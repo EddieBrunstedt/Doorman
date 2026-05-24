@@ -12,6 +12,7 @@ pub mod clock;
 pub mod email;
 pub mod error;
 pub mod memory;
+pub mod password;
 pub mod session;
 pub mod storage;
 

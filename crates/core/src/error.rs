@@ -22,6 +22,15 @@ pub enum Error {
 
     #[error("user not found")]
     UserNotFound,
+
+    #[error("password does not meet policy: minimum length is {min_length}")]
+    WeakPassword { min_length: usize },
+
+    #[error("password hashing failed: {0}")]
+    PasswordHashing(String),
+
+    #[error("stored password hash is corrupt")]
+    PasswordHashCorrupt,
 }
 
 #[derive(Debug, Error)]
