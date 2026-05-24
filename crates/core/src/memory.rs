@@ -12,8 +12,9 @@ use crate::audit::{AuditEvent, AuditSink};
 use crate::email::{Email, EmailSender};
 use crate::error::{EmailResult, StorageError, StorageResult};
 use crate::storage::{
-    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasswordCredential,
-    PasswordCredentialStore, Session, SessionId, SessionStore, StoredPasskey,
+    OAuthIdentity, OAuthIdentityStore, OAuthStateId, OAuthStateStore, PasskeyChallengeId,
+    PasskeyChallengeStore, PasskeyCredentialStore, PasswordCredential, PasswordCredentialStore,
+    PendingOAuthAuthorization, Session, SessionId, SessionStore, StoredPasskey,
     StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
     VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
@@ -546,5 +547,121 @@ impl PasskeyChallengeStore for InMemoryPasskeyChallengeStore {
         state.authentications.retain(|_, v| v.expires_at > now);
         let after = state.registrations.len() + state.authentications.len();
         Ok((before - after) as u64)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InMemoryOAuthIdentityStore {
+    inner: Mutex<Vec<OAuthIdentity>>,
+}
+
+impl InMemoryOAuthIdentityStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<OAuthIdentity>> {
+        self.inner
+            .lock()
+            .expect("oauth identity store mutex poisoned")
+    }
+
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[async_trait]
+impl OAuthIdentityStore for InMemoryOAuthIdentityStore {
+    async fn link(&self, identity: OAuthIdentity) -> StorageResult<()> {
+        let mut state = self.lock();
+        if state
+            .iter()
+            .any(|i| i.provider == identity.provider && i.subject == identity.subject)
+        {
+            return Err(StorageError::msg("oauth identity already linked to a user"));
+        }
+        state.push(identity);
+        Ok(())
+    }
+
+    async fn find_by_provider_subject(
+        &self,
+        provider: &str,
+        subject: &str,
+    ) -> StorageResult<Option<OAuthIdentity>> {
+        Ok(self
+            .lock()
+            .iter()
+            .find(|i| i.provider == provider && i.subject == subject)
+            .cloned())
+    }
+
+    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<OAuthIdentity>> {
+        Ok(self
+            .lock()
+            .iter()
+            .filter(|i| i.user_id == user_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn unlink(&self, provider: &str, subject: &str) -> StorageResult<()> {
+        let mut state = self.lock();
+        state.retain(|i| !(i.provider == provider && i.subject == subject));
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InMemoryOAuthStateStore {
+    inner: Mutex<HashMap<OAuthStateId, PendingOAuthAuthorization>>,
+}
+
+impl InMemoryOAuthStateStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<OAuthStateId, PendingOAuthAuthorization>> {
+        self.inner.lock().expect("oauth state store mutex poisoned")
+    }
+
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[async_trait]
+impl OAuthStateStore for InMemoryOAuthStateStore {
+    async fn put(&self, value: PendingOAuthAuthorization) -> StorageResult<()> {
+        let mut state = self.lock();
+        if state.contains_key(&value.state_id) {
+            return Err(StorageError::msg("oauth state id collision"));
+        }
+        state.insert(value.state_id.clone(), value);
+        Ok(())
+    }
+
+    async fn take(
+        &self,
+        state_id: &OAuthStateId,
+    ) -> StorageResult<Option<PendingOAuthAuthorization>> {
+        Ok(self.lock().remove(state_id))
+    }
+
+    async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
+        let mut state = self.lock();
+        let before = state.len();
+        state.retain(|_, v| v.expires_at > now);
+        Ok((before - state.len()) as u64)
     }
 }
