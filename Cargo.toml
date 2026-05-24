@@ -1,6 +1,22 @@
-[package]
-name = "bauth"
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/axum"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/eddieb/bauth"
+authors = ["Eddie Brunstedt <eddie.brunstedt@protonmail.com>"]
+rust-version = "1.85"
 
-[dependencies]
+[workspace.dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+thiserror = "1"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+uuid = { version = "1", features = ["serde", "v4"] }
