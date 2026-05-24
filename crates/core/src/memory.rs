@@ -12,8 +12,10 @@ use crate::audit::{AuditEvent, AuditSink};
 use crate::email::{Email, EmailSender};
 use crate::error::{EmailResult, StorageError, StorageResult};
 use crate::storage::{
-    PasswordCredential, PasswordCredentialStore, Session, SessionId, SessionStore, TokenHash, User,
-    UserId, UserStore, VerificationPurpose, VerificationToken, VerificationTokenStore,
+    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasswordCredential,
+    PasswordCredentialStore, Session, SessionId, SessionStore, StoredPasskey,
+    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
+    VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
 
 #[derive(Debug, Default)]
@@ -384,5 +386,165 @@ impl VerificationTokenStore for InMemoryVerificationTokenStore {
         let before = state.len();
         state.retain(|t| t.expires_at > now);
         Ok((before - state.len()) as u64)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InMemoryPasskeyCredentialStore {
+    inner: Mutex<Vec<StoredPasskey>>,
+}
+
+impl InMemoryPasskeyCredentialStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<StoredPasskey>> {
+        self.inner
+            .lock()
+            .expect("passkey credential store mutex poisoned")
+    }
+
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[async_trait]
+impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
+    async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
+        let mut state = self.lock();
+        if state
+            .iter()
+            .any(|c| c.credential_id == credential.credential_id)
+        {
+            return Err(StorageError::msg(
+                "passkey credential id already registered",
+            ));
+        }
+        state.push(credential);
+        Ok(())
+    }
+
+    async fn update_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
+        let mut state = self.lock();
+        let Some(slot) = state
+            .iter_mut()
+            .find(|c| c.credential_id == credential.credential_id)
+        else {
+            return Err(StorageError::msg("passkey credential not found"));
+        };
+        *slot = credential;
+        Ok(())
+    }
+
+    async fn list_passkeys_for_user(&self, user_id: UserId) -> StorageResult<Vec<StoredPasskey>> {
+        Ok(self
+            .lock()
+            .iter()
+            .filter(|c| c.user_id == user_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn find_passkey_by_credential_id(
+        &self,
+        credential_id: &[u8],
+    ) -> StorageResult<Option<StoredPasskey>> {
+        Ok(self
+            .lock()
+            .iter()
+            .find(|c| c.credential_id == credential_id)
+            .cloned())
+    }
+
+    async fn delete_passkey(&self, credential_id: &[u8]) -> StorageResult<()> {
+        let mut state = self.lock();
+        state.retain(|c| c.credential_id != credential_id);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InMemoryPasskeyChallengeStore {
+    inner: Mutex<PasskeyChallengeState>,
+}
+
+#[derive(Debug, Default)]
+struct PasskeyChallengeState {
+    registrations: HashMap<PasskeyChallengeId, StoredPasskeyRegistration>,
+    authentications: HashMap<PasskeyChallengeId, StoredPasskeyAuthentication>,
+}
+
+impl InMemoryPasskeyChallengeStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, PasskeyChallengeState> {
+        self.inner
+            .lock()
+            .expect("passkey challenge store mutex poisoned")
+    }
+
+    pub fn len(&self) -> usize {
+        let s = self.lock();
+        s.registrations.len() + s.authentications.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[async_trait]
+impl PasskeyChallengeStore for InMemoryPasskeyChallengeStore {
+    async fn put_registration(&self, value: StoredPasskeyRegistration) -> StorageResult<()> {
+        let mut state = self.lock();
+        if state.registrations.contains_key(&value.id) {
+            return Err(StorageError::msg(
+                "passkey registration challenge collision",
+            ));
+        }
+        state.registrations.insert(value.id, value);
+        Ok(())
+    }
+
+    async fn take_registration(
+        &self,
+        id: PasskeyChallengeId,
+    ) -> StorageResult<Option<StoredPasskeyRegistration>> {
+        Ok(self.lock().registrations.remove(&id))
+    }
+
+    async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
+        let mut state = self.lock();
+        if state.authentications.contains_key(&value.id) {
+            return Err(StorageError::msg(
+                "passkey authentication challenge collision",
+            ));
+        }
+        state.authentications.insert(value.id, value);
+        Ok(())
+    }
+
+    async fn take_authentication(
+        &self,
+        id: PasskeyChallengeId,
+    ) -> StorageResult<Option<StoredPasskeyAuthentication>> {
+        Ok(self.lock().authentications.remove(&id))
+    }
+
+    async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
+        let mut state = self.lock();
+        let before = state.registrations.len() + state.authentications.len();
+        state.registrations.retain(|_, v| v.expires_at > now);
+        state.authentications.retain(|_, v| v.expires_at > now);
+        let after = state.registrations.len() + state.authentications.len();
+        Ok((before - after) as u64)
     }
 }

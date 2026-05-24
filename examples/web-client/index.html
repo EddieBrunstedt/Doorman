@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>bauth passkey demo</title>
+  </head>
+  <body>
+    <h1>bauth passkey demo</h1>
+    <section>
+      <h2>Register a new passkey</h2>
+      <p>You must already be signed in for this to work.</p>
+      <label>Device name <input id="device-name" type="text" placeholder="MacBook" /></label>
+      <button id="register">Register passkey</button>
+    </section>
+    <section>
+      <h2>Sign in with a passkey</h2>
+      <label>Email <input id="email" type="email" placeholder="you@example.com" /></label>
+      <button id="authenticate">Sign in</button>
+    </section>
+    <pre id="log"></pre>
+
+    <script type="module">
+      import { registerPasskey, authenticatePasskey } from "./passkey.ts";
+
+      const log = (msg) => {
+        const el = document.getElementById("log");
+        el.textContent += msg + "\n";
+      };
+
+      document.getElementById("register").addEventListener("click", async () => {
+        try {
+          const name = document.getElementById("device-name").value || undefined;
+          await registerPasskey(name);
+          log("registered ok");
+        } catch (e) {
+          log("register error: " + e.message);
+        }
+      });
+
+      document.getElementById("authenticate").addEventListener("click", async () => {
+        try {
+          const email = document.getElementById("email").value;
+          await authenticatePasskey(email);
+          log("signed in ok");
+        } catch (e) {
+          log("auth error: " + e.message);
+        }
+      });
+    </script>
+  </body>
+</html>

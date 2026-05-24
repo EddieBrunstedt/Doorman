@@ -17,7 +17,10 @@ rand.workspace = true
 serde.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+url.workspace = true
 uuid.workspace = true
+webauthn-rs.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+webauthn-authenticator-rs.workspace = true

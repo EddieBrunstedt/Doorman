@@ -52,6 +52,21 @@ pub enum Error {
 
     #[error("stored password hash is corrupt")]
     PasswordHashCorrupt,
+
+    #[error("passkey ceremony is invalid or has expired")]
+    InvalidPasskeyChallenge,
+
+    #[error("passkey credential is not registered")]
+    PasskeyNotFound,
+
+    #[error("passkey credential does not belong to the expected user")]
+    PasskeyOwnershipMismatch,
+
+    #[error("webauthn ceremony failed: {0}")]
+    Webauthn(String),
+
+    #[error("invalid relying party configuration: {0}")]
+    InvalidRelyingParty(String),
 }
 
 #[derive(Debug, Error)]

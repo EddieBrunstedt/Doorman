@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PasskeyRegistration};
 
 use crate::error::StorageResult;
 
@@ -110,6 +111,115 @@ pub trait SessionStore: Send + Sync {
     async fn delete_session(&self, id: SessionId) -> StorageResult<()>;
 
     async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64>;
+
+    async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
+}
+
+/// Identifier for an in-progress passkey ceremony (registration or
+/// authentication). The plaintext value is returned to the client so it
+/// can submit it back at the `finish` step; the actual ceremony state is
+/// only ever held server-side via [`PasskeyChallengeStore`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PasskeyChallengeId(pub Uuid);
+
+impl PasskeyChallengeId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for PasskeyChallengeId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for PasskeyChallengeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// A passkey credential bound to a user. The `passkey` field carries the
+/// serialisable `webauthn-rs` representation; a host adapter that
+/// persists this to a database is expected to (de)serialise it as JSON or
+/// CBOR.
+#[derive(Debug, Clone)]
+pub struct StoredPasskey {
+    /// Raw credential id, as a byte string. Duplicates `passkey.cred_id()`
+    /// but kept top-level so storage backends can index on it without
+    /// having to deserialise the passkey blob.
+    pub credential_id: Vec<u8>,
+    pub user_id: UserId,
+    pub passkey: Passkey,
+    /// Optional friendly device name set by the user at registration time
+    /// ("Eddie's iPhone", "Yubikey 5"). The library does not interpret it.
+    pub name: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+/// In-progress passkey registration ceremony state. The `state` field is
+/// a `webauthn-rs` opaque value that must be preserved verbatim between
+/// start and finish.
+#[derive(Debug, Clone)]
+pub struct StoredPasskeyRegistration {
+    pub id: PasskeyChallengeId,
+    pub user_id: UserId,
+    pub state: PasskeyRegistration,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// In-progress passkey authentication ceremony state.
+#[derive(Debug, Clone)]
+pub struct StoredPasskeyAuthentication {
+    pub id: PasskeyChallengeId,
+    /// The user the ceremony was started for, if username-first. `None`
+    /// is reserved for future usernameless / discoverable flows.
+    pub user_id: Option<UserId>,
+    pub state: PasskeyAuthentication,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[async_trait]
+pub trait PasskeyCredentialStore: Send + Sync {
+    async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()>;
+
+    /// Update an existing passkey, typically to advance its signature
+    /// counter or backup-state flags after a successful authentication.
+    async fn update_passkey(&self, credential: StoredPasskey) -> StorageResult<()>;
+
+    async fn list_passkeys_for_user(&self, user_id: UserId) -> StorageResult<Vec<StoredPasskey>>;
+
+    async fn find_passkey_by_credential_id(
+        &self,
+        credential_id: &[u8],
+    ) -> StorageResult<Option<StoredPasskey>>;
+
+    async fn delete_passkey(&self, credential_id: &[u8]) -> StorageResult<()>;
+}
+
+#[async_trait]
+pub trait PasskeyChallengeStore: Send + Sync {
+    async fn put_registration(&self, value: StoredPasskeyRegistration) -> StorageResult<()>;
+
+    /// Atomically look up and remove a registration challenge. MUST
+    /// delete before returning so the same challenge cannot be replayed.
+    async fn take_registration(
+        &self,
+        id: PasskeyChallengeId,
+    ) -> StorageResult<Option<StoredPasskeyRegistration>>;
+
+    async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()>;
+
+    /// Atomically look up and remove an authentication challenge.
+    async fn take_authentication(
+        &self,
+        id: PasskeyChallengeId,
+    ) -> StorageResult<Option<StoredPasskeyAuthentication>>;
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }
