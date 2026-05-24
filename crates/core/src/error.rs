@@ -1,4 +1,5 @@
 use std::fmt;
+use std::time::Duration;
 
 use thiserror::Error;
 
@@ -87,6 +88,9 @@ pub enum Error {
 
     #[error("oauth provider did not return an email address")]
     OAuthEmailMissing,
+
+    #[error("rate limit exceeded; retry after {} ms", retry_after.as_millis())]
+    RateLimited { retry_after: Duration },
 }
 
 #[derive(Debug, Error)]

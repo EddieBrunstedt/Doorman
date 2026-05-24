@@ -22,6 +22,7 @@ use crate::clock::Clock;
 use crate::email::{Email, EmailSender};
 use crate::error::{Error, Result};
 use crate::password::{PasswordPolicy, hash_password, verify_password};
+use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
 use crate::session::{IssuedSession, SessionContext, SessionManager, hash_token};
 use crate::storage::{
     PasswordCredential, PasswordCredentialStore, TokenHash, User, UserId, UserStore,
@@ -51,6 +52,62 @@ pub struct PasswordAuthConfig {
     /// existing session for the affected user as part of the reset.
     /// Defaults to `true` because reset implies a credential compromise.
     pub revoke_sessions_on_password_reset: bool,
+    /// Rate-limit policies applied to login and unauthenticated email
+    /// flows (password reset request, verification email re-issue).
+    /// Defaults to a conservative posture; set to [`PasswordRateLimits::disabled`]
+    /// to turn enforcement off.
+    pub rate_limits: PasswordRateLimits,
+}
+
+/// Rate-limit policies applied to the password-auth flows. Each protected
+/// operation is checked against an IP-keyed bucket and an identifier-keyed
+/// bucket: the IP bucket caps the rate at which a single client can probe,
+/// while the identifier bucket caps the rate at which one email or account
+/// can be targeted regardless of source IP. Both must clear for the
+/// operation to proceed.
+#[derive(Debug, Clone, Copy)]
+pub struct PasswordRateLimits {
+    pub login_per_ip: Option<RateLimitPolicy>,
+    pub login_per_identifier: Option<RateLimitPolicy>,
+    pub password_reset_per_ip: Option<RateLimitPolicy>,
+    pub password_reset_per_identifier: Option<RateLimitPolicy>,
+    pub verification_email_per_user: Option<RateLimitPolicy>,
+}
+
+impl PasswordRateLimits {
+    /// Turn off every policy. Equivalent to wiring a
+    /// [`NoopRateLimiter`](crate::rate_limit::NoopRateLimiter) but keeps
+    /// the limiter free of fan-out on hot paths.
+    pub const fn disabled() -> Self {
+        Self {
+            login_per_ip: None,
+            login_per_identifier: None,
+            password_reset_per_ip: None,
+            password_reset_per_identifier: None,
+            verification_email_per_user: None,
+        }
+    }
+}
+
+impl Default for PasswordRateLimits {
+    fn default() -> Self {
+        Self {
+            // Defaults balance UX with abuse resistance: a legitimate user
+            // typing a password wrong a handful of times in a minute is
+            // fine; a credential-stuffing bot is not.
+            login_per_ip: Some(RateLimitPolicy::new(20, Duration::from_secs(60))),
+            login_per_identifier: Some(RateLimitPolicy::new(10, Duration::from_secs(60 * 15))),
+            password_reset_per_ip: Some(RateLimitPolicy::new(5, Duration::from_secs(60 * 60))),
+            password_reset_per_identifier: Some(RateLimitPolicy::new(
+                3,
+                Duration::from_secs(60 * 60),
+            )),
+            verification_email_per_user: Some(RateLimitPolicy::new(
+                5,
+                Duration::from_secs(60 * 60),
+            )),
+        }
+    }
 }
 
 impl Default for PasswordAuthConfig {
@@ -67,6 +124,7 @@ impl Default for PasswordAuthConfig {
             ),
             require_email_verification: false,
             revoke_sessions_on_password_reset: true,
+            rate_limits: PasswordRateLimits::default(),
         }
     }
 }
@@ -89,6 +147,7 @@ pub struct PasswordAuthManager {
     email: Arc<dyn EmailSender>,
     clock: Arc<dyn Clock>,
     audit: Arc<dyn AuditSink>,
+    rate_limiter: Arc<dyn RateLimiter>,
     config: PasswordAuthConfig,
 }
 
@@ -102,6 +161,7 @@ impl PasswordAuthManager {
         email: Arc<dyn EmailSender>,
         clock: Arc<dyn Clock>,
         audit: Arc<dyn AuditSink>,
+        rate_limiter: Arc<dyn RateLimiter>,
         config: PasswordAuthConfig,
     ) -> Self {
         Self {
@@ -112,6 +172,7 @@ impl PasswordAuthManager {
             email,
             clock,
             audit,
+            rate_limiter,
             config,
         }
     }
@@ -185,6 +246,19 @@ impl PasswordAuthManager {
     ) -> Result<IssuedSession> {
         let email_normalized = normalize_email(email);
         let now = self.clock.now();
+
+        self.enforce_rate_limit(
+            self.config.rate_limits.login_per_ip,
+            "password/login/ip",
+            context.ip.as_deref(),
+        )
+        .await?;
+        self.enforce_rate_limit(
+            self.config.rate_limits.login_per_identifier,
+            "password/login/email",
+            Some(email_normalized.as_str()),
+        )
+        .await?;
 
         let Some(user) = self.users.find_user_by_email(&email_normalized).await? else {
             self.emit_login_failed(
@@ -280,6 +354,13 @@ impl PasswordAuthManager {
     }
 
     pub async fn request_email_verification(&self, user_id: UserId) -> Result<()> {
+        self.enforce_rate_limit(
+            self.config.rate_limits.verification_email_per_user,
+            "password/verify/user",
+            Some(user_id.to_string().as_str()),
+        )
+        .await?;
+
         let Some(user) = self.users.find_user_by_id(user_id).await? else {
             return Err(Error::UserNotFound);
         };
@@ -326,6 +407,20 @@ impl PasswordAuthManager {
 
     pub async fn request_password_reset(&self, email: &str, context: SessionContext) -> Result<()> {
         let email_normalized = normalize_email(email);
+
+        self.enforce_rate_limit(
+            self.config.rate_limits.password_reset_per_ip,
+            "password/reset/ip",
+            context.ip.as_deref(),
+        )
+        .await?;
+        self.enforce_rate_limit(
+            self.config.rate_limits.password_reset_per_identifier,
+            "password/reset/email",
+            Some(email_normalized.as_str()),
+        )
+        .await?;
+
         // Silent success for unknown addresses keeps the endpoint from
         // doubling as an account-enumeration oracle.
         let Some(user) = self.users.find_user_by_email(&email_normalized).await? else {
@@ -456,6 +551,25 @@ impl PasswordAuthManager {
         let url = build_url(&self.config.verification_url_template, &token);
         self.email.send(build_verification_email(to, &url)).await?;
         Ok(())
+    }
+
+    async fn enforce_rate_limit(
+        &self,
+        policy: Option<RateLimitPolicy>,
+        prefix: &str,
+        scope: Option<&str>,
+    ) -> Result<()> {
+        // Skip cleanly when either the policy is disabled or the caller
+        // didn't supply the keying scope (e.g. an IP-keyed policy on a
+        // request that arrived without an IP).
+        let (Some(policy), Some(scope)) = (policy, scope) else {
+            return Ok(());
+        };
+        let key = format!("{prefix}:{scope}");
+        match self.rate_limiter.check(&key, policy).await? {
+            RateLimitDecision::Allowed => Ok(()),
+            RateLimitDecision::Limited { retry_after } => Err(Error::RateLimited { retry_after }),
+        }
     }
 
     async fn emit_login_failed(

@@ -8,11 +8,14 @@ use bauth_core::clock::{Clock, MockClock};
 use bauth_core::email::EmailSender;
 use bauth_core::error::Error;
 use bauth_core::memory::{
-    InMemoryAuditSink, InMemoryEmailSender, InMemoryPasswordCredentialStore, InMemorySessionStore,
-    InMemoryUserStore, InMemoryVerificationTokenStore,
+    InMemoryAuditSink, InMemoryEmailSender, InMemoryPasswordCredentialStore, InMemoryRateLimiter,
+    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::password::PasswordPolicy;
-use bauth_core::password_auth::{PasswordAuthConfig, PasswordAuthManager, TOKEN_PLACEHOLDER};
+use bauth_core::password_auth::{
+    PasswordAuthConfig, PasswordAuthManager, PasswordRateLimits, TOKEN_PLACEHOLDER,
+};
+use bauth_core::rate_limit::{NoopRateLimiter, RateLimitPolicy, RateLimiter};
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
 use bauth_core::storage::{
     PasswordCredentialStore, SessionStore, UserStore, VerificationPurpose, VerificationTokenStore,
@@ -44,11 +47,19 @@ fn default_config() -> PasswordAuthConfig {
         password_policy: PasswordPolicy { min_length: 8 },
         verification_url_template: VERIFICATION_URL.to_string(),
         password_reset_url_template: RESET_URL.to_string(),
+        // Default tests don't exercise the limiter; keep its accounting
+        // bookkeeping out of the way by disabling every policy. The
+        // dedicated rate_limit tests below opt back in.
+        rate_limits: PasswordRateLimits::disabled(),
         ..PasswordAuthConfig::default()
     }
 }
 
 fn fresh(config: PasswordAuthConfig) -> Harness {
+    fresh_with_limiter(config, Arc::new(NoopRateLimiter) as Arc<dyn RateLimiter>)
+}
+
+fn fresh_with_limiter(config: PasswordAuthConfig, limiter: Arc<dyn RateLimiter>) -> Harness {
     let users: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
     let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
     let passwords: Arc<InMemoryPasswordCredentialStore> =
@@ -74,6 +85,7 @@ fn fresh(config: PasswordAuthConfig) -> Harness {
         email.clone() as Arc<dyn EmailSender>,
         clock.clone() as Arc<dyn Clock>,
         audit.clone() as Arc<dyn AuditSink>,
+        limiter,
         config,
     );
     Harness {
@@ -936,4 +948,252 @@ async fn verification_token_store_rejects_hash_collision_per_purpose() {
         .create_token(make(VerificationPurpose::EmailVerification))
         .await
         .expect_err("collision");
+}
+
+fn rate_limited_config(rate_limits: PasswordRateLimits) -> PasswordAuthConfig {
+    PasswordAuthConfig {
+        rate_limits,
+        ..default_config()
+    }
+}
+
+#[tokio::test]
+async fn login_rate_limit_per_ip_blocks_after_budget() {
+    let clock_for_limiter = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let limiter = Arc::new(InMemoryRateLimiter::new(
+        clock_for_limiter as Arc<dyn Clock>,
+    )) as Arc<dyn RateLimiter>;
+    let policy = RateLimitPolicy::new(3, Duration::from_secs(60));
+    let h = fresh_with_limiter(
+        rate_limited_config(PasswordRateLimits {
+            login_per_ip: Some(policy),
+            ..PasswordRateLimits::disabled()
+        }),
+        limiter.clone(),
+    );
+    h.manager
+        .register(
+            "u@example.com",
+            "hunter22hunter22",
+            SessionContext::default(),
+        )
+        .await
+        .expect("register");
+
+    let ctx = SessionContext {
+        ip: Some("9.9.9.9".into()),
+        user_agent: None,
+    };
+    for _ in 0..3 {
+        let err = h
+            .manager
+            .login("u@example.com", "WRONG", ctx.clone())
+            .await
+            .expect_err("wrong pw");
+        assert!(matches!(err, Error::InvalidCredentials));
+    }
+
+    let err = h
+        .manager
+        .login("u@example.com", "WRONG", ctx.clone())
+        .await
+        .expect_err("limit");
+    assert!(matches!(err, Error::RateLimited { .. }));
+
+    // A different IP should still get through (subject to its own bucket).
+    let other = SessionContext {
+        ip: Some("8.8.8.8".into()),
+        user_agent: None,
+    };
+    let err = h
+        .manager
+        .login("u@example.com", "WRONG", other)
+        .await
+        .expect_err("other ip still allowed");
+    assert!(matches!(err, Error::InvalidCredentials));
+}
+
+#[tokio::test]
+async fn login_rate_limit_per_identifier_blocks_across_ips() {
+    let clock_for_limiter = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let limiter = Arc::new(InMemoryRateLimiter::new(
+        clock_for_limiter as Arc<dyn Clock>,
+    )) as Arc<dyn RateLimiter>;
+    let policy = RateLimitPolicy::new(2, Duration::from_secs(60 * 15));
+    let h = fresh_with_limiter(
+        rate_limited_config(PasswordRateLimits {
+            login_per_identifier: Some(policy),
+            ..PasswordRateLimits::disabled()
+        }),
+        limiter,
+    );
+    h.manager
+        .register(
+            "u@example.com",
+            "hunter22hunter22",
+            SessionContext::default(),
+        )
+        .await
+        .expect("register");
+
+    for ip in ["1.1.1.1", "2.2.2.2"] {
+        let err = h
+            .manager
+            .login(
+                "u@example.com",
+                "WRONG",
+                SessionContext {
+                    ip: Some(ip.into()),
+                    user_agent: None,
+                },
+            )
+            .await
+            .expect_err("wrong pw");
+        assert!(matches!(err, Error::InvalidCredentials));
+    }
+
+    let err = h
+        .manager
+        .login(
+            "u@example.com",
+            "WRONG",
+            SessionContext {
+                ip: Some("3.3.3.3".into()),
+                user_agent: None,
+            },
+        )
+        .await
+        .expect_err("identifier bucket exhausted regardless of ip");
+    assert!(matches!(err, Error::RateLimited { .. }));
+}
+
+#[tokio::test]
+async fn password_reset_rate_limit_engages() {
+    let clock_for_limiter = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let limiter = Arc::new(InMemoryRateLimiter::new(
+        clock_for_limiter as Arc<dyn Clock>,
+    )) as Arc<dyn RateLimiter>;
+    let policy = RateLimitPolicy::new(2, Duration::from_secs(60 * 60));
+    let h = fresh_with_limiter(
+        rate_limited_config(PasswordRateLimits {
+            password_reset_per_identifier: Some(policy),
+            ..PasswordRateLimits::disabled()
+        }),
+        limiter,
+    );
+    h.manager
+        .register(
+            "u@example.com",
+            "hunter22hunter22",
+            SessionContext::default(),
+        )
+        .await
+        .expect("register");
+
+    h.manager
+        .request_password_reset("u@example.com", SessionContext::default())
+        .await
+        .expect("first");
+    h.manager
+        .request_password_reset("u@example.com", SessionContext::default())
+        .await
+        .expect("second");
+
+    let err = h
+        .manager
+        .request_password_reset("u@example.com", SessionContext::default())
+        .await
+        .expect_err("limited");
+    assert!(matches!(err, Error::RateLimited { .. }));
+}
+
+#[tokio::test]
+async fn verification_email_rate_limit_engages() {
+    let clock_for_limiter = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let limiter = Arc::new(InMemoryRateLimiter::new(
+        clock_for_limiter as Arc<dyn Clock>,
+    )) as Arc<dyn RateLimiter>;
+    let policy = RateLimitPolicy::new(2, Duration::from_secs(60 * 60));
+    let h = fresh_with_limiter(
+        rate_limited_config(PasswordRateLimits {
+            verification_email_per_user: Some(policy),
+            ..PasswordRateLimits::disabled()
+        }),
+        limiter,
+    );
+    let outcome = h
+        .manager
+        .register(
+            "u@example.com",
+            "hunter22hunter22",
+            SessionContext::default(),
+        )
+        .await
+        .expect("register");
+
+    h.manager
+        .request_email_verification(outcome.user.id)
+        .await
+        .expect("first re-request");
+    h.manager
+        .request_email_verification(outcome.user.id)
+        .await
+        .expect("second re-request");
+
+    let err = h
+        .manager
+        .request_email_verification(outcome.user.id)
+        .await
+        .expect_err("limited");
+    assert!(matches!(err, Error::RateLimited { .. }));
+}
+
+#[tokio::test]
+async fn rate_limit_clears_after_window() {
+    let clock_for_limiter = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let limiter = Arc::new(InMemoryRateLimiter::new(
+        clock_for_limiter.clone() as Arc<dyn Clock>
+    )) as Arc<dyn RateLimiter>;
+    let policy = RateLimitPolicy::new(1, Duration::from_secs(60));
+    let h = fresh_with_limiter(
+        rate_limited_config(PasswordRateLimits {
+            login_per_ip: Some(policy),
+            ..PasswordRateLimits::disabled()
+        }),
+        limiter,
+    );
+    h.manager
+        .register(
+            "u@example.com",
+            "hunter22hunter22",
+            SessionContext::default(),
+        )
+        .await
+        .expect("register");
+
+    let ctx = SessionContext {
+        ip: Some("1.2.3.4".into()),
+        user_agent: None,
+    };
+    let _ = h
+        .manager
+        .login("u@example.com", "WRONG", ctx.clone())
+        .await
+        .expect_err("first attempt fails on password");
+
+    let err = h
+        .manager
+        .login("u@example.com", "WRONG", ctx.clone())
+        .await
+        .expect_err("limited");
+    assert!(matches!(err, Error::RateLimited { .. }));
+
+    // Advance the limiter's clock past the window; the bucket should drain.
+    clock_for_limiter.advance(ChronoDuration::seconds(120));
+    let err = h
+        .manager
+        .login("u@example.com", "WRONG", ctx)
+        .await
+        .expect_err("window cleared, password is still wrong");
+    assert!(matches!(err, Error::InvalidCredentials));
 }

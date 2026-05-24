@@ -3,14 +3,16 @@
 //! the process and lookups hold a `std::sync::Mutex` for their duration.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::audit::{AuditEvent, AuditSink};
+use crate::clock::Clock;
 use crate::email::{Email, EmailSender};
 use crate::error::{EmailResult, StorageError, StorageResult};
+use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
 use crate::storage::{
     OAuthIdentity, OAuthIdentityStore, OAuthStateId, OAuthStateStore, PasskeyChallengeId,
     PasskeyChallengeStore, PasskeyCredentialStore, PasswordCredential, PasswordCredentialStore,
@@ -663,5 +665,63 @@ impl OAuthStateStore for InMemoryOAuthStateStore {
         let before = state.len();
         state.retain(|_, v| v.expires_at > now);
         Ok((before - state.len()) as u64)
+    }
+}
+
+/// In-memory sliding-window-log rate limiter.
+///
+/// Each `(key, policy.window)` bucket keeps the timestamps of recent
+/// attempts and evicts ones older than `policy.window` on every check.
+/// Suitable for single-process deployments and tests; a multi-replica
+/// deployment should swap in a shared backend.
+pub struct InMemoryRateLimiter {
+    clock: Arc<dyn Clock>,
+    inner: Mutex<HashMap<BucketKey, Vec<DateTime<Utc>>>>,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct BucketKey {
+    key: String,
+    window_ms: u128,
+}
+
+impl InMemoryRateLimiter {
+    pub fn new(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            clock,
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<BucketKey, Vec<DateTime<Utc>>>> {
+        self.inner.lock().expect("rate limiter mutex poisoned")
+    }
+}
+
+#[async_trait]
+impl RateLimiter for InMemoryRateLimiter {
+    async fn check(&self, key: &str, policy: RateLimitPolicy) -> StorageResult<RateLimitDecision> {
+        let now = self.clock.now();
+        let window = chrono::Duration::from_std(policy.window)
+            .map_err(|_| StorageError::msg("rate limit window overflows chrono::Duration"))?;
+        let cutoff = now - window;
+        let bucket = BucketKey {
+            key: key.to_owned(),
+            window_ms: policy.window.as_millis(),
+        };
+
+        let mut state = self.lock();
+        let entries = state.entry(bucket).or_default();
+        entries.retain(|t| *t > cutoff);
+
+        if entries.len() as u32 >= policy.max_attempts {
+            let oldest = *entries.first().unwrap_or(&now);
+            let retry_at = oldest + window;
+            let retry_after = (retry_at - now).to_std().unwrap_or(policy.window);
+            return Ok(RateLimitDecision::Limited { retry_after });
+        }
+
+        entries.push(now);
+        Ok(RateLimitDecision::Allowed)
     }
 }

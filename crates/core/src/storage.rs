@@ -3,6 +3,7 @@ use std::fmt;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PasskeyRegistration};
 
@@ -53,9 +54,20 @@ impl fmt::Display for SessionId {
 }
 
 /// SHA-256 digest of a session token. Sessions are stored keyed by hash so
-/// that a database breach does not yield usable tokens.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// that a database breach does not yield usable tokens. Equality is
+/// constant-time so that any in-process comparison (including HashMap
+/// bucket disambiguation) does not leak the matched prefix length via
+/// timing.
+#[derive(Clone, Copy, Hash, Serialize, Deserialize)]
 pub struct TokenHash(pub [u8; 32]);
+
+impl PartialEq for TokenHash {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.ct_eq(&other.0).into()
+    }
+}
+
+impl Eq for TokenHash {}
 
 impl fmt::Debug for TokenHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

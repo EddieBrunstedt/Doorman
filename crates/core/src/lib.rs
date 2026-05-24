@@ -16,6 +16,7 @@ pub mod oauth;
 pub mod passkey;
 pub mod password;
 pub mod password_auth;
+pub mod rate_limit;
 pub mod session;
 pub mod storage;
 
