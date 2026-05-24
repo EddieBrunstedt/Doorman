@@ -11,7 +11,10 @@ use chrono::{DateTime, Utc};
 use crate::audit::{AuditEvent, AuditSink};
 use crate::email::{Email, EmailSender};
 use crate::error::{EmailResult, StorageError, StorageResult};
-use crate::storage::{Session, SessionId, SessionStore, TokenHash, User, UserId, UserStore};
+use crate::storage::{
+    PasswordCredential, PasswordCredentialStore, Session, SessionId, SessionStore, TokenHash, User,
+    UserId, UserStore, VerificationPurpose, VerificationToken, VerificationTokenStore,
+};
 
 #[derive(Debug, Default)]
 pub struct InMemoryUserStore {
@@ -257,5 +260,129 @@ impl EmailSender for InMemoryEmailSender {
             .expect("email sender mutex poisoned")
             .push(email);
         Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InMemoryPasswordCredentialStore {
+    inner: Mutex<HashMap<UserId, PasswordCredential>>,
+}
+
+impl InMemoryPasswordCredentialStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<UserId, PasswordCredential>> {
+        self.inner
+            .lock()
+            .expect("password credential store mutex poisoned")
+    }
+
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[async_trait]
+impl PasswordCredentialStore for InMemoryPasswordCredentialStore {
+    async fn set_password(&self, credential: PasswordCredential) -> StorageResult<()> {
+        self.lock().insert(credential.user_id, credential);
+        Ok(())
+    }
+
+    async fn get_password(&self, user_id: UserId) -> StorageResult<Option<PasswordCredential>> {
+        Ok(self.lock().get(&user_id).cloned())
+    }
+
+    async fn delete_password(&self, user_id: UserId) -> StorageResult<()> {
+        self.lock().remove(&user_id);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InMemoryVerificationTokenStore {
+    inner: Mutex<Vec<VerificationToken>>,
+}
+
+impl InMemoryVerificationTokenStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<VerificationToken>> {
+        self.inner
+            .lock()
+            .expect("verification token store mutex poisoned")
+    }
+
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[async_trait]
+impl VerificationTokenStore for InMemoryVerificationTokenStore {
+    async fn create_token(&self, token: VerificationToken) -> StorageResult<()> {
+        let mut state = self.lock();
+        if state
+            .iter()
+            .any(|t| t.token_hash == token.token_hash && t.purpose == token.purpose)
+        {
+            return Err(StorageError::msg("verification token hash collision"));
+        }
+        state.push(token);
+        Ok(())
+    }
+
+    async fn consume_token(
+        &self,
+        hash: &TokenHash,
+        purpose: VerificationPurpose,
+    ) -> StorageResult<Option<VerificationToken>> {
+        let mut state = self.lock();
+        let pos = state
+            .iter()
+            .position(|t| t.token_hash == *hash && t.purpose == purpose);
+        Ok(pos.map(|i| state.remove(i)))
+    }
+
+    async fn find_token(
+        &self,
+        hash: &TokenHash,
+        purpose: VerificationPurpose,
+    ) -> StorageResult<Option<VerificationToken>> {
+        let state = self.lock();
+        Ok(state
+            .iter()
+            .find(|t| t.token_hash == *hash && t.purpose == purpose)
+            .cloned())
+    }
+
+    async fn delete_tokens_for_user(
+        &self,
+        user_id: UserId,
+        purpose: VerificationPurpose,
+    ) -> StorageResult<u64> {
+        let mut state = self.lock();
+        let before = state.len();
+        state.retain(|t| !(t.user_id == user_id && t.purpose == purpose));
+        Ok((before - state.len()) as u64)
+    }
+
+    async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
+        let mut state = self.lock();
+        let before = state.len();
+        state.retain(|t| t.expires_at > now);
+        Ok((before - state.len()) as u64)
     }
 }

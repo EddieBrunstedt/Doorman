@@ -113,3 +113,75 @@ pub trait SessionStore: Send + Sync {
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }
+
+/// A stored Argon2id password hash bound to a user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasswordCredential {
+    pub user_id: UserId,
+    /// The PHC-formatted hash string, including algorithm parameters and salt.
+    pub hash: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[async_trait]
+pub trait PasswordCredentialStore: Send + Sync {
+    /// Insert or replace the password credential for a user. Implementations
+    /// must overwrite any previous credential for the same `user_id`.
+    async fn set_password(&self, credential: PasswordCredential) -> StorageResult<()>;
+
+    async fn get_password(&self, user_id: UserId) -> StorageResult<Option<PasswordCredential>>;
+
+    async fn delete_password(&self, user_id: UserId) -> StorageResult<()>;
+}
+
+/// What a verification token authorises. Tokens are kept distinct per
+/// purpose so that a leaked password-reset link can never act as an
+/// email-verification link, and vice versa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationPurpose {
+    EmailVerification,
+    PasswordReset,
+}
+
+/// A single-use, time-limited token issued for an out-of-band flow such
+/// as email verification or password reset. Stored keyed by token hash so
+/// that a database breach does not yield usable tokens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationToken {
+    pub token_hash: TokenHash,
+    pub user_id: UserId,
+    pub purpose: VerificationPurpose,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[async_trait]
+pub trait VerificationTokenStore: Send + Sync {
+    async fn create_token(&self, token: VerificationToken) -> StorageResult<()>;
+
+    /// Atomically look up and remove a token matching `(hash, purpose)`.
+    /// Implementations MUST delete the token before returning it, so the
+    /// same token can never be redeemed twice.
+    async fn consume_token(
+        &self,
+        hash: &TokenHash,
+        purpose: VerificationPurpose,
+    ) -> StorageResult<Option<VerificationToken>>;
+
+    async fn find_token(
+        &self,
+        hash: &TokenHash,
+        purpose: VerificationPurpose,
+    ) -> StorageResult<Option<VerificationToken>>;
+
+    /// Drop all outstanding tokens of a given purpose for a user. Used
+    /// when issuing a fresh token to invalidate older ones.
+    async fn delete_tokens_for_user(
+        &self,
+        user_id: UserId,
+        purpose: VerificationPurpose,
+    ) -> StorageResult<u64>;
+
+    async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
+}
