@@ -1,0 +1,349 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use bauth_core::audit::{AuditEventKind, AuditSink};
+use bauth_core::clock::{Clock, MockClock, SystemClock};
+use bauth_core::email::{Email, EmailSender};
+use bauth_core::error::Error;
+use bauth_core::memory::{
+    InMemoryAuditSink, InMemoryEmailSender, InMemorySessionStore, InMemoryUserStore,
+};
+use bauth_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
+use bauth_core::storage::{Session, SessionId, SessionStore, User, UserId, UserStore};
+use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
+
+fn fresh_manager() -> (
+    SessionManager,
+    Arc<InMemorySessionStore>,
+    Arc<InMemoryAuditSink>,
+) {
+    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
+    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
+    let manager = SessionManager::new(
+        sessions.clone() as Arc<dyn SessionStore>,
+        Arc::new(SystemClock) as Arc<dyn Clock>,
+        audit.clone() as Arc<dyn AuditSink>,
+        SessionConfig {
+            lifetime: Duration::from_secs(60 * 60),
+        },
+    );
+    (manager, sessions, audit)
+}
+
+fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
+        .single()
+        .expect("valid timestamp")
+}
+
+#[tokio::test]
+async fn create_then_validate_returns_same_session() {
+    let (manager, sessions, audit) = fresh_manager();
+    let user_id = UserId::new();
+
+    let issued = manager
+        .create(
+            user_id,
+            SessionContext {
+                ip: Some("1.2.3.4".into()),
+                user_agent: Some("test-agent".into()),
+            },
+        )
+        .await
+        .expect("create");
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(issued.session.user_id, user_id);
+    assert_eq!(issued.session.ip.as_deref(), Some("1.2.3.4"));
+    assert_eq!(hash_token(&issued.token), issued.session.token_hash);
+
+    let validated = manager.validate(&issued.token).await.expect("validate");
+    assert_eq!(validated.id, issued.session.id);
+    assert_eq!(validated.user_id, user_id);
+
+    let events = audit.events();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        events[0].kind,
+        AuditEventKind::SessionCreated { user_id: u, session_id: s }
+            if u == user_id && s == issued.session.id
+    ));
+}
+
+#[tokio::test]
+async fn revoke_deletes_session_and_emits_audit() {
+    let (manager, sessions, audit) = fresh_manager();
+    let user_id = UserId::new();
+
+    let issued = manager
+        .create(user_id, SessionContext::default())
+        .await
+        .expect("create");
+
+    manager.revoke(&issued.token).await.expect("revoke");
+    assert_eq!(sessions.len(), 0);
+
+    let err = manager
+        .validate(&issued.token)
+        .await
+        .expect_err("validating revoked token should fail");
+    assert!(matches!(err, Error::SessionNotFound));
+
+    let kinds: Vec<_> = audit.events().into_iter().map(|e| e.kind).collect();
+    assert_eq!(kinds.len(), 2);
+    assert!(matches!(kinds[0], AuditEventKind::SessionCreated { .. }));
+    assert!(matches!(kinds[1], AuditEventKind::SessionRevoked { .. }));
+}
+
+#[tokio::test]
+async fn revoke_unknown_token_errors() {
+    let (manager, _, _) = fresh_manager();
+    let err = manager
+        .revoke("not-a-real-token")
+        .await
+        .expect_err("revoke should fail");
+    assert!(matches!(err, Error::SessionNotFound));
+}
+
+#[tokio::test]
+async fn validate_unknown_token_errors() {
+    let (manager, _, _) = fresh_manager();
+    let err = manager
+        .validate("not-a-real-token")
+        .await
+        .expect_err("validate should fail");
+    assert!(matches!(err, Error::SessionNotFound));
+}
+
+#[tokio::test]
+async fn expired_session_fails_validation_and_logs() {
+    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
+    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
+    let clock = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let manager = SessionManager::new(
+        sessions.clone() as Arc<dyn SessionStore>,
+        clock.clone() as Arc<dyn Clock>,
+        audit.clone() as Arc<dyn AuditSink>,
+        SessionConfig {
+            lifetime: Duration::from_secs(60),
+        },
+    );
+
+    let issued = manager
+        .create(UserId::new(), SessionContext::default())
+        .await
+        .expect("create");
+
+    clock.advance(ChronoDuration::seconds(120));
+
+    let err = manager
+        .validate(&issued.token)
+        .await
+        .expect_err("expired session should not validate");
+    assert!(matches!(err, Error::SessionExpired));
+
+    let last_kind = audit
+        .events()
+        .into_iter()
+        .last()
+        .expect("at least one event")
+        .kind;
+    assert!(matches!(last_kind, AuditEventKind::SessionExpired { .. }));
+}
+
+#[tokio::test]
+async fn revoke_by_id_removes_session() {
+    let (manager, sessions, _) = fresh_manager();
+    let issued = manager
+        .create(UserId::new(), SessionContext::default())
+        .await
+        .expect("create");
+
+    manager
+        .revoke_by_id(issued.session.id)
+        .await
+        .expect("revoke_by_id");
+    assert!(sessions.is_empty());
+}
+
+#[tokio::test]
+async fn revoke_all_for_user_clears_only_that_user() {
+    let (manager, sessions, _) = fresh_manager();
+    let alice = UserId::new();
+    let bob = UserId::new();
+
+    manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice 1");
+    manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice 2");
+    let bob_session = manager
+        .create(bob, SessionContext::default())
+        .await
+        .expect("bob");
+
+    let removed = manager
+        .revoke_all_for_user(alice)
+        .await
+        .expect("revoke_all");
+    assert_eq!(removed, 2);
+    assert_eq!(sessions.len(), 1);
+    assert!(
+        sessions
+            .find_session_by_id(bob_session.session.id)
+            .await
+            .expect("find bob")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn purge_expired_deletes_only_expired() {
+    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
+    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
+    let clock = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let manager = SessionManager::new(
+        sessions.clone() as Arc<dyn SessionStore>,
+        clock.clone() as Arc<dyn Clock>,
+        audit.clone() as Arc<dyn AuditSink>,
+        SessionConfig {
+            lifetime: Duration::from_secs(60),
+        },
+    );
+
+    let short = manager
+        .create(UserId::new(), SessionContext::default())
+        .await
+        .expect("short");
+
+    clock.advance(ChronoDuration::seconds(30));
+    let long = manager
+        .create(UserId::new(), SessionContext::default())
+        .await
+        .expect("long");
+
+    clock.advance(ChronoDuration::seconds(45));
+    let removed = manager.purge_expired().await.expect("purge");
+    assert_eq!(removed, 1);
+    assert!(
+        sessions
+            .find_session_by_id(short.session.id)
+            .await
+            .expect("find short")
+            .is_none()
+    );
+    assert!(
+        sessions
+            .find_session_by_id(long.session.id)
+            .await
+            .expect("find long")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn user_store_round_trip() {
+    let store = InMemoryUserStore::new();
+    let user = User {
+        id: UserId::new(),
+        email: Some("alice@example.com".into()),
+        email_verified_at: None,
+        created_at: ts(2026, 1, 1),
+        updated_at: ts(2026, 1, 1),
+    };
+
+    store.create_user(user.clone()).await.expect("create");
+    assert_eq!(
+        store.find_user_by_id(user.id).await.expect("find by id"),
+        Some(user.clone())
+    );
+    assert_eq!(
+        store
+            .find_user_by_email("alice@example.com")
+            .await
+            .expect("find by email"),
+        Some(user.clone())
+    );
+
+    store
+        .create_user(user.clone())
+        .await
+        .expect_err("duplicate id should error");
+
+    let other = User {
+        id: UserId::new(),
+        email: Some("alice@example.com".into()),
+        email_verified_at: None,
+        created_at: user.created_at,
+        updated_at: user.updated_at,
+    };
+    store
+        .create_user(other)
+        .await
+        .expect_err("duplicate email should error");
+
+    store.delete_user(user.id).await.expect("delete");
+    assert!(
+        store
+            .find_user_by_id(user.id)
+            .await
+            .expect("find after delete")
+            .is_none()
+    );
+    assert!(
+        store
+            .find_user_by_email("alice@example.com")
+            .await
+            .expect("find email after delete")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn email_sender_captures_messages() {
+    let sender = InMemoryEmailSender::new();
+    let email = Email {
+        to: "user@example.com".into(),
+        subject: "Verify".into(),
+        body_text: "click here".into(),
+        body_html: None,
+    };
+    sender.send(email.clone()).await.expect("send");
+    assert_eq!(sender.sent(), vec![email]);
+}
+
+#[tokio::test]
+async fn session_store_rejects_id_and_hash_collisions() {
+    let store = InMemorySessionStore::new();
+    let session = Session {
+        id: SessionId::new(),
+        user_id: UserId::new(),
+        token_hash: hash_token("abc"),
+        created_at: Utc::now(),
+        expires_at: Utc::now() + ChronoDuration::hours(1),
+        ip: None,
+        user_agent: None,
+    };
+    store.create_session(session.clone()).await.expect("first");
+
+    let dup_id = Session {
+        token_hash: hash_token("different"),
+        ..session.clone()
+    };
+    store
+        .create_session(dup_id)
+        .await
+        .expect_err("duplicate id should error");
+
+    let dup_hash = Session {
+        id: SessionId::new(),
+        ..session
+    };
+    store
+        .create_session(dup_hash)
+        .await
+        .expect_err("duplicate hash should error");
+}
