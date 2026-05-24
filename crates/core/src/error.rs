@@ -23,8 +23,29 @@ pub enum Error {
     #[error("user not found")]
     UserNotFound,
 
+    #[error("user has no email address on file")]
+    UserHasNoEmail,
+
+    #[error("invalid email address")]
+    InvalidEmail,
+
+    #[error("invalid credentials")]
+    InvalidCredentials,
+
+    #[error("email address is not verified")]
+    EmailNotVerified,
+
+    #[error("email address is already in use")]
+    EmailAlreadyTaken,
+
+    #[error("email address is already verified")]
+    EmailAlreadyVerified,
+
     #[error("password does not meet policy: minimum length is {min_length}")]
     WeakPassword { min_length: usize },
+
+    #[error("verification token is invalid or expired")]
+    InvalidVerificationToken,
 
     #[error("password hashing failed: {0}")]
     PasswordHashing(String),

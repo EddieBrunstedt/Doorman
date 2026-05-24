@@ -13,6 +13,7 @@ pub mod email;
 pub mod error;
 pub mod memory;
 pub mod password;
+pub mod password_auth;
 pub mod session;
 pub mod storage;
 
