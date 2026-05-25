@@ -20,10 +20,16 @@ serde_json.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true }
 url.workspace = true
 uuid.workspace = true
 webauthn-rs.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 tokio.workspace = true
 webauthn-authenticator-rs.workspace = true
+
+[[bench]]
+name = "password_login"
+harness = false

@@ -8,12 +8,13 @@
 
 use std::sync::Arc;
 
-use bauth_core::session::SessionManager;
+use bauth_core::session::{SessionInvalidationHook, SessionManager};
 use bauth_core::storage::UserStore;
 #[cfg(feature = "oauth")]
 use url::Url;
 
 use crate::BauthAxum;
+use crate::cache::{CacheInvalidator, SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::BauthState;
@@ -41,6 +42,7 @@ pub struct BauthAxumBuilder {
     session_manager: Option<SessionManager>,
     user_store: Option<Arc<dyn UserStore>>,
     cookie_config: Option<CookieConfig>,
+    cache_config: Option<SessionCacheConfig>,
     #[cfg(feature = "oauth")]
     external_origin: Option<Url>,
 
@@ -65,6 +67,16 @@ impl BauthAxumBuilder {
 
     pub fn cookie_config(mut self, config: CookieConfig) -> Self {
         self.cookie_config = Some(config);
+        self
+    }
+
+    /// Override the default session-resolution cache parameters. The
+    /// session layer runs an in-process LRU keyed by token hash so the
+    /// hot path (handlers that don't read `AuthUser`, plus high-RPS
+    /// authenticated endpoints) doesn't hit the session and user stores
+    /// on every request.
+    pub fn cache_config(mut self, config: SessionCacheConfig) -> Self {
+        self.cache_config = Some(config);
         self
     }
 
@@ -108,10 +120,22 @@ impl BauthAxumBuilder {
             return Err(BuilderError::MissingExternalOrigin);
         }
 
+        let cache = SessionCache::new(self.cache_config.unwrap_or_default());
+        // Register the cache as an invalidation hook so revokes routed
+        // through SessionManager — including those triggered by the
+        // password/oauth managers that hold their own clones — evict the
+        // matching entries without the host having to know the cache
+        // exists. The hook is shared across every clone of the manager
+        // because it lives behind an `Arc<RwLock<_>>`.
+        session_manager.set_invalidation_hook(
+            Arc::new(CacheInvalidator::new(cache.clone())) as Arc<dyn SessionInvalidationHook>
+        );
+
         let layer_state = Arc::new(SessionLayerState {
             session_manager: session_manager.clone(),
             user_store: user_store.clone(),
             cookie_name: cookie_config.session_cookie_name.clone(),
+            cache: cache.clone(),
         });
 
         let state = BauthState {
@@ -132,6 +156,7 @@ impl BauthAxumBuilder {
         Ok(BauthAxum {
             state,
             session_layer: SessionLayer::new(layer_state),
+            cache,
         })
     }
 }

@@ -26,6 +26,7 @@
 //! a sibling integration for another framework remains a future option
 //! without disturbing the core auth logic.
 
+pub mod cache;
 pub mod config;
 mod cookies;
 pub mod dto;
@@ -40,6 +41,7 @@ mod builder;
 pub use bauth_core as core;
 
 pub use builder::{BauthAxumBuilder, BuilderError};
+pub use cache::{DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, SessionCache, SessionCacheConfig};
 pub use config::CookieConfig;
 pub use error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use extractors::{AuthSession, AuthUser, OptionalAuthUser, RequestContext};
@@ -55,6 +57,7 @@ use axum::Router;
 pub struct BauthAxum {
     state: BauthState,
     session_layer: SessionLayer,
+    cache: SessionCache,
 }
 
 impl BauthAxum {
@@ -79,5 +82,12 @@ impl BauthAxum {
 
     pub fn state(&self) -> &BauthState {
         &self.state
+    }
+
+    /// Handle to the session-resolution cache. Surfaced primarily for
+    /// tests and observability — application code should not need to
+    /// reach into the cache directly.
+    pub fn cache(&self) -> &SessionCache {
+        &self.cache
     }
 }

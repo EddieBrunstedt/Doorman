@@ -20,11 +20,12 @@ use std::task::{Context, Poll};
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, header};
 use axum::response::Response;
-use bauth_core::session::SessionManager;
+use bauth_core::session::{SessionManager, hash_token};
 use bauth_core::storage::{Session, User, UserStore};
 use tower_layer::Layer;
 use tower_service::Service;
 
+use crate::cache::SessionCache;
 use crate::cookies::read_cookie;
 
 /// Successfully resolved authentication state for a request.
@@ -47,6 +48,7 @@ pub(crate) struct SessionLayerState {
     pub(crate) session_manager: SessionManager,
     pub(crate) user_store: Arc<dyn UserStore>,
     pub(crate) cookie_name: String,
+    pub(crate) cache: SessionCache,
 }
 
 /// Tower layer constructed via
@@ -104,15 +106,29 @@ where
         let mut inner = std::mem::replace(&mut self.inner, clone);
         let state = self.state.clone();
         Box::pin(async move {
-            if let Some(token) = extract_token(req.headers(), &state.cookie_name)
-                && let Ok(session) = state.session_manager.validate(&token).await
-                && let Ok(Some(user)) = state.user_store.find_user_by_id(session.user_id).await
-            {
-                req.extensions_mut().insert(AuthContext {
-                    user,
-                    session,
-                    token,
-                });
+            if let Some(token) = extract_token(req.headers(), &state.cookie_name) {
+                let token_hash = hash_token(&token);
+                // Cache hit short-circuits both the session lookup and the
+                // user-store fetch. On miss, fall through to the canonical
+                // validate path and seed the cache with the result.
+                if let Some(cached) = state.cache.get(&token_hash) {
+                    req.extensions_mut().insert(AuthContext {
+                        user: cached.user,
+                        session: cached.session,
+                        token,
+                    });
+                } else if let Ok(session) = state.session_manager.validate(&token).await
+                    && let Ok(Some(user)) = state.user_store.find_user_by_id(session.user_id).await
+                {
+                    state
+                        .cache
+                        .insert(token_hash, session.clone(), user.clone());
+                    req.extensions_mut().insert(AuthContext {
+                        user,
+                        session,
+                        token,
+                    });
+                }
             }
             inner.call(req).await
         })

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use bauth_core::audit::{AuditEventKind, AuditSink};
 use bauth_core::clock::{Clock, MockClock, SystemClock};
 use bauth_core::email::{Email, EmailSender};
@@ -8,9 +9,12 @@ use bauth_core::error::Error;
 use bauth_core::memory::{
     InMemoryAuditSink, InMemoryEmailSender, InMemorySessionStore, InMemoryUserStore,
 };
-use bauth_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
+use bauth_core::session::{
+    SessionConfig, SessionContext, SessionInvalidationHook, SessionManager, hash_token,
+};
 use bauth_core::storage::{Session, SessionId, SessionStore, User, UserId, UserStore};
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
+use std::sync::Mutex;
 
 fn fresh_manager() -> (
     SessionManager,
@@ -313,6 +317,124 @@ async fn email_sender_captures_messages() {
     };
     sender.send(email.clone()).await.expect("send");
     assert_eq!(sender.sent(), vec![email]);
+}
+
+#[derive(Debug, Default)]
+struct RecordingHook {
+    sessions: Mutex<Vec<SessionId>>,
+    users: Mutex<Vec<UserId>>,
+}
+
+#[async_trait]
+impl SessionInvalidationHook for RecordingHook {
+    async fn on_session_invalidated(&self, session_id: SessionId) {
+        self.sessions
+            .lock()
+            .expect("hook session lock")
+            .push(session_id);
+    }
+
+    async fn on_user_sessions_invalidated(&self, user_id: UserId) {
+        self.users.lock().expect("hook user lock").push(user_id);
+    }
+}
+
+#[tokio::test]
+async fn revoke_notifies_invalidation_hook_with_session_id() {
+    let (manager, _, _) = fresh_manager();
+    let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
+    manager.set_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
+
+    let issued = manager
+        .create(UserId::new(), SessionContext::default())
+        .await
+        .expect("create");
+    manager.revoke(&issued.token).await.expect("revoke");
+
+    assert_eq!(
+        *hook.sessions.lock().expect("read"),
+        vec![issued.session.id],
+        "revoke fires per-session hook"
+    );
+    assert!(
+        hook.users.lock().expect("read").is_empty(),
+        "no user-level hook on single revoke"
+    );
+}
+
+#[tokio::test]
+async fn revoke_by_id_notifies_invalidation_hook() {
+    let (manager, _, _) = fresh_manager();
+    let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
+    manager.set_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
+
+    let issued = manager
+        .create(UserId::new(), SessionContext::default())
+        .await
+        .expect("create");
+    manager
+        .revoke_by_id(issued.session.id)
+        .await
+        .expect("revoke_by_id");
+
+    assert_eq!(
+        *hook.sessions.lock().expect("read"),
+        vec![issued.session.id]
+    );
+}
+
+#[tokio::test]
+async fn revoke_all_for_user_notifies_user_hook() {
+    let (manager, _, _) = fresh_manager();
+    let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
+    manager.set_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
+
+    let alice = UserId::new();
+    manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice 1");
+    manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice 2");
+
+    let removed = manager
+        .revoke_all_for_user(alice)
+        .await
+        .expect("revoke_all");
+    assert_eq!(removed, 2);
+
+    assert_eq!(
+        *hook.users.lock().expect("read"),
+        vec![alice],
+        "delete_sessions_for_user fires user-level hook"
+    );
+    assert!(
+        hook.sessions.lock().expect("read").is_empty(),
+        "bulk revoke does not iterate per session"
+    );
+}
+
+#[tokio::test]
+async fn invalidation_hook_swap_is_visible_to_clones() {
+    let (manager, _, _) = fresh_manager();
+    let clone = manager.clone();
+
+    let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
+    manager.set_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
+
+    let issued = clone
+        .create(UserId::new(), SessionContext::default())
+        .await
+        .expect("create");
+    clone.revoke(&issued.token).await.expect("revoke via clone");
+
+    assert_eq!(
+        *hook.sessions.lock().expect("read"),
+        vec![issued.session.id],
+        "hook installed on original is visible to the clone"
+    );
 }
 
 #[tokio::test]

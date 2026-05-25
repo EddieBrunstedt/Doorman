@@ -4,6 +4,13 @@
 //! target roughly 100 ms of work on commodity hardware and align with the
 //! current OWASP recommendation. The output is a self-describing PHC
 //! string, so verification needs only the stored hash and the plaintext.
+//!
+//! Both the hash and verify routines are CPU-bound for ~100 ms by design.
+//! [`hash_password_async`] and [`verify_password_async`] dispatch the
+//! synchronous primitives through [`tokio::task::spawn_blocking`] so that
+//! the runtime's worker threads stay free to drive other I/O while a login
+//! is in flight; the surrounding `async fn` flows in
+//! [`crate::password_auth`] use those wrappers.
 
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash as Argon2Hash, SaltString};
@@ -60,6 +67,23 @@ pub fn verify_password(plain: &str, hash: &str) -> Result<bool> {
         Err(argon2::password_hash::Error::Password) => Ok(false),
         Err(e) => Err(Error::PasswordHashing(e.to_string())),
     }
+}
+
+/// Async wrapper around [`hash_password`] that offloads the Argon2 work
+/// onto the blocking pool so the calling tokio worker is not pinned for
+/// the ~100 ms hashing window.
+pub async fn hash_password_async(plain: String) -> Result<String> {
+    tokio::task::spawn_blocking(move || hash_password(&plain))
+        .await
+        .map_err(|e| Error::PasswordHashing(format!("hashing task panicked: {e}")))?
+}
+
+/// Async wrapper around [`verify_password`] that offloads the Argon2 work
+/// onto the blocking pool. See [`hash_password_async`].
+pub async fn verify_password_async(plain: String, hash: String) -> Result<bool> {
+    tokio::task::spawn_blocking(move || verify_password(&plain, &hash))
+        .await
+        .map_err(|e| Error::PasswordHashing(format!("hashing task panicked: {e}")))?
 }
 
 #[cfg(test)]

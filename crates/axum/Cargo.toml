@@ -22,6 +22,7 @@ bauth-core = { path = "../core", version = "0.1.0" }
 chrono.workspace = true
 cookie = "0.18"
 http = "1"
+lru.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 subtle.workspace = true
@@ -35,5 +36,10 @@ webauthn-rs.workspace = true
 
 [dev-dependencies]
 bauth-core = { path = "../core", version = "0.1.0" }
+criterion.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }
 tokio = { workspace = true, features = ["net"] }
+
+[[bench]]
+name = "session_validate"
+harness = false

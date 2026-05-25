@@ -1,6 +1,7 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
@@ -43,11 +44,41 @@ pub struct SessionContext {
     pub user_agent: Option<String>,
 }
 
+/// Observer that is notified whenever the [`SessionManager`] invalidates
+/// a session out-of-band of a fresh `validate()` call. Implementations
+/// live outside `bauth-core`; the canonical user is `bauth-axum`'s
+/// session-resolution cache, which needs to evict stale entries when a
+/// session is revoked or a user is logged out everywhere.
+///
+/// Hooks are called on a best-effort basis — failures during invalidation
+/// must not propagate, so the trait returns `()` rather than `Result`.
+#[async_trait]
+pub trait SessionInvalidationHook: Send + Sync {
+    async fn on_session_invalidated(&self, session_id: SessionId);
+    async fn on_user_sessions_invalidated(&self, user_id: UserId);
+}
+
+/// Default hook that ignores every event. Used when no observer is wired
+/// up, which is the common case for non-axum hosts.
+pub struct NoopSessionInvalidationHook;
+
+#[async_trait]
+impl SessionInvalidationHook for NoopSessionInvalidationHook {
+    async fn on_session_invalidated(&self, _: SessionId) {}
+    async fn on_user_sessions_invalidated(&self, _: UserId) {}
+}
+
 #[derive(Clone)]
 pub struct SessionManager {
     sessions: Arc<dyn SessionStore>,
     clock: Arc<dyn Clock>,
     audit: Arc<dyn AuditSink>,
+    /// The hook is kept behind an `Arc<RwLock<_>>` so that a framework
+    /// integration (e.g. `bauth-axum`) can install its cache invalidator
+    /// after the manager has already been cloned into other managers
+    /// (`PasswordAuthManager`, `OAuthManager`, `PasskeyManager`). All
+    /// existing clones see the swap because they share the same lock.
+    invalidation_hook: Arc<RwLock<Arc<dyn SessionInvalidationHook>>>,
     config: SessionConfig,
 }
 
@@ -62,8 +93,29 @@ impl SessionManager {
             sessions,
             clock,
             audit,
+            invalidation_hook: Arc::new(RwLock::new(Arc::new(NoopSessionInvalidationHook))),
             config,
         }
+    }
+
+    /// Install an observer that is notified every time the manager
+    /// invalidates a session (revoke by token / id, or bulk revoke for a
+    /// user). Replaces any previous hook. The change is visible to every
+    /// existing clone of this `SessionManager`, so a framework layer can
+    /// hand the host a no-hook manager, let the host wire it into other
+    /// managers, and then attach its hook after the fact.
+    pub fn set_invalidation_hook(&self, hook: Arc<dyn SessionInvalidationHook>) {
+        *self
+            .invalidation_hook
+            .write()
+            .expect("session invalidation hook lock poisoned") = hook;
+    }
+
+    fn current_hook(&self) -> Arc<dyn SessionInvalidationHook> {
+        self.invalidation_hook
+            .read()
+            .expect("session invalidation hook lock poisoned")
+            .clone()
     }
 
     pub async fn create(&self, user_id: UserId, context: SessionContext) -> Result<IssuedSession> {
@@ -142,6 +194,9 @@ impl SessionManager {
 
     pub async fn revoke_all_for_user(&self, user_id: UserId) -> Result<u64> {
         let count = self.sessions.delete_sessions_for_user(user_id).await?;
+        self.current_hook()
+            .on_user_sessions_invalidated(user_id)
+            .await;
         Ok(count)
     }
 
@@ -153,6 +208,7 @@ impl SessionManager {
 
     async fn revoke_session(&self, session: Session) -> Result<()> {
         self.sessions.delete_session(session.id).await?;
+        self.current_hook().on_session_invalidated(session.id).await;
         self.audit
             .emit(AuditEvent {
                 timestamp: self.clock.now(),

@@ -21,7 +21,7 @@ use crate::audit::{
 use crate::clock::Clock;
 use crate::email::{Email, EmailSender};
 use crate::error::{Error, Result};
-use crate::password::{PasswordPolicy, hash_password, verify_password};
+use crate::password::{PasswordPolicy, hash_password_async, verify_password_async};
 use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
 use crate::session::{IssuedSession, SessionContext, SessionManager, hash_token};
 use crate::storage::{
@@ -206,7 +206,7 @@ impl PasswordAuthManager {
         };
         self.users.create_user(user.clone()).await?;
 
-        let password_hash = hash_password(password)?;
+        let password_hash = hash_password_async(password.to_owned()).await?;
         self.passwords
             .set_password(PasswordCredential {
                 user_id: user.id,
@@ -280,7 +280,7 @@ impl PasswordAuthManager {
             return Err(Error::InvalidCredentials);
         };
 
-        if !verify_password(password, &credential.hash)? {
+        if !verify_password_async(password.to_owned(), credential.hash.clone()).await? {
             self.emit_login_failed(
                 &email_normalized,
                 LoginFailureReason::InvalidCredential,
@@ -330,10 +330,10 @@ impl PasswordAuthManager {
         let Some(credential) = self.passwords.get_password(user_id).await? else {
             return Err(Error::InvalidCredentials);
         };
-        if !verify_password(current_password, &credential.hash)? {
+        if !verify_password_async(current_password.to_owned(), credential.hash.clone()).await? {
             return Err(Error::InvalidCredentials);
         }
-        let new_hash = hash_password(new_password)?;
+        let new_hash = hash_password_async(new_password.to_owned()).await?;
         let now = self.clock.now();
         self.passwords
             .set_password(PasswordCredential {
@@ -486,7 +486,7 @@ impl PasswordAuthManager {
         if record.expires_at <= now {
             return Err(Error::InvalidVerificationToken);
         }
-        let new_hash = hash_password(new_password)?;
+        let new_hash = hash_password_async(new_password.to_owned()).await?;
         self.passwords
             .set_password(PasswordCredential {
                 user_id: record.user_id,
