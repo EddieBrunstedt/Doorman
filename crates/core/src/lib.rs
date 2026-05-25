@@ -16,8 +16,9 @@ pub mod oauth;
 pub mod passkey;
 pub mod password;
 pub mod password_auth;
+pub mod prelude;
 pub mod rate_limit;
 pub mod session;
 pub mod storage;
 
-pub use error::{BoxError, EmailError, EmailResult, Error, Result, StorageError, StorageResult};
+pub use error::*;

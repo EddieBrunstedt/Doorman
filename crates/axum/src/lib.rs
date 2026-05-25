@@ -32,6 +32,7 @@ mod cookies;
 pub mod dto;
 pub mod error;
 pub mod extractors;
+pub mod prelude;
 mod routes;
 pub mod session;
 mod state;
