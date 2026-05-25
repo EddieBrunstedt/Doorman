@@ -46,12 +46,19 @@ constructs the managers (`SessionManager`, `PasswordAuthManager`,
 `PasskeyManager`, `OAuthManager`), and either mounts the routes from
 `bauth-axum` or drives the managers directly.
 
-## Worked example (in-memory, for tests and local play)
+## Worked example: mounting on Axum
+
+The intended entry point for an Axum host. Wire your stores into the
+managers from `bauth-core`, hand them to `BauthAxum::builder()`, and
+merge the returned router into your app.
 
 ```rust
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::{Router, routing::get, Json};
+use bauth_axum::{AuthUser, BauthAxum, CookieConfig};
+use bauth_axum::dto::UserDto;
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::email::{EmailSender, NoopEmailSender};
@@ -61,36 +68,31 @@ use bauth_core::memory::{
 };
 use bauth_core::password_auth::{PasswordAuthConfig, PasswordAuthManager};
 use bauth_core::rate_limit::RateLimiter;
-use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
-use bauth_core::storage::{
-    PasswordCredentialStore, SessionStore, UserStore, VerificationTokenStore,
-};
+use bauth_core::session::{SessionConfig, SessionManager};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
     let email: Arc<dyn EmailSender> = Arc::new(NoopEmailSender);
-
-    let users: Arc<dyn UserStore> = Arc::new(InMemoryUserStore::new());
-    let sessions: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
-    let passwords: Arc<dyn PasswordCredentialStore> =
-        Arc::new(InMemoryPasswordCredentialStore::new());
-    let tokens: Arc<dyn VerificationTokenStore> =
-        Arc::new(InMemoryVerificationTokenStore::new());
     let limiter: Arc<dyn RateLimiter> = Arc::new(InMemoryRateLimiter::new(clock.clone()));
 
+    let users = Arc::new(InMemoryUserStore::new());
+    let sessions = Arc::new(InMemorySessionStore::new());
+    let passwords = Arc::new(InMemoryPasswordCredentialStore::new());
+    let tokens = Arc::new(InMemoryVerificationTokenStore::new());
+
     let session_manager = SessionManager::new(
-        sessions.clone(),
+        sessions,
         clock.clone(),
         audit.clone(),
         SessionConfig { lifetime: Duration::from_secs(60 * 60 * 24 * 30) },
     );
-    let manager = PasswordAuthManager::new(
-        users,
+    let password_manager = PasswordAuthManager::new(
+        users.clone(),
         passwords,
         tokens,
-        session_manager,
+        session_manager.clone(),
         email,
         clock,
         audit,
@@ -98,17 +100,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PasswordAuthConfig::default(),
     );
 
-    let outcome = manager
-        .register("alice@example.com", "correct horse battery staple", SessionContext::default())
-        .await?;
-    println!("registered {:?}", outcome.user.id);
+    let auth = BauthAxum::builder()
+        .session_manager(session_manager)
+        .user_store(users)
+        .password_manager(password_manager)
+        .cookie_config(CookieConfig::default())
+        .build()?;
+
+    let app = Router::new()
+        .merge(auth.router())                  // mounts /auth/*
+        .route("/api/me", get(me))
+        .layer(auth.session_layer());          // populates AuthUser
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }
+
+async fn me(AuthUser(user): AuthUser) -> Json<UserDto> {
+    Json(user.into())
+}
 ```
+
+`auth.router()` mounts every endpoint whose backing manager you supplied
+to the builder. Add `.passkey_manager(...)`, `.oauth_manager(...)`, and
+(for OAuth) `.external_origin("https://app.example.com".parse()?)` to
+turn on the other auth methods.
 
 For a production-shaped storage layer, see
 [`examples/sqlx-sqlite`](examples/sqlx-sqlite) — every trait wired to a
 single SQLite database via SQLx, with migrations and tests.
+
+### Driving the managers directly
+
+If you're not on Axum or want full control of the HTTP surface, skip
+`bauth-axum` and call the managers from `bauth-core` yourself — they
+own all the auth logic and return framework-agnostic outcomes
+(`IssuedSession`, `RegisterOutcome`, `OAuthOutcome`, …). The Axum crate
+is a thin translation layer on top.
 
 ## Configuration knobs you usually want to think about
 
@@ -121,6 +150,24 @@ single SQLite database via SQLx, with migrations and tests.
 - `OAuthConfig::allow_email_linking` — auto-link OAuth identity to an
   existing email-matching account when the provider asserts the email is
   verified. Off by default.
+- `CookieConfig` (from `bauth-axum`) — session and OAuth state cookie
+  attributes: `session_cookie_name`, `oauth_state_cookie_name`, `domain`,
+  `path`, `secure` (defaults to `true` — disable for plain-HTTP local
+  dev), `same_site` (defaults to `Lax`), `session_max_age` (match
+  `SessionConfig::lifetime`), `oauth_state_max_age`.
+- `BauthAxumBuilder::external_origin` — required when an OAuth manager
+  is supplied. The absolute origin external clients see (e.g.
+  `https://app.example.com`); used to build the absolute callback URL
+  handed to providers. Build will fail without it.
+
+### Feature flags on `bauth-axum`
+
+`password`, `passkey`, `oauth` (all on by default). Disable the ones
+you don't use to shrink compile time and dependency surface:
+
+```toml
+bauth-axum = { version = "0.1", default-features = false, features = ["password"] }
+```
 
 ## Security
 
