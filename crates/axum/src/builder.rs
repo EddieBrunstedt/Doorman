@@ -35,6 +35,15 @@ pub enum BuilderError {
     #[cfg(feature = "oauth")]
     #[error("external_origin must be set when the oauth manager is configured")]
     MissingExternalOrigin,
+    /// Only returned through [`quickstart`](crate::quickstart), which has
+    /// to construct the passkey manager itself. The direct
+    /// `BauthAxumBuilder` path takes a pre-built [`PasskeyManager`] and
+    /// surfaces the same error to the host at construction time.
+    ///
+    /// [`PasskeyManager`]: bauth_core::passkey::PasskeyManager
+    #[cfg(feature = "passkey")]
+    #[error("passkey manager construction failed: {0}")]
+    Passkey(bauth_core::error::Error),
 }
 
 #[derive(Default)]

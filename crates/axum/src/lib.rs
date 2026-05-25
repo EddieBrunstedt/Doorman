@@ -33,6 +33,7 @@ pub mod dto;
 pub mod error;
 pub mod extractors;
 pub mod prelude;
+mod quickstart;
 mod routes;
 pub mod session;
 mod state;
@@ -46,6 +47,7 @@ pub use cache::{DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, SessionCache, Session
 pub use config::CookieConfig;
 pub use error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use extractors::{AuthSession, AuthUser, OptionalAuthUser, RequestContext};
+pub use quickstart::{QuickstartBuilder, quickstart};
 pub use session::{AuthContext, SessionLayer};
 pub use state::BauthState;
 

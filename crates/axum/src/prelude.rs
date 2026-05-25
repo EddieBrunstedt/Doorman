@@ -17,4 +17,4 @@ pub use crate::config::CookieConfig;
 pub use crate::error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use crate::extractors::{AuthSession, AuthUser, OptionalAuthUser, RequestContext};
 pub use crate::session::{AuthContext, SessionLayer};
-pub use crate::{BauthAxum, BauthAxumBuilder, BuilderError};
+pub use crate::{BauthAxum, BauthAxumBuilder, BuilderError, QuickstartBuilder, quickstart};
