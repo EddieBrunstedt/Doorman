@@ -8,5 +8,32 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Axum HTTP integration for the bauth authentication library."
 
+[features]
+default = ["password", "passkey", "oauth"]
+password = []
+passkey = []
+oauth = []
+
 [dependencies]
+async-trait.workspace = true
+axum = { version = "0.8", default-features = false, features = ["json", "query", "tokio", "http1"] }
+base64.workspace = true
 bauth-core = { path = "../core", version = "0.1.0" }
+chrono.workspace = true
+cookie = "0.18"
+http = "1"
+serde.workspace = true
+serde_json.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tower = { version = "0.5", default-features = false }
+tower-layer = "0.3"
+tower-service = "0.3"
+url.workspace = true
+uuid.workspace = true
+webauthn-rs.workspace = true
+
+[dev-dependencies]
+bauth-core = { path = "../core", version = "0.1.0" }
+reqwest = { workspace = true, features = ["cookies"] }
+tokio = { workspace = true, features = ["net"] }
