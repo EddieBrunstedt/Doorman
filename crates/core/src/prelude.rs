@@ -32,7 +32,7 @@ pub use crate::session::{
 pub use crate::storage::{
     OAuthIdentity, OAuthIdentityStore, OAuthStateId, OAuthStateStore, PasskeyChallengeId,
     PasskeyChallengeStore, PasskeyCredentialStore, PasswordCredential, PasswordCredentialStore,
-    PendingOAuthAuthorization, Session, SessionId, SessionStore, StoredPasskey,
+    PendingOAuthAuthorization, Session, SessionId, SessionStore, Storage, StoredPasskey,
     StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
     VerificationPurpose, VerificationToken, VerificationTokenStore,
 };

@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -8,6 +9,28 @@ use uuid::Uuid;
 use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PasskeyRegistration};
 
 use crate::error::StorageResult;
+
+/// Composite handle to every storage trait the managers need.
+///
+/// Bundles the eight per-concern `Arc<dyn ...>` stores so a host can pass
+/// one value to the quickstart builder (or assemble it once and reuse it
+/// across multiple managers) instead of threading each store through by
+/// hand. Storage adapters typically expose a `fn storage(&self) -> Storage`
+/// that returns this struct populated against a single backend; hosts that
+/// want to mix backends (e.g. SQLx for most stores, a Redis-backed
+/// `SessionStore` for cross-process revoke speed) construct the struct
+/// directly and swap individual fields.
+#[derive(Clone)]
+pub struct Storage {
+    pub users: Arc<dyn UserStore>,
+    pub sessions: Arc<dyn SessionStore>,
+    pub passwords: Arc<dyn PasswordCredentialStore>,
+    pub verification_tokens: Arc<dyn VerificationTokenStore>,
+    pub passkey_credentials: Arc<dyn PasskeyCredentialStore>,
+    pub passkey_challenges: Arc<dyn PasskeyChallengeStore>,
+    pub oauth_identities: Arc<dyn OAuthIdentityStore>,
+    pub oauth_states: Arc<dyn OAuthStateStore>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
