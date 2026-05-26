@@ -44,15 +44,34 @@ pub struct SessionDto {
     pub id: SessionId,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    /// Best-effort client IP captured at session-issue time, mirroring the
+    /// value the audit log records. `None` when the proxy chain stripped
+    /// the headers we look for.
+    pub ip: Option<String>,
+    /// Browser/CLI `User-Agent` captured at session-issue time.
+    pub user_agent: Option<String>,
+    /// `true` when this dto represents the session the request was made
+    /// on. Set by the routes that build a session list; defaults to
+    /// `false` for the `From<Session>` convenience impl.
+    pub is_current: bool,
 }
 
-impl From<Session> for SessionDto {
-    fn from(value: Session) -> Self {
+impl SessionDto {
+    pub fn from_session(value: Session, is_current: bool) -> Self {
         Self {
             id: value.id,
             created_at: value.created_at,
             expires_at: value.expires_at,
+            ip: value.ip,
+            user_agent: value.user_agent,
+            is_current,
         }
+    }
+}
+
+impl From<Session> for SessionDto {
+    fn from(value: Session) -> Self {
+        Self::from_session(value, false)
     }
 }
 
@@ -74,7 +93,7 @@ impl AuthResponse {
     pub fn from_issued(user: User, issued: IssuedSession) -> Self {
         Self {
             user: user.into(),
-            session: issued.session.into(),
+            session: SessionDto::from_session(issued.session, true),
             token: issued.token,
         }
     }

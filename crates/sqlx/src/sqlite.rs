@@ -264,6 +264,18 @@ impl SessionStore for SqliteSessionStore {
         row.map(row_to_session).transpose()
     }
 
+    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
+        let rows = sqlx::query(
+            "SELECT id, user_id, token_hash, created_at, expires_at, ip, user_agent
+             FROM sessions WHERE user_id = ?",
+        )
+        .bind(uuid_to_bytes(user_id.0))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        rows.into_iter().map(row_to_session).collect()
+    }
+
     async fn delete_session(&self, id: SessionId) -> StorageResult<()> {
         sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(uuid_to_bytes(id.0))
@@ -276,6 +288,20 @@ impl SessionStore for SqliteSessionStore {
     async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64> {
         let result = sqlx::query("DELETE FROM sessions WHERE user_id = ?")
             .bind(uuid_to_bytes(user_id.0))
+            .execute(&self.pool)
+            .await
+            .map_err(storage)?;
+        Ok(result.rows_affected())
+    }
+
+    async fn delete_other_sessions_for_user(
+        &self,
+        user_id: UserId,
+        except: SessionId,
+    ) -> StorageResult<u64> {
+        let result = sqlx::query("DELETE FROM sessions WHERE user_id = ? AND id != ?")
+            .bind(uuid_to_bytes(user_id.0))
+            .bind(uuid_to_bytes(except.0))
             .execute(&self.pool)
             .await
             .map_err(storage)?;

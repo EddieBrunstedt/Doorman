@@ -195,6 +195,35 @@ impl SessionManager {
         Ok(count)
     }
 
+    /// Return every still-valid session belonging to `user_id`. Sessions
+    /// whose `expires_at` has already passed are filtered out here so
+    /// adapters don't have to encode the expiry rule.
+    pub async fn list_for_user(&self, user_id: UserId) -> Result<Vec<Session>> {
+        let now = self.clock.now();
+        let sessions = self.sessions.list_for_user(user_id).await?;
+        Ok(sessions
+            .into_iter()
+            .filter(|s| s.expires_at > now)
+            .collect())
+    }
+
+    /// Revoke every session belonging to `user_id` *except* `except`. The
+    /// retained session is the caller's "current" device on the typical
+    /// "sign out everywhere else" path. Notifies the invalidation hook so
+    /// any framework-side cache evicts the removed sessions.
+    pub async fn revoke_others_for_user(&self, user_id: UserId, except: SessionId) -> Result<u64> {
+        let count = self
+            .sessions
+            .delete_other_sessions_for_user(user_id, except)
+            .await?;
+        if count > 0 {
+            self.invalidation_hook
+                .on_user_sessions_invalidated(user_id)
+                .await;
+        }
+        Ok(count)
+    }
+
     pub async fn purge_expired(&self) -> Result<u64> {
         let now = self.clock.now();
         let count = self.sessions.purge_expired(now).await?;

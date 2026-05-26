@@ -29,6 +29,7 @@ pub(crate) mod oauth;
 pub(crate) mod passkey;
 #[cfg(feature = "password")]
 pub(crate) mod password;
+pub(crate) mod sessions;
 
 /// Build a JSON response that issues a session cookie alongside an
 /// [`AuthResponse`] body. Shared by the password, passkey, and magic-link
@@ -46,8 +47,7 @@ pub(crate) fn auth_success(
 }
 
 pub(crate) fn router(state: BauthState) -> Router {
-    #[allow(unused_mut)]
-    let mut router: Router<BauthState> = Router::new();
+    let mut router: Router<BauthState> = Router::new().merge(sessions::routes());
 
     #[cfg(feature = "password")]
     if state.password.is_some() {

@@ -166,9 +166,23 @@ pub trait SessionStore: Send + Sync {
 
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>>;
 
+    /// Return every unexpired session belonging to a user. Implementations
+    /// MAY return expired sessions; callers (e.g. `SessionManager::list_for_user`)
+    /// are expected to filter on `expires_at` so adapters are not forced to
+    /// re-implement the expiry rule.
+    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>>;
+
     async fn delete_session(&self, id: SessionId) -> StorageResult<()>;
 
     async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64>;
+
+    /// Delete every session belonging to `user_id` *except* the one with
+    /// `except`. Implementations return the number of sessions removed.
+    async fn delete_other_sessions_for_user(
+        &self,
+        user_id: UserId,
+        except: SessionId,
+    ) -> StorageResult<u64>;
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }

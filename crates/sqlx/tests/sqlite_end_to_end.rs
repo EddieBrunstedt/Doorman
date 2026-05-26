@@ -271,6 +271,104 @@ async fn verification_token_consume_is_atomic() {
 }
 
 #[tokio::test]
+async fn session_list_and_delete_others_against_sqlite() {
+    use bauth_core::session::hash_token;
+    use bauth_core::storage::{Session, SessionId};
+    use chrono::Duration as ChronoDuration;
+
+    let storage = SqliteStorage::connect("sqlite::memory:")
+        .await
+        .expect("connect");
+    storage.migrate().await.expect("migrate");
+
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+    let user_id = UserId::new();
+    storage
+        .user_store()
+        .create_user(bauth_core::storage::User {
+            id: user_id,
+            email: Some("sessions@example.com".into()),
+            email_verified_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("user");
+
+    let other_user = UserId::new();
+    storage
+        .user_store()
+        .create_user(bauth_core::storage::User {
+            id: other_user,
+            email: Some("other@example.com".into()),
+            email_verified_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("other user");
+
+    let sessions = storage.session_store();
+    let mk_session = |token: &str, user: UserId| Session {
+        id: SessionId::new(),
+        user_id: user,
+        token_hash: hash_token(token),
+        created_at: now,
+        expires_at: now + ChronoDuration::hours(1),
+        ip: Some("203.0.113.1".into()),
+        user_agent: Some("agent".into()),
+    };
+
+    let s_keep = mk_session("keep", user_id);
+    let s_other_a = mk_session("other-a", user_id);
+    let s_other_b = mk_session("other-b", user_id);
+    let s_neighbour = mk_session("neighbour", other_user);
+
+    sessions
+        .create_session(s_keep.clone())
+        .await
+        .expect("create keep");
+    sessions
+        .create_session(s_other_a.clone())
+        .await
+        .expect("create other a");
+    sessions
+        .create_session(s_other_b.clone())
+        .await
+        .expect("create other b");
+    sessions
+        .create_session(s_neighbour.clone())
+        .await
+        .expect("create neighbour");
+
+    let listed = sessions.list_for_user(user_id).await.expect("list");
+    let listed_ids: std::collections::HashSet<_> = listed.iter().map(|s| s.id).collect();
+    assert_eq!(listed.len(), 3);
+    assert!(listed_ids.contains(&s_keep.id));
+    assert!(listed_ids.contains(&s_other_a.id));
+    assert!(listed_ids.contains(&s_other_b.id));
+
+    let removed = sessions
+        .delete_other_sessions_for_user(user_id, s_keep.id)
+        .await
+        .expect("delete others");
+    assert_eq!(removed, 2);
+
+    let listed_after = sessions.list_for_user(user_id).await.expect("list after");
+    assert_eq!(listed_after.len(), 1);
+    assert_eq!(listed_after[0].id, s_keep.id);
+
+    // The neighbouring user's session is untouched.
+    assert!(
+        sessions
+            .find_session_by_id(s_neighbour.id)
+            .await
+            .expect("find neighbour")
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn storage_composite_returns_every_store() {
     let storage = SqliteStorage::connect("sqlite::memory:")
         .await

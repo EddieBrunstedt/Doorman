@@ -162,6 +162,16 @@ impl SessionStore for InMemorySessionStore {
         Ok(self.lock().by_id.get(&id).cloned())
     }
 
+    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
+        Ok(self
+            .lock()
+            .by_id
+            .values()
+            .filter(|s| s.user_id == user_id)
+            .cloned()
+            .collect())
+    }
+
     async fn delete_session(&self, id: SessionId) -> StorageResult<()> {
         let mut state = self.lock();
         if let Some(session) = state.by_id.remove(&id) {
@@ -176,6 +186,26 @@ impl SessionStore for InMemorySessionStore {
             .by_id
             .iter()
             .filter_map(|(id, s)| (s.user_id == user_id).then_some(*id))
+            .collect();
+        let count = ids.len() as u64;
+        for id in ids {
+            if let Some(session) = state.by_id.remove(&id) {
+                state.hash_to_id.remove(&session.token_hash);
+            }
+        }
+        Ok(count)
+    }
+
+    async fn delete_other_sessions_for_user(
+        &self,
+        user_id: UserId,
+        except: SessionId,
+    ) -> StorageResult<u64> {
+        let mut state = self.lock();
+        let ids: Vec<SessionId> = state
+            .by_id
+            .iter()
+            .filter_map(|(id, s)| (s.user_id == user_id && *id != except).then_some(*id))
             .collect();
         let count = ids.len() as u64;
         for id in ids {

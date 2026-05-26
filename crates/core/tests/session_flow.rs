@@ -205,6 +205,157 @@ async fn revoke_all_for_user_clears_only_that_user() {
 }
 
 #[tokio::test]
+async fn list_for_user_returns_only_active_sessions_for_that_user() {
+    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
+    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
+    let clock = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let manager = SessionManager::new(
+        sessions.clone() as Arc<dyn SessionStore>,
+        clock.clone() as Arc<dyn Clock>,
+        audit.clone() as Arc<dyn AuditSink>,
+        SessionConfig {
+            lifetime: Duration::from_secs(60),
+        },
+    );
+
+    let alice = UserId::new();
+    let bob = UserId::new();
+
+    let alice_first = manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice 1");
+    let alice_second = manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice 2");
+    manager
+        .create(bob, SessionContext::default())
+        .await
+        .expect("bob");
+
+    let listed = manager.list_for_user(alice).await.expect("list");
+    let mut ids: Vec<SessionId> = listed.iter().map(|s| s.id).collect();
+    ids.sort_by_key(|id| id.0);
+    let mut expected = vec![alice_first.session.id, alice_second.session.id];
+    expected.sort_by_key(|id| id.0);
+    assert_eq!(ids, expected, "list returns only Alice's sessions");
+
+    // Step past Alice's first session's expiry while keeping Bob's and
+    // Alice's second session alive (re-issue Alice's second now to verify
+    // the manager filters expired entries even though the storage adapter
+    // still holds the row).
+    clock.advance(ChronoDuration::seconds(120));
+    let fresh = manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice 3 (fresh)");
+
+    let listed_after = manager.list_for_user(alice).await.expect("list after");
+    let ids_after: Vec<SessionId> = listed_after.iter().map(|s| s.id).collect();
+    assert_eq!(
+        ids_after,
+        vec![fresh.session.id],
+        "manager filters out expired sessions even when storage retains them"
+    );
+}
+
+#[tokio::test]
+async fn revoke_others_for_user_keeps_only_the_exception() {
+    let (manager, sessions, _) = fresh_manager();
+    let alice = UserId::new();
+    let bob = UserId::new();
+
+    let keep = manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice keep");
+    manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice other 1");
+    manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice other 2");
+    let bob_session = manager
+        .create(bob, SessionContext::default())
+        .await
+        .expect("bob");
+
+    let removed = manager
+        .revoke_others_for_user(alice, keep.session.id)
+        .await
+        .expect("revoke_others");
+    assert_eq!(removed, 2);
+
+    let remaining_alice: Vec<SessionId> = sessions
+        .list_for_user(alice)
+        .await
+        .expect("list alice")
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(remaining_alice, vec![keep.session.id]);
+
+    // Bob's session is untouched.
+    assert!(
+        sessions
+            .find_session_by_id(bob_session.session.id)
+            .await
+            .expect("find bob")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn revoke_others_for_user_notifies_user_hook_when_anything_removed() {
+    let (manager, _, _) = fresh_manager();
+    let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
+    let manager = manager.with_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
+
+    let alice = UserId::new();
+    let keep = manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice keep");
+    manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice other");
+
+    let removed = manager
+        .revoke_others_for_user(alice, keep.session.id)
+        .await
+        .expect("revoke_others");
+    assert_eq!(removed, 1);
+    assert_eq!(*hook.users.lock().expect("read"), vec![alice]);
+}
+
+#[tokio::test]
+async fn revoke_others_for_user_skips_hook_when_nothing_removed() {
+    let (manager, _, _) = fresh_manager();
+    let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
+    let manager = manager.with_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
+
+    let alice = UserId::new();
+    let only = manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice only");
+
+    let removed = manager
+        .revoke_others_for_user(alice, only.session.id)
+        .await
+        .expect("revoke_others");
+    assert_eq!(removed, 0);
+    assert!(
+        hook.users.lock().expect("read").is_empty(),
+        "no-op revoke must not spam the cache invalidator"
+    );
+}
+
+#[tokio::test]
 async fn purge_expired_deletes_only_expired() {
     let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
     let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
