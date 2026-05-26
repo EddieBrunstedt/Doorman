@@ -279,7 +279,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "bauth-sqlx-sqlite"
+name = "bauth-sqlx"
 version = "0.1.0"
 dependencies = [
  "async-trait",

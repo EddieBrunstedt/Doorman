@@ -1,3 +1,23 @@
+//! Persistence contracts the managers run against.
+//!
+//! The eight `*Store` traits in this module are the boundary between
+//! `bauth-core` and the host's database. The managers do not know or
+//! care how rows land on disk — they only call the trait methods.
+//!
+//! ## Picking an adapter
+//!
+//! - **SQLx hosts** (SQLite or Postgres) should depend on `bauth-sqlx`
+//!   and let `SqliteStorage::storage()` / `PostgresStorage::storage()`
+//!   populate the [`Storage`] composite for them.
+//! - **Hosts on other stacks** (Diesel, sea-orm, Redis, a bespoke
+//!   driver) implement these traits directly. The in-memory stores in
+//!   [`crate::memory`] are a worked reference for what each method must
+//!   guarantee — in particular the atomic `take_*` / `consume_*`
+//!   semantics that single-use tokens rely on.
+//!
+//! The trait surface is the contract. Adapter crates (`bauth-sqlx` and
+//! any future siblings) are conveniences on top of it, not part of it.
+
 use std::fmt;
 use std::sync::Arc;
 

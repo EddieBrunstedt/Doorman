@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/axum", "examples/sqlx-sqlite"]
+members = ["crates/core", "crates/axum", "crates/sqlx"]
 
 [workspace.package]
 version = "0.1.0"

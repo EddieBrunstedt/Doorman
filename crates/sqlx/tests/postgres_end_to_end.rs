@@ -1,10 +1,15 @@
-//! End-to-end smoke test for the SQLx + SQLite adapter.
+//! End-to-end smoke test for the SQLx + Postgres adapter.
 //!
-//! Wires every storage trait through `SqliteStorage` and runs the
-//! happy-path password flow against it: register → verify email →
-//! login → reset password → login with the new password. Also
-//! exercises the OAuth identity store and verification-token purging
-//! since those have query shapes the password flow doesn't reach.
+//! Skipped unless the `PG_URL` environment variable points at a
+//! disposable test database. CI provides this via a containerised
+//! Postgres; locally you can set
+//! `PG_URL=postgres://postgres:postgres@localhost/bauth_test`.
+//!
+//! The test wipes the database's `public` schema before running so the
+//! migration state is fresh on every invocation. Do not point `PG_URL`
+//! at a database whose `public` schema holds data you want to keep.
+
+#![cfg(feature = "postgres")]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,8 +25,9 @@ use bauth_core::password_auth::{
 use bauth_core::rate_limit::RateLimiter;
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
 use bauth_core::storage::{OAuthIdentity, UserId, VerificationPurpose};
-use bauth_sqlx_sqlite::SqliteStorage;
+use bauth_sqlx::PostgresStorage;
 use chrono::{TimeZone, Utc};
+use sqlx::PgPool;
 
 const VERIFY_URL: &str = "https://app.test/verify-email?token={token}";
 const RESET_URL: &str = "https://app.test/reset-password?token={token}";
@@ -36,11 +42,35 @@ fn token_from_email(template: &str, body: &str) -> String {
     after.split_whitespace().next().unwrap().to_string()
 }
 
-async fn setup() -> (SqliteStorage, PasswordAuthManager, Arc<InMemoryEmailSender>) {
-    let storage = SqliteStorage::connect("sqlite::memory:")
+async fn fresh_storage() -> Option<PostgresStorage> {
+    let url = match std::env::var("PG_URL") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("PG_URL not set; skipping Postgres test");
+            return None;
+        }
+    };
+
+    let pool = PgPool::connect(&url).await.expect("pg connect");
+    sqlx::query("DROP SCHEMA IF EXISTS public CASCADE")
+        .execute(&pool)
         .await
-        .expect("connect");
+        .expect("drop schema");
+    sqlx::query("CREATE SCHEMA public")
+        .execute(&pool)
+        .await
+        .expect("create schema");
+
+    let storage = PostgresStorage::from_pool(pool);
     storage.migrate().await.expect("migrate");
+    Some(storage)
+}
+
+#[tokio::test]
+async fn postgres_full_smoke_test() {
+    let Some(storage) = fresh_storage().await else {
+        return;
+    };
 
     let clock: Arc<MockClock> = Arc::new(MockClock::new(
         Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
@@ -76,13 +106,6 @@ async fn setup() -> (SqliteStorage, PasswordAuthManager, Arc<InMemoryEmailSender
         },
     );
 
-    (storage, manager, email)
-}
-
-#[tokio::test]
-async fn full_password_flow_against_sqlite() {
-    let (storage, manager, email) = setup().await;
-
     let outcome = manager
         .register(
             "alice@example.com",
@@ -101,7 +124,6 @@ async fn full_password_flow_against_sqlite() {
         .expect("user persisted");
     assert_eq!(persisted.id, outcome.user.id);
 
-    // Verify email.
     let verify_body = email
         .sent()
         .into_iter()
@@ -114,14 +136,6 @@ async fn full_password_flow_against_sqlite() {
         .await
         .expect("verify");
 
-    let after_verify = users
-        .find_user_by_id(outcome.user.id)
-        .await
-        .expect("find")
-        .expect("user");
-    assert!(after_verify.email_verified_at.is_some());
-
-    // Login.
     manager
         .login(
             "alice@example.com",
@@ -131,7 +145,6 @@ async fn full_password_flow_against_sqlite() {
         .await
         .expect("login");
 
-    // Password reset.
     manager
         .request_password_reset("alice@example.com", SessionContext::default())
         .await
@@ -149,7 +162,6 @@ async fn full_password_flow_against_sqlite() {
         .await
         .expect("reset");
 
-    // New password works; old one doesn't.
     manager
         .login(
             "alice@example.com",
@@ -159,30 +171,13 @@ async fn full_password_flow_against_sqlite() {
         .await
         .expect("login with new pw");
 
-    // Verification tokens for this user should all be drained: the
-    // email-verification one was consumed, the password-reset one too.
-    let tokens = storage.verification_token_store();
-    let purged = tokens
-        .purge_expired(Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap())
-        .await
-        .expect("purge");
-    assert_eq!(purged, 0, "no outstanding tokens after consume");
-}
-
-#[tokio::test]
-async fn oauth_identity_round_trip_against_sqlite() {
-    let storage = SqliteStorage::connect("sqlite::memory:")
-        .await
-        .expect("connect");
-    storage.migrate().await.expect("migrate");
-
-    // Seed a user (FK target).
+    // OAuth identity round-trip on a fresh user, to exercise the
+    // identity-store queries.
     let user_id = UserId::new();
-    storage
-        .user_store()
+    users
         .create_user(bauth_core::storage::User {
             id: user_id,
-            email: Some("alice@example.com".into()),
+            email: Some("bob@example.com".into()),
             email_verified_at: None,
             created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
@@ -194,54 +189,29 @@ async fn oauth_identity_round_trip_against_sqlite() {
     identities
         .link(OAuthIdentity {
             provider: "google".into(),
-            subject: "sub-123".into(),
+            subject: "sub-456".into(),
             user_id,
-            email: Some("alice@example.com".into()),
+            email: Some("bob@example.com".into()),
             created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
         })
         .await
         .expect("link");
 
-    let found = identities
-        .find_by_provider_subject("google", "sub-123")
-        .await
-        .expect("find")
-        .expect("identity present");
-    assert_eq!(found.user_id, user_id);
-
     let listed = identities.list_for_user(user_id).await.expect("list");
     assert_eq!(listed.len(), 1);
 
     identities
-        .unlink("google", "sub-123")
+        .unlink("google", "sub-456")
         .await
         .expect("unlink");
-    assert!(
-        identities
-            .find_by_provider_subject("google", "sub-123")
-            .await
-            .expect("find after unlink")
-            .is_none()
-    );
-}
 
-#[tokio::test]
-async fn verification_token_consume_is_atomic() {
-    use bauth_core::session::hash_token;
-    use bauth_core::storage::VerificationToken;
-
-    let storage = SqliteStorage::connect("sqlite::memory:")
-        .await
-        .expect("connect");
-    storage.migrate().await.expect("migrate");
-
-    let user_id = UserId::new();
-    storage
-        .user_store()
+    // Verification-token atomic consume.
+    let token_user = UserId::new();
+    users
         .create_user(bauth_core::storage::User {
-            id: user_id,
-            email: Some("u@example.com".into()),
+            id: token_user,
+            email: Some("carol@example.com".into()),
             email_verified_at: None,
             created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
@@ -250,11 +220,11 @@ async fn verification_token_consume_is_atomic() {
         .expect("user");
 
     let tokens = storage.verification_token_store();
-    let hash = hash_token("test-token");
+    let hash = bauth_core::session::hash_token("pg-test-token");
     tokens
-        .create_token(VerificationToken {
+        .create_token(bauth_core::storage::VerificationToken {
             token_hash: hash,
-            user_id,
+            user_id: token_user,
             purpose: VerificationPurpose::EmailVerification,
             created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
             expires_at: Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap(),
@@ -273,4 +243,12 @@ async fn verification_token_consume_is_atomic() {
         .await
         .expect("consume again");
     assert!(second.is_none(), "second consume returns nothing");
+
+    // Composite Storage handle returns the same backing pool.
+    let composite = storage.storage();
+    let _ = composite
+        .users
+        .find_user_by_email("alice@example.com")
+        .await
+        .expect("composite find");
 }

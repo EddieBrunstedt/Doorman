@@ -18,8 +18,8 @@ expect breaking changes between minor versions until 1.0.
 crates/
   core/    # bauth-core — framework-agnostic primitives, traits, managers
   axum/    # bauth-axum — HTTP layer (router, extractors, middleware)
+  sqlx/    # bauth-sqlx — SQLx storage adapter (SQLite and Postgres, feature-gated)
 examples/
-  sqlx-sqlite/  # reference storage adapter using SQLx + SQLite
   web-client/   # browser-side TypeScript for the passkey ceremonies
 ```
 
@@ -127,9 +127,11 @@ to the builder. Add `.passkey_manager(...)`, `.oauth_manager(...)`, and
 (for OAuth) `.external_origin("https://app.example.com".parse()?)` to
 turn on the other auth methods.
 
-For a production-shaped storage layer, see
-[`examples/sqlx-sqlite`](examples/sqlx-sqlite) — every trait wired to a
-single SQLite database via SQLx, with migrations and tests.
+For a production-shaped storage layer, use
+[`bauth-sqlx`](crates/sqlx) — `SqliteStorage` and `PostgresStorage`
+implement every storage trait against a SQLx pool, with embedded
+migrations. Enable the `sqlite` or `postgres` feature for the backend
+you need.
 
 ### Driving the managers directly
 
