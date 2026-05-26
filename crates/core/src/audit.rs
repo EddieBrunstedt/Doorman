@@ -97,6 +97,14 @@ pub enum LoginFailureReason {
 #[async_trait]
 pub trait AuditSink: Send + Sync {
     async fn emit(&self, event: AuditEvent);
+
+    /// Used by the axum builder's startup sanity checks to detect that the
+    /// host is running with no real audit sink wired up. Implementations
+    /// other than [`NoopAuditSink`] should leave the default in place.
+    #[doc(hidden)]
+    fn is_noop_sink(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -105,4 +113,32 @@ pub struct NoopAuditSink;
 #[async_trait]
 impl AuditSink for NoopAuditSink {
     async fn emit(&self, _event: AuditEvent) {}
+
+    fn is_noop_sink(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn noop_sink_is_detected_as_noop() {
+        let sink: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
+        assert!(sink.is_noop_sink());
+    }
+
+    #[test]
+    fn custom_sink_default_is_not_noop() {
+        struct MySink;
+        #[async_trait]
+        impl AuditSink for MySink {
+            async fn emit(&self, _event: AuditEvent) {}
+        }
+
+        let sink: Arc<dyn AuditSink> = Arc::new(MySink);
+        assert!(!sink.is_noop_sink());
+    }
 }

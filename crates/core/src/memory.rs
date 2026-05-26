@@ -12,7 +12,7 @@ use crate::audit::{AuditEvent, AuditSink};
 use crate::clock::Clock;
 use crate::email::{Email, EmailSender};
 use crate::error::{EmailResult, StorageError, StorageResult};
-use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
+use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter, RateLimiterKind};
 use crate::storage::{
     OAuthIdentity, OAuthIdentityStore, OAuthStateId, OAuthStateStore, PasskeyChallengeId,
     PasskeyChallengeStore, PasskeyCredentialStore, PasswordCredential, PasswordCredentialStore,
@@ -700,6 +700,10 @@ impl InMemoryRateLimiter {
 
 #[async_trait]
 impl RateLimiter for InMemoryRateLimiter {
+    fn diagnostic_kind(&self) -> RateLimiterKind {
+        RateLimiterKind::InMemory
+    }
+
     async fn check(&self, key: &str, policy: RateLimitPolicy) -> StorageResult<RateLimitDecision> {
         let now = self.clock.now();
         let window = chrono::Duration::from_std(policy.window)
@@ -723,5 +727,18 @@ impl RateLimiter for InMemoryRateLimiter {
 
         entries.push(now);
         Ok(RateLimitDecision::Allowed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clock::SystemClock;
+
+    #[test]
+    fn in_memory_limiter_reports_in_memory_kind() {
+        let limiter: Arc<dyn RateLimiter> =
+            Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock)));
+        assert_eq!(limiter.diagnostic_kind(), RateLimiterKind::InMemory);
     }
 }

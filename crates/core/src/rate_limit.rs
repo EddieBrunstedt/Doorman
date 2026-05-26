@@ -47,6 +47,24 @@ impl RateLimitPolicy {
     }
 }
 
+/// Diagnostic tag returned by [`RateLimiter::diagnostic_kind`]. Used by the
+/// axum builder's startup sanity checks to surface limiters that are not
+/// safe in production (`Noop` discards all enforcement; `InMemory` is
+/// per-process and underestimates effective rate in multi-replica
+/// deployments).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateLimiterKind {
+    /// A host-supplied limiter. The default assumed for any third-party
+    /// implementation; no warning is emitted at build time.
+    Custom,
+    /// [`NoopRateLimiter`] — enforcement disabled.
+    Noop,
+    /// [`InMemoryRateLimiter`](crate::memory::InMemoryRateLimiter) — fine
+    /// for a single-process deployment, not for multi-replica.
+    InMemory,
+}
+
 #[async_trait]
 pub trait RateLimiter: Send + Sync {
     /// Charge a single attempt against `key` under `policy`.
@@ -57,6 +75,14 @@ pub trait RateLimiter: Send + Sync {
     /// failure by the calling manager; transient errors should be
     /// retried internally rather than bubbled up.
     async fn check(&self, key: &str, policy: RateLimitPolicy) -> StorageResult<RateLimitDecision>;
+
+    /// Used by the axum builder's startup sanity checks to detect noop /
+    /// per-process limiters. Third-party implementations should leave the
+    /// default in place.
+    #[doc(hidden)]
+    fn diagnostic_kind(&self) -> RateLimiterKind {
+        RateLimiterKind::Custom
+    }
 }
 
 /// A limiter that never rejects. Useful as a default when rate limiting
@@ -72,5 +98,39 @@ impl RateLimiter for NoopRateLimiter {
         _policy: RateLimitPolicy,
     ) -> StorageResult<RateLimitDecision> {
         Ok(RateLimitDecision::Allowed)
+    }
+
+    fn diagnostic_kind(&self) -> RateLimiterKind {
+        RateLimiterKind::Noop
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn noop_limiter_reports_noop_kind() {
+        let limiter: Arc<dyn RateLimiter> = Arc::new(NoopRateLimiter);
+        assert_eq!(limiter.diagnostic_kind(), RateLimiterKind::Noop);
+    }
+
+    #[test]
+    fn custom_limiter_default_reports_custom_kind() {
+        struct MyLimiter;
+        #[async_trait]
+        impl RateLimiter for MyLimiter {
+            async fn check(
+                &self,
+                _key: &str,
+                _policy: RateLimitPolicy,
+            ) -> StorageResult<RateLimitDecision> {
+                Ok(RateLimitDecision::Allowed)
+            }
+        }
+
+        let limiter: Arc<dyn RateLimiter> = Arc::new(MyLimiter);
+        assert_eq!(limiter.diagnostic_kind(), RateLimiterKind::Custom);
     }
 }

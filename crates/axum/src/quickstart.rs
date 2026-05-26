@@ -14,10 +14,12 @@
 //! - [`RateLimiter`] → [`InMemoryRateLimiter`]
 //! - [`EmailSender`] → [`NoopEmailSender`]
 //!
-//! These defaults are fine for development but not for production. The
-//! later "startup sanity checks" phase will surface that mismatch with
-//! warnings at build time; today the host's responsibility is to wire real
-//! implementations through [`QuickstartBuilder::clock`], [`audit`], etc.
+//! These defaults are fine for development but not for production.
+//! [`build`](QuickstartBuilder::build) surfaces the mismatch via the
+//! [`warnings`](crate::warnings) module — hosts who have made an informed
+//! choice silence them with [`QuickstartBuilder::silence_warnings`]. The
+//! host's responsibility is to wire real implementations through
+//! [`QuickstartBuilder::clock`], [`audit`], etc.
 //!
 //! [`Clock`]: bauth_core::clock::Clock
 //! [`SystemClock`]: bauth_core::clock::SystemClock
@@ -55,6 +57,7 @@ use crate::BauthAxum;
 use crate::builder::{BauthAxumBuilder, BuilderError};
 use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
+use crate::warnings::Warnings;
 
 /// Begin building a [`BauthAxum`] from a composite [`Storage`].
 ///
@@ -87,6 +90,7 @@ pub struct QuickstartBuilder {
     session_config: Option<SessionConfig>,
     cookie_config: Option<CookieConfig>,
     cache_config: Option<SessionCacheConfig>,
+    silence_warnings: bool,
 
     #[cfg(feature = "oauth")]
     external_origin: Option<Url>,
@@ -118,6 +122,7 @@ impl QuickstartBuilder {
             session_config: None,
             cookie_config: None,
             cache_config: None,
+            silence_warnings: false,
             #[cfg(feature = "oauth")]
             external_origin: None,
             #[cfg(feature = "password")]
@@ -129,6 +134,15 @@ impl QuickstartBuilder {
             #[cfg(feature = "magic_link")]
             magic_link: None,
         }
+    }
+
+    /// Suppress the build-time configuration warnings. Use after you have
+    /// reviewed the warnings and made an informed choice — e.g. you are
+    /// intentionally running with the in-memory rate limiter in a
+    /// single-process deployment.
+    pub fn silence_warnings(mut self) -> Self {
+        self.silence_warnings = true;
+        self
     }
 
     /// Override the default [`SystemClock`].
@@ -259,6 +273,28 @@ impl QuickstartBuilder {
             .unwrap_or_else(|| Arc::new(InMemoryRateLimiter::new(clock.clone())));
         let session_config = self.session_config.unwrap_or_default();
 
+        let mut warnings = Warnings::default();
+        if audit.is_noop_sink() {
+            warnings.noop_audit = true;
+        }
+        match limiter.diagnostic_kind() {
+            bauth_core::rate_limit::RateLimiterKind::Noop => {
+                warnings.noop_rate_limiter = true;
+            }
+            bauth_core::rate_limit::RateLimiterKind::InMemory => {
+                warnings.in_memory_rate_limiter = true;
+            }
+            bauth_core::rate_limit::RateLimiterKind::Custom => {}
+        }
+        #[cfg(all(feature = "password", feature = "oauth"))]
+        if let (Some(password_cfg), Some(oauth_setup)) =
+            (self.password.as_ref(), self.oauth.as_ref())
+            && oauth_setup.config.allow_email_linking
+            && !password_cfg.require_email_verification
+        {
+            warnings.unsafe_oauth_email_linking = true;
+        }
+
         // Build the cache up-front so its invalidator can be attached to
         // the `SessionManager` before any dependent manager clones it.
         // Every clone captures the same invalidation hook, so revocations
@@ -278,6 +314,10 @@ impl QuickstartBuilder {
             .session_manager(session_manager.clone())
             .user_store(self.storage.users.clone())
             .session_cache(cache);
+        builder.inherited_warnings = warnings;
+        if self.silence_warnings {
+            builder.silence_warnings = true;
+        }
 
         if let Some(cookie_config) = self.cookie_config {
             builder = builder.cookie_config(cookie_config);

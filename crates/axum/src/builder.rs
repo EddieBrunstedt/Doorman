@@ -18,6 +18,7 @@ use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::BauthState;
+use crate::warnings::{self, Warnings};
 
 #[cfg(feature = "magic_link")]
 use bauth_core::magic_link::MagicLinkManager;
@@ -55,6 +56,12 @@ pub struct BauthAxumBuilder {
     cookie_config: Option<CookieConfig>,
     cache_config: Option<SessionCacheConfig>,
     session_cache: Option<SessionCache>,
+    /// Pre-computed warning conditions from a parent builder (the
+    /// quickstart entry point) that already inspected audit / rate-limiter
+    /// / linking state the low-level builder does not see. Merged with the
+    /// builder's own cookie-config check at [`Self::build`] time.
+    pub(crate) inherited_warnings: Warnings,
+    pub(crate) silence_warnings: bool,
     #[cfg(feature = "oauth")]
     external_origin: Option<Url>,
 
@@ -151,6 +158,15 @@ impl BauthAxumBuilder {
         self
     }
 
+    /// Suppress the build-time configuration warnings. Use after you have
+    /// reviewed the warnings and made an informed choice — e.g. you are
+    /// intentionally running with an in-memory rate limiter in a
+    /// single-process deployment.
+    pub fn silence_warnings(mut self) -> Self {
+        self.silence_warnings = true;
+        self
+    }
+
     pub fn build(self) -> Result<BauthAxum, BuilderError> {
         let session_manager = self
             .session_manager
@@ -161,6 +177,12 @@ impl BauthAxumBuilder {
         #[cfg(feature = "oauth")]
         if self.oauth.is_some() && self.external_origin.is_none() {
             return Err(BuilderError::MissingExternalOrigin);
+        }
+
+        if !self.silence_warnings {
+            let mut warnings = self.inherited_warnings.clone();
+            warnings.cookie_insecure_in_production = warnings::check_cookie(&cookie_config);
+            warnings.emit();
         }
 
         // Use the host-supplied cache when present so the layer reads from
