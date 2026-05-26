@@ -101,6 +101,9 @@ impl fmt::Display for SessionId {
 /// constant-time so that any in-process comparison (including HashMap
 /// bucket disambiguation) does not leak the matched prefix length via
 /// timing.
+// `PartialEq` is constant-time but byte-equivalent to a derived impl, so the
+// `Hash`/`Eq` contract (`a == b => hash(a) == hash(b)`) still holds.
+#[allow(clippy::derived_hash_with_manual_eq)]
 #[derive(Clone, Copy, Hash, Serialize, Deserialize)]
 pub struct TokenHash(pub [u8; 32]);
 
