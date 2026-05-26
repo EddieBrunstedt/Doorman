@@ -128,6 +128,7 @@ impl OAuthManager {
         }
     }
 
+    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn list_identities(&self, user_id: UserId) -> Result<Vec<OAuthIdentity>> {
         Ok(self.identities.list_for_user(user_id).await?)
     }
@@ -135,6 +136,10 @@ impl OAuthManager {
     /// Detach an OAuth identity from a user. The `user_id` argument is
     /// enforced server-side so a session for user A cannot delete user
     /// B's identity by guessing a `(provider, subject)` pair.
+    #[tracing::instrument(
+        skip(self, subject, context),
+        fields(method = "oauth", user_id = %user_id, provider = %provider),
+    )]
     pub async fn unlink(
         &self,
         user_id: UserId,
@@ -147,9 +152,11 @@ impl OAuthManager {
             .find_by_provider_subject(provider, subject)
             .await?
         else {
+            tracing::info!(outcome = "noop", "oauth unlink (no identity)");
             return Ok(());
         };
         if identity.user_id != user_id {
+            tracing::warn!(outcome = "ownership_mismatch", "oauth unlink failed");
             return Err(Error::OAuthIdentityAlreadyLinked);
         }
         self.identities.unlink(provider, subject).await?;
@@ -164,6 +171,7 @@ impl OAuthManager {
                 },
             })
             .await;
+        tracing::info!(outcome = "unlinked", "oauth identity unlinked");
         Ok(())
     }
 

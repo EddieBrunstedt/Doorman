@@ -10,6 +10,10 @@ use crate::storage::{PasswordCredential, UserId};
 use super::PasswordAuthManager;
 
 impl PasswordAuthManager {
+    #[tracing::instrument(
+        skip(self, current_password, new_password, context),
+        fields(user_id = %user_id),
+    )]
     pub async fn change_password(
         &self,
         user_id: UserId,
@@ -19,9 +23,11 @@ impl PasswordAuthManager {
     ) -> Result<()> {
         self.config.password_policy.validate(new_password)?;
         let Some(credential) = self.passwords.get_password(user_id).await? else {
+            tracing::warn!(outcome = "no_credential", "change password failed");
             return Err(Error::InvalidCredentials);
         };
         if !verify_password_async(current_password.to_owned(), credential.hash.clone()).await? {
+            tracing::warn!(outcome = "invalid_credential", "change password failed");
             return Err(Error::InvalidCredentials);
         }
         let new_hash = hash_password_async(new_password.to_owned()).await?;
@@ -41,6 +47,7 @@ impl PasswordAuthManager {
                 kind: AuditEventKind::PasswordChanged { user_id },
             })
             .await;
+        tracing::info!(outcome = "changed", "password changed");
         Ok(())
     }
 }

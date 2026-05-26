@@ -11,6 +11,7 @@ use crate::storage::{PasswordCredential, VerificationPurpose, VerificationToken}
 use super::{PasswordAuthManager, build_url, generate_verification_token, normalize_email};
 
 impl PasswordAuthManager {
+    #[tracing::instrument(skip(self, email, context), fields(user_id = tracing::field::Empty))]
     pub async fn request_password_reset(&self, email: &str, context: SessionContext) -> Result<()> {
         let email_normalized = normalize_email(email);
 
@@ -30,8 +31,10 @@ impl PasswordAuthManager {
         // Silent success for unknown addresses keeps the endpoint from
         // doubling as an account-enumeration oracle.
         let Some(user) = self.users.find_user_by_email(&email_normalized).await? else {
+            tracing::info!(outcome = "unknown_email", "password reset request (silent)");
             return Ok(());
         };
+        tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
         // Invalidate prior outstanding reset tokens so an attacker who
         // grabbed a stale email link can't reuse it after a fresh
@@ -69,9 +72,11 @@ impl PasswordAuthManager {
                 kind: AuditEventKind::PasswordResetRequested { user_id: user.id },
             })
             .await;
+        tracing::info!(outcome = "sent", "password reset email sent");
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, token, new_password, context), fields(user_id = tracing::field::Empty))]
     pub async fn reset_password(
         &self,
         token: &str,
@@ -86,11 +91,14 @@ impl PasswordAuthManager {
             .consume_token(&hash, VerificationPurpose::PasswordReset)
             .await?
         else {
+            tracing::warn!(outcome = "invalid_token", "password reset failed");
             return Err(Error::InvalidVerificationToken);
         };
         if record.expires_at <= now {
+            tracing::warn!(outcome = "expired_token", "password reset failed");
             return Err(Error::InvalidVerificationToken);
         }
+        tracing::Span::current().record("user_id", tracing::field::display(record.user_id));
         let new_hash = hash_password_async(new_password.to_owned()).await?;
         self.passwords
             .set_password(PasswordCredential {
@@ -124,6 +132,7 @@ impl PasswordAuthManager {
                 },
             })
             .await;
+        tracing::info!(outcome = "completed", "password reset completed");
         Ok(())
     }
 }

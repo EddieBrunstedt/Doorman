@@ -24,6 +24,7 @@ use bauth_core::session::{SessionManager, hash_token};
 use bauth_core::storage::{Session, User, UserStore};
 use tower_layer::Layer;
 use tower_service::Service;
+use tracing::Instrument;
 
 use crate::cache::SessionCache;
 use crate::cookies::read_cookie;
@@ -105,33 +106,48 @@ where
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
         let state = self.state.clone();
-        Box::pin(async move {
-            if let Some(token) = extract_token(req.headers(), &state.cookie_name) {
-                let token_hash = hash_token(&token);
-                // Cache hit short-circuits both the session lookup and the
-                // user-store fetch. On miss, fall through to the canonical
-                // validate path and seed the cache with the result.
-                if let Some(cached) = state.cache.get(&token_hash) {
-                    req.extensions_mut().insert(AuthContext {
-                        user: cached.user,
-                        session: cached.session,
-                        token,
-                    });
-                } else if let Ok(session) = state.session_manager.validate(&token).await
-                    && let Ok(Some(user)) = state.user_store.find_user_by_id(session.user_id).await
-                {
-                    state
-                        .cache
-                        .insert(token_hash, session.clone(), user.clone());
-                    req.extensions_mut().insert(AuthContext {
-                        user,
-                        session,
-                        token,
-                    });
+        let span = tracing::info_span!(
+            "bauth.session",
+            session_id = tracing::field::Empty,
+            user_id = tracing::field::Empty,
+        );
+        Box::pin(
+            async move {
+                if let Some(token) = extract_token(req.headers(), &state.cookie_name) {
+                    let token_hash = hash_token(&token);
+                    // Cache hit short-circuits both the session lookup and the
+                    // user-store fetch. On miss, fall through to the canonical
+                    // validate path and seed the cache with the result.
+                    if let Some(cached) = state.cache.get(&token_hash) {
+                        let span = tracing::Span::current();
+                        span.record("session_id", tracing::field::display(cached.session.id));
+                        span.record("user_id", tracing::field::display(cached.user.id));
+                        req.extensions_mut().insert(AuthContext {
+                            user: cached.user,
+                            session: cached.session,
+                            token,
+                        });
+                    } else if let Ok(session) = state.session_manager.validate(&token).await
+                        && let Ok(Some(user)) =
+                            state.user_store.find_user_by_id(session.user_id).await
+                    {
+                        let span = tracing::Span::current();
+                        span.record("session_id", tracing::field::display(session.id));
+                        span.record("user_id", tracing::field::display(user.id));
+                        state
+                            .cache
+                            .insert(token_hash, session.clone(), user.clone());
+                        req.extensions_mut().insert(AuthContext {
+                            user,
+                            session,
+                            token,
+                        });
+                    }
                 }
+                inner.call(req).await
             }
-            inner.call(req).await
-        })
+            .instrument(span),
+        )
     }
 }
 

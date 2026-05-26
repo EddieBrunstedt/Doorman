@@ -113,6 +113,7 @@ impl SessionManager {
         self
     }
 
+    #[tracing::instrument(skip(self, context), fields(user_id = %user_id))]
     pub async fn create(&self, user_id: UserId, context: SessionContext) -> Result<IssuedSession> {
         let (token, token_hash) = generate_token();
         let now = self.clock.now();
@@ -144,14 +145,20 @@ impl SessionManager {
             })
             .await;
 
+        tracing::info!(session_id = %session.id, outcome = "created", "session created");
         Ok(IssuedSession { session, token })
     }
 
+    #[tracing::instrument(skip(self, token), fields(user_id = tracing::field::Empty, session_id = tracing::field::Empty))]
     pub async fn validate(&self, token: &str) -> Result<Session> {
         let hash = hash_token(token);
         let Some(session) = self.sessions.find_session_by_token_hash(&hash).await? else {
+            tracing::warn!(outcome = "not_found", "session validate failed");
             return Err(Error::SessionNotFound);
         };
+        let span = tracing::Span::current();
+        span.record("user_id", tracing::field::display(session.user_id));
+        span.record("session_id", tracing::field::display(session.id));
 
         let now = self.clock.now();
         if session.expires_at <= now {
@@ -166,38 +173,46 @@ impl SessionManager {
                     },
                 })
                 .await;
+            tracing::warn!(outcome = "expired", "session validate failed");
             return Err(Error::SessionExpired);
         }
 
         Ok(session)
     }
 
+    #[tracing::instrument(skip(self, token))]
     pub async fn revoke(&self, token: &str) -> Result<()> {
         let hash = hash_token(token);
         let Some(session) = self.sessions.find_session_by_token_hash(&hash).await? else {
+            tracing::warn!(outcome = "not_found", "session revoke failed");
             return Err(Error::SessionNotFound);
         };
         self.revoke_session(session).await
     }
 
+    #[tracing::instrument(skip(self), fields(session_id = %session_id))]
     pub async fn revoke_by_id(&self, session_id: SessionId) -> Result<()> {
         let Some(session) = self.sessions.find_session_by_id(session_id).await? else {
+            tracing::warn!(outcome = "not_found", "session revoke failed");
             return Err(Error::SessionNotFound);
         };
         self.revoke_session(session).await
     }
 
+    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn revoke_all_for_user(&self, user_id: UserId) -> Result<u64> {
         let count = self.sessions.delete_sessions_for_user(user_id).await?;
         self.invalidation_hook
             .on_user_sessions_invalidated(user_id)
             .await;
+        tracing::info!(count, outcome = "revoked_all", "user sessions revoked");
         Ok(count)
     }
 
     /// Return every still-valid session belonging to `user_id`. Sessions
     /// whose `expires_at` has already passed are filtered out here so
     /// adapters don't have to encode the expiry rule.
+    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn list_for_user(&self, user_id: UserId) -> Result<Vec<Session>> {
         let now = self.clock.now();
         let sessions = self.sessions.list_for_user(user_id).await?;
@@ -211,6 +226,7 @@ impl SessionManager {
     /// retained session is the caller's "current" device on the typical
     /// "sign out everywhere else" path. Notifies the invalidation hook so
     /// any framework-side cache evicts the removed sessions.
+    #[tracing::instrument(skip(self), fields(user_id = %user_id, session_id = %except))]
     pub async fn revoke_others_for_user(&self, user_id: UserId, except: SessionId) -> Result<u64> {
         let count = self
             .sessions
@@ -221,12 +237,19 @@ impl SessionManager {
                 .on_user_sessions_invalidated(user_id)
                 .await;
         }
+        tracing::info!(
+            count,
+            outcome = "revoked_others",
+            "other user sessions revoked"
+        );
         Ok(count)
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn purge_expired(&self) -> Result<u64> {
         let now = self.clock.now();
         let count = self.sessions.purge_expired(now).await?;
+        tracing::info!(count, outcome = "purged", "expired sessions purged");
         Ok(count)
     }
 
@@ -246,6 +269,12 @@ impl SessionManager {
                 },
             })
             .await;
+        tracing::info!(
+            user_id = %session.user_id,
+            session_id = %session.id,
+            outcome = "revoked",
+            "session revoked",
+        );
         Ok(())
     }
 }

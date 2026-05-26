@@ -158,6 +158,10 @@ impl MagicLinkManager {
     /// cannot be used to enumerate accounts.
     ///
     /// [`PasswordAuthManager::request_password_reset`]: crate::password_auth::PasswordAuthManager::request_password_reset
+    #[tracing::instrument(
+        skip(self, email, context),
+        fields(method = "magic_link", user_id = tracing::field::Empty),
+    )]
     pub async fn request_magic_link(&self, email: &str, context: SessionContext) -> Result<()> {
         let email_normalized = normalize_email(email);
         validate_email(&email_normalized)?;
@@ -193,9 +197,11 @@ impl MagicLinkManager {
             }
             (None, false) => {
                 // Silent success: do not leak which addresses are registered.
+                tracing::info!(outcome = "unknown_email", "magic link request (silent)");
                 return Ok(());
             }
         };
+        tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
         // Invalidate prior outstanding magic-link tokens so an attacker who
         // grabbed a stale link can't reuse it after a fresh request.
@@ -230,12 +236,17 @@ impl MagicLinkManager {
                 kind: AuditEventKind::MagicLinkRequested { user_id: user.id },
             })
             .await;
+        tracing::info!(outcome = "sent", "magic link email sent");
         Ok(())
     }
 
     /// Redeem a magic-link token. Atomically consumes the token (so the
     /// same link cannot be replayed), marks the user's email as verified
     /// if it was not already, and issues a session.
+    #[tracing::instrument(
+        skip(self, token, context),
+        fields(method = "magic_link", user_id = tracing::field::Empty),
+    )]
     pub async fn consume_magic_link(
         &self,
         token: &str,
@@ -248,14 +259,18 @@ impl MagicLinkManager {
             .consume_token(&hash, VerificationPurpose::MagicLink)
             .await?
         else {
+            tracing::warn!(outcome = "invalid_token", "magic link consume failed");
             return Err(Error::InvalidVerificationToken);
         };
         if record.expires_at <= now {
+            tracing::warn!(outcome = "expired_token", "magic link consume failed");
             return Err(Error::InvalidVerificationToken);
         }
         let Some(mut user) = self.users.find_user_by_id(record.user_id).await? else {
+            tracing::warn!(outcome = "user_not_found", "magic link consume failed");
             return Err(Error::UserNotFound);
         };
+        tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
         let email_was_unverified = user.email_verified_at.is_none();
         if email_was_unverified {
@@ -290,6 +305,11 @@ impl MagicLinkManager {
             })
             .await;
 
+        tracing::info!(
+            outcome = "succeeded",
+            is_new_user = email_was_unverified,
+            "magic link login succeeded",
+        );
         Ok(MagicLinkOutcome {
             user,
             session,

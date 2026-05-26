@@ -99,6 +99,7 @@ impl PasskeyManager {
     /// `navigator.credentials.create` on the client; the
     /// [`PasskeyChallengeId`] is what the client must echo back to
     /// [`PasskeyManager::finish_registration`].
+    #[tracing::instrument(skip(self), fields(method = "passkey", user_id = %user_id))]
     pub async fn start_registration(
         &self,
         user_id: UserId,
@@ -138,12 +139,17 @@ impl PasskeyManager {
             expires_at: now + challenge_lifetime(self.config.challenge_lifetime),
         };
         self.challenges.put_registration(stored).await?;
+        tracing::info!(outcome = "started", "passkey registration started");
         Ok((id, ccr))
     }
 
     /// Complete a registration ceremony. On success the passkey is
     /// persisted and a [`CredentialAdded`](AuditEventKind::CredentialAdded)
     /// event is emitted.
+    #[tracing::instrument(
+        skip(self, response, name, context),
+        fields(method = "passkey", user_id = tracing::field::Empty),
+    )]
     pub async fn finish_registration(
         &self,
         challenge_id: PasskeyChallengeId,
@@ -153,11 +159,14 @@ impl PasskeyManager {
     ) -> Result<StoredPasskey> {
         let now = self.clock.now();
         let Some(stored) = self.challenges.take_registration(challenge_id).await? else {
+            tracing::warn!(outcome = "invalid_challenge", "passkey registration failed");
             return Err(Error::InvalidPasskeyChallenge);
         };
         if stored.expires_at <= now {
+            tracing::warn!(outcome = "expired_challenge", "passkey registration failed");
             return Err(Error::InvalidPasskeyChallenge);
         }
+        tracing::Span::current().record("user_id", tracing::field::display(stored.user_id));
 
         let passkey = self
             .webauthn
@@ -185,6 +194,7 @@ impl PasskeyManager {
                 },
             })
             .await;
+        tracing::info!(outcome = "registered", "passkey registered");
         Ok(credential)
     }
 
@@ -193,6 +203,7 @@ impl PasskeyManager {
     /// [`PasskeyChallengeId`] the client must echo back. Unknown emails
     /// are silently accepted (with no credentials) so the endpoint does
     /// not double as an account-enumeration oracle.
+    #[tracing::instrument(skip(self, email), fields(method = "passkey", user_id = tracing::field::Empty))]
     pub async fn start_authentication(
         &self,
         email: &str,
@@ -202,6 +213,7 @@ impl PasskeyManager {
 
         let (user_id, passkeys): (Option<UserId>, Vec<Passkey>) = match user {
             Some(u) => {
+                tracing::Span::current().record("user_id", tracing::field::display(u.id));
                 let creds = self.credentials.list_passkeys_for_user(u.id).await?;
                 let pks = creds.into_iter().map(|c| c.passkey).collect();
                 (Some(u.id), pks)
@@ -224,10 +236,15 @@ impl PasskeyManager {
             expires_at: now + challenge_lifetime(self.config.challenge_lifetime),
         };
         self.challenges.put_authentication(stored).await?;
+        tracing::info!(outcome = "started", "passkey authentication started");
         Ok((id, rcr))
     }
 
     /// Complete an authentication ceremony, issuing a session on success.
+    #[tracing::instrument(
+        skip(self, response, context),
+        fields(method = "passkey", user_id = tracing::field::Empty),
+    )]
     pub async fn finish_authentication(
         &self,
         challenge_id: PasskeyChallengeId,
@@ -236,9 +253,11 @@ impl PasskeyManager {
     ) -> Result<IssuedSession> {
         let now = self.clock.now();
         let Some(stored) = self.challenges.take_authentication(challenge_id).await? else {
+            tracing::warn!(outcome = "invalid_challenge", "passkey login failed");
             return Err(Error::InvalidPasskeyChallenge);
         };
         if stored.expires_at <= now {
+            tracing::warn!(outcome = "expired_challenge", "passkey login failed");
             return Err(Error::InvalidPasskeyChallenge);
         }
 
@@ -248,8 +267,10 @@ impl PasskeyManager {
             .find_passkey_by_credential_id(cred_id_bytes)
             .await?
         else {
+            tracing::warn!(outcome = "credential_not_found", "passkey login failed");
             return Err(Error::PasskeyNotFound);
         };
+        tracing::Span::current().record("user_id", tracing::field::display(credential.user_id));
 
         // If start_authentication recorded the intended user, enforce
         // that the asserted credential actually belongs to them. This
@@ -258,6 +279,7 @@ impl PasskeyManager {
         if let Some(expected_user) = stored.user_id
             && credential.user_id != expected_user
         {
+            tracing::warn!(outcome = "ownership_mismatch", "passkey login failed");
             return Err(Error::PasskeyOwnershipMismatch);
         }
 
@@ -285,9 +307,11 @@ impl PasskeyManager {
             })
             .await;
 
+        tracing::info!(outcome = "succeeded", "passkey login succeeded");
         self.sessions.create(user_id, context).await
     }
 
+    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn list_passkeys(&self, user_id: UserId) -> Result<Vec<StoredPasskey>> {
         Ok(self.credentials.list_passkeys_for_user(user_id).await?)
     }
@@ -295,6 +319,7 @@ impl PasskeyManager {
     /// Remove a passkey. The `user_id` argument is enforced server-side
     /// so a session for user A cannot delete user B's credential by
     /// guessing a credential id.
+    #[tracing::instrument(skip(self, credential_id, context), fields(user_id = %user_id))]
     pub async fn remove_passkey(
         &self,
         user_id: UserId,
@@ -306,9 +331,11 @@ impl PasskeyManager {
             .find_passkey_by_credential_id(credential_id)
             .await?
         else {
+            tracing::warn!(outcome = "credential_not_found", "passkey remove failed");
             return Err(Error::PasskeyNotFound);
         };
         if credential.user_id != user_id {
+            tracing::warn!(outcome = "ownership_mismatch", "passkey remove failed");
             return Err(Error::PasskeyOwnershipMismatch);
         }
         self.credentials.delete_passkey(credential_id).await?;
@@ -323,6 +350,7 @@ impl PasskeyManager {
                 },
             })
             .await;
+        tracing::info!(outcome = "removed", "passkey removed");
         Ok(())
     }
 }

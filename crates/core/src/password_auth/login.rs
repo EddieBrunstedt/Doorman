@@ -9,6 +9,7 @@ use crate::session::{IssuedSession, SessionContext};
 use super::{PasswordAuthManager, normalize_email};
 
 impl PasswordAuthManager {
+    #[tracing::instrument(skip(self, email, password, context), fields(method = "password", user_id = tracing::field::Empty))]
     pub async fn login(
         &self,
         email: &str,
@@ -38,8 +39,10 @@ impl PasswordAuthManager {
                 &context,
             )
             .await;
+            tracing::warn!(outcome = "user_not_found", "login failed");
             return Err(Error::InvalidCredentials);
         };
+        tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
         let Some(credential) = self.passwords.get_password(user.id).await? else {
             self.emit_login_failed(
@@ -48,6 +51,7 @@ impl PasswordAuthManager {
                 &context,
             )
             .await;
+            tracing::warn!(outcome = "no_credential", "login failed");
             return Err(Error::InvalidCredentials);
         };
 
@@ -58,6 +62,7 @@ impl PasswordAuthManager {
                 &context,
             )
             .await;
+            tracing::warn!(outcome = "invalid_credential", "login failed");
             return Err(Error::InvalidCredentials);
         }
 
@@ -68,6 +73,7 @@ impl PasswordAuthManager {
                 &context,
             )
             .await;
+            tracing::warn!(outcome = "email_not_verified", "login failed");
             return Err(Error::EmailNotVerified);
         }
 
@@ -83,6 +89,7 @@ impl PasswordAuthManager {
             })
             .await;
 
+        tracing::info!(outcome = "succeeded", "login succeeded");
         self.sessions.create(user.id, context).await
     }
 }

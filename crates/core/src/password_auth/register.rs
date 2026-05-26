@@ -21,6 +21,7 @@ pub struct RegisterOutcome {
 }
 
 impl PasswordAuthManager {
+    #[tracing::instrument(skip(self, email, password, context), fields(method = "password", user_id = tracing::field::Empty))]
     pub async fn register(
         &self,
         email: &str,
@@ -37,6 +38,7 @@ impl PasswordAuthManager {
             .await?
             .is_some()
         {
+            tracing::warn!(outcome = "email_taken", "register failed");
             return Err(Error::EmailAlreadyTaken);
         }
 
@@ -49,6 +51,7 @@ impl PasswordAuthManager {
             updated_at: now,
         };
         self.users.create_user(user.clone()).await?;
+        tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
         let password_hash = hash_password_async(password.to_owned()).await?;
         self.passwords
@@ -79,6 +82,7 @@ impl PasswordAuthManager {
             Some(self.sessions.create(user.id, context).await?)
         };
 
+        tracing::info!(outcome = "registered", "user registered");
         Ok(RegisterOutcome { user, session })
     }
 }

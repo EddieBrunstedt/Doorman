@@ -23,6 +23,10 @@ impl OAuthManager {
     ///
     /// `link_user_id` is `Some` when an already-logged-in user wants to
     /// attach a federated identity to their existing account.
+    #[tracing::instrument(
+        skip(self, redirect_uri),
+        fields(method = "oauth", provider = %provider_name),
+    )]
     pub async fn start_authorization(
         &self,
         provider_name: &str,
@@ -56,6 +60,7 @@ impl OAuthManager {
             })
             .await?;
 
+        tracing::info!(outcome = "started", "oauth authorization started");
         Ok(StartedAuthorization {
             state,
             authorize_url: url,

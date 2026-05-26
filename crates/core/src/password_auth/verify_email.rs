@@ -9,6 +9,7 @@ use crate::storage::{User, VerificationPurpose, VerificationToken};
 use super::{PasswordAuthManager, build_url, generate_verification_token};
 
 impl PasswordAuthManager {
+    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn request_email_verification(&self, user_id: crate::storage::UserId) -> Result<()> {
         self.enforce_rate_limit(
             self.config.rate_limits.verification_email_per_user,
@@ -18,18 +19,23 @@ impl PasswordAuthManager {
         .await?;
 
         let Some(user) = self.users.find_user_by_id(user_id).await? else {
+            tracing::warn!(outcome = "user_not_found", "verification request failed");
             return Err(Error::UserNotFound);
         };
         if user.email.is_none() {
+            tracing::warn!(outcome = "no_email", "verification request failed");
             return Err(Error::UserHasNoEmail);
         }
         if user.email_verified_at.is_some() {
+            tracing::warn!(outcome = "already_verified", "verification request failed");
             return Err(Error::EmailAlreadyVerified);
         }
         self.send_verification_email_to(&user).await?;
+        tracing::info!(outcome = "sent", "verification email sent");
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, token, context), fields(user_id = tracing::field::Empty))]
     pub async fn verify_email(&self, token: &str, context: SessionContext) -> Result<()> {
         let hash = hash_token(token);
         let now = self.clock.now();
@@ -38,14 +44,18 @@ impl PasswordAuthManager {
             .consume_token(&hash, VerificationPurpose::EmailVerification)
             .await?
         else {
+            tracing::warn!(outcome = "invalid_token", "email verify failed");
             return Err(Error::InvalidVerificationToken);
         };
         if record.expires_at <= now {
+            tracing::warn!(outcome = "expired_token", "email verify failed");
             return Err(Error::InvalidVerificationToken);
         }
         let Some(mut user) = self.users.find_user_by_id(record.user_id).await? else {
+            tracing::warn!(outcome = "user_not_found", "email verify failed");
             return Err(Error::UserNotFound);
         };
+        tracing::Span::current().record("user_id", tracing::field::display(user.id));
         user.email_verified_at = Some(now);
         user.updated_at = now;
         self.users.update_user(user.clone()).await?;
@@ -58,6 +68,7 @@ impl PasswordAuthManager {
                 kind: AuditEventKind::EmailVerified { user_id: user.id },
             })
             .await;
+        tracing::info!(outcome = "verified", "email verified");
         Ok(())
     }
 

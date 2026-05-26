@@ -274,6 +274,7 @@ dependencies = [
  "subtle",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "url",
  "uuid",
  "webauthn-authenticator-rs",

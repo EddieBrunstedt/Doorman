@@ -176,6 +176,7 @@ impl PasswordAuthManager {
         }
     }
 
+    #[tracing::instrument(skip(self, token))]
     pub async fn logout(&self, token: &str) -> Result<()> {
         self.sessions.revoke(token).await
     }
