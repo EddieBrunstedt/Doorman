@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use bauth_core::audit::{AuditEvent, AuditEventKind, AuditSink, AuthMethod};
 use bauth_core::clock::{Clock, MockClock};
-use bauth_core::email::EmailSender;
+use bauth_core::email::{BauthEmails, Email, EmailSender};
 use bauth_core::error::Error;
 use bauth_core::magic_link::{
     MagicLinkConfig, MagicLinkManager, MagicLinkRateLimits, TOKEN_PLACEHOLDER,
@@ -14,7 +14,7 @@ use bauth_core::memory::{
 };
 use bauth_core::rate_limit::{NoopRateLimiter, RateLimitPolicy, RateLimiter};
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
-use bauth_core::storage::{SessionStore, UserStore, VerificationTokenStore};
+use bauth_core::storage::{SessionStore, User, UserStore, VerificationTokenStore};
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
 
 const MAGIC_URL: &str = "https://app.test/magic-link?token={token}";
@@ -427,4 +427,49 @@ async fn rate_limit_per_identifier_blocks_across_ips() {
         .await
         .expect_err("identifier limited");
     assert!(matches!(err, Error::RateLimited { .. }));
+}
+
+struct BrandedEmails;
+
+impl BauthEmails for BrandedEmails {
+    fn magic_link_email(&self, user: &User, url: &str) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Acme magic link".to_string(),
+            body_text: format!("Open {url}"),
+            body_html: Some(format!("<a href=\"{url}\">Open</a>")),
+        }
+    }
+}
+
+#[tokio::test]
+async fn custom_emails_override_magic_link_subject_and_html() {
+    let h = fresh(MagicLinkConfig {
+        emails: Arc::new(BrandedEmails),
+        ..default_config()
+    });
+
+    h.manager
+        .request_magic_link("user@example.com", SessionContext::default())
+        .await
+        .expect("request");
+
+    let sent = h.email.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].subject, "Acme magic link");
+    assert!(sent[0].body_text.starts_with("Open "));
+    assert!(sent[0].body_html.is_some());
+}
+
+#[tokio::test]
+async fn default_emails_match_legacy_subject_lines() {
+    let h = fresh(default_config());
+
+    h.manager
+        .request_magic_link("user@example.com", SessionContext::default())
+        .await
+        .expect("request");
+
+    let sent = h.email.sent();
+    assert_eq!(sent[0].subject, "Your sign-in link");
 }

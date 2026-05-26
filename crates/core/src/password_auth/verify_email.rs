@@ -2,7 +2,6 @@
 //! consume a token to mark a user verified.
 
 use crate::audit::{AuditEvent, AuditEventKind};
-use crate::email::Email;
 use crate::error::{Error, Result};
 use crate::session::{SessionContext, hash_token};
 use crate::storage::{User, VerificationPurpose, VerificationToken};
@@ -63,9 +62,9 @@ impl PasswordAuthManager {
     }
 
     pub(super) async fn send_verification_email_to(&self, user: &User) -> Result<()> {
-        let Some(to) = user.email.clone() else {
+        if user.email.is_none() {
             return Ok(());
-        };
+        }
 
         // Drop any prior verification tokens so an old email link can't
         // be reused after the user requests a new one.
@@ -89,21 +88,8 @@ impl PasswordAuthManager {
             .await?;
 
         let url = build_url(&self.config.verification_url_template, &token);
-        self.email.send(build_verification_email(to, &url)).await?;
+        let email = self.config.emails.verification_email(user, &url);
+        self.email.send(email).await?;
         Ok(())
-    }
-}
-
-fn build_verification_email(to: String, url: &str) -> Email {
-    Email {
-        to,
-        subject: "Verify your email address".to_string(),
-        body_text: format!(
-            "Hello,\n\n\
-             Please confirm your email address by visiting the link below:\n\n\
-             {url}\n\n\
-             If you did not request this, you can ignore this message.\n"
-        ),
-        body_html: None,
     }
 }

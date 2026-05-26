@@ -23,7 +23,7 @@ use rand::rngs::OsRng;
 
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink, AuthMethod};
 use crate::clock::Clock;
-use crate::email::{Email, EmailSender};
+use crate::email::{BauthEmails, EmailSender, default_emails};
 use crate::error::{Error, Result};
 use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
 use crate::session::{IssuedSession, SessionContext, SessionManager, hash_token};
@@ -37,7 +37,7 @@ const MAGIC_LINK_TOKEN_BYTES: usize = 32;
 /// Placeholder substituted with the generated token in URL templates.
 pub const TOKEN_PLACEHOLDER: &str = "{token}";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MagicLinkConfig {
     /// Token lifetime. Short by design — the link is the credential and a
     /// stale link sitting in an inbox is a takeover vector.
@@ -55,6 +55,10 @@ pub struct MagicLinkConfig {
     /// per-IP and per-identifier policies are checked; both must clear
     /// for the request to proceed.
     pub rate_limits: MagicLinkRateLimits,
+    /// Renderer for the magic-link email. Defaults to
+    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails); hosts that
+    /// want branded copy override this with an [`Arc<dyn BauthEmails>`].
+    pub emails: Arc<dyn BauthEmails>,
 }
 
 /// Rate-limit policies for the magic-link request endpoint.
@@ -95,6 +99,7 @@ impl Default for MagicLinkConfig {
             url_template: format!("https://example.invalid/magic-link?token={TOKEN_PLACEHOLDER}"),
             allow_signup: true,
             rate_limits: MagicLinkRateLimits::default(),
+            emails: default_emails(),
         }
     }
 }
@@ -211,9 +216,10 @@ impl MagicLinkManager {
             })
             .await?;
 
-        if let Some(to) = user.email.clone() {
+        if user.email.is_some() {
             let url = build_url(&self.config.url_template, &token);
-            self.email.send(build_magic_link_email(to, &url)).await?;
+            let email = self.config.emails.magic_link_email(&user, &url);
+            self.email.send(email).await?;
         }
 
         self.audit
@@ -329,20 +335,6 @@ fn generate_token() -> (String, TokenHash) {
     let token = URL_SAFE_NO_PAD.encode(bytes);
     let hash = hash_token(&token);
     (token, hash)
-}
-
-fn build_magic_link_email(to: String, url: &str) -> Email {
-    Email {
-        to,
-        subject: "Your sign-in link".to_string(),
-        body_text: format!(
-            "Hello,\n\n\
-             Click the link below to sign in. The link can only be used once and expires shortly:\n\n\
-             {url}\n\n\
-             If you did not request this you can safely ignore this message.\n"
-        ),
-        body_html: None,
-    }
 }
 
 #[cfg(test)]

@@ -23,7 +23,7 @@ use rand::rngs::OsRng;
 
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink, LoginFailureReason};
 use crate::clock::Clock;
-use crate::email::EmailSender;
+use crate::email::{BauthEmails, EmailSender, default_emails};
 use crate::error::{Error, Result};
 use crate::password::PasswordPolicy;
 use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
@@ -37,7 +37,7 @@ const VERIFICATION_TOKEN_BYTES: usize = 32;
 /// Placeholder substituted with the generated token in URL templates.
 pub const TOKEN_PLACEHOLDER: &str = "{token}";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PasswordAuthConfig {
     pub password_policy: PasswordPolicy,
     pub email_verification_lifetime: Duration,
@@ -60,6 +60,10 @@ pub struct PasswordAuthConfig {
     /// Defaults to a conservative posture; set to [`PasswordRateLimits::disabled`]
     /// to turn enforcement off.
     pub rate_limits: PasswordRateLimits,
+    /// Renderer for the verification and password-reset emails. Defaults to
+    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails); hosts that
+    /// want branded copy override this with an [`Arc<dyn BauthEmails>`].
+    pub emails: Arc<dyn BauthEmails>,
 }
 
 /// Rate-limit policies applied to the password-auth flows. Each protected
@@ -128,6 +132,7 @@ impl Default for PasswordAuthConfig {
             require_email_verification: false,
             revoke_sessions_on_password_reset: true,
             rate_limits: PasswordRateLimits::default(),
+            emails: default_emails(),
         }
     }
 }

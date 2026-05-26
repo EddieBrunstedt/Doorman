@@ -3,7 +3,6 @@
 //! sessions).
 
 use crate::audit::{AuditEvent, AuditEventKind};
-use crate::email::Email;
 use crate::error::{Error, Result};
 use crate::password::hash_password_async;
 use crate::session::{SessionContext, hash_token};
@@ -56,11 +55,10 @@ impl PasswordAuthManager {
             })
             .await?;
 
-        if let Some(to) = user.email.clone() {
+        if user.email.is_some() {
             let url = build_url(&self.config.password_reset_url_template, &token);
-            self.email
-                .send(build_password_reset_email(to, &url))
-                .await?;
+            let email = self.config.emails.password_reset_email(&user, &url);
+            self.email.send(email).await?;
         }
 
         self.audit
@@ -127,19 +125,5 @@ impl PasswordAuthManager {
             })
             .await;
         Ok(())
-    }
-}
-
-fn build_password_reset_email(to: String, url: &str) -> Email {
-    Email {
-        to,
-        subject: "Reset your password".to_string(),
-        body_text: format!(
-            "Hello,\n\n\
-             A password reset was requested for your account. To choose a new password, visit:\n\n\
-             {url}\n\n\
-             If you did not request this you can safely ignore this message — your password will not change.\n"
-        ),
-        body_html: None,
     }
 }

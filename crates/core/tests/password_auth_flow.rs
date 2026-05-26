@@ -5,7 +5,7 @@ use bauth_core::audit::{
     AuditEventKind, AuditSink, AuthMethod, CredentialKind, LoginFailureReason,
 };
 use bauth_core::clock::{Clock, MockClock};
-use bauth_core::email::EmailSender;
+use bauth_core::email::{BauthEmails, Email, EmailSender};
 use bauth_core::error::Error;
 use bauth_core::memory::{
     InMemoryAuditSink, InMemoryEmailSender, InMemoryPasswordCredentialStore, InMemoryRateLimiter,
@@ -18,7 +18,8 @@ use bauth_core::password_auth::{
 use bauth_core::rate_limit::{NoopRateLimiter, RateLimitPolicy, RateLimiter};
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
 use bauth_core::storage::{
-    PasswordCredentialStore, SessionStore, UserStore, VerificationPurpose, VerificationTokenStore,
+    PasswordCredentialStore, SessionStore, User, UserStore, VerificationPurpose,
+    VerificationTokenStore,
 };
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
 
@@ -1196,4 +1197,95 @@ async fn rate_limit_clears_after_window() {
         .await
         .expect_err("window cleared, password is still wrong");
     assert!(matches!(err, Error::InvalidCredentials));
+}
+
+struct BrandedEmails {
+    brand: &'static str,
+}
+
+impl BauthEmails for BrandedEmails {
+    fn verification_email(&self, user: &User, url: &str) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: format!("Confirm your {} account", self.brand),
+            body_text: format!("Confirm at {url}"),
+            body_html: Some(format!("<a href=\"{url}\">Confirm</a>")),
+        }
+    }
+
+    fn password_reset_email(&self, user: &User, url: &str) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: format!("Reset your {} password", self.brand),
+            body_text: format!("Reset at {url}"),
+            body_html: None,
+        }
+    }
+}
+
+#[tokio::test]
+async fn custom_emails_override_verification_subject_and_html() {
+    let h = fresh(PasswordAuthConfig {
+        emails: Arc::new(BrandedEmails { brand: "Acme" }),
+        ..default_config()
+    });
+
+    h.manager
+        .register(
+            "user@example.com",
+            "hunter22hunter22",
+            SessionContext::default(),
+        )
+        .await
+        .expect("register");
+
+    let sent = h.email.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].subject, "Confirm your Acme account");
+    assert!(sent[0].body_text.starts_with("Confirm at "));
+    assert!(sent[0].body_html.is_some());
+}
+
+#[tokio::test]
+async fn custom_emails_override_password_reset_subject() {
+    let h = fresh(PasswordAuthConfig {
+        emails: Arc::new(BrandedEmails { brand: "Acme" }),
+        require_email_verification: false,
+        ..default_config()
+    });
+
+    h.manager
+        .register(
+            "user@example.com",
+            "hunter22hunter22",
+            SessionContext::default(),
+        )
+        .await
+        .expect("register");
+    // Verification email is the first sent; the reset will be the second.
+    h.manager
+        .request_password_reset("user@example.com", SessionContext::default())
+        .await
+        .expect("request reset");
+
+    let sent = h.email.sent();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].subject, "Reset your Acme password");
+}
+
+#[tokio::test]
+async fn default_emails_match_legacy_subject_lines() {
+    let h = fresh(default_config());
+
+    h.manager
+        .register(
+            "user@example.com",
+            "hunter22hunter22",
+            SessionContext::default(),
+        )
+        .await
+        .expect("register");
+
+    let sent = h.email.sent();
+    assert_eq!(sent[0].subject, "Verify your email address");
 }
