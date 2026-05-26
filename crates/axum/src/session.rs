@@ -28,6 +28,7 @@ use tracing::Instrument;
 
 use crate::cache::SessionCache;
 use crate::cookies::read_cookie;
+use crate::csrf::{self, CsrfConfig};
 
 /// Successfully resolved authentication state for a request.
 ///
@@ -50,6 +51,7 @@ pub(crate) struct SessionLayerState {
     pub(crate) user_store: Arc<dyn UserStore>,
     pub(crate) cookie_name: String,
     pub(crate) cache: SessionCache,
+    pub(crate) csrf: Option<CsrfConfig>,
 }
 
 /// Tower layer constructed via
@@ -113,6 +115,12 @@ where
         );
         Box::pin(
             async move {
+                if let Some(config) = state.csrf.as_ref()
+                    && csrf::should_reject(req.method(), req.headers(), &state.cookie_name, config)
+                {
+                    return Ok(csrf::rejection_response());
+                }
+
                 if let Some(token) = extract_token(req.headers(), &state.cookie_name) {
                     let token_hash = hash_token(&token);
                     // Cache hit short-circuits both the session lookup and the

@@ -30,6 +30,7 @@ examples/
 - OAuth social login with PKCE (Google + GitHub, plus a provider trait)
 - Magic-link sign-in via single-use email links
 - Server-side opaque session tokens with instant revocation
+- CSRF origin checks for cookie-backed state-changing requests
 - Rate limiting on sensitive endpoints (login, password reset, verification re-issue)
 - Audit log emission for every meaningful auth event
 - Account linking — one user can hold password + passkeys + multiple OAuth identities
@@ -167,6 +168,10 @@ is a thin translation layer on top.
   is supplied. The absolute origin external clients see (e.g.
   `https://app.example.com`); used to build the absolute callback URL
   handed to providers. Build will fail without it.
+- `CsrfConfig` / `BauthAxumBuilder::with_csrf` — CSRF origin checks are
+  enabled by default when `external_origin` is set. Use
+  `with_csrf(CsrfConfig::disabled())` only for tests or known
+  non-browser deployments.
 
 ### Feature flags on `bauth-axum`
 
@@ -177,6 +182,19 @@ surface:
 ```toml
 bauth-axum = { version = "0.1", default-features = false, features = ["password"] }
 ```
+
+## Production checklist
+
+- Keep `CookieConfig::secure = true` outside local HTTP development.
+- Set `external_origin("https://app.example.com".parse()?)` so the
+  default CSRF layer can verify `Origin` / `Referer` on cookie-backed
+  state-changing requests.
+- Leave CSRF enabled unless every authenticated client uses bearer tokens
+  and no browser cookie session is in scope; the escape hatch is
+  `with_csrf(CsrfConfig::disabled())`.
+- Wire a real `AuditSink`, `RateLimiter`, and `EmailSender` before
+  production.
+- Decide whether your app requires `require_email_verification = true`.
 
 ## Security
 

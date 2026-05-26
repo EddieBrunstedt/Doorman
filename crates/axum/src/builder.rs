@@ -10,12 +10,12 @@ use std::sync::Arc;
 
 use bauth_core::session::SessionManager;
 use bauth_core::storage::UserStore;
-#[cfg(feature = "oauth")]
 use url::Url;
 
 use crate::BauthAxum;
 use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
+use crate::csrf::CsrfConfig;
 use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::BauthState;
 use crate::warnings::{self, Warnings};
@@ -62,8 +62,8 @@ pub struct BauthAxumBuilder {
     /// builder's own cookie-config check at [`Self::build`] time.
     pub(crate) inherited_warnings: Warnings,
     pub(crate) silence_warnings: bool,
-    #[cfg(feature = "oauth")]
     external_origin: Option<Url>,
+    csrf_config: Option<CsrfConfig>,
 
     #[cfg(feature = "password")]
     password: Option<PasswordAuthManager>,
@@ -127,10 +127,20 @@ impl BauthAxumBuilder {
     /// Absolute public origin (scheme + host [+ port] [+ path prefix])
     /// that external clients use to reach the auth routes. Required when
     /// the `oauth` feature is in use, because providers must be handed an
-    /// absolute callback URL at authorization time.
-    #[cfg(feature = "oauth")]
+    /// absolute callback URL at authorization time. Supplying an origin
+    /// also enables the CSRF origin-check layer by default; disable it
+    /// explicitly with [`with_csrf`](Self::with_csrf) when you have a
+    /// known non-browser deployment.
     pub fn external_origin(mut self, origin: Url) -> Self {
         self.external_origin = Some(origin);
+        self
+    }
+
+    /// Override the CSRF origin-check behaviour. By default, CSRF checks
+    /// are enabled when [`external_origin`](Self::external_origin) is set
+    /// and disabled otherwise.
+    pub fn with_csrf(mut self, config: CsrfConfig) -> Self {
+        self.csrf_config = Some(config);
         self
     }
 
@@ -185,6 +195,17 @@ impl BauthAxumBuilder {
             warnings.emit();
         }
 
+        let default_csrf_origin = self.external_origin.clone();
+        let csrf_config = self
+            .csrf_config
+            .unwrap_or_else(|| {
+                default_csrf_origin
+                    .as_ref()
+                    .map(|origin| CsrfConfig::new(origin.clone()))
+                    .unwrap_or_else(CsrfConfig::disabled)
+            })
+            .enabled_config();
+
         // Use the host-supplied cache when present so the layer reads from
         // whatever cache the host has already wired an invalidator into;
         // otherwise construct a fresh one. Wiring the invalidator onto the
@@ -201,6 +222,7 @@ impl BauthAxumBuilder {
             user_store: user_store.clone(),
             cookie_name: cookie_config.session_cookie_name.clone(),
             cache: cache.clone(),
+            csrf: csrf_config,
         });
 
         let state = BauthState {

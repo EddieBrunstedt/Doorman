@@ -29,6 +29,7 @@
 pub mod cache;
 pub mod config;
 mod cookies;
+pub mod csrf;
 pub mod dto;
 pub mod error;
 pub mod extractors;
@@ -46,6 +47,7 @@ pub use bauth_core as core;
 pub use builder::{BauthAxumBuilder, BuilderError};
 pub use cache::{DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, SessionCache, SessionCacheConfig};
 pub use config::CookieConfig;
+pub use csrf::{CsrfConfig, CsrfLayer};
 pub use error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use extractors::{AuthSession, AuthUser, OptionalAuthUser, RequestContext};
 pub use quickstart::{QuickstartBuilder, quickstart};

@@ -50,13 +50,13 @@ use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
 #[cfg(feature = "password")]
 use bauth_core::password_auth::{PasswordAuthConfig, PasswordAuthManager};
 
-#[cfg(feature = "oauth")]
 use url::Url;
 
 use crate::BauthAxum;
 use crate::builder::{BauthAxumBuilder, BuilderError};
 use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
+use crate::csrf::CsrfConfig;
 use crate::warnings::Warnings;
 
 /// Begin building a [`BauthAxum`] from a composite [`Storage`].
@@ -90,9 +90,9 @@ pub struct QuickstartBuilder {
     session_config: Option<SessionConfig>,
     cookie_config: Option<CookieConfig>,
     cache_config: Option<SessionCacheConfig>,
+    csrf_config: Option<CsrfConfig>,
     silence_warnings: bool,
 
-    #[cfg(feature = "oauth")]
     external_origin: Option<Url>,
 
     #[cfg(feature = "password")]
@@ -122,8 +122,8 @@ impl QuickstartBuilder {
             session_config: None,
             cookie_config: None,
             cache_config: None,
+            csrf_config: None,
             silence_warnings: false,
-            #[cfg(feature = "oauth")]
             external_origin: None,
             #[cfg(feature = "password")]
             password: None,
@@ -200,6 +200,14 @@ impl QuickstartBuilder {
         self
     }
 
+    /// Override the CSRF origin-check behaviour. By default, CSRF checks
+    /// are enabled when [`external_origin`](Self::external_origin) is set
+    /// and disabled otherwise.
+    pub fn with_csrf(mut self, config: CsrfConfig) -> Self {
+        self.csrf_config = Some(config);
+        self
+    }
+
     /// Enable password flows with the supplied config.
     #[cfg(feature = "password")]
     pub fn password(mut self, config: PasswordAuthConfig) -> Self {
@@ -256,8 +264,8 @@ impl QuickstartBuilder {
     }
 
     /// Absolute public origin clients use to reach the auth routes.
-    /// Required when [`oauth`](Self::oauth) is in use.
-    #[cfg(feature = "oauth")]
+    /// Required when OAuth is in use. Supplying an origin also enables
+    /// CSRF origin checks by default.
     pub fn external_origin(mut self, origin: Url) -> Self {
         self.external_origin = Some(origin);
         self
@@ -323,6 +331,10 @@ impl QuickstartBuilder {
             builder = builder.cookie_config(cookie_config);
         }
 
+        if let Some(csrf_config) = self.csrf_config {
+            builder = builder.with_csrf(csrf_config);
+        }
+
         #[cfg(feature = "password")]
         if let Some(config) = self.password {
             let manager = PasswordAuthManager::new(
@@ -369,7 +381,6 @@ impl QuickstartBuilder {
             builder = builder.oauth_manager(manager);
         }
 
-        #[cfg(feature = "oauth")]
         if let Some(origin) = self.external_origin {
             builder = builder.external_origin(origin);
         }

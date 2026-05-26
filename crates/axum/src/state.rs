@@ -31,7 +31,7 @@ pub struct BauthState {
     /// Absolute origin (scheme + host [+ port] [+ path prefix]) that
     /// external clients see when calling these routes. Required when the
     /// `oauth` feature is in use — provider redirect URIs must be
-    /// absolute — and unused otherwise.
+    /// absolute.
     #[cfg(feature = "oauth")]
     pub(crate) external_origin: Option<Url>,
 

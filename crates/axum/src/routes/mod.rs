@@ -47,6 +47,8 @@ pub(crate) fn auth_success(
 }
 
 pub(crate) fn router(state: BauthState) -> Router {
+    // `mut` is only needed when at least one auth-method feature is enabled.
+    #[allow(unused_mut)]
     let mut router: Router<BauthState> = Router::new().merge(sessions::routes());
 
     #[cfg(feature = "password")]

@@ -152,12 +152,18 @@ Set every authentication cookie with:
 
 Browsers will attach a `SameSite=Lax` cookie to top-level navigations,
 which is enough to protect most password and passkey flows. State-
-changing endpoints that accept JSON from the same origin should still
-verify either:
+changing endpoints that accept cookies still need an origin check.
 
-- A custom request header (e.g. `X-CSRF-Token`) that scripts must
-  read from a non-HttpOnly cookie or page-embedded token, **or**
-- The `Origin`/`Referer` matches your application origin.
+`bauth-axum` enables its `CsrfLayer` by default when
+`external_origin` is configured. For any non-GET/HEAD/OPTIONS request
+that carries the configured session cookie, the layer requires either:
+
+- an `Origin` header matching your application origin, or
+- when `Origin` is absent, a `Referer` whose origin matches.
+
+Requests authenticated with `Authorization: Bearer ...` are not in CSRF
+scope. Disable the layer with `with_csrf(CsrfConfig::disabled())` only
+for tests or known non-browser deployments.
 
 `SameSite=Lax` is **not** enough by itself against GET-triggered side
 effects — keep state changes to POST/PATCH/DELETE.
