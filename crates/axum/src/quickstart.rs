@@ -5,8 +5,8 @@
 //! [`bauth_core::storage::Storage`] (typically obtained in one call from a
 //! storage adapter such as `bauth-sqlx`) plus opt-in per-method configs,
 //! constructs the `SessionManager`/`PasswordAuthManager`/`PasskeyManager`/
-//! `OAuthManager` internally with sensible defaults, and returns a fully
-//! built [`BauthAxum`].
+//! `OAuthManager`/`MagicLinkManager` internally with sensible defaults, and
+//! returns a fully built [`BauthAxum`].
 //!
 //! Defaults applied when the host does not override them:
 //! - [`Clock`] → [`SystemClock`]
@@ -39,6 +39,8 @@ use bauth_core::rate_limit::RateLimiter;
 use bauth_core::session::{SessionConfig, SessionManager};
 use bauth_core::storage::Storage;
 
+#[cfg(feature = "magic_link")]
+use bauth_core::magic_link::{MagicLinkConfig, MagicLinkManager};
 #[cfg(feature = "oauth")]
 use bauth_core::oauth::{OAuthConfig, OAuthManager, OAuthProvider};
 #[cfg(feature = "passkey")]
@@ -74,8 +76,8 @@ pub fn quickstart(storage: Storage) -> QuickstartBuilder {
 ///
 /// Collects the storage, the orthogonal collaborators (clock / audit /
 /// email / rate limiter), the session config, the cookie config, and the
-/// opt-in per-method configs (password / passkey / oauth). Construction of
-/// the core managers happens in [`build`](Self::build).
+/// opt-in per-method configs (password / passkey / oauth / magic-link).
+/// Construction of the core managers happens in [`build`](Self::build).
 pub struct QuickstartBuilder {
     storage: Storage,
     clock: Option<Arc<dyn Clock>>,
@@ -95,6 +97,8 @@ pub struct QuickstartBuilder {
     passkey: Option<PasskeyConfig>,
     #[cfg(feature = "oauth")]
     oauth: Option<OAuthSetup>,
+    #[cfg(feature = "magic_link")]
+    magic_link: Option<MagicLinkConfig>,
 }
 
 #[cfg(feature = "oauth")]
@@ -122,6 +126,8 @@ impl QuickstartBuilder {
             passkey: None,
             #[cfg(feature = "oauth")]
             oauth: None,
+            #[cfg(feature = "magic_link")]
+            magic_link: None,
         }
     }
 
@@ -143,8 +149,8 @@ impl QuickstartBuilder {
     }
 
     /// Override the default [`NoopEmailSender`]. Required for the
-    /// verification, password-reset, and (later) magic-link flows to
-    /// actually deliver mail.
+    /// verification, password-reset, and magic-link flows to actually
+    /// deliver mail.
     ///
     /// [`NoopEmailSender`]: bauth_core::email::NoopEmailSender
     pub fn email(mut self, email: Arc<dyn EmailSender>) -> Self {
@@ -191,6 +197,18 @@ impl QuickstartBuilder {
     #[cfg(feature = "passkey")]
     pub fn passkey(mut self, config: PasskeyConfig) -> Self {
         self.passkey = Some(config);
+        self
+    }
+
+    /// Enable magic-link flows with the supplied config. Requires a real
+    /// [`EmailSender`] (set via [`email`](Self::email)) to actually
+    /// deliver links; the default [`NoopEmailSender`] silently drops them.
+    ///
+    /// [`EmailSender`]: bauth_core::email::EmailSender
+    /// [`NoopEmailSender`]: bauth_core::email::NoopEmailSender
+    #[cfg(feature = "magic_link")]
+    pub fn magic_link(mut self, config: MagicLinkConfig) -> Self {
+        self.magic_link = Some(config);
         self
     }
 
@@ -314,6 +332,21 @@ impl QuickstartBuilder {
         #[cfg(feature = "oauth")]
         if let Some(origin) = self.external_origin {
             builder = builder.external_origin(origin);
+        }
+
+        #[cfg(feature = "magic_link")]
+        if let Some(config) = self.magic_link {
+            let manager = MagicLinkManager::new(
+                self.storage.users.clone(),
+                self.storage.verification_tokens.clone(),
+                session_manager.clone(),
+                email.clone(),
+                clock.clone(),
+                audit.clone(),
+                limiter.clone(),
+                config,
+            );
+            builder = builder.magic_link_manager(manager);
         }
 
         // Touch otherwise-unused values when no method features are active

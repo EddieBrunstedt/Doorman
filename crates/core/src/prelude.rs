@@ -16,6 +16,9 @@ pub use crate::audit::{
 pub use crate::clock::{Clock, SystemClock};
 pub use crate::email::{Email, EmailSender, NoopEmailSender};
 pub use crate::error::{Error, Result, StorageError, StorageResult};
+pub use crate::magic_link::{
+    MagicLinkConfig, MagicLinkManager, MagicLinkOutcome, MagicLinkRateLimits,
+};
 pub use crate::oauth::{
     OAuthConfig, OAuthManager, OAuthOutcome, OAuthProvider, ProviderError, ProviderUser,
     StartedAuthorization,

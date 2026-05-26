@@ -250,7 +250,7 @@ async fn verification_token_consume_is_atomic() {
         .create_token(VerificationToken {
             token_hash: hash,
             user_id,
-            purpose: VerificationPurpose::EmailVerification,
+            purpose: VerificationPurpose::MagicLink,
             created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
             expires_at: Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap(),
         })
@@ -258,13 +258,13 @@ async fn verification_token_consume_is_atomic() {
         .expect("create");
 
     let first = tokens
-        .consume_token(&hash, VerificationPurpose::EmailVerification)
+        .consume_token(&hash, VerificationPurpose::MagicLink)
         .await
         .expect("consume");
     assert!(first.is_some(), "first consume returns the token");
 
     let second = tokens
-        .consume_token(&hash, VerificationPurpose::EmailVerification)
+        .consume_token(&hash, VerificationPurpose::MagicLink)
         .await
         .expect("consume again");
     assert!(second.is_none(), "second consume returns nothing");

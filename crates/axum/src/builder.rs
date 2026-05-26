@@ -19,6 +19,8 @@ use crate::config::CookieConfig;
 use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::BauthState;
 
+#[cfg(feature = "magic_link")]
+use bauth_core::magic_link::MagicLinkManager;
 #[cfg(feature = "oauth")]
 use bauth_core::oauth::OAuthManager;
 #[cfg(feature = "passkey")]
@@ -62,6 +64,8 @@ pub struct BauthAxumBuilder {
     passkey: Option<PasskeyManager>,
     #[cfg(feature = "oauth")]
     oauth: Option<OAuthManager>,
+    #[cfg(feature = "magic_link")]
+    magic_link: Option<MagicLinkManager>,
 }
 
 impl BauthAxumBuilder {
@@ -141,6 +145,12 @@ impl BauthAxumBuilder {
         self
     }
 
+    #[cfg(feature = "magic_link")]
+    pub fn magic_link_manager(mut self, manager: MagicLinkManager) -> Self {
+        self.magic_link = Some(manager);
+        self
+    }
+
     pub fn build(self) -> Result<BauthAxum, BuilderError> {
         let session_manager = self
             .session_manager
@@ -184,6 +194,8 @@ impl BauthAxumBuilder {
             passkey: self.passkey,
             #[cfg(feature = "oauth")]
             oauth: self.oauth,
+            #[cfg(feature = "magic_link")]
+            magic_link: self.magic_link,
         };
 
         Ok(BauthAxum {

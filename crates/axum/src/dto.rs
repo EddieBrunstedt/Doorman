@@ -57,7 +57,7 @@ impl From<Session> for SessionDto {
 }
 
 /// Returned by every endpoint that issues a session: register, login,
-/// passkey finish, OAuth callback.
+/// passkey finish, magic-link consume, OAuth callback.
 ///
 /// `token` is the raw bearer token. It is *also* set as an HttpOnly
 /// session cookie on the same response, so browser clients can ignore
@@ -165,6 +165,16 @@ pub struct ResetPasswordRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyEmailRequest {
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestMagicLinkRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MagicLinkConsumeRequest {
     pub token: String,
 }
 

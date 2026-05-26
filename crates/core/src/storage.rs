@@ -398,6 +398,7 @@ pub trait PasswordCredentialStore: Send + Sync {
 pub enum VerificationPurpose {
     EmailVerification,
     PasswordReset,
+    MagicLink,
 }
 
 /// A single-use, time-limited token issued for an out-of-band flow such

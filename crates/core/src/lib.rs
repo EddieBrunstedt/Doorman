@@ -11,6 +11,7 @@ pub mod audit;
 pub mod clock;
 pub mod email;
 pub mod error;
+pub mod magic_link;
 pub mod memory;
 pub mod oauth;
 pub mod passkey;

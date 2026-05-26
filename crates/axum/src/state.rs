@@ -14,6 +14,8 @@ use url::Url;
 
 use crate::config::CookieConfig;
 
+#[cfg(feature = "magic_link")]
+use bauth_core::magic_link::MagicLinkManager;
 #[cfg(feature = "oauth")]
 use bauth_core::oauth::OAuthManager;
 #[cfg(feature = "passkey")]
@@ -39,6 +41,8 @@ pub struct BauthState {
     pub(crate) passkey: Option<PasskeyManager>,
     #[cfg(feature = "oauth")]
     pub(crate) oauth: Option<OAuthManager>,
+    #[cfg(feature = "magic_link")]
+    pub(crate) magic_link: Option<MagicLinkManager>,
 }
 
 impl BauthState {

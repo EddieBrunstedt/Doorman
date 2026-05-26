@@ -73,6 +73,21 @@ It is **not** designed to defend against:
 - `request_password_reset` returns success regardless of whether the
   email is registered, removing the obvious enumeration vector.
 
+### Magic links
+
+- Magic-link tokens use the same verification-token machinery as email
+  verification and password reset: 256 bits of CSPRNG output, hash-only
+  storage, purpose namespacing, and atomic single-use consumption.
+- Requesting a fresh magic link revokes earlier outstanding magic-link
+  tokens for that user.
+- `request_magic_link` returns success even when signup is disabled and
+  the email is unknown, so the endpoint does not reveal which addresses
+  are registered.
+- A magic link is a bearer credential delivered to the user's inbox. If
+  the inbox is compromised, the account can be taken over. Prefer magic
+  links as an additional login option, or pair them with a stronger
+  factor for sensitive applications.
+
 ### Passkeys / WebAuthn
 
 - Server-side ceremony state lives in `PasskeyChallengeStore` and is
@@ -194,6 +209,7 @@ section will grow.
 | Password minimum length | 12 chars | OWASP minimum |
 | Password reset link lifetime | 1 hour | Short enough to limit forwarded-link abuse |
 | Email verification link lifetime | 24 hours | Long enough for slow inboxes |
+| Magic-link lifetime | 15 minutes | The link itself is the credential |
 | `require_email_verification` | `false` | Some apps want frictionless signup; opt in when ready |
 | `revoke_sessions_on_password_reset` | `true` | Reset implies credential compromise |
 | `allow_email_linking` (OAuth) | `false` | Don't trust third-party "email verified" by default |

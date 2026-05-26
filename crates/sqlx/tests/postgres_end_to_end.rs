@@ -225,7 +225,7 @@ async fn postgres_full_smoke_test() {
         .create_token(bauth_core::storage::VerificationToken {
             token_hash: hash,
             user_id: token_user,
-            purpose: VerificationPurpose::EmailVerification,
+            purpose: VerificationPurpose::MagicLink,
             created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
             expires_at: Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap(),
         })
@@ -233,13 +233,13 @@ async fn postgres_full_smoke_test() {
         .expect("create");
 
     let first = tokens
-        .consume_token(&hash, VerificationPurpose::EmailVerification)
+        .consume_token(&hash, VerificationPurpose::MagicLink)
         .await
         .expect("consume");
     assert!(first.is_some(), "first consume returns the token");
 
     let second = tokens
-        .consume_token(&hash, VerificationPurpose::EmailVerification)
+        .consume_token(&hash, VerificationPurpose::MagicLink)
         .await
         .expect("consume again");
     assert!(second.is_none(), "second consume returns nothing");

@@ -28,6 +28,7 @@ examples/
 - Password auth (Argon2id) with email verification and password reset
 - Passkeys / WebAuthn via [`webauthn-rs`](https://crates.io/crates/webauthn-rs)
 - OAuth social login with PKCE (Google + GitHub, plus a provider trait)
+- Magic-link sign-in via single-use email links
 - Server-side opaque session tokens with instant revocation
 - Rate limiting on sensitive endpoints (login, password reset, verification re-issue)
 - Audit log emission for every meaningful auth event
@@ -43,8 +44,8 @@ See [`PLAN.md`](PLAN.md) for design rationale and the full roadmap.
 `VerificationTokenStore`, plus `EmailSender`, `AuditSink`, `Clock`, and
 `RateLimiter`. The host implements them (or uses an example adapter),
 constructs the managers (`SessionManager`, `PasswordAuthManager`,
-`PasskeyManager`, `OAuthManager`), and either mounts the routes from
-`bauth-axum` or drives the managers directly.
+`PasskeyManager`, `OAuthManager`, `MagicLinkManager`), and either
+mounts the routes from `bauth-axum` or drives the managers directly.
 
 ## Worked example: mounting on Axum
 
@@ -123,9 +124,10 @@ async fn me(AuthUser(user): AuthUser) -> Json<UserDto> {
 ```
 
 `auth.router()` mounts every endpoint whose backing manager you supplied
-to the builder. Add `.passkey_manager(...)`, `.oauth_manager(...)`, and
-(for OAuth) `.external_origin("https://app.example.com".parse()?)` to
-turn on the other auth methods.
+to the builder. Add `.passkey_manager(...)`, `.oauth_manager(...)`,
+`.magic_link_manager(...)`, and (for OAuth)
+`.external_origin("https://app.example.com".parse()?)` to turn on the
+other auth methods.
 
 For a production-shaped storage layer, use
 [`bauth-sqlx`](crates/sqlx) — `SqliteStorage` and `PostgresStorage`
@@ -152,6 +154,10 @@ is a thin translation layer on top.
 - `OAuthConfig::allow_email_linking` — auto-link OAuth identity to an
   existing email-matching account when the provider asserts the email is
   verified. Off by default.
+- `MagicLinkConfig` — single-use link lifetime, URL template, signup
+  policy, and request rate limits. Magic links are only as strong as the
+  user's inbox, so use them as an additional login option or pair them
+  with a stronger factor for sensitive apps.
 - `CookieConfig` (from `bauth-axum`) — session and OAuth state cookie
   attributes: `session_cookie_name`, `oauth_state_cookie_name`, `domain`,
   `path`, `secure` (defaults to `true` — disable for plain-HTTP local
@@ -164,8 +170,9 @@ is a thin translation layer on top.
 
 ### Feature flags on `bauth-axum`
 
-`password`, `passkey`, `oauth` (all on by default). Disable the ones
-you don't use to shrink compile time and dependency surface:
+`password`, `passkey`, `oauth`, `magic_link` (all on by default).
+Disable the ones you don't use to shrink compile time and dependency
+surface:
 
 ```toml
 bauth-axum = { version = "0.1", default-features = false, features = ["password"] }
