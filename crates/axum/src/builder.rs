@@ -8,13 +8,13 @@
 
 use std::sync::Arc;
 
-use bauth_core::session::{SessionInvalidationHook, SessionManager};
+use bauth_core::session::SessionManager;
 use bauth_core::storage::UserStore;
 #[cfg(feature = "oauth")]
 use url::Url;
 
 use crate::BauthAxum;
-use crate::cache::{CacheInvalidator, SessionCache, SessionCacheConfig};
+use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::BauthState;
@@ -52,6 +52,7 @@ pub struct BauthAxumBuilder {
     user_store: Option<Arc<dyn UserStore>>,
     cookie_config: Option<CookieConfig>,
     cache_config: Option<SessionCacheConfig>,
+    session_cache: Option<SessionCache>,
     #[cfg(feature = "oauth")]
     external_origin: Option<Url>,
 
@@ -84,8 +85,31 @@ impl BauthAxumBuilder {
     /// hot path (handlers that don't read `AuthUser`, plus high-RPS
     /// authenticated endpoints) doesn't hit the session and user stores
     /// on every request.
+    ///
+    /// Ignored if [`session_cache`](Self::session_cache) is supplied.
     pub fn cache_config(mut self, config: SessionCacheConfig) -> Self {
         self.cache_config = Some(config);
+        self
+    }
+
+    /// Hand the builder a pre-constructed [`SessionCache`]. Use this when
+    /// the host needs to wire the cache invalidator onto the
+    /// [`SessionManager`] (via [`SessionManager::with_invalidation_hook`])
+    /// _before_ constructing the dependent managers — passing the same
+    /// cache here ensures the layer reads from the cache the host has
+    /// hooked into.
+    ///
+    /// If the host neither supplies a cache nor wires an invalidator,
+    /// revocations made through cloned `SessionManager`s held by the
+    /// password / passkey / oauth managers will not evict cached entries;
+    /// they will only be cleared by the cache TTL. The
+    /// [`quickstart`](crate::quickstart) entry point handles all of this
+    /// automatically.
+    ///
+    /// [`SessionManager`]: bauth_core::session::SessionManager
+    /// [`SessionManager::with_invalidation_hook`]: bauth_core::session::SessionManager::with_invalidation_hook
+    pub fn session_cache(mut self, cache: SessionCache) -> Self {
+        self.session_cache = Some(cache);
         self
     }
 
@@ -129,16 +153,16 @@ impl BauthAxumBuilder {
             return Err(BuilderError::MissingExternalOrigin);
         }
 
-        let cache = SessionCache::new(self.cache_config.unwrap_or_default());
-        // Register the cache as an invalidation hook so revokes routed
-        // through SessionManager — including those triggered by the
-        // password/oauth managers that hold their own clones — evict the
-        // matching entries without the host having to know the cache
-        // exists. The hook is shared across every clone of the manager
-        // because it lives behind an `Arc<RwLock<_>>`.
-        session_manager.set_invalidation_hook(
-            Arc::new(CacheInvalidator::new(cache.clone())) as Arc<dyn SessionInvalidationHook>
-        );
+        // Use the host-supplied cache when present so the layer reads from
+        // whatever cache the host has already wired an invalidator into;
+        // otherwise construct a fresh one. Wiring the invalidator onto the
+        // session manager is the host's responsibility on this path
+        // because the `SessionManager` is immutable after construction —
+        // see [`session_cache`](Self::session_cache) and
+        // [`quickstart`](crate::quickstart).
+        let cache = self
+            .session_cache
+            .unwrap_or_else(|| SessionCache::new(self.cache_config.unwrap_or_default()));
 
         let layer_state = Arc::new(SessionLayerState {
             session_manager: session_manager.clone(),

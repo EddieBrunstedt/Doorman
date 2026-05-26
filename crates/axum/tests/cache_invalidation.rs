@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use bauth_axum::dto::{AuthResponse, RegisterRequest, UserDto};
 use bauth_axum::extractors::AuthSession;
-use bauth_axum::{BauthAxum, CookieConfig, SessionCache};
+use bauth_axum::{BauthAxum, CookieConfig, SessionCache, SessionCacheConfig};
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::email::EmailSender;
@@ -50,6 +50,9 @@ impl Harness {
         let token_store: Arc<InMemoryVerificationTokenStore> =
             Arc::new(InMemoryVerificationTokenStore::new());
 
+        // Build the cache up-front so its invalidator can be attached to
+        // the session manager before the password manager clones it.
+        let cache = SessionCache::new(SessionCacheConfig::default());
         let session_manager = SessionManager::new(
             session_store,
             clock.clone(),
@@ -57,7 +60,8 @@ impl Harness {
             SessionConfig {
                 lifetime: Duration::from_secs(60 * 60),
             },
-        );
+        )
+        .with_invalidation_hook(cache.invalidator());
 
         let password_manager = PasswordAuthManager::new(
             user_store.clone(),
@@ -79,11 +83,10 @@ impl Harness {
             .session_manager(session_manager.clone())
             .user_store(user_store)
             .password_manager(password_manager)
+            .session_cache(cache.clone())
             .cookie_config(CookieConfig::default())
             .build()
             .expect("auth built");
-
-        let cache = auth.cache().clone();
 
         let app = Router::new()
             .merge(auth.router())

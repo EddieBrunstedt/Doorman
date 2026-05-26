@@ -343,7 +343,7 @@ impl SessionInvalidationHook for RecordingHook {
 async fn revoke_notifies_invalidation_hook_with_session_id() {
     let (manager, _, _) = fresh_manager();
     let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
-    manager.set_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
+    let manager = manager.with_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
 
     let issued = manager
         .create(UserId::new(), SessionContext::default())
@@ -366,7 +366,7 @@ async fn revoke_notifies_invalidation_hook_with_session_id() {
 async fn revoke_by_id_notifies_invalidation_hook() {
     let (manager, _, _) = fresh_manager();
     let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
-    manager.set_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
+    let manager = manager.with_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
 
     let issued = manager
         .create(UserId::new(), SessionContext::default())
@@ -387,7 +387,7 @@ async fn revoke_by_id_notifies_invalidation_hook() {
 async fn revoke_all_for_user_notifies_user_hook() {
     let (manager, _, _) = fresh_manager();
     let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
-    manager.set_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
+    let manager = manager.with_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
 
     let alice = UserId::new();
     manager
@@ -417,23 +417,56 @@ async fn revoke_all_for_user_notifies_user_hook() {
 }
 
 #[tokio::test]
-async fn invalidation_hook_swap_is_visible_to_clones() {
+async fn clones_taken_before_with_invalidation_hook_keep_old_hook() {
+    // The hook is captured at construction (or rebuild) time. Cloning the
+    // manager copies the current hook into the clone; calling
+    // `with_invalidation_hook` on the original returns a new manager and
+    // does not retroactively affect older clones. Hosts that need every
+    // dependent manager to see invalidations must attach the hook
+    // _before_ creating those clones.
     let (manager, _, _) = fresh_manager();
-    let clone = manager.clone();
+    let unhooked_clone = manager.clone();
 
     let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
-    manager.set_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
+    let hooked = manager.with_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
 
-    let issued = clone
+    let issued = unhooked_clone
         .create(UserId::new(), SessionContext::default())
         .await
         .expect("create");
-    clone.revoke(&issued.token).await.expect("revoke via clone");
+    unhooked_clone
+        .revoke(&issued.token)
+        .await
+        .expect("revoke via clone");
+    assert!(
+        hook.sessions.lock().expect("read").is_empty(),
+        "clone taken before with_invalidation_hook still uses the noop hook"
+    );
 
+    let issued = hooked
+        .create(UserId::new(), SessionContext::default())
+        .await
+        .expect("create");
+    hooked.revoke(&issued.token).await.expect("revoke");
     assert_eq!(
         *hook.sessions.lock().expect("read"),
         vec![issued.session.id],
-        "hook installed on original is visible to the clone"
+        "the rebuilt manager fires the hook"
+    );
+
+    let hooked_clone = hooked.clone();
+    let issued = hooked_clone
+        .create(UserId::new(), SessionContext::default())
+        .await
+        .expect("create");
+    hooked_clone
+        .revoke(&issued.token)
+        .await
+        .expect("revoke via hooked clone");
+    assert_eq!(
+        hook.sessions.lock().expect("read").len(),
+        2,
+        "clones taken after with_invalidation_hook share the hook"
     );
 }
 

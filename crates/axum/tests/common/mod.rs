@@ -12,10 +12,10 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
-use bauth_axum::BauthAxum;
 use bauth_axum::config::CookieConfig;
 use bauth_axum::dto::UserDto;
 use bauth_axum::extractors::AuthSession;
+use bauth_axum::{BauthAxum, SessionCache, SessionCacheConfig};
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::email::EmailSender;
@@ -51,6 +51,7 @@ impl TestApp {
         let token_store: Arc<InMemoryVerificationTokenStore> =
             Arc::new(InMemoryVerificationTokenStore::new());
 
+        let cache = SessionCache::new(SessionCacheConfig::default());
         let session_manager = SessionManager::new(
             session_store.clone(),
             clock.clone(),
@@ -58,7 +59,8 @@ impl TestApp {
             SessionConfig {
                 lifetime: Duration::from_secs(60 * 60),
             },
-        );
+        )
+        .with_invalidation_hook(cache.invalidator());
 
         let password_manager = PasswordAuthManager::new(
             user_store.clone(),
@@ -85,6 +87,7 @@ impl TestApp {
             .session_manager(session_manager)
             .user_store(user_store)
             .password_manager(password_manager)
+            .session_cache(cache)
             .cookie_config(cookie_config)
             .build()
             .expect("auth built");

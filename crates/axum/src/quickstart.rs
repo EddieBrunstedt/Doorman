@@ -51,7 +51,7 @@ use url::Url;
 
 use crate::BauthAxum;
 use crate::builder::{BauthAxumBuilder, BuilderError};
-use crate::cache::SessionCacheConfig;
+use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 
 /// Begin building a [`BauthAxum`] from a composite [`Storage`].
@@ -241,22 +241,28 @@ impl QuickstartBuilder {
             .unwrap_or_else(|| Arc::new(InMemoryRateLimiter::new(clock.clone())));
         let session_config = self.session_config.unwrap_or_default();
 
+        // Build the cache up-front so its invalidator can be attached to
+        // the `SessionManager` before any dependent manager clones it.
+        // Every clone captures the same invalidation hook, so revocations
+        // routed through `PasswordAuthManager::logout`,
+        // `reset_password`, etc. evict the cache for free.
+        let cache = SessionCache::new(self.cache_config.unwrap_or_default());
+
         let session_manager = SessionManager::new(
             self.storage.sessions.clone(),
             clock.clone(),
             audit.clone(),
             session_config,
-        );
+        )
+        .with_invalidation_hook(cache.invalidator());
 
         let mut builder = BauthAxumBuilder::default()
             .session_manager(session_manager.clone())
-            .user_store(self.storage.users.clone());
+            .user_store(self.storage.users.clone())
+            .session_cache(cache);
 
         if let Some(cookie_config) = self.cookie_config {
             builder = builder.cookie_config(cookie_config);
-        }
-        if let Some(cache_config) = self.cache_config {
-            builder = builder.cache_config(cache_config);
         }
 
         #[cfg(feature = "password")]

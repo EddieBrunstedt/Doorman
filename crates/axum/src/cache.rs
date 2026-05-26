@@ -150,6 +150,18 @@ impl SessionCache {
         }
     }
 
+    /// `SessionInvalidationHook` handle that flushes matching entries from
+    /// this cache. Wire it onto the [`SessionManager`] via
+    /// [`SessionManager::with_invalidation_hook`] _before_ constructing the
+    /// dependent managers (password / passkey / oauth) so every clone of
+    /// the session manager evicts the cache when it invalidates a session.
+    ///
+    /// [`SessionManager`]: bauth_core::session::SessionManager
+    /// [`SessionManager::with_invalidation_hook`]: bauth_core::session::SessionManager::with_invalidation_hook
+    pub fn invalidator(&self) -> Arc<dyn SessionInvalidationHook> {
+        Arc::new(CacheInvalidator::new(self.clone()))
+    }
+
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.inner
@@ -168,15 +180,14 @@ impl SessionCache {
 }
 
 /// `SessionInvalidationHook` implementation that flushes the matching
-/// entries from a [`SessionCache`]. Registered with the [`SessionManager`]
-/// at builder time so revocations made through the manager evict the
-/// cache without the host having to know the cache exists.
-pub(crate) struct CacheInvalidator {
+/// entries from a [`SessionCache`]. Construct via
+/// [`SessionCache::invalidator`].
+struct CacheInvalidator {
     cache: SessionCache,
 }
 
 impl CacheInvalidator {
-    pub fn new(cache: SessionCache) -> Self {
+    fn new(cache: SessionCache) -> Self {
         Self { cache }
     }
 }
