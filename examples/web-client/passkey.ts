@@ -115,7 +115,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 }
 
 export async function registerPasskey(name?: string): Promise<void> {
-  const start = await postJson<{ challengeId: string; options: ServerCreationOptions }>(
+  const start = await postJson<{ challenge_id: string; options: ServerCreationOptions }>(
     "/auth/passkey/register/start",
     {},
   );
@@ -124,14 +124,14 @@ export async function registerPasskey(name?: string): Promise<void> {
   )) as PublicKeyCredential | null;
   if (!cred) throw new Error("user cancelled passkey registration");
   await postJson("/auth/passkey/register/finish", {
-    challengeId: start.challengeId,
+    challenge_id: start.challenge_id,
     response: encodeAttestation(cred),
     name,
   });
 }
 
 export async function authenticatePasskey(email: string): Promise<void> {
-  const start = await postJson<{ challengeId: string; options: ServerRequestOptions }>(
+  const start = await postJson<{ challenge_id: string; options: ServerRequestOptions }>(
     "/auth/passkey/authenticate/start",
     { email },
   );
@@ -140,7 +140,7 @@ export async function authenticatePasskey(email: string): Promise<void> {
   )) as PublicKeyCredential | null;
   if (!cred) throw new Error("user cancelled passkey authentication");
   await postJson("/auth/passkey/authenticate/finish", {
-    challengeId: start.challengeId,
+    challenge_id: start.challenge_id,
     response: encodeAssertion(cred),
   });
 }

@@ -14,10 +14,10 @@ strings. The helpers in `passkey.ts` handle that translation.
 
 | Method | Path | Body | Response |
 | ------ | ---- | ---- | -------- |
-| POST | `/auth/passkey/register/start` | `{}` (user is identified by session) | `{ challengeId, options }` |
-| POST | `/auth/passkey/register/finish` | `{ challengeId, response, name? }` | `204` |
-| POST | `/auth/passkey/authenticate/start` | `{ email }` | `{ challengeId, options }` |
-| POST | `/auth/passkey/authenticate/finish` | `{ challengeId, response }` | `204` (session cookie set) |
+| POST | `/auth/passkey/register/start` | empty (user is identified by session) | `{ challenge_id, options }` |
+| POST | `/auth/passkey/register/finish` | `{ challenge_id, response, name? }` | passkey dto |
+| POST | `/auth/passkey/authenticate/start` | `{ email }` | `{ challenge_id, options }` |
+| POST | `/auth/passkey/authenticate/finish` | `{ challenge_id, response }` | auth response (session cookie set) |
 
 `options` is the JSON `webauthn-rs` produces for
 `CreationChallengeResponse` / `RequestChallengeResponse` and `response`

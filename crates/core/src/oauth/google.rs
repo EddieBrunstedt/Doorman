@@ -18,6 +18,7 @@ const USERINFO_URL: &str = "https://openidconnect.googleapis.com/v1/userinfo";
 /// `profile` populate the corresponding userinfo fields.
 pub const DEFAULT_SCOPES: &[&str] = &["openid", "email", "profile"];
 
+/// Built-in Google OAuth / OpenID Connect provider.
 #[derive(Clone)]
 pub struct GoogleProvider {
     client_id: String,

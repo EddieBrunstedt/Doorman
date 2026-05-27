@@ -1,11 +1,18 @@
+//! Clock abstraction used by managers and tests.
+//!
+//! Production code usually uses [`SystemClock`]. Tests can use
+//! [`MockClock`] to make expiry and rate-limit behaviour deterministic.
+
 use std::sync::Mutex;
 
 use chrono::{DateTime, Duration, Utc};
 
+/// Source of the current UTC time.
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
 }
 
+/// Clock implementation backed by [`Utc::now`](chrono::Utc::now).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemClock;
 
@@ -15,6 +22,7 @@ impl Clock for SystemClock {
     }
 }
 
+/// Mutable clock for deterministic tests.
 #[derive(Debug)]
 pub struct MockClock {
     inner: Mutex<DateTime<Utc>>,

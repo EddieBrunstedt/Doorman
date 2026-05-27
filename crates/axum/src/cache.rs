@@ -16,11 +16,10 @@
 //!
 //! ## Invalidation
 //!
-//! - On [`SessionManager::revoke`] / [`revoke_by_id`] →
-//!   [`CacheInvalidator::on_session_invalidated`] drops the matching entry.
-//! - On [`SessionManager::revoke_all_for_user`] →
-//!   [`CacheInvalidator::on_user_sessions_invalidated`] drops every entry
-//!   belonging to that user.
+//! - On [`SessionManager::revoke`] / [`revoke_by_id`] → the cache
+//!   invalidator drops the matching entry.
+//! - On [`SessionManager::revoke_all_for_user`] → the cache invalidator
+//!   drops every entry belonging to that user.
 //! - Time-based: every entry carries an `inserted_at` and is treated as
 //!   stale once the configured TTL has elapsed. TTL must be kept well below
 //!   `SessionConfig::lifetime` so that a session that is revoked through a
@@ -49,6 +48,7 @@ pub const DEFAULT_CACHE_CAPACITY: usize = 1024;
 /// revocation made through an unhooked path still self-heals quickly.
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(60);
 
+/// Capacity and freshness configuration for [`SessionCache`].
 #[derive(Debug, Clone, Copy)]
 pub struct SessionCacheConfig {
     pub capacity: NonZeroUsize,

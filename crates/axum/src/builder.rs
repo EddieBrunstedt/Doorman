@@ -29,6 +29,7 @@ use bauth_core::passkey::PasskeyManager;
 #[cfg(feature = "password")]
 use bauth_core::password_auth::PasswordAuthManager;
 
+/// Errors returned when the Axum auth surface is incompletely configured.
 #[derive(Debug, thiserror::Error)]
 pub enum BuilderError {
     #[error("session_manager is required")]
@@ -49,6 +50,7 @@ pub enum BuilderError {
     Passkey(bauth_core::error::Error),
 }
 
+/// Low-level builder for hosts that construct core managers themselves.
 #[derive(Default)]
 pub struct BauthAxumBuilder {
     session_manager: Option<SessionManager>,

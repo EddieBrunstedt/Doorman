@@ -55,6 +55,7 @@ pub struct ProviderUser {
     pub display_name: Option<String>,
 }
 
+/// Error returned by an OAuth provider implementation.
 #[derive(Debug)]
 pub enum ProviderError {
     /// Transport-level failure (DNS, TLS, timeout, connection reset).
@@ -77,6 +78,9 @@ impl fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
+/// Provider-specific OAuth/OIDC integration used by [`OAuthManager`].
+///
+/// [`OAuthManager`]: crate::oauth::OAuthManager
 #[async_trait]
 pub trait OAuthProvider: Send + Sync {
     /// Stable identifier used as the storage key for linked identities.

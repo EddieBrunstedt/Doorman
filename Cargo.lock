@@ -282,6 +282,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bauth-minimal-app"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bauth-axum",
+ "bauth-core",
+ "bauth-sqlx",
+ "tokio",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "bauth-sqlx"
 version = "0.1.0"
 dependencies = [

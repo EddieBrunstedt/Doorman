@@ -20,6 +20,7 @@ use bauth_core::storage::{OAuthIdentity, Session, SessionId, StoredPasskey, User
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Public JSON representation of a user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserDto {
     pub id: UserId,
@@ -39,6 +40,7 @@ impl From<User> for UserDto {
     }
 }
 
+/// Public JSON representation of a session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionDto {
     pub id: SessionId,
@@ -108,6 +110,7 @@ pub struct MeResponse {
     pub session: SessionDto,
 }
 
+/// Public JSON representation of a registered passkey.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PasskeyDto {
     /// Raw credential id encoded as URL-safe base64 (no padding). Matches
@@ -130,6 +133,7 @@ impl From<StoredPasskey> for PasskeyDto {
     }
 }
 
+/// Public JSON representation of a linked OAuth identity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthIdentityDto {
     pub provider: String,
@@ -153,50 +157,59 @@ impl From<OAuthIdentity> for OAuthIdentityDto {
 // Request bodies
 // ---------------------------------------------------------------------------
 
+/// Request body for password registration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterRequest {
     pub email: String,
     pub password: String,
 }
 
+/// Request body for password login.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
 }
 
+/// Request body for changing a password while authenticated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangePasswordRequest {
     pub current_password: String,
     pub new_password: String,
 }
 
+/// Request body for starting password reset.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestPasswordResetRequest {
     pub email: String,
 }
 
+/// Request body for completing password reset.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResetPasswordRequest {
     pub token: String,
     pub new_password: String,
 }
 
+/// Request body for consuming an email-verification token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyEmailRequest {
     pub token: String,
 }
 
+/// Request body for sending a magic link.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestMagicLinkRequest {
     pub email: String,
 }
 
+/// Request body for consuming a magic-link token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MagicLinkConsumeRequest {
     pub token: String,
 }
 
+/// Request body for starting passkey authentication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PasskeyAuthenticateStartRequest {
     pub email: String,
@@ -212,6 +225,7 @@ pub struct PasskeyChallenge<T> {
     pub options: T,
 }
 
+/// Request body for completing passkey registration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PasskeyRegisterFinishRequest {
     pub challenge_id: String,
@@ -220,6 +234,7 @@ pub struct PasskeyRegisterFinishRequest {
     pub name: Option<String>,
 }
 
+/// Request body for completing passkey authentication.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PasskeyAuthenticateFinishRequest {
     pub challenge_id: String,

@@ -46,6 +46,7 @@ pub struct AuthContext {
     pub token: String,
 }
 
+/// Internal shared state for [`SessionLayer`] services.
 pub(crate) struct SessionLayerState {
     pub(crate) session_manager: SessionManager,
     pub(crate) user_store: Arc<dyn UserStore>,
@@ -69,6 +70,7 @@ impl SessionLayer {
     }
 }
 
+/// Service produced by [`SessionLayer`] for a concrete inner service.
 #[derive(Clone)]
 pub struct SessionService<S> {
     inner: S,

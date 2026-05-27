@@ -1,0 +1,96 @@
+//! Minimal Axum application using bauth with SQLite storage.
+
+use std::env;
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use axum::response::Html;
+use axum::routing::get;
+use axum::{Json, Router};
+use bauth_axum::dto::{MeResponse, SessionDto};
+use bauth_axum::prelude::*;
+use bauth_core::oauth::google::GoogleProvider;
+use bauth_sqlx::SqliteStorage;
+use url::Url;
+
+#[tokio::main]
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let database_url = env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "sqlite://bauth-minimal-app.db?mode=rwc".to_owned());
+    let external_origin: Url = env::var("EXTERNAL_ORIGIN")
+        .unwrap_or_else(|_| "http://localhost:3000".to_owned())
+        .parse()?;
+    let bind_addr: SocketAddr = env::var("BIND_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:3000".to_owned())
+        .parse()?;
+
+    let storage = SqliteStorage::connect(&database_url).await?;
+    storage.migrate().await?;
+
+    let base_url = external_origin.as_str().trim_end_matches('/');
+    let password_config = PasswordAuthConfig {
+        verification_url_template: format!("{base_url}/?verify_token={{token}}"),
+        password_reset_url_template: format!("{base_url}/?reset_token={{token}}"),
+        ..PasswordAuthConfig::default()
+    };
+
+    let rp_id = env::var("PASSKEY_RP_ID")
+        .unwrap_or_else(|_| external_origin.host_str().unwrap_or("localhost").to_owned());
+    let passkey_config = PasskeyConfig::new(
+        rp_id,
+        external_origin.clone(),
+        env::var("PASSKEY_RP_NAME").unwrap_or_else(|_| "bauth minimal app".to_owned()),
+    );
+
+    let cookie_config = CookieConfig {
+        secure: external_origin.scheme() == "https",
+        ..CookieConfig::default()
+    };
+
+    let mut builder = bauth_axum::quickstart(storage.storage())
+        .password(password_config)
+        .passkey(passkey_config)
+        .external_origin(external_origin.clone())
+        .cookie(cookie_config);
+
+    match (
+        env::var("GOOGLE_CLIENT_ID"),
+        env::var("GOOGLE_CLIENT_SECRET"),
+    ) {
+        (Ok(client_id), Ok(client_secret)) => {
+            let google: Arc<dyn OAuthProvider> =
+                Arc::new(GoogleProvider::new(client_id, client_secret));
+            builder = builder.oauth([google]);
+        }
+        _ => {
+            eprintln!(
+                "Google OAuth disabled: set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable it"
+            );
+        }
+    }
+
+    let auth = builder.build()?;
+    let app = Router::new()
+        .route("/", get(index))
+        .route("/api/me", get(me))
+        .merge(auth.router())
+        .layer(auth.session_layer());
+
+    eprintln!("listening on http://{bind_addr}");
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn index() -> Html<&'static str> {
+    Html(include_str!("../static/index.html"))
+}
+
+async fn me(auth: AuthSession) -> Json<MeResponse> {
+    Json(MeResponse {
+        user: auth.user.into(),
+        session: SessionDto::from_session(auth.session, true),
+    })
+}

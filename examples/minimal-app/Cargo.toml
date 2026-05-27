@@ -1,0 +1,15 @@
+[package]
+name = "bauth-minimal-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1"] }
+bauth-axum = { path = "../../crates/axum" }
+bauth-core = { path = "../../crates/core" }
+bauth-sqlx = { path = "../../crates/sqlx", features = ["sqlite"] }
+tokio = { workspace = true, features = ["net"] }
+tracing-subscriber = { workspace = true }
+url.workspace = true

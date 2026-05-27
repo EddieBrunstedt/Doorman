@@ -37,6 +37,7 @@ const VERIFICATION_TOKEN_BYTES: usize = 32;
 /// Placeholder substituted with the generated token in URL templates.
 pub const TOKEN_PLACEHOLDER: &str = "{token}";
 
+/// Configuration for password registration, login, verification, and reset flows.
 #[derive(Clone)]
 pub struct PasswordAuthConfig {
     pub password_policy: PasswordPolicy,
@@ -137,6 +138,7 @@ impl Default for PasswordAuthConfig {
     }
 }
 
+/// Manager for password-based authentication flows.
 #[derive(Clone)]
 pub struct PasswordAuthManager {
     pub(super) users: Arc<dyn UserStore>,

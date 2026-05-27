@@ -27,6 +27,7 @@ pub const DEFAULT_SCOPES: &[&str] = &["read:user", "user:email"];
 /// GitHub rejects API requests without a User-Agent header.
 const USER_AGENT: &str = concat!("bauth/", env!("CARGO_PKG_VERSION"));
 
+/// Built-in GitHub OAuth provider.
 #[derive(Clone)]
 pub struct GitHubProvider {
     client_id: String,

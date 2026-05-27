@@ -31,6 +31,7 @@ pub use provider::{
     AuthorizationRequest, ExchangeRequest, OAuthProvider, ProviderError, ProviderUser,
 };
 
+/// Configuration for OAuth authorization state and account-linking policy.
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
     /// How long a `start_authorization` record stays valid waiting for the
@@ -84,6 +85,7 @@ pub struct OAuthOutcome {
     pub link_was_added: bool,
 }
 
+/// Manager for starting, finishing, listing, and unlinking OAuth identities.
 #[derive(Clone)]
 pub struct OAuthManager {
     pub(super) providers: Arc<HashMap<String, Arc<dyn OAuthProvider>>>,

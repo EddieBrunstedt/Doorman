@@ -1,205 +1,186 @@
 # bauth
 
-A Rust authentication library for Axum (and, in principle, any HTTP
-framework). Composes correct primitives — Argon2id, WebAuthn,
-PKCE OAuth, server-side opaque sessions — behind a small set of storage
-traits the host implements.
+bauth is an Axum-first authentication library for Rust applications. It
+ships correct auth primitives — Argon2id passwords, passkeys/WebAuthn,
+PKCE OAuth, magic links, server-side opaque sessions, CSRF origin checks,
+rate limiting, and audit events — behind storage traits you can back with
+SQLx or your own database layer.
 
-The goal is to fill the gap [better-auth](https://github.com/better-auth/better-auth)
-fills in the JS ecosystem: drop-in, modern auth without dictating your
-storage, ORM, or frontend.
+The user-facing crate is `bauth-axum`. `bauth-core` stays
+framework-agnostic so the auth logic is testable without a router, but
+Axum is the supported integration today.
 
-Status: pre-1.0. Public surface is stable enough to build against, but
-expect breaking changes between minor versions until 1.0.
+Status: pre-1.0. The surface is usable, but breaking changes can land
+between minor versions until 1.0.
 
-## Workspace layout
+## Quickstart: mount bauth on Axum
 
+```toml
+[dependencies]
+axum = "0.8"
+bauth-axum = "0.1"
+bauth-core = "0.1"
+bauth-sqlx = { version = "0.1", features = ["sqlite"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
-crates/
-  core/    # bauth-core — framework-agnostic primitives, traits, managers
-  axum/    # bauth-axum — HTTP layer (router, extractors, middleware)
-  sqlx/    # bauth-sqlx — SQLx storage adapter (SQLite and Postgres, feature-gated)
-examples/
-  web-client/   # browser-side TypeScript for the passkey ceremonies
-```
-
-## What's in v1
-
-- Password auth (Argon2id) with email verification and password reset
-- Passkeys / WebAuthn via [`webauthn-rs`](https://crates.io/crates/webauthn-rs)
-- OAuth social login with PKCE (Google + GitHub, plus a provider trait)
-- Magic-link sign-in via single-use email links
-- Server-side opaque session tokens with instant revocation
-- CSRF origin checks for cookie-backed state-changing requests
-- Rate limiting on sensitive endpoints (login, password reset, verification re-issue)
-- Audit log emission for every meaningful auth event
-- Account linking — one user can hold password + passkeys + multiple OAuth identities
-
-See [`PLAN.md`](PLAN.md) for design rationale and the full roadmap.
-
-## Design in one paragraph
-
-`bauth-core` defines storage traits — `UserStore`, `SessionStore`,
-`PasswordCredentialStore`, `PasskeyCredentialStore`,
-`PasskeyChallengeStore`, `OAuthIdentityStore`, `OAuthStateStore`,
-`VerificationTokenStore`, plus `EmailSender`, `AuditSink`, `Clock`, and
-`RateLimiter`. The host implements them (or uses an example adapter),
-constructs the managers (`SessionManager`, `PasswordAuthManager`,
-`PasskeyManager`, `OAuthManager`, `MagicLinkManager`), and either
-mounts the routes from `bauth-axum` or drives the managers directly.
-
-## Worked example: mounting on Axum
-
-The intended entry point for an Axum host. Wire your stores into the
-managers from `bauth-core`, hand them to `BauthAxum::builder()`, and
-merge the returned router into your app.
 
 ```rust
 use std::sync::Arc;
-use std::time::Duration;
 
-use axum::{Router, routing::get, Json};
-use bauth_axum::{AuthUser, BauthAxum, CookieConfig};
-use bauth_axum::dto::UserDto;
-use bauth_core::audit::{AuditSink, NoopAuditSink};
-use bauth_core::clock::{Clock, SystemClock};
-use bauth_core::email::{EmailSender, NoopEmailSender};
-use bauth_core::memory::{
-    InMemoryPasswordCredentialStore, InMemoryRateLimiter, InMemorySessionStore,
-    InMemoryUserStore, InMemoryVerificationTokenStore,
-};
-use bauth_core::password_auth::{PasswordAuthConfig, PasswordAuthManager};
-use bauth_core::rate_limit::RateLimiter;
-use bauth_core::session::{SessionConfig, SessionManager};
+use axum::{Json, Router, routing::get};
+use bauth_axum::dto::{MeResponse, SessionDto};
+use bauth_axum::prelude::*;
+use bauth_core::oauth::google::GoogleProvider;
+use bauth_sqlx::SqliteStorage;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-    let email: Arc<dyn EmailSender> = Arc::new(NoopEmailSender);
-    let limiter: Arc<dyn RateLimiter> = Arc::new(InMemoryRateLimiter::new(clock.clone()));
+    let storage = SqliteStorage::connect("sqlite:///var/lib/myapp/auth.db?mode=rwc").await?;
+    storage.migrate().await?;
 
-    let users = Arc::new(InMemoryUserStore::new());
-    let sessions = Arc::new(InMemorySessionStore::new());
-    let passwords = Arc::new(InMemoryPasswordCredentialStore::new());
-    let tokens = Arc::new(InMemoryVerificationTokenStore::new());
+    let origin = "https://app.example.com".parse()?;
+    let google: Arc<dyn OAuthProvider> = Arc::new(GoogleProvider::new(
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+    ));
 
-    let session_manager = SessionManager::new(
-        sessions,
-        clock.clone(),
-        audit.clone(),
-        SessionConfig { lifetime: Duration::from_secs(60 * 60 * 24 * 30) },
-    );
-    let password_manager = PasswordAuthManager::new(
-        users.clone(),
-        passwords,
-        tokens,
-        session_manager.clone(),
-        email,
-        clock,
-        audit,
-        limiter,
-        PasswordAuthConfig::default(),
-    );
-
-    let auth = BauthAxum::builder()
-        .session_manager(session_manager)
-        .user_store(users)
-        .password_manager(password_manager)
-        .cookie_config(CookieConfig::default())
+    let auth = bauth_axum::quickstart(storage.storage())
+        .password(PasswordAuthConfig::default())
+        .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
+        .oauth([google])
+        .external_origin(origin)
+        .cookie(CookieConfig::default())
         .build()?;
 
     let app = Router::new()
-        .merge(auth.router())                  // mounts /auth/*
+        .merge(auth.router())
         .route("/api/me", get(me))
-        .layer(auth.session_layer());          // populates AuthUser
+        .layer(auth.session_layer());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-async fn me(AuthUser(user): AuthUser) -> Json<UserDto> {
-    Json(user.into())
+async fn me(auth: AuthSession) -> Json<MeResponse> {
+    Json(MeResponse {
+        user: auth.user.into(),
+        session: SessionDto::from_session(auth.session, true),
+    })
 }
 ```
 
-`auth.router()` mounts every endpoint whose backing manager you supplied
-to the builder. Add `.passkey_manager(...)`, `.oauth_manager(...)`,
-`.magic_link_manager(...)`, and (for OAuth)
-`.external_origin("https://app.example.com".parse()?)` to turn on the
-other auth methods.
+`auth.router()` mounts `/auth/*` routes for every method you enabled.
+`auth.session_layer()` reads the session cookie or bearer token and makes
+`AuthUser`, `OptionalAuthUser`, and `AuthSession` work in your handlers.
 
-For a production-shaped storage layer, use
-[`bauth-sqlx`](crates/sqlx) — `SqliteStorage` and `PostgresStorage`
-implement every storage trait against a SQLx pool, with embedded
-migrations. Enable the `sqlite` or `postgres` feature for the backend
-you need.
+For local plain-HTTP development, set `CookieConfig { secure: false, .. }`;
+leave `secure = true` in production.
 
-### Driving the managers directly
+## Run the minimal app
 
-If you're not on Axum or want full control of the HTTP surface, skip
-`bauth-axum` and call the managers from `bauth-core` yourself — they
-own all the auth logic and return framework-agnostic outcomes
-(`IssuedSession`, `RegisterOutcome`, `OAuthOutcome`, …). The Axum crate
-is a thin translation layer on top.
+A complete runnable app lives in [`examples/minimal-app`](examples/minimal-app):
+SQLite via `bauth-sqlx`, password auth, passkeys, optional Google OAuth,
+`/api/me`, and a static HTML page with no frontend build step.
 
-## Configuration knobs you usually want to think about
+```sh
+cargo run -p bauth-minimal-app
+```
 
-- `SessionConfig::lifetime` — defaults to 30 days
-- `PasswordAuthConfig::require_email_verification` — gate login on verified email
-- `PasswordAuthConfig::revoke_sessions_on_password_reset` — defaults to `true`
-- `PasswordAuthConfig::rate_limits` — per-IP and per-identifier policies for
-  login, password reset, and verification re-issue
-- `PasskeyConfig::{rp_id, rp_origin, rp_name}` — relying-party identity
-- `OAuthConfig::allow_email_linking` — auto-link OAuth identity to an
-  existing email-matching account when the provider asserts the email is
-  verified. Off by default.
-- `MagicLinkConfig` — single-use link lifetime, URL template, signup
-  policy, and request rate limits. Magic links are only as strong as the
-  user's inbox, so use them as an additional login option or pair them
-  with a stronger factor for sensitive apps.
-- `CookieConfig` (from `bauth-axum`) — session and OAuth state cookie
-  attributes: `session_cookie_name`, `oauth_state_cookie_name`, `domain`,
-  `path`, `secure` (defaults to `true` — disable for plain-HTTP local
-  dev), `same_site` (defaults to `Lax`), `session_max_age` (match
-  `SessionConfig::lifetime`), `oauth_state_max_age`.
-- `BauthAxumBuilder::external_origin` — required when an OAuth manager
-  is supplied. The absolute origin external clients see (e.g.
-  `https://app.example.com`); used to build the absolute callback URL
-  handed to providers. Build will fail without it.
-- `CsrfConfig` / `BauthAxumBuilder::with_csrf` — CSRF origin checks are
-  enabled by default when `external_origin` is set. Use
-  `with_csrf(CsrfConfig::disabled())` only for tests or known
-  non-browser deployments.
+Open <http://localhost:3000>. To enable Google OAuth, set
+`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` and register
+`http://localhost:3000/auth/oauth/google/callback` as the callback URL.
 
-### Feature flags on `bauth-axum`
+## What ships
 
-`password`, `passkey`, `oauth`, `magic_link` (all on by default).
-Disable the ones you don't use to shrink compile time and dependency
-surface:
+- Password auth with Argon2id, email verification, and password reset.
+- Passkeys / WebAuthn via [`webauthn-rs`](https://crates.io/crates/webauthn-rs).
+- OAuth social login with PKCE; Google and GitHub providers are included,
+  and custom providers implement `OAuthProvider`.
+- Magic-link sign-in using single-use, hashed email tokens.
+- Server-side opaque sessions with instant revocation and a signed-in
+  devices endpoint.
+- CSRF origin checks for cookie-backed state-changing requests.
+- Rate limiting and audit events for sensitive auth operations.
+- First-party SQLx storage adapter for SQLite and Postgres.
+
+## Workspace layout
+
+```text
+crates/
+  core/    # bauth-core: managers, storage traits, auth primitives
+  axum/    # bauth-axum: router, extractors, session layer, CSRF layer
+  sqlx/    # bauth-sqlx: SQLite/Postgres storage adapter
+examples/
+  minimal-app/  # runnable Axum + SQLite app
+  web-client/   # browser-side passkey helper reference
+```
+
+## Production checklist
+
+These mirror the startup warnings emitted by `quickstart().build()` and
+`BauthAxum::builder().build()`.
+
+- Keep `CookieConfig::secure = true` outside local HTTP development.
+- Set `external_origin("https://app.example.com".parse()?)`; this also
+  enables the default CSRF origin-check layer.
+- Do not disable CSRF unless authenticated browser cookies are not in
+  scope and every client uses bearer tokens.
+- Wire a real `AuditSink`; `NoopAuditSink` discards security events.
+- Wire a production `RateLimiter`. The built-in `InMemoryRateLimiter` is
+  per-process, so multi-replica deployments need a shared backend.
+- Wire a real `EmailSender` before relying on email verification,
+  password reset, or magic links.
+- If you enable `OAuthConfig::allow_email_linking`, also set
+  `PasswordAuthConfig::require_email_verification = true` unless you
+  intentionally trust every provider's `email_verified` claim.
+- Run storage migrations at startup and periodically purge expired
+  sessions, verification tokens, passkey challenges, and OAuth states.
+
+Use `.silence_warnings()` only after you have reviewed the warning and
+made an explicit operational choice.
+
+## Configuration knobs
+
+- `SessionConfig::lifetime` — session lifetime; defaults to 30 days.
+- `PasswordAuthConfig` — password policy, verification/reset lifetimes,
+  URL templates, `require_email_verification`, reset-time session
+  revocation, rate limits, and email renderer.
+- `PasskeyConfig` — WebAuthn relying-party id, origin, display name, and
+  challenge lifetime.
+- `OAuthConfig::allow_email_linking` — auto-link provider identities to
+  an existing verified email. Defaults to `false`.
+- `MagicLinkConfig` — token lifetime, URL template, signup policy, rate
+  limits, and email renderer.
+- `CookieConfig` — session/state cookie names, domain/path, `secure`,
+  `SameSite`, and max ages.
+- `CsrfConfig` — override or disable the origin-check layer.
+
+Feature flags on `bauth-axum`: `password`, `passkey`, `oauth`, and
+`magic_link` (all enabled by default).
 
 ```toml
 bauth-axum = { version = "0.1", default-features = false, features = ["password"] }
 ```
 
-## Production checklist
+## Custom storage and direct manager use
 
-- Keep `CookieConfig::secure = true` outside local HTTP development.
-- Set `external_origin("https://app.example.com".parse()?)` so the
-  default CSRF layer can verify `Origin` / `Referer` on cookie-backed
-  state-changing requests.
-- Leave CSRF enabled unless every authenticated client uses bearer tokens
-  and no browser cookie session is in scope; the escape hatch is
-  `with_csrf(CsrfConfig::disabled())`.
-- Wire a real `AuditSink`, `RateLimiter`, and `EmailSender` before
-  production.
-- Decide whether your app requires `require_email_verification = true`.
+The happy path is `bauth-sqlx` plus `bauth_axum::quickstart(...)`. Hosts
+on another database stack implement the storage traits in `bauth-core`:
+`UserStore`, `SessionStore`, `PasswordCredentialStore`,
+`VerificationTokenStore`, `PasskeyCredentialStore`,
+`PasskeyChallengeStore`, `OAuthIdentityStore`, and `OAuthStateStore`.
+
+If you want full control of the HTTP surface, skip `bauth-axum` routes and
+call the core managers directly (`SessionManager`, `PasswordAuthManager`,
+`PasskeyManager`, `OAuthManager`, `MagicLinkManager`). They return
+framework-agnostic outcomes such as `IssuedSession`, `RegisterOutcome`,
+and `OAuthOutcome`.
 
 ## Security
 
-See [`SECURITY.md`](SECURITY.md) for the threat model, hardening
-checklist for hosts (cookie flags, CSRF, key rotation, etc.), and the
+See [`SECURITY.md`](SECURITY.md) for the threat model, host hardening
+requirements, cookie and CSRF guidance, operational cleanup, and the
 vulnerability disclosure address.
 
 ## License

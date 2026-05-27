@@ -21,6 +21,7 @@ use crate::storage::{
     VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
 
+/// In-memory [`UserStore`] backed by mutex-protected hash maps.
 #[derive(Debug, Default)]
 pub struct InMemoryUserStore {
     inner: Mutex<UserStoreState>,
@@ -106,6 +107,7 @@ impl UserStore for InMemoryUserStore {
     }
 }
 
+/// In-memory [`SessionStore`] backed by mutex-protected hash maps.
 #[derive(Debug, Default)]
 pub struct InMemorySessionStore {
     inner: Mutex<SessionStoreState>,
@@ -233,6 +235,7 @@ impl SessionStore for InMemorySessionStore {
     }
 }
 
+/// Audit sink that records events in memory for tests.
 #[derive(Debug, Default)]
 pub struct InMemoryAuditSink {
     events: Mutex<Vec<AuditEvent>>,
@@ -269,6 +272,7 @@ impl AuditSink for InMemoryAuditSink {
     }
 }
 
+/// Email sender that records messages in memory for tests.
 #[derive(Debug, Default)]
 pub struct InMemoryEmailSender {
     sent: Mutex<Vec<Email>>,
@@ -298,6 +302,7 @@ impl EmailSender for InMemoryEmailSender {
     }
 }
 
+/// In-memory [`PasswordCredentialStore`].
 #[derive(Debug, Default)]
 pub struct InMemoryPasswordCredentialStore {
     inner: Mutex<HashMap<UserId, PasswordCredential>>,
@@ -340,6 +345,7 @@ impl PasswordCredentialStore for InMemoryPasswordCredentialStore {
     }
 }
 
+/// In-memory [`VerificationTokenStore`] preserving single-use semantics.
 #[derive(Debug, Default)]
 pub struct InMemoryVerificationTokenStore {
     inner: Mutex<Vec<VerificationToken>>,
@@ -422,6 +428,7 @@ impl VerificationTokenStore for InMemoryVerificationTokenStore {
     }
 }
 
+/// In-memory [`PasskeyCredentialStore`].
 #[derive(Debug, Default)]
 pub struct InMemoryPasskeyCredentialStore {
     inner: Mutex<Vec<StoredPasskey>>,
@@ -502,6 +509,7 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
     }
 }
 
+/// In-memory [`PasskeyChallengeStore`] with atomic take semantics.
 #[derive(Debug, Default)]
 pub struct InMemoryPasskeyChallengeStore {
     inner: Mutex<PasskeyChallengeState>,
@@ -582,6 +590,7 @@ impl PasskeyChallengeStore for InMemoryPasskeyChallengeStore {
     }
 }
 
+/// In-memory [`OAuthIdentityStore`].
 #[derive(Debug, Default)]
 pub struct InMemoryOAuthIdentityStore {
     inner: Mutex<Vec<OAuthIdentity>>,
@@ -649,6 +658,7 @@ impl OAuthIdentityStore for InMemoryOAuthIdentityStore {
     }
 }
 
+/// In-memory [`OAuthStateStore`] with atomic take semantics.
 #[derive(Debug, Default)]
 pub struct InMemoryOAuthStateStore {
     inner: Mutex<HashMap<OAuthStateId, PendingOAuthAuthorization>>,

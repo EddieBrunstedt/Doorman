@@ -37,6 +37,7 @@ const MAGIC_LINK_TOKEN_BYTES: usize = 32;
 /// Placeholder substituted with the generated token in URL templates.
 pub const TOKEN_PLACEHOLDER: &str = "{token}";
 
+/// Configuration for issuing and consuming magic-link login tokens.
 #[derive(Clone)]
 pub struct MagicLinkConfig {
     /// Token lifetime. Short by design — the link is the credential and a
@@ -115,6 +116,7 @@ pub struct MagicLinkOutcome {
     pub is_new_user: bool,
 }
 
+/// Manager for magic-link request and consume flows.
 #[derive(Clone)]
 pub struct MagicLinkManager {
     users: Arc<dyn UserStore>,

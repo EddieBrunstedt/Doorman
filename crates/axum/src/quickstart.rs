@@ -61,7 +61,7 @@ use crate::warnings::Warnings;
 
 /// Begin building a [`BauthAxum`] from a composite [`Storage`].
 ///
-/// See the [module-level docs](self) for the full picture. Typical use:
+/// See the module-level docs for the full picture. Typical use:
 ///
 /// ```ignore
 /// use bauth_axum::prelude::*;

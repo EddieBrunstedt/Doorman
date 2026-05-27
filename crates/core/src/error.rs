@@ -1,12 +1,20 @@
+//! Shared error types returned by core managers and storage adapters.
+//!
+//! [`enum@Error`] is the manager-facing error enum. [`StorageError`] and
+//! [`EmailError`] wrap backend-specific failures without exposing their
+//! concrete types in public APIs.
+
 use std::fmt;
 use std::time::Duration;
 
 use thiserror::Error;
 
+/// Result alias used by public manager APIs.
 pub type Result<T> = std::result::Result<T, Error>;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
+/// Errors returned by bauth managers.
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
@@ -93,6 +101,7 @@ pub enum Error {
     RateLimited { retry_after: Duration },
 }
 
+/// Opaque storage-backend failure.
 #[derive(Debug, Error)]
 #[error("storage error: {0}")]
 pub struct StorageError(BoxError);
@@ -110,8 +119,10 @@ impl StorageError {
     }
 }
 
+/// Result alias used by storage traits.
 pub type StorageResult<T> = std::result::Result<T, StorageError>;
 
+/// Opaque email-transport failure.
 #[derive(Debug, Error)]
 #[error("email error: {0}")]
 pub struct EmailError(BoxError);
@@ -129,6 +140,7 @@ impl EmailError {
     }
 }
 
+/// Result alias used by email transports.
 pub type EmailResult<T> = std::result::Result<T, EmailError>;
 
 #[derive(Debug)]

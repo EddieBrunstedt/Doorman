@@ -23,6 +23,7 @@ use bauth_core::passkey::PasskeyManager;
 #[cfg(feature = "password")]
 use bauth_core::password_auth::PasswordAuthManager;
 
+/// Shared Axum router state holding configured auth managers and settings.
 #[derive(Clone)]
 pub struct BauthState {
     pub(crate) session_manager: SessionManager,

@@ -1,3 +1,9 @@
+//! Server-side opaque session management.
+//!
+//! [`SessionManager`] issues high-entropy bearer tokens, stores only their
+//! hashes, validates incoming tokens, and revokes sessions immediately via
+//! the configured [`SessionStore`].
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,6 +30,7 @@ pub struct IssuedSession {
     pub token: String,
 }
 
+/// Configuration for session issuance.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     pub lifetime: Duration,
@@ -38,6 +45,7 @@ impl Default for SessionConfig {
     }
 }
 
+/// Request metadata captured when an auth flow creates or audits a session.
 #[derive(Debug, Clone, Default)]
 pub struct SessionContext {
     pub ip: Option<String>,
@@ -68,6 +76,7 @@ impl SessionInvalidationHook for NoopSessionInvalidationHook {
     async fn on_user_sessions_invalidated(&self, _: UserId) {}
 }
 
+/// Manager for issuing, validating, listing, and revoking sessions.
 #[derive(Clone)]
 pub struct SessionManager {
     sessions: Arc<dyn SessionStore>,

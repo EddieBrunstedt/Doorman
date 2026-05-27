@@ -1,11 +1,10 @@
-//! Core authentication primitives for the `bauth` library.
+//! Core authentication primitives for bauth.
 //!
-//! This crate is intentionally framework-agnostic: it defines the storage,
-//! clock, email, and audit traits that a host application implements, plus
-//! the [`SessionManager`](crate::session::SessionManager) that drives session
-//! creation, validation, and revocation against those traits.
-//!
-//! The companion crate `bauth-axum` provides an HTTP layer on top.
+//! `bauth-axum` is the supported user-facing integration. This crate stays
+//! framework-agnostic so the auth logic can be tested and reasoned about
+//! without an HTTP router attached. It owns the storage, clock, email,
+//! audit, and rate-limiter traits plus the managers that implement each
+//! auth flow.
 
 pub mod audit;
 pub mod clock;

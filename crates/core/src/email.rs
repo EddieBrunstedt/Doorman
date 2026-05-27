@@ -1,3 +1,10 @@
+//! Email transport and email-template customization.
+//!
+//! Managers build transactional emails through [`BauthEmails`] and hand
+//! them to an [`EmailSender`]. Production hosts provide a real transport;
+//! tests and local experiments can use [`NoopEmailSender`] or the
+//! in-memory sender in [`crate::memory`].
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -5,6 +12,7 @@ use async_trait::async_trait;
 use crate::error::EmailResult;
 use crate::storage::User;
 
+/// Transactional email ready to hand to a transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Email {
     pub to: String,
@@ -13,11 +21,13 @@ pub struct Email {
     pub body_html: Option<String>,
 }
 
+/// Transport for sending rendered transactional emails.
 #[async_trait]
 pub trait EmailSender: Send + Sync {
     async fn send(&self, email: Email) -> EmailResult<()>;
 }
 
+/// Email sender that accepts mail and drops it.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopEmailSender;
 

@@ -1,30 +1,32 @@
-//! Axum HTTP integration for the [`bauth_core`] authentication library.
+//! Axum-first HTTP integration for bauth.
+//!
+//! Most hosts start with [`quickstart`], hand it a
+//! [`bauth_core::storage::Storage`] value from a storage adapter such as
+//! `bauth-sqlx`, enable the auth methods they want, and mount the returned
+//! [`BauthAxum`] on their application router.
 //!
 //! ```ignore
-//! use std::sync::Arc;
-//! use bauth_axum::{BauthAxum, CookieConfig};
+//! use bauth_axum::prelude::*;
+//! use bauth_sqlx::SqliteStorage;
 //!
-//! let auth = BauthAxum::builder()
-//!     .session_manager(session_manager)
-//!     .user_store(user_store)
-//!     .password_manager(password_manager)
-//!     .passkey_manager(passkey_manager)
-//!     .oauth_manager(oauth_manager)
-//!     .external_origin("https://app.example.com".parse().unwrap())
-//!     .cookie_config(CookieConfig::default())
-//!     .build()
-//!     .expect("auth configured");
+//! let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").await?;
+//! storage.migrate().await?;
+//!
+//! let auth = bauth_axum::quickstart(storage.storage())
+//!     .password(PasswordAuthConfig::default())
+//!     .external_origin("https://app.example.com".parse()?)
+//!     .cookie(CookieConfig::default())
+//!     .build()?;
 //!
 //! let app = axum::Router::new()
 //!     .merge(auth.router())
 //!     .route("/api/me", axum::routing::get(me))
 //!     .layer(auth.session_layer());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! The split between the framework-agnostic [`bauth_core`] crate and this
-//! crate is intentional: nothing axum-shaped leaks into `bauth_core`, so
-//! a sibling integration for another framework remains a future option
-//! without disturbing the core auth logic.
+//! [`BauthAxum::builder`] remains available for hosts that want to
+//! construct the core managers by hand.
 
 pub mod cache;
 pub mod config;
@@ -67,6 +69,7 @@ pub struct BauthAxum {
 }
 
 impl BauthAxum {
+    /// Start the low-level builder that accepts pre-constructed managers.
     pub fn builder() -> BauthAxumBuilder {
         BauthAxumBuilder::default()
     }
@@ -86,6 +89,7 @@ impl BauthAxum {
         self.session_layer.clone()
     }
 
+    /// Access the router state backing the auth routes.
     pub fn state(&self) -> &BauthState {
         &self.state
     }

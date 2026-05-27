@@ -65,6 +65,7 @@ pub enum RateLimiterKind {
     InMemory,
 }
 
+/// Backend interface for charging and enforcing rate-limit policies.
 #[async_trait]
 pub trait RateLimiter: Send + Sync {
     /// Charge a single attempt against `key` under `policy`.

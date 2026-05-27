@@ -28,6 +28,7 @@ use crate::storage::{
     StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, UserStore,
 };
 
+/// WebAuthn relying-party configuration for passkey flows.
 #[derive(Debug, Clone)]
 pub struct PasskeyConfig {
     /// Relying party identifier, typically the registrable suffix of
@@ -54,6 +55,7 @@ impl PasskeyConfig {
     }
 }
 
+/// Manager for passkey registration, authentication, listing, and removal.
 #[derive(Clone)]
 pub struct PasskeyManager {
     users: Arc<dyn UserStore>,

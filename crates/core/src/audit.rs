@@ -1,9 +1,16 @@
+//! Audit-event model and sink abstraction.
+//!
+//! Managers emit these events for security-significant auth activity.
+//! Hosts provide an [`AuditSink`] that persists or forwards them to a
+//! durable log; [`NoopAuditSink`] exists only as a development default.
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::storage::{SessionId, UserId};
 
+/// One audit record emitted by an auth flow.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEvent {
     pub timestamp: DateTime<Utc>,
@@ -12,6 +19,7 @@ pub struct AuditEvent {
     pub kind: AuditEventKind,
 }
 
+/// Specific security event captured in an [`AuditEvent`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuditEventKind {
@@ -67,6 +75,7 @@ pub enum AuditEventKind {
     },
 }
 
+/// Authentication method that produced a successful login.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
@@ -76,6 +85,7 @@ pub enum AuthMethod {
     MagicLink,
 }
 
+/// Credential family added to or removed from a user account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
@@ -85,6 +95,7 @@ pub enum CredentialKind {
     MagicLink,
 }
 
+/// Normalised reason for a failed login attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LoginFailureReason {
@@ -94,6 +105,7 @@ pub enum LoginFailureReason {
     EmailNotVerified,
 }
 
+/// Destination for audit events emitted by the managers.
 #[async_trait]
 pub trait AuditSink: Send + Sync {
     async fn emit(&self, event: AuditEvent);
@@ -107,6 +119,7 @@ pub trait AuditSink: Send + Sync {
     }
 }
 
+/// Audit sink that discards every event.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopAuditSink;
 

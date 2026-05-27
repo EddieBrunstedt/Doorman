@@ -99,6 +99,7 @@ impl CsrfLayer {
     }
 }
 
+/// Service produced by [`CsrfLayer`] for a concrete inner service.
 #[derive(Clone)]
 pub struct CsrfService<S> {
     inner: S,

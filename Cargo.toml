@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/axum", "crates/sqlx"]
+members = ["crates/core", "crates/axum", "crates/sqlx", "examples/minimal-app"]
 
 [workspace.package]
 version = "0.1.0"

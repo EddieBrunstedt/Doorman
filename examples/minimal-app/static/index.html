@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>bauth minimal app</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+      form, section { border: 1px solid #ddd; border-radius: 8px; margin: 1rem 0; padding: 1rem; }
+      label { display: block; margin: .5rem 0; }
+      input { min-width: 20rem; padding: .4rem; }
+      button { margin-top: .5rem; padding: .45rem .7rem; }
+      pre { background: #111; color: #eee; padding: 1rem; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <h1>bauth minimal app</h1>
+    <p>
+      Password auth, passkeys, optional Google OAuth, and <code>/api/me</code>
+      served by one Axum process.
+    </p>
+
+    <form id="register">
+      <h2>Register / login with password</h2>
+      <label>Email <input name="email" type="email" value="alice@example.com" required /></label>
+      <label>Password <input name="password" type="password" value="correct horse battery staple" required /></label>
+      <button name="action" value="register">Register</button>
+      <button name="action" value="login">Login</button>
+    </form>
+
+    <form id="passkey-login">
+      <h2>Passkeys</h2>
+      <p>Register a passkey after password login, then try passkey login.</p>
+      <label>Email <input name="email" type="email" value="alice@example.com" required /></label>
+      <label>Device name <input name="name" value="local device" /></label>
+      <button name="action" value="register-passkey">Register passkey</button>
+      <button name="action" value="login-passkey">Login with passkey</button>
+    </form>
+
+    <section>
+      <h2>Google OAuth</h2>
+      <p>
+        Set <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code>,
+        then register <code>http://localhost:3000/auth/oauth/google/callback</code>
+        in Google Cloud.
+      </p>
+      <p><a href="/auth/oauth/google/start?return_to=/">Continue with Google</a></p>
+    </section>
+
+    <form id="password-reset-request">
+      <h2>Password reset</h2>
+      <label>Email <input name="email" type="email" value="alice@example.com" required /></label>
+      <button>Request reset email</button>
+      <p>With the demo NoopEmailSender, inspect your real EmailSender in a production app.</p>
+    </form>
+
+    <section>
+      <h2>Current session</h2>
+      <button id="me">GET /api/me</button>
+      <button id="logout">Logout</button>
+      <pre id="out">ready</pre>
+    </section>
+
+    <script>
+      const out = document.querySelector("#out");
+      const log = (value) => {
+        out.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      };
+
+      async function api(path, method = "GET", body) {
+        const res = await fetch(path, {
+          method,
+          credentials: "include",
+          headers: body === undefined ? {} : { "content-type": "application/json" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        const text = await res.text();
+        const data = text ? JSON.parse(text) : null;
+        if (!res.ok) throw new Error(`${method} ${path} -> ${res.status}: ${text}`);
+        return data;
+      }
+
+      function base64UrlToBuffer(input) {
+        const padded = input.padEnd(input.length + ((4 - (input.length % 4)) % 4), "=");
+        const bin = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out.buffer;
+      }
+
+      function bufferToBase64Url(buf) {
+        const bytes = new Uint8Array(buf);
+        let bin = "";
+        for (const b of bytes) bin += String.fromCharCode(b);
+        return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      }
+
+      function decodeCreationOptions(options) {
+        const p = options.publicKey;
+        return {
+          publicKey: {
+            ...p,
+            challenge: base64UrlToBuffer(p.challenge),
+            user: { ...p.user, id: base64UrlToBuffer(p.user.id) },
+            excludeCredentials: p.excludeCredentials?.map((c) => ({
+              ...c,
+              id: base64UrlToBuffer(c.id),
+            })),
+          },
+        };
+      }
+
+      function decodeRequestOptions(options) {
+        const p = options.publicKey;
+        return {
+          publicKey: {
+            ...p,
+            challenge: base64UrlToBuffer(p.challenge),
+            allowCredentials: p.allowCredentials?.map((c) => ({
+              ...c,
+              id: base64UrlToBuffer(c.id),
+            })),
+          },
+        };
+      }
+
+      function encodeAttestation(cred) {
+        const response = cred.response;
+        return {
+          id: cred.id,
+          rawId: bufferToBase64Url(cred.rawId),
+          type: cred.type,
+          response: {
+            attestationObject: bufferToBase64Url(response.attestationObject),
+            clientDataJSON: bufferToBase64Url(response.clientDataJSON),
+          },
+          clientExtensionResults: cred.getClientExtensionResults(),
+        };
+      }
+
+      function encodeAssertion(cred) {
+        const response = cred.response;
+        return {
+          id: cred.id,
+          rawId: bufferToBase64Url(cred.rawId),
+          type: cred.type,
+          response: {
+            authenticatorData: bufferToBase64Url(response.authenticatorData),
+            clientDataJSON: bufferToBase64Url(response.clientDataJSON),
+            signature: bufferToBase64Url(response.signature),
+            userHandle: response.userHandle ? bufferToBase64Url(response.userHandle) : null,
+          },
+          clientExtensionResults: cred.getClientExtensionResults(),
+        };
+      }
+
+      async function registerPasskey(name) {
+        const start = await api("/auth/passkey/register/start", "POST");
+        const cred = await navigator.credentials.create(decodeCreationOptions(start.options));
+        if (!cred) throw new Error("passkey registration cancelled");
+        return api("/auth/passkey/register/finish", "POST", {
+          challenge_id: start.challenge_id,
+          response: encodeAttestation(cred),
+          name,
+        });
+      }
+
+      async function loginPasskey(email) {
+        const start = await api("/auth/passkey/authenticate/start", "POST", { email });
+        const cred = await navigator.credentials.get(decodeRequestOptions(start.options));
+        if (!cred) throw new Error("passkey login cancelled");
+        return api("/auth/passkey/authenticate/finish", "POST", {
+          challenge_id: start.challenge_id,
+          response: encodeAssertion(cred),
+        });
+      }
+
+      document.querySelector("#register").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = new FormData(event.submitter.form);
+        const body = { email: form.get("email"), password: form.get("password") };
+        const path = event.submitter.value === "register" ? "/auth/password/register" : "/auth/password/login";
+        try { log(await api(path, "POST", body)); } catch (err) { log(String(err)); }
+      });
+
+      document.querySelector("#passkey-login").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = new FormData(event.submitter.form);
+        try {
+          const result = event.submitter.value === "register-passkey"
+            ? await registerPasskey(form.get("name"))
+            : await loginPasskey(form.get("email"));
+          log(result ?? "ok");
+        } catch (err) { log(String(err)); }
+      });
+
+      document.querySelector("#password-reset-request").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = new FormData(event.currentTarget);
+        try { log(await api("/auth/password/reset/request", "POST", { email: form.get("email") }) ?? "ok"); }
+        catch (err) { log(String(err)); }
+      });
+
+      document.querySelector("#me").addEventListener("click", async () => {
+        try { log(await api("/api/me")); } catch (err) { log(String(err)); }
+      });
+
+      document.querySelector("#logout").addEventListener("click", async () => {
+        try { log(await api("/auth/password/logout", "POST") ?? "logged out"); }
+        catch (err) { log(String(err)); }
+      });
+
+      const params = new URLSearchParams(location.search);
+      if (params.has("verify_token")) {
+        api("/auth/password/verify-email", "POST", { token: params.get("verify_token") })
+          .then(() => log("email verified"))
+          .catch((err) => log(String(err)));
+      }
+    </script>
+  </body>
+</html>

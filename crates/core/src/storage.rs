@@ -52,6 +52,7 @@ pub struct Storage {
     pub oauth_states: Arc<dyn OAuthStateStore>,
 }
 
+/// Stable local user identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct UserId(pub Uuid);
@@ -74,6 +75,7 @@ impl fmt::Display for UserId {
     }
 }
 
+/// Stable server-side session identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SessionId(pub Uuid);
@@ -101,8 +103,8 @@ impl fmt::Display for SessionId {
 /// constant-time so that any in-process comparison (including HashMap
 /// bucket disambiguation) does not leak the matched prefix length via
 /// timing.
-// `PartialEq` is constant-time but byte-equivalent to a derived impl, so the
-// `Hash`/`Eq` contract (`a == b => hash(a) == hash(b)`) still holds.
+/// `PartialEq` is constant-time but byte-equivalent to a derived impl, so the
+/// `Hash`/`Eq` contract (`a == b => hash(a) == hash(b)`) still holds.
 #[allow(clippy::derived_hash_with_manual_eq)]
 #[derive(Clone, Copy, Hash, Serialize, Deserialize)]
 pub struct TokenHash(pub [u8; 32]);
@@ -125,6 +127,7 @@ impl fmt::Debug for TokenHash {
     }
 }
 
+/// Local user record shared by all auth methods.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
     pub id: UserId,
@@ -134,6 +137,7 @@ pub struct User {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Persisted session row keyed by a hashed bearer token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub id: SessionId,
@@ -145,6 +149,7 @@ pub struct Session {
     pub user_agent: Option<String>,
 }
 
+/// Persistence contract for local user records.
 #[async_trait]
 pub trait UserStore: Send + Sync {
     async fn create_user(&self, user: User) -> StorageResult<()>;
@@ -158,6 +163,7 @@ pub trait UserStore: Send + Sync {
     async fn delete_user(&self, id: UserId) -> StorageResult<()>;
 }
 
+/// Persistence contract for server-side sessions.
 #[async_trait]
 pub trait SessionStore: Send + Sync {
     async fn create_session(&self, session: Session) -> StorageResult<()>;
@@ -256,6 +262,7 @@ pub struct StoredPasskeyAuthentication {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Persistence contract for registered passkey credentials.
 #[async_trait]
 pub trait PasskeyCredentialStore: Send + Sync {
     async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()>;
@@ -274,6 +281,7 @@ pub trait PasskeyCredentialStore: Send + Sync {
     async fn delete_passkey(&self, credential_id: &[u8]) -> StorageResult<()>;
 }
 
+/// Persistence contract for in-progress passkey ceremony state.
 #[async_trait]
 pub trait PasskeyChallengeStore: Send + Sync {
     async fn put_registration(&self, value: StoredPasskeyRegistration) -> StorageResult<()>;
@@ -315,6 +323,7 @@ pub struct OAuthIdentity {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Persistence contract for linked OAuth identities.
 #[async_trait]
 pub trait OAuthIdentityStore: Send + Sync {
     /// Persist a freshly linked identity. Implementations MUST reject the
@@ -370,6 +379,7 @@ pub struct PendingOAuthAuthorization {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Persistence contract for pending OAuth authorization state.
 #[async_trait]
 pub trait OAuthStateStore: Send + Sync {
     async fn put(&self, value: PendingOAuthAuthorization) -> StorageResult<()>;
@@ -393,6 +403,7 @@ pub struct PasswordCredential {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Persistence contract for password credentials.
 #[async_trait]
 pub trait PasswordCredentialStore: Send + Sync {
     /// Insert or replace the password credential for a user. Implementations
@@ -427,6 +438,7 @@ pub struct VerificationToken {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Persistence contract for single-use verification tokens.
 #[async_trait]
 pub trait VerificationTokenStore: Send + Sync {
     async fn create_token(&self, token: VerificationToken) -> StorageResult<()>;

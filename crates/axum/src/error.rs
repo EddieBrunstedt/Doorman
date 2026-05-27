@@ -17,6 +17,7 @@ pub struct ErrorBody {
     pub error: ErrorPayload,
 }
 
+/// Stable machine-readable error payload nested under `error`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorPayload {
     pub code: &'static str,
