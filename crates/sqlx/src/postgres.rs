@@ -6,10 +6,10 @@ use async_trait::async_trait;
 use bauth_core::error::{StorageError, StorageResult};
 use bauth_core::storage::{
     OAuthIdentity, OAuthIdentityStore, OAuthStateId, OAuthStateStore, PasskeyChallengeId,
-    PasskeyChallengeStore, PasskeyCredentialStore, PasswordCredential, PasswordCredentialStore,
-    PendingOAuthAuthorization, Session, SessionId, SessionStore, Storage, StoredPasskey,
-    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
-    VerificationPurpose, VerificationToken, VerificationTokenStore,
+    PasskeyChallengeStore, PasskeyCredentialStore, PendingOAuthAuthorization, Session, SessionId,
+    SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
+    TokenHash, User, UserId, UserStore, VerificationPurpose, VerificationToken,
+    VerificationTokenStore,
 };
 use chrono::{DateTime, Utc};
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -60,7 +60,6 @@ impl PostgresStorage {
         Storage {
             users: self.user_store(),
             sessions: self.session_store(),
-            passwords: self.password_credential_store(),
             verification_tokens: self.verification_token_store(),
             passkey_credentials: self.passkey_credential_store(),
             passkey_challenges: self.passkey_challenge_store(),
@@ -77,12 +76,6 @@ impl PostgresStorage {
 
     pub fn session_store(&self) -> Arc<dyn SessionStore> {
         Arc::new(PgSessionStore {
-            pool: self.pool.clone(),
-        })
-    }
-
-    pub fn password_credential_store(&self) -> Arc<dyn PasswordCredentialStore> {
-        Arc::new(PgPasswordCredentialStore {
             pool: self.pool.clone(),
         })
     }
@@ -327,58 +320,6 @@ fn row_to_session(row: PgRow) -> StorageResult<Session> {
         ip: row.try_get("ip").map_err(storage)?,
         user_agent: row.try_get("user_agent").map_err(storage)?,
     })
-}
-
-// -----------------------------------------------------------------------------
-// password credentials
-// -----------------------------------------------------------------------------
-
-struct PgPasswordCredentialStore {
-    pool: PgPool,
-}
-
-#[async_trait]
-impl PasswordCredentialStore for PgPasswordCredentialStore {
-    async fn set_password(&self, credential: PasswordCredential) -> StorageResult<()> {
-        sqlx::query(
-            "INSERT INTO password_credentials (user_id, hash, updated_at)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (user_id) DO UPDATE SET hash = EXCLUDED.hash, updated_at = EXCLUDED.updated_at",
-        )
-        .bind(uuid_to_bytes(credential.user_id.0))
-        .bind(&credential.hash)
-        .bind(credential.updated_at)
-        .execute(&self.pool)
-        .await
-        .map_err(storage)?;
-        Ok(())
-    }
-
-    async fn get_password(&self, user_id: UserId) -> StorageResult<Option<PasswordCredential>> {
-        let row = sqlx::query(
-            "SELECT user_id, hash, updated_at FROM password_credentials WHERE user_id = $1",
-        )
-        .bind(uuid_to_bytes(user_id.0))
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
-        let Some(row) = row else { return Ok(None) };
-        let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err(storage)?;
-        Ok(Some(PasswordCredential {
-            user_id: UserId(uuid_from_row(user_id_bytes)?),
-            hash: row.try_get("hash").map_err(storage)?,
-            updated_at: row.try_get("updated_at").map_err(storage)?,
-        }))
-    }
-
-    async fn delete_password(&self, user_id: UserId) -> StorageResult<()> {
-        sqlx::query("DELETE FROM password_credentials WHERE user_id = $1")
-            .bind(uuid_to_bytes(user_id.0))
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
-        Ok(())
-    }
 }
 
 // -----------------------------------------------------------------------------

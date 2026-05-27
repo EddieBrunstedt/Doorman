@@ -48,8 +48,7 @@ pub struct MagicLinkConfig {
     pub url_template: String,
     /// When `true`, a request for an unknown email provisions a new user
     /// (email unverified until the link is consumed). When `false`, the
-    /// request silently succeeds without sending mail — same shape as
-    /// `request_password_reset` for unknown addresses, so the endpoint
+    /// request silently succeeds without sending mail, so the endpoint
     /// does not leak which emails are registered.
     pub allow_signup: bool,
     /// Rate-limit policies applied to the request endpoint. Both the
@@ -84,9 +83,8 @@ impl MagicLinkRateLimits {
 impl Default for MagicLinkRateLimits {
     fn default() -> Self {
         Self {
-            // Same posture as password reset: a legitimate user clicking
-            // "send me a link" a couple of times is fine; an attacker
-            // hammering an inbox is not.
+            // A legitimate user clicking "send me a link" a couple of
+            // times is fine; an attacker hammering an inbox is not.
             request_per_ip: Some(RateLimitPolicy::new(5, Duration::from_secs(60 * 60))),
             request_per_identifier: Some(RateLimitPolicy::new(3, Duration::from_secs(60 * 60))),
         }
@@ -155,11 +153,7 @@ impl MagicLinkManager {
 
     /// Issue a magic link to `email`. Returns `Ok(())` regardless of
     /// whether the email is registered (or whether signup was triggered),
-    /// matching the silent-success contract of
-    /// [`PasswordAuthManager::request_password_reset`] so the endpoint
-    /// cannot be used to enumerate accounts.
-    ///
-    /// [`PasswordAuthManager::request_password_reset`]: crate::password_auth::PasswordAuthManager::request_password_reset
+    /// so the endpoint cannot be used to enumerate accounts.
     #[tracing::instrument(
         skip(self, email, context),
         fields(method = "magic_link", user_id = tracing::field::Empty),
@@ -278,8 +272,7 @@ impl MagicLinkManager {
         if email_was_unverified {
             // Clicking a link sent to the address proves ownership; mark
             // the email verified so subsequent flows that check it (e.g.
-            // OAuth linking, password login with `require_email_verification`)
-            // see a verified account.
+            // OAuth linking) see a verified account.
             user.email_verified_at = Some(now);
             user.updated_at = now;
             self.users.update_user(user.clone()).await?;

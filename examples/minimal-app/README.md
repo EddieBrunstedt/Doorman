@@ -3,8 +3,8 @@
 Runnable Axum app showing the `bauth_axum::quickstart` path with:
 
 - SQLite storage via `bauth-sqlx`
-- password registration/login/logout
 - passkey registration/login
+- magic-link signup/login with email bodies printed to the server terminal
 - optional Google OAuth
 - `/api/me`
 - one static HTML page, no frontend build step
@@ -34,5 +34,6 @@ For Google OAuth, register this callback URL with Google:
 http://localhost:3000/auth/oauth/google/callback
 ```
 
-This example uses the development defaults for email and rate limiting. It
-is a quickstart reference, not a production deployment template.
+This example uses a terminal-printing email sender and the development
+rate-limiter default. It is a quickstart reference, not a production
+deployment template.

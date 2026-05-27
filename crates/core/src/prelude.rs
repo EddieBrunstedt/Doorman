@@ -24,18 +24,14 @@ pub use crate::oauth::{
     StartedAuthorization,
 };
 pub use crate::passkey::{PasskeyConfig, PasskeyManager};
-pub use crate::password::PasswordPolicy;
-pub use crate::password_auth::{
-    PasswordAuthConfig, PasswordAuthManager, PasswordRateLimits, RegisterOutcome,
-};
 pub use crate::rate_limit::{NoopRateLimiter, RateLimitDecision, RateLimitPolicy, RateLimiter};
 pub use crate::session::{
     IssuedSession, SessionConfig, SessionContext, SessionInvalidationHook, SessionManager,
 };
 pub use crate::storage::{
     OAuthIdentity, OAuthIdentityStore, OAuthStateId, OAuthStateStore, PasskeyChallengeId,
-    PasskeyChallengeStore, PasskeyCredentialStore, PasswordCredential, PasswordCredentialStore,
-    PendingOAuthAuthorization, Session, SessionId, SessionStore, Storage, StoredPasskey,
-    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
-    VerificationPurpose, VerificationToken, VerificationTokenStore,
+    PasskeyChallengeStore, PasskeyCredentialStore, PendingOAuthAuthorization, Session, SessionId,
+    SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
+    TokenHash, User, UserId, UserStore, VerificationPurpose, VerificationToken,
+    VerificationTokenStore,
 };

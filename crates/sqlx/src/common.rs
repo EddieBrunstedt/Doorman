@@ -31,7 +31,6 @@ pub(crate) fn uuid_from_row(b: Vec<u8>) -> StorageResult<Uuid> {
 pub(crate) fn purpose_to_str(p: VerificationPurpose) -> &'static str {
     match p {
         VerificationPurpose::EmailVerification => "email_verification",
-        VerificationPurpose::PasswordReset => "password_reset",
         VerificationPurpose::MagicLink => "magic_link",
     }
 }
@@ -39,7 +38,6 @@ pub(crate) fn purpose_to_str(p: VerificationPurpose) -> &'static str {
 pub(crate) fn purpose_from_str(s: &str) -> StorageResult<VerificationPurpose> {
     match s {
         "email_verification" => Ok(VerificationPurpose::EmailVerification),
-        "password_reset" => Ok(VerificationPurpose::PasswordReset),
         "magic_link" => Ok(VerificationPurpose::MagicLink),
         other => Err(StorageError::msg(format!(
             "unknown verification purpose `{other}` in database"

@@ -9,8 +9,7 @@ rust-version.workspace = true
 description = "Axum HTTP integration for the bauth authentication library."
 
 [features]
-default = ["password", "passkey", "oauth", "magic_link"]
-password = []
+default = ["passkey", "oauth", "magic_link"]
 passkey = []
 oauth = []
 magic_link = []

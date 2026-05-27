@@ -4,33 +4,11 @@ mod common;
 
 use axum::Router;
 use axum::http::StatusCode;
-use bauth_axum::dto::{AuthResponse, RegisterRequest, SessionDto};
-use common::TestApp;
-use serde_json::json;
-
-async fn register(client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
-    let resp = client
-        .post(app.url("/auth/password/register"))
-        .json(&RegisterRequest {
-            email: email.into(),
-            password: "hunter22hunter22".into(),
-        })
-        .send()
-        .await
-        .expect("register");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    resp.json().await.expect("register body")
-}
+use bauth_axum::dto::{AuthResponse, MagicLinkConsumeRequest, RequestMagicLinkRequest, SessionDto};
+use common::{TestApp, token_from_email};
 
 async fn login(client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
-    let resp = client
-        .post(app.url("/auth/password/login"))
-        .json(&json!({"email": email, "password": "hunter22hunter22"}))
-        .send()
-        .await
-        .expect("login");
-    assert_eq!(resp.status(), StatusCode::OK);
-    resp.json().await.expect("login body")
+    common::login(client, app, email).await
 }
 
 #[tokio::test]
@@ -38,7 +16,7 @@ async fn list_sessions_marks_caller_session_as_current() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
-    let first = register(&client, &app, "alice@example.com").await;
+    let first = login(&client, &app, "alice@example.com").await;
     let second = login(&client, &app, "alice@example.com").await;
     let third = login(&client, &app, "alice@example.com").await;
 
@@ -74,21 +52,33 @@ async fn list_sessions_exposes_ip_and_user_agent() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
-    // Register supplying an X-Forwarded-For + User-Agent so the recorded
-    // SessionContext is non-empty.
+    // Drive the magic-link flow supplying an X-Forwarded-For + User-Agent so
+    // the recorded SessionContext is non-empty.
     let resp = client
-        .post(app.url("/auth/password/register"))
+        .post(app.url("/auth/magic-link/request"))
         .header("x-forwarded-for", "203.0.113.5")
         .header(reqwest::header::USER_AGENT, "test-agent/1.0")
-        .json(&RegisterRequest {
+        .json(&RequestMagicLinkRequest {
             email: "carol@example.com".into(),
-            password: "hunter22hunter22".into(),
         })
         .send()
         .await
-        .expect("register");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let issued: AuthResponse = resp.json().await.expect("register body");
+        .expect("request");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let sent = app.email.sent();
+    let token = token_from_email(&sent.last().expect("email").body_text);
+
+    let consume = client
+        .post(app.url("/auth/magic-link/consume"))
+        .header("x-forwarded-for", "203.0.113.5")
+        .header(reqwest::header::USER_AGENT, "test-agent/1.0")
+        .json(&MagicLinkConsumeRequest { token })
+        .send()
+        .await
+        .expect("consume");
+    assert_eq!(consume.status(), StatusCode::OK);
+    let issued: AuthResponse = consume.json().await.expect("body");
 
     let sessions: Vec<SessionDto> = client
         .get(app.url("/auth/sessions"))
@@ -113,7 +103,7 @@ async fn delete_session_revokes_target_and_leaves_caller_authenticated() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
-    let caller = register(&client, &app, "dan@example.com").await;
+    let caller = login(&client, &app, "dan@example.com").await;
     let other = login(&client, &app, "dan@example.com").await;
 
     // Caller revokes the other session.
@@ -154,8 +144,8 @@ async fn delete_session_owned_by_another_user_returns_session_not_found() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
-    let alice = register(&client, &app, "alice@example.com").await;
-    let bob = register(&client, &app, "bob@example.com").await;
+    let alice = login(&client, &app, "alice@example.com").await;
+    let bob = login(&client, &app, "bob@example.com").await;
 
     // Alice tries to delete Bob's session by id.
     let resp = client
@@ -202,7 +192,7 @@ async fn delete_session_with_malformed_id_returns_session_not_found() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
-    let alice = register(&client, &app, "alice@example.com").await;
+    let alice = login(&client, &app, "alice@example.com").await;
 
     let resp = client
         .delete(app.url("/auth/sessions/not-a-uuid"))

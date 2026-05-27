@@ -7,9 +7,8 @@ ship behind cargo features:
 - `postgres` — `PostgresStorage` for Postgres databases.
 
 Both implement every storage trait the library defines: `UserStore`,
-`SessionStore`, `PasswordCredentialStore`, `VerificationTokenStore`,
-`PasskeyCredentialStore`, `PasskeyChallengeStore`, `OAuthIdentityStore`,
-`OAuthStateStore`.
+`SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`,
+`PasskeyChallengeStore`, `OAuthIdentityStore`, `OAuthStateStore`.
 
 ## Usage
 

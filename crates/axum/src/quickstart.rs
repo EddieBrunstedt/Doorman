@@ -4,9 +4,9 @@
 //! they need to construct. [`quickstart`] takes the composite
 //! [`bauth_core::storage::Storage`] (typically obtained in one call from a
 //! storage adapter such as `bauth-sqlx`) plus opt-in per-method configs,
-//! constructs the `SessionManager`/`PasswordAuthManager`/`PasskeyManager`/
-//! `OAuthManager`/`MagicLinkManager` internally with sensible defaults, and
-//! returns a fully built [`BauthAxum`].
+//! constructs the `SessionManager`/`PasskeyManager`/`OAuthManager`/
+//! `MagicLinkManager` internally with sensible defaults, and returns a
+//! fully built [`BauthAxum`].
 //!
 //! Defaults applied when the host does not override them:
 //! - [`Clock`] → [`SystemClock`]
@@ -47,8 +47,6 @@ use bauth_core::magic_link::{MagicLinkConfig, MagicLinkManager};
 use bauth_core::oauth::{OAuthConfig, OAuthManager, OAuthProvider};
 #[cfg(feature = "passkey")]
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
-#[cfg(feature = "password")]
-use bauth_core::password_auth::{PasswordAuthConfig, PasswordAuthManager};
 
 use url::Url;
 
@@ -67,7 +65,7 @@ use crate::warnings::Warnings;
 /// use bauth_axum::prelude::*;
 ///
 /// let auth = bauth_axum::quickstart(storage)
-///     .password(PasswordAuthConfig::default())
+///     .passkey(PasskeyConfig::new("example.com", origin, "Example"))
 ///     .cookie(CookieConfig::default())
 ///     .build()?;
 /// ```
@@ -79,7 +77,7 @@ pub fn quickstart(storage: Storage) -> QuickstartBuilder {
 ///
 /// Collects the storage, the orthogonal collaborators (clock / audit /
 /// email / rate limiter), the session config, the cookie config, and the
-/// opt-in per-method configs (password / passkey / oauth / magic-link).
+/// opt-in per-method configs (passkey / oauth / magic-link).
 /// Construction of the core managers happens in [`build`](Self::build).
 pub struct QuickstartBuilder {
     storage: Storage,
@@ -95,8 +93,6 @@ pub struct QuickstartBuilder {
 
     external_origin: Option<Url>,
 
-    #[cfg(feature = "password")]
-    password: Option<PasswordAuthConfig>,
     #[cfg(feature = "passkey")]
     passkey: Option<PasskeyConfig>,
     #[cfg(feature = "oauth")]
@@ -125,8 +121,6 @@ impl QuickstartBuilder {
             csrf_config: None,
             silence_warnings: false,
             external_origin: None,
-            #[cfg(feature = "password")]
-            password: None,
             #[cfg(feature = "passkey")]
             passkey: None,
             #[cfg(feature = "oauth")]
@@ -163,8 +157,7 @@ impl QuickstartBuilder {
     }
 
     /// Override the default [`NoopEmailSender`]. Required for the
-    /// verification, password-reset, and magic-link flows to actually
-    /// deliver mail.
+    /// magic-link flows to actually deliver mail.
     ///
     /// [`NoopEmailSender`]: bauth_core::email::NoopEmailSender
     pub fn email(mut self, email: Arc<dyn EmailSender>) -> Self {
@@ -205,13 +198,6 @@ impl QuickstartBuilder {
     /// and disabled otherwise.
     pub fn with_csrf(mut self, config: CsrfConfig) -> Self {
         self.csrf_config = Some(config);
-        self
-    }
-
-    /// Enable password flows with the supplied config.
-    #[cfg(feature = "password")]
-    pub fn password(mut self, config: PasswordAuthConfig) -> Self {
-        self.password = Some(config);
         self
     }
 
@@ -294,20 +280,11 @@ impl QuickstartBuilder {
             }
             bauth_core::rate_limit::RateLimiterKind::Custom => {}
         }
-        #[cfg(all(feature = "password", feature = "oauth"))]
-        if let (Some(password_cfg), Some(oauth_setup)) =
-            (self.password.as_ref(), self.oauth.as_ref())
-            && oauth_setup.config.allow_email_linking
-            && !password_cfg.require_email_verification
-        {
-            warnings.unsafe_oauth_email_linking = true;
-        }
-
         // Build the cache up-front so its invalidator can be attached to
         // the `SessionManager` before any dependent manager clones it.
         // Every clone captures the same invalidation hook, so revocations
-        // routed through `PasswordAuthManager::logout`,
-        // `reset_password`, etc. evict the cache for free.
+        // routed through manager logout / revoke paths evict the cache for
+        // free.
         let cache = SessionCache::new(self.cache_config.unwrap_or_default());
 
         let session_manager = SessionManager::new(
@@ -333,22 +310,6 @@ impl QuickstartBuilder {
 
         if let Some(csrf_config) = self.csrf_config {
             builder = builder.with_csrf(csrf_config);
-        }
-
-        #[cfg(feature = "password")]
-        if let Some(config) = self.password {
-            let manager = PasswordAuthManager::new(
-                self.storage.users.clone(),
-                self.storage.passwords.clone(),
-                self.storage.verification_tokens.clone(),
-                session_manager.clone(),
-                email.clone(),
-                clock.clone(),
-                audit.clone(),
-                limiter.clone(),
-                config,
-            );
-            builder = builder.password_manager(manager);
         }
 
         #[cfg(feature = "passkey")]

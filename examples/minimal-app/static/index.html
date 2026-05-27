@@ -16,21 +16,19 @@
   <body>
     <h1>bauth minimal app</h1>
     <p>
-      Password auth, passkeys, optional Google OAuth, and <code>/api/me</code>
-      served by one Axum process.
+      Passkeys, magic links, optional Google OAuth, and <code>/api/me</code>
+      served by one Axum process. Magic-link emails are printed to the server
+      terminal for local development.
     </p>
 
-    <form id="register">
-      <h2>Register / login with password</h2>
+    <form id="magic-link">
+      <h2>Magic link</h2>
       <label>Email <input name="email" type="email" value="alice@example.com" required /></label>
-      <label>Password <input name="password" type="password" value="correct horse battery staple" required /></label>
-      <button name="action" value="register">Register</button>
-      <button name="action" value="login">Login</button>
+      <button>Send magic link</button>
     </form>
 
     <form id="passkey-login">
       <h2>Passkeys</h2>
-      <p>Register a passkey after password login, then try passkey login.</p>
       <label>Email <input name="email" type="email" value="alice@example.com" required /></label>
       <label>Device name <input name="name" value="local device" /></label>
       <button name="action" value="register-passkey">Register passkey</button>
@@ -47,17 +45,10 @@
       <p><a href="/auth/oauth/google/start?return_to=/">Continue with Google</a></p>
     </section>
 
-    <form id="password-reset-request">
-      <h2>Password reset</h2>
-      <label>Email <input name="email" type="email" value="alice@example.com" required /></label>
-      <button>Request reset email</button>
-      <p>With the demo NoopEmailSender, inspect your real EmailSender in a production app.</p>
-    </form>
-
     <section>
       <h2>Current session</h2>
       <button id="me">GET /api/me</button>
-      <button id="logout">Logout</button>
+      <button id="logout">Logout (revoke current session)</button>
       <pre id="out">ready</pre>
     </section>
 
@@ -154,6 +145,15 @@
         };
       }
 
+      async function requestMagicLink(email) {
+        await api("/auth/magic-link/request", "POST", { email });
+        return "magic link sent; copy it from the server terminal";
+      }
+
+      async function consumeMagicLink(token) {
+        return api("/auth/magic-link/consume", "POST", { token });
+      }
+
       async function registerPasskey(name) {
         const start = await api("/auth/passkey/register/start", "POST");
         const cred = await navigator.credentials.create(decodeCreationOptions(start.options));
@@ -175,13 +175,19 @@
         });
       }
 
-      document.querySelector("#register").addEventListener("submit", async (event) => {
+      document.querySelector("#magic-link").addEventListener("submit", async (event) => {
         event.preventDefault();
         const form = new FormData(event.submitter.form);
-        const body = { email: form.get("email"), password: form.get("password") };
-        const path = event.submitter.value === "register" ? "/auth/password/register" : "/auth/password/login";
-        try { log(await api(path, "POST", body)); } catch (err) { log(String(err)); }
+        try { log(await requestMagicLink(form.get("email"))); } catch (err) { log(String(err)); }
       });
+
+      const magicToken = new URLSearchParams(window.location.search).get("magic_token");
+      if (magicToken) {
+        consumeMagicLink(magicToken)
+          .then(log)
+          .then(() => history.replaceState(null, "", "/"))
+          .catch((err) => log(String(err)));
+      }
 
       document.querySelector("#passkey-login").addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -194,28 +200,17 @@
         } catch (err) { log(String(err)); }
       });
 
-      document.querySelector("#password-reset-request").addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const form = new FormData(event.currentTarget);
-        try { log(await api("/auth/password/reset/request", "POST", { email: form.get("email") }) ?? "ok"); }
-        catch (err) { log(String(err)); }
-      });
-
       document.querySelector("#me").addEventListener("click", async () => {
         try { log(await api("/api/me")); } catch (err) { log(String(err)); }
       });
 
       document.querySelector("#logout").addEventListener("click", async () => {
-        try { log(await api("/auth/password/logout", "POST") ?? "logged out"); }
-        catch (err) { log(String(err)); }
+        try {
+          const me = await api("/api/me");
+          await api(`/auth/sessions/${me.session.id}`, "DELETE");
+          log("logged out");
+        } catch (err) { log(String(err)); }
       });
-
-      const params = new URLSearchParams(location.search);
-      if (params.has("verify_token")) {
-        api("/auth/password/verify-email", "POST", { token: params.get("verify_token") })
-          .then(() => log("email verified"))
-          .catch((err) => log(String(err)));
-      }
     </script>
   </body>
 </html>

@@ -10,14 +10,11 @@ use std::sync::{Arc, Mutex};
 
 use bauth_axum::config::CookieConfig;
 use bauth_axum::quickstart;
-use bauth_core::audit::NoopAuditSink;
 use bauth_core::memory::{
     InMemoryOAuthIdentityStore, InMemoryOAuthStateStore, InMemoryPasskeyChallengeStore,
-    InMemoryPasskeyCredentialStore, InMemoryPasswordCredentialStore, InMemorySessionStore,
-    InMemoryUserStore, InMemoryVerificationTokenStore,
+    InMemoryPasskeyCredentialStore, InMemorySessionStore, InMemoryUserStore,
+    InMemoryVerificationTokenStore,
 };
-use bauth_core::oauth::OAuthConfig;
-use bauth_core::password_auth::{PasswordAuthConfig, PasswordRateLimits};
 use bauth_core::rate_limit::NoopRateLimiter;
 use bauth_core::storage::Storage;
 use tracing_subscriber::fmt::MakeWriter;
@@ -27,7 +24,7 @@ struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
 
 impl CaptureWriter {
     fn output(&self) -> String {
-        String::from_utf8(self.0.lock().unwrap().clone()).expect("utf-8")
+        String::from_utf8(self.0.lock().expect("capture writer lock").clone()).expect("utf-8")
     }
 }
 
@@ -35,7 +32,10 @@ struct CaptureHandle(Arc<Mutex<Vec<u8>>>);
 
 impl io::Write for CaptureHandle {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
+        self.0
+            .lock()
+            .expect("capture writer lock")
+            .extend_from_slice(buf);
         Ok(buf.len())
     }
 
@@ -56,7 +56,6 @@ fn fresh_storage() -> Storage {
     Storage {
         users: Arc::new(InMemoryUserStore::new()),
         sessions: Arc::new(InMemorySessionStore::new()),
-        passwords: Arc::new(InMemoryPasswordCredentialStore::new()),
         verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
         passkey_credentials: Arc::new(InMemoryPasskeyCredentialStore::new()),
         passkey_challenges: Arc::new(InMemoryPasskeyChallengeStore::new()),
@@ -163,34 +162,6 @@ fn cookie_warning_fires_when_not_silenced() {
     assert!(
         output.contains("cookie.secure"),
         "expected cookie warning for non-localhost domain over plaintext HTTP; got: {output}"
-    );
-}
-
-#[test]
-fn unsafe_oauth_email_linking_warns() {
-    let output = capture(|| {
-        let _ = quickstart(fresh_storage())
-            .password(PasswordAuthConfig {
-                require_email_verification: false,
-                rate_limits: PasswordRateLimits::disabled(),
-                ..PasswordAuthConfig::default()
-            })
-            .oauth_with(
-                std::iter::empty(),
-                OAuthConfig {
-                    allow_email_linking: true,
-                    ..OAuthConfig::default()
-                },
-            )
-            .external_origin("https://example.invalid".parse().expect("url"))
-            .audit(Arc::new(NoopAuditSink)) // already noop by default but explicit for clarity
-            .build()
-            .expect("build");
-    });
-
-    assert!(
-        output.contains("allow_email_linking"),
-        "expected oauth/email-linking warning, got: {output}"
     );
 }
 

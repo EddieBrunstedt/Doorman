@@ -20,8 +20,8 @@ use bauth_core::email::EmailSender;
 use bauth_core::magic_link::{MagicLinkConfig, MagicLinkRateLimits, TOKEN_PLACEHOLDER};
 use bauth_core::memory::{
     InMemoryEmailSender, InMemoryOAuthIdentityStore, InMemoryOAuthStateStore,
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemoryPasswordCredentialStore,
-    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
+    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
+    InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::storage::Storage;
 use reqwest::header;
@@ -43,7 +43,6 @@ impl MagicLinkApp {
         let storage = Storage {
             users: Arc::new(InMemoryUserStore::new()),
             sessions: Arc::new(InMemorySessionStore::new()),
-            passwords: Arc::new(InMemoryPasswordCredentialStore::new()),
             verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
             passkey_credentials: Arc::new(InMemoryPasskeyCredentialStore::new()),
             passkey_challenges: Arc::new(InMemoryPasskeyChallengeStore::new()),

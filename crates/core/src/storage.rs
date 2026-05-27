@@ -1,6 +1,6 @@
 //! Persistence contracts the managers run against.
 //!
-//! The eight `*Store` traits in this module are the boundary between
+//! The `*Store` traits in this module are the boundary between
 //! `bauth-core` and the host's database. The managers do not know or
 //! care how rows land on disk — they only call the trait methods.
 //!
@@ -44,7 +44,6 @@ use crate::error::StorageResult;
 pub struct Storage {
     pub users: Arc<dyn UserStore>,
     pub sessions: Arc<dyn SessionStore>,
-    pub passwords: Arc<dyn PasswordCredentialStore>,
     pub verification_tokens: Arc<dyn VerificationTokenStore>,
     pub passkey_credentials: Arc<dyn PasskeyCredentialStore>,
     pub passkey_challenges: Arc<dyn PasskeyChallengeStore>,
@@ -394,41 +393,19 @@ pub trait OAuthStateStore: Send + Sync {
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }
 
-/// A stored Argon2id password hash bound to a user.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PasswordCredential {
-    pub user_id: UserId,
-    /// The PHC-formatted hash string, including algorithm parameters and salt.
-    pub hash: String,
-    pub updated_at: DateTime<Utc>,
-}
-
-/// Persistence contract for password credentials.
-#[async_trait]
-pub trait PasswordCredentialStore: Send + Sync {
-    /// Insert or replace the password credential for a user. Implementations
-    /// must overwrite any previous credential for the same `user_id`.
-    async fn set_password(&self, credential: PasswordCredential) -> StorageResult<()>;
-
-    async fn get_password(&self, user_id: UserId) -> StorageResult<Option<PasswordCredential>>;
-
-    async fn delete_password(&self, user_id: UserId) -> StorageResult<()>;
-}
-
 /// What a verification token authorises. Tokens are kept distinct per
-/// purpose so that a leaked password-reset link can never act as an
-/// email-verification link, and vice versa.
+/// purpose so that a leaked link of one kind can never act as a link of
+/// another kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationPurpose {
     EmailVerification,
-    PasswordReset,
     MagicLink,
 }
 
 /// A single-use, time-limited token issued for an out-of-band flow such
-/// as email verification or password reset. Stored keyed by token hash so
-/// that a database breach does not yield usable tokens.
+/// as email verification or magic-link login. Stored keyed by token hash
+/// so that a database breach does not yield usable tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationToken {
     pub token_hash: TokenHash,

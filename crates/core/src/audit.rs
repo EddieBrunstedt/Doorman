@@ -47,18 +47,6 @@ pub enum AuditEventKind {
         user_id: UserId,
         session_id: SessionId,
     },
-    PasswordChanged {
-        user_id: UserId,
-    },
-    EmailVerified {
-        user_id: UserId,
-    },
-    PasswordResetRequested {
-        user_id: UserId,
-    },
-    PasswordResetCompleted {
-        user_id: UserId,
-    },
     CredentialAdded {
         user_id: UserId,
         credential_kind: CredentialKind,
@@ -79,7 +67,6 @@ pub enum AuditEventKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
-    Password,
     Passkey,
     OAuth,
     MagicLink,
@@ -89,7 +76,6 @@ pub enum AuthMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
-    Password,
     Passkey,
     OAuth,
     MagicLink,

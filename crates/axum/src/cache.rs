@@ -137,7 +137,7 @@ impl SessionCache {
     }
 
     /// Drop every entry belonging to `user_id`. Used when a user is logged
-    /// out everywhere (e.g. after a password reset).
+    /// out everywhere.
     pub fn invalidate_user(&self, user_id: UserId) {
         let mut guard = self.inner.lock().expect("session cache lock poisoned");
         let victims: Vec<TokenHash> = guard
@@ -153,7 +153,7 @@ impl SessionCache {
     /// `SessionInvalidationHook` handle that flushes matching entries from
     /// this cache. Wire it onto the [`SessionManager`] via
     /// [`SessionManager::with_invalidation_hook`] _before_ constructing the
-    /// dependent managers (password / passkey / oauth) so every clone of
+    /// dependent managers (passkey / oauth / magic-link) so every clone of
     /// the session manager evicts the cache when it invalidates a session.
     ///
     /// [`SessionManager`]: bauth_core::session::SessionManager

@@ -9,6 +9,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use bauth_axum::dto::{MeResponse, SessionDto};
 use bauth_axum::prelude::*;
+use bauth_core::error::EmailResult;
+use bauth_core::magic_link::TOKEN_PLACEHOLDER;
 use bauth_core::oauth::google::GoogleProvider;
 use bauth_sqlx::SqliteStorage;
 use url::Url;
@@ -29,13 +31,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let storage = SqliteStorage::connect(&database_url).await?;
     storage.migrate().await?;
 
-    let base_url = external_origin.as_str().trim_end_matches('/');
-    let password_config = PasswordAuthConfig {
-        verification_url_template: format!("{base_url}/?verify_token={{token}}"),
-        password_reset_url_template: format!("{base_url}/?reset_token={{token}}"),
-        ..PasswordAuthConfig::default()
-    };
-
     let rp_id = env::var("PASSKEY_RP_ID")
         .unwrap_or_else(|_| external_origin.host_str().unwrap_or("localhost").to_owned());
     let passkey_config = PasskeyConfig::new(
@@ -49,8 +44,17 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         ..CookieConfig::default()
     };
 
+    let magic_link_url_template = format!(
+        "{}?magic_token={TOKEN_PLACEHOLDER}",
+        external_origin.as_str().trim_end_matches('/')
+    );
+
     let mut builder = bauth_axum::quickstart(storage.storage())
-        .password(password_config)
+        .email(Arc::new(StdoutEmailSender))
+        .magic_link(MagicLinkConfig {
+            url_template: magic_link_url_template,
+            ..MagicLinkConfig::default()
+        })
         .passkey(passkey_config)
         .external_origin(external_origin.clone())
         .cookie(cookie_config);
@@ -82,6 +86,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+struct StdoutEmailSender;
+
+#[async_trait::async_trait]
+impl EmailSender for StdoutEmailSender {
+    async fn send(&self, email: Email) -> EmailResult<()> {
+        eprintln!(
+            "\n--- bauth email ---\nTo: {}\nSubject: {}\n\n{}\n--- end bauth email ---\n",
+            email.to, email.subject, email.body_text
+        );
+        Ok(())
+    }
 }
 
 async fn index() -> Html<&'static str> {

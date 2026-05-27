@@ -15,10 +15,9 @@ use crate::error::{EmailResult, StorageError, StorageResult};
 use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter, RateLimiterKind};
 use crate::storage::{
     OAuthIdentity, OAuthIdentityStore, OAuthStateId, OAuthStateStore, PasskeyChallengeId,
-    PasskeyChallengeStore, PasskeyCredentialStore, PasswordCredential, PasswordCredentialStore,
-    PendingOAuthAuthorization, Session, SessionId, SessionStore, StoredPasskey,
-    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
-    VerificationPurpose, VerificationToken, VerificationTokenStore,
+    PasskeyChallengeStore, PasskeyCredentialStore, PendingOAuthAuthorization, Session, SessionId,
+    SessionStore, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash,
+    User, UserId, UserStore, VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
 
 /// In-memory [`UserStore`] backed by mutex-protected hash maps.
@@ -298,49 +297,6 @@ impl EmailSender for InMemoryEmailSender {
             .lock()
             .expect("email sender mutex poisoned")
             .push(email);
-        Ok(())
-    }
-}
-
-/// In-memory [`PasswordCredentialStore`].
-#[derive(Debug, Default)]
-pub struct InMemoryPasswordCredentialStore {
-    inner: Mutex<HashMap<UserId, PasswordCredential>>,
-}
-
-impl InMemoryPasswordCredentialStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<UserId, PasswordCredential>> {
-        self.inner
-            .lock()
-            .expect("password credential store mutex poisoned")
-    }
-
-    pub fn len(&self) -> usize {
-        self.lock().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
-#[async_trait]
-impl PasswordCredentialStore for InMemoryPasswordCredentialStore {
-    async fn set_password(&self, credential: PasswordCredential) -> StorageResult<()> {
-        self.lock().insert(credential.user_id, credential);
-        Ok(())
-    }
-
-    async fn get_password(&self, user_id: UserId) -> StorageResult<Option<PasswordCredential>> {
-        Ok(self.lock().get(&user_id).cloned())
-    }
-
-    async fn delete_password(&self, user_id: UserId) -> StorageResult<()> {
-        self.lock().remove(&user_id);
         Ok(())
     }
 }

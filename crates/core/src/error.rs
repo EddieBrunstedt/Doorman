@@ -50,17 +50,8 @@ pub enum Error {
     #[error("email address is already verified")]
     EmailAlreadyVerified,
 
-    #[error("password does not meet policy: minimum length is {min_length}")]
-    WeakPassword { min_length: usize },
-
     #[error("verification token is invalid or expired")]
     InvalidVerificationToken,
-
-    #[error("password hashing failed: {0}")]
-    PasswordHashing(String),
-
-    #[error("stored password hash is corrupt")]
-    PasswordHashCorrupt,
 
     #[error("passkey ceremony is invalid or has expired")]
     InvalidPasskeyChallenge,

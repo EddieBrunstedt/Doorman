@@ -1,7 +1,7 @@
 //! Quickstart builder smoke test.
 //!
-//! Wires `bauth_axum::quickstart` against the in-memory stores, registers
-//! a user through the HTTP surface, and confirms the resulting session
+//! Wires `bauth_axum::quickstart` against the in-memory stores, signs a
+//! user in through the HTTP surface, and confirms the resulting session
 //! cookie loads back through the session layer. Validates that the
 //! quickstart path produces an end-to-end working app without the host
 //! constructing managers by hand.
@@ -15,26 +15,28 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use bauth_axum::config::CookieConfig;
-use bauth_axum::dto::{AuthResponse, RegisterRequest, UserDto};
+use bauth_axum::dto::{AuthResponse, MagicLinkConsumeRequest, RequestMagicLinkRequest, UserDto};
 use bauth_axum::extractors::AuthSession;
 use bauth_axum::quickstart;
+use bauth_core::email::EmailSender;
+use bauth_core::magic_link::{MagicLinkConfig, MagicLinkRateLimits, TOKEN_PLACEHOLDER};
 use bauth_core::memory::{
-    InMemoryOAuthIdentityStore, InMemoryOAuthStateStore, InMemoryPasskeyChallengeStore,
-    InMemoryPasskeyCredentialStore, InMemoryPasswordCredentialStore, InMemorySessionStore,
+    InMemoryEmailSender, InMemoryOAuthIdentityStore, InMemoryOAuthStateStore,
+    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
 };
-use bauth_core::password::PasswordPolicy;
-use bauth_core::password_auth::{PasswordAuthConfig, PasswordRateLimits};
 use bauth_core::storage::Storage;
 use reqwest::header;
 use tokio::net::TcpListener;
 
+const MAGIC_URL: &str = "https://app.test/magic-link?token={token}";
+
 #[tokio::test]
-async fn quickstart_password_register_and_me() {
+async fn quickstart_magic_link_and_me() {
+    let email = Arc::new(InMemoryEmailSender::new());
     let storage = Storage {
         users: Arc::new(InMemoryUserStore::new()),
         sessions: Arc::new(InMemorySessionStore::new()),
-        passwords: Arc::new(InMemoryPasswordCredentialStore::new()),
         verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
         passkey_credentials: Arc::new(InMemoryPasskeyCredentialStore::new()),
         passkey_challenges: Arc::new(InMemoryPasskeyChallengeStore::new()),
@@ -43,10 +45,11 @@ async fn quickstart_password_register_and_me() {
     };
 
     let auth = quickstart(storage)
-        .password(PasswordAuthConfig {
-            password_policy: PasswordPolicy { min_length: 8 },
-            rate_limits: PasswordRateLimits::disabled(),
-            ..PasswordAuthConfig::default()
+        .email(email.clone() as Arc<dyn EmailSender>)
+        .magic_link(MagicLinkConfig {
+            url_template: MAGIC_URL.to_string(),
+            rate_limits: MagicLinkRateLimits::disabled(),
+            ..MagicLinkConfig::default()
         })
         .cookie(CookieConfig {
             secure: false,
@@ -81,25 +84,36 @@ async fn quickstart_password_register_and_me() {
         .expect("client");
     let base = format!("http://{addr}");
 
-    let resp = client
-        .post(format!("{base}/auth/password/register"))
-        .json(&RegisterRequest {
+    let request = client
+        .post(format!("{base}/auth/magic-link/request"))
+        .json(&RequestMagicLinkRequest {
             email: "alice@example.com".into(),
-            password: "hunter22hunter22".into(),
         })
         .send()
         .await
-        .expect("register");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let set_cookie = resp
+        .expect("request magic link");
+    assert_eq!(request.status(), StatusCode::NO_CONTENT);
+
+    let sent = email.sent();
+    assert_eq!(sent.len(), 1, "one magic-link email queued");
+    let token = token_from_email(&sent[0].body_text);
+
+    let consume = client
+        .post(format!("{base}/auth/magic-link/consume"))
+        .json(&MagicLinkConsumeRequest { token })
+        .send()
+        .await
+        .expect("consume magic link");
+    assert_eq!(consume.status(), StatusCode::OK);
+    let set_cookie = consume
         .headers()
         .get(header::SET_COOKIE)
         .expect("set-cookie")
         .to_str()
-        .unwrap()
+        .expect("set-cookie text")
         .to_owned();
     assert!(set_cookie.contains("bauth_session="));
-    let body: AuthResponse = resp.json().await.expect("json");
+    let body: AuthResponse = consume.json().await.expect("json");
     assert_eq!(body.user.email.as_deref(), Some("alice@example.com"));
 
     let me = client
@@ -114,6 +128,20 @@ async fn quickstart_password_register_and_me() {
 
     let _ = tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(1), server).await;
+}
+
+fn token_from_email(body: &str) -> String {
+    let prefix = MAGIC_URL
+        .split(TOKEN_PLACEHOLDER)
+        .next()
+        .expect("template has prefix");
+    let start = body.find(prefix).expect("body contains url prefix");
+    let after = &body[start + prefix.len()..];
+    after
+        .split_whitespace()
+        .next()
+        .expect("token follows prefix")
+        .to_string()
 }
 
 async fn me_handler(auth: AuthSession) -> Response {

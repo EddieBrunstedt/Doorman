@@ -4,7 +4,7 @@
 //! with the user, identity, and state stores into the two-step
 //! `start_authorization` / `finish_authorization` API a host serves to its
 //! frontend. Account linking falls out for free: the same `user_id` can own
-//! a password credential, a passkey, and one or more OAuth identities.
+//! a passkey and one or more OAuth identities.
 
 mod finish;
 pub mod github;

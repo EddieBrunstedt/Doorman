@@ -1,5 +1,5 @@
 //! Shared test scaffolding: spin up an axum app backed by in-memory storage
-//! and the password manager, expose a base URL for `reqwest`, and tear the
+//! and the magic-link manager, expose a base URL for `reqwest`, and tear the
 //! server down at the end of the test.
 
 #![allow(dead_code)]
@@ -13,22 +13,25 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use bauth_axum::config::CookieConfig;
-use bauth_axum::dto::UserDto;
+use bauth_axum::dto::{AuthResponse, MagicLinkConsumeRequest, RequestMagicLinkRequest, UserDto};
 use bauth_axum::extractors::AuthSession;
 use bauth_axum::{BauthAxum, SessionCache, SessionCacheConfig};
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::email::EmailSender;
-use bauth_core::memory::{
-    InMemoryEmailSender, InMemoryPasswordCredentialStore, InMemoryRateLimiter,
-    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
+use bauth_core::magic_link::{
+    MagicLinkConfig, MagicLinkManager, MagicLinkRateLimits, TOKEN_PLACEHOLDER,
 };
-use bauth_core::password::PasswordPolicy;
-use bauth_core::password_auth::{PasswordAuthConfig, PasswordAuthManager, PasswordRateLimits};
+use bauth_core::memory::{
+    InMemoryEmailSender, InMemoryRateLimiter, InMemorySessionStore, InMemoryUserStore,
+    InMemoryVerificationTokenStore,
+};
 use bauth_core::rate_limit::RateLimiter;
 use bauth_core::session::{SessionConfig, SessionManager};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
+
+pub const MAGIC_URL: &str = "https://app.test/magic-link?token={token}";
 
 pub struct TestApp {
     pub addr: SocketAddr,
@@ -46,8 +49,6 @@ impl TestApp {
 
         let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
         let session_store: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-        let password_store: Arc<InMemoryPasswordCredentialStore> =
-            Arc::new(InMemoryPasswordCredentialStore::new());
         let token_store: Arc<InMemoryVerificationTokenStore> =
             Arc::new(InMemoryVerificationTokenStore::new());
 
@@ -62,19 +63,18 @@ impl TestApp {
         )
         .with_invalidation_hook(cache.invalidator());
 
-        let password_manager = PasswordAuthManager::new(
+        let magic_link_manager = MagicLinkManager::new(
             user_store.clone(),
-            password_store,
             token_store,
             session_manager.clone(),
             email.clone() as Arc<dyn EmailSender>,
             clock.clone(),
             audit,
             limiter,
-            PasswordAuthConfig {
-                password_policy: PasswordPolicy { min_length: 8 },
-                rate_limits: PasswordRateLimits::disabled(),
-                ..PasswordAuthConfig::default()
+            MagicLinkConfig {
+                url_template: MAGIC_URL.to_string(),
+                rate_limits: MagicLinkRateLimits::disabled(),
+                ..MagicLinkConfig::default()
             },
         );
 
@@ -86,7 +86,7 @@ impl TestApp {
         let auth = BauthAxum::builder()
             .session_manager(session_manager)
             .user_store(user_store)
-            .password_manager(password_manager)
+            .magic_link_manager(magic_link_manager)
             .session_cache(cache)
             .cookie_config(cookie_config)
             .build()
@@ -129,6 +129,48 @@ impl TestApp {
         let _ = self.shutdown.send(());
         let _ = self.handle.await;
     }
+}
+
+/// Request a magic link for `email`, pull the token out of the in-memory
+/// email queue, consume it, and return the issued session response.
+pub async fn login(client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
+    let before = app.email.sent().len();
+    let req = client
+        .post(app.url("/auth/magic-link/request"))
+        .json(&RequestMagicLinkRequest {
+            email: email.into(),
+        })
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(req.status(), StatusCode::NO_CONTENT);
+
+    let sent = app.email.sent();
+    assert!(sent.len() > before, "magic-link email queued");
+    let token = token_from_email(sent.last().expect("email").body_text.as_str());
+
+    let consume = client
+        .post(app.url("/auth/magic-link/consume"))
+        .json(&MagicLinkConsumeRequest { token })
+        .send()
+        .await
+        .expect("consume");
+    assert_eq!(consume.status(), StatusCode::OK);
+    consume.json().await.expect("auth body")
+}
+
+pub fn token_from_email(body: &str) -> String {
+    let prefix = MAGIC_URL
+        .split(TOKEN_PLACEHOLDER)
+        .next()
+        .expect("template has prefix");
+    let start = body.find(prefix).expect("body contains url prefix");
+    let after = &body[start + prefix.len()..];
+    after
+        .split_whitespace()
+        .next()
+        .expect("token follows prefix")
+        .to_string()
 }
 
 async fn me_handler(auth: AuthSession) -> Response {

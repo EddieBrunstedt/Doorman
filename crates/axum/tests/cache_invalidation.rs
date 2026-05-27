@@ -11,27 +11,31 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
-use bauth_axum::dto::{AuthResponse, RegisterRequest, UserDto};
+use bauth_axum::dto::{AuthResponse, MagicLinkConsumeRequest, RequestMagicLinkRequest, UserDto};
 use bauth_axum::extractors::AuthSession;
 use bauth_axum::{BauthAxum, CookieConfig, SessionCache, SessionCacheConfig};
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::email::EmailSender;
-use bauth_core::memory::{
-    InMemoryEmailSender, InMemoryPasswordCredentialStore, InMemoryRateLimiter,
-    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
+use bauth_core::magic_link::{
+    MagicLinkConfig, MagicLinkManager, MagicLinkRateLimits, TOKEN_PLACEHOLDER,
 };
-use bauth_core::password::PasswordPolicy;
-use bauth_core::password_auth::{PasswordAuthConfig, PasswordAuthManager, PasswordRateLimits};
+use bauth_core::memory::{
+    InMemoryEmailSender, InMemoryRateLimiter, InMemorySessionStore, InMemoryUserStore,
+    InMemoryVerificationTokenStore,
+};
 use bauth_core::rate_limit::RateLimiter;
 use bauth_core::session::{SessionConfig, SessionManager, hash_token};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
+const MAGIC_URL: &str = "https://app.test/magic-link?token={token}";
+
 struct Harness {
     addr: SocketAddr,
     cache: SessionCache,
     session_manager: SessionManager,
+    email: Arc<InMemoryEmailSender>,
     handle: JoinHandle<()>,
     shutdown: tokio::sync::oneshot::Sender<()>,
 }
@@ -40,18 +44,16 @@ impl Harness {
     async fn start() -> Self {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-        let email: Arc<dyn EmailSender> = Arc::new(InMemoryEmailSender::new());
+        let email = Arc::new(InMemoryEmailSender::new());
         let limiter: Arc<dyn RateLimiter> = Arc::new(InMemoryRateLimiter::new(clock.clone()));
 
         let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
         let session_store: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-        let password_store: Arc<InMemoryPasswordCredentialStore> =
-            Arc::new(InMemoryPasswordCredentialStore::new());
         let token_store: Arc<InMemoryVerificationTokenStore> =
             Arc::new(InMemoryVerificationTokenStore::new());
 
         // Build the cache up-front so its invalidator can be attached to
-        // the session manager before the password manager clones it.
+        // the session manager before the magic-link manager clones it.
         let cache = SessionCache::new(SessionCacheConfig::default());
         let session_manager = SessionManager::new(
             session_store,
@@ -63,26 +65,25 @@ impl Harness {
         )
         .with_invalidation_hook(cache.invalidator());
 
-        let password_manager = PasswordAuthManager::new(
+        let magic_link_manager = MagicLinkManager::new(
             user_store.clone(),
-            password_store,
             token_store,
             session_manager.clone(),
-            email,
+            email.clone() as Arc<dyn EmailSender>,
             clock,
             audit,
             limiter,
-            PasswordAuthConfig {
-                password_policy: PasswordPolicy { min_length: 8 },
-                rate_limits: PasswordRateLimits::disabled(),
-                ..PasswordAuthConfig::default()
+            MagicLinkConfig {
+                url_template: MAGIC_URL.to_string(),
+                rate_limits: MagicLinkRateLimits::disabled(),
+                ..MagicLinkConfig::default()
             },
         );
 
         let auth = BauthAxum::builder()
             .session_manager(session_manager.clone())
             .user_store(user_store)
-            .password_manager(password_manager)
+            .magic_link_manager(magic_link_manager)
             .session_cache(cache.clone())
             .cookie_config(CookieConfig::default())
             .build()
@@ -112,6 +113,7 @@ impl Harness {
             addr,
             cache,
             session_manager,
+            email,
             handle,
             shutdown: tx,
         }
@@ -131,18 +133,44 @@ async fn me_handler(auth: AuthSession) -> Response {
     (StatusCode::OK, Json(UserDto::from(auth.user))).into_response()
 }
 
-async fn register(client: &reqwest::Client, harness: &Harness, email: &str) -> AuthResponse {
-    let resp = client
-        .post(harness.url("/auth/password/register"))
-        .json(&RegisterRequest {
+fn token_from_email(body: &str) -> String {
+    let prefix = MAGIC_URL
+        .split(TOKEN_PLACEHOLDER)
+        .next()
+        .expect("template has prefix");
+    let start = body.find(prefix).expect("body contains url prefix");
+    let after = &body[start + prefix.len()..];
+    after
+        .split_whitespace()
+        .next()
+        .expect("token follows prefix")
+        .to_string()
+}
+
+async fn login(client: &reqwest::Client, harness: &Harness, email: &str) -> AuthResponse {
+    let before = harness.email.sent().len();
+    let req = client
+        .post(harness.url("/auth/magic-link/request"))
+        .json(&RequestMagicLinkRequest {
             email: email.into(),
-            password: "hunter22hunter22".into(),
         })
         .send()
         .await
-        .expect("register");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    resp.json::<AuthResponse>().await.expect("json")
+        .expect("request");
+    assert_eq!(req.status(), StatusCode::NO_CONTENT);
+
+    let sent = harness.email.sent();
+    assert!(sent.len() > before, "email queued");
+    let token = token_from_email(&sent.last().expect("email").body_text);
+
+    let consume = client
+        .post(harness.url("/auth/magic-link/consume"))
+        .json(&MagicLinkConsumeRequest { token })
+        .send()
+        .await
+        .expect("consume");
+    assert_eq!(consume.status(), StatusCode::OK);
+    consume.json().await.expect("auth body")
 }
 
 async fn me(client: &reqwest::Client, harness: &Harness, token: &str) -> StatusCode {
@@ -160,7 +188,7 @@ async fn revoke_invalidates_cache() {
     let harness = Harness::start().await;
     let client = reqwest::Client::new();
 
-    let auth = register(&client, &harness, "alice@example.com").await;
+    let auth = login(&client, &harness, "alice@example.com").await;
 
     // First /me populates the cache.
     assert_eq!(me(&client, &harness, &auth.token).await, StatusCode::OK);
@@ -197,21 +225,8 @@ async fn revoke_all_for_user_invalidates_cache() {
     let harness = Harness::start().await;
     let client = reqwest::Client::new();
 
-    let first = register(&client, &harness, "bob@example.com").await;
-
-    // Log in a second time to create a second session for the same user;
-    // both should be cached after a /me round-trip.
-    let second_login = client
-        .post(harness.url("/auth/password/login"))
-        .json(&serde_json::json!({
-            "email": "bob@example.com",
-            "password": "hunter22hunter22",
-        }))
-        .send()
-        .await
-        .expect("login");
-    assert_eq!(second_login.status(), StatusCode::OK);
-    let second: AuthResponse = second_login.json().await.expect("json");
+    let first = login(&client, &harness, "bob@example.com").await;
+    let second = login(&client, &harness, "bob@example.com").await;
 
     assert_eq!(me(&client, &harness, &first.token).await, StatusCode::OK);
     assert_eq!(me(&client, &harness, &second.token).await, StatusCode::OK);
@@ -252,14 +267,15 @@ async fn cache_warms_on_first_authenticated_request() {
     let harness = Harness::start().await;
     let client = reqwest::Client::new();
 
-    let auth = register(&client, &harness, "carol@example.com").await;
+    let auth = login(&client, &harness, "carol@example.com").await;
     let hash = hash_token(&auth.token);
 
-    // The /auth/password/register handler issues a session but doesn't
-    // pass through the session layer, so the cache should be cold.
+    // The magic-link consume handler issues a session but the response
+    // doesn't pass back through the session layer, so the cache should be
+    // cold until the next authenticated request.
     assert!(
         harness.cache.get(&hash).is_none(),
-        "registration alone does not warm the cache"
+        "consume alone does not warm the cache"
     );
 
     assert_eq!(me(&client, &harness, &auth.token).await, StatusCode::OK);

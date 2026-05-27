@@ -26,8 +26,6 @@ use bauth_core::magic_link::MagicLinkManager;
 use bauth_core::oauth::OAuthManager;
 #[cfg(feature = "passkey")]
 use bauth_core::passkey::PasskeyManager;
-#[cfg(feature = "password")]
-use bauth_core::password_auth::PasswordAuthManager;
 
 /// Errors returned when the Axum auth surface is incompletely configured.
 #[derive(Debug, thiserror::Error)]
@@ -67,8 +65,6 @@ pub struct BauthAxumBuilder {
     external_origin: Option<Url>,
     csrf_config: Option<CsrfConfig>,
 
-    #[cfg(feature = "password")]
-    password: Option<PasswordAuthManager>,
     #[cfg(feature = "passkey")]
     passkey: Option<PasskeyManager>,
     #[cfg(feature = "oauth")]
@@ -114,7 +110,7 @@ impl BauthAxumBuilder {
     ///
     /// If the host neither supplies a cache nor wires an invalidator,
     /// revocations made through cloned `SessionManager`s held by the
-    /// password / passkey / oauth managers will not evict cached entries;
+    /// passkey / oauth / magic-link managers will not evict cached entries;
     /// they will only be cleared by the cache TTL. The
     /// [`quickstart`](crate::quickstart) entry point handles all of this
     /// automatically.
@@ -143,12 +139,6 @@ impl BauthAxumBuilder {
     /// and disabled otherwise.
     pub fn with_csrf(mut self, config: CsrfConfig) -> Self {
         self.csrf_config = Some(config);
-        self
-    }
-
-    #[cfg(feature = "password")]
-    pub fn password_manager(mut self, manager: PasswordAuthManager) -> Self {
-        self.password = Some(manager);
         self
     }
 
@@ -234,8 +224,6 @@ impl BauthAxumBuilder {
             #[cfg(feature = "oauth")]
             external_origin: self.external_origin,
 
-            #[cfg(feature = "password")]
-            password: self.password,
             #[cfg(feature = "passkey")]
             passkey: self.passkey,
             #[cfg(feature = "oauth")]

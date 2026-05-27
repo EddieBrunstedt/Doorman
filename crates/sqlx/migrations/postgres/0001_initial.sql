@@ -23,12 +23,6 @@ CREATE TABLE sessions (
 CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 
-CREATE TABLE password_credentials (
-    user_id BYTEA PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    hash TEXT NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL
-);
-
 CREATE TABLE verification_tokens (
     token_hash BYTEA NOT NULL,
     purpose TEXT NOT NULL,

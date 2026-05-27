@@ -1,10 +1,10 @@
 # bauth
 
 bauth is an Axum-first authentication library for Rust applications. It
-ships correct auth primitives — Argon2id passwords, passkeys/WebAuthn,
-PKCE OAuth, magic links, server-side opaque sessions, CSRF origin checks,
-rate limiting, and audit events — behind storage traits you can back with
-SQLx or your own database layer.
+ships correct auth primitives — passkeys/WebAuthn, PKCE OAuth, magic
+links, server-side opaque sessions, CSRF origin checks, rate limiting,
+and audit events — behind storage traits you can back with SQLx or your
+own database layer.
 
 The user-facing crate is `bauth-axum`. `bauth-core` stays
 framework-agnostic so the auth logic is testable without a router, but
@@ -45,7 +45,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     let auth = bauth_axum::quickstart(storage.storage())
-        .password(PasswordAuthConfig::default())
         .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
         .oauth([google])
         .external_origin(origin)
@@ -80,7 +79,7 @@ leave `secure = true` in production.
 ## Run the minimal app
 
 A complete runnable app lives in [`examples/minimal-app`](examples/minimal-app):
-SQLite via `bauth-sqlx`, password auth, passkeys, optional Google OAuth,
+SQLite via `bauth-sqlx`, passkeys, magic links, optional Google OAuth,
 `/api/me`, and a static HTML page with no frontend build step.
 
 ```sh
@@ -93,7 +92,6 @@ Open <http://localhost:3000>. To enable Google OAuth, set
 
 ## What ships
 
-- Password auth with Argon2id, email verification, and password reset.
 - Passkeys / WebAuthn via [`webauthn-rs`](https://crates.io/crates/webauthn-rs).
 - OAuth social login with PKCE; Google and GitHub providers are included,
   and custom providers implement `OAuthProvider`.
@@ -129,11 +127,9 @@ These mirror the startup warnings emitted by `quickstart().build()` and
 - Wire a real `AuditSink`; `NoopAuditSink` discards security events.
 - Wire a production `RateLimiter`. The built-in `InMemoryRateLimiter` is
   per-process, so multi-replica deployments need a shared backend.
-- Wire a real `EmailSender` before relying on email verification,
-  password reset, or magic links.
-- If you enable `OAuthConfig::allow_email_linking`, also set
-  `PasswordAuthConfig::require_email_verification = true` unless you
-  intentionally trust every provider's `email_verified` claim.
+- Wire a real `EmailSender` before relying on magic links.
+- If you enable `OAuthConfig::allow_email_linking`, do so only when you
+  intentionally trust the provider's `email_verified` claim.
 - Run storage migrations at startup and periodically purge expired
   sessions, verification tokens, passkey challenges, and OAuth states.
 
@@ -143,9 +139,6 @@ made an explicit operational choice.
 ## Configuration knobs
 
 - `SessionConfig::lifetime` — session lifetime; defaults to 30 days.
-- `PasswordAuthConfig` — password policy, verification/reset lifetimes,
-  URL templates, `require_email_verification`, reset-time session
-  revocation, rate limits, and email renderer.
 - `PasskeyConfig` — WebAuthn relying-party id, origin, display name, and
   challenge lifetime.
 - `OAuthConfig::allow_email_linking` — auto-link provider identities to
@@ -156,26 +149,25 @@ made an explicit operational choice.
   `SameSite`, and max ages.
 - `CsrfConfig` — override or disable the origin-check layer.
 
-Feature flags on `bauth-axum`: `password`, `passkey`, `oauth`, and
-`magic_link` (all enabled by default).
+Feature flags on `bauth-axum`: `passkey`, `oauth`, and `magic_link` (all
+enabled by default).
 
 ```toml
-bauth-axum = { version = "0.1", default-features = false, features = ["password"] }
+bauth-axum = { version = "0.1", default-features = false, features = ["passkey"] }
 ```
 
 ## Custom storage and direct manager use
 
 The happy path is `bauth-sqlx` plus `bauth_axum::quickstart(...)`. Hosts
 on another database stack implement the storage traits in `bauth-core`:
-`UserStore`, `SessionStore`, `PasswordCredentialStore`,
-`VerificationTokenStore`, `PasskeyCredentialStore`,
-`PasskeyChallengeStore`, `OAuthIdentityStore`, and `OAuthStateStore`.
+`UserStore`, `SessionStore`, `VerificationTokenStore`,
+`PasskeyCredentialStore`, `PasskeyChallengeStore`, `OAuthIdentityStore`,
+and `OAuthStateStore`.
 
 If you want full control of the HTTP surface, skip `bauth-axum` routes and
-call the core managers directly (`SessionManager`, `PasswordAuthManager`,
-`PasskeyManager`, `OAuthManager`, `MagicLinkManager`). They return
-framework-agnostic outcomes such as `IssuedSession`, `RegisterOutcome`,
-and `OAuthOutcome`.
+call the core managers directly (`SessionManager`, `PasskeyManager`,
+`OAuthManager`, `MagicLinkManager`). They return framework-agnostic
+outcomes such as `IssuedSession`, `StoredPasskey`, and `OAuthOutcome`.
 
 ## Security
 

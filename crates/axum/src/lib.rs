@@ -13,7 +13,7 @@
 //! storage.migrate().await?;
 //!
 //! let auth = bauth_axum::quickstart(storage.storage())
-//!     .password(PasswordAuthConfig::default())
+//!     .passkey(PasskeyConfig::new("example.com", origin, "Example"))
 //!     .external_origin("https://app.example.com".parse()?)
 //!     .cookie(CookieConfig::default())
 //!     .build()?;

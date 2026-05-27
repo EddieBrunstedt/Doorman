@@ -57,11 +57,11 @@ impl EmailSender for NoopEmailSender {
 /// }
 ///
 /// impl BauthEmails for MyEmails {
-///     fn verification_email(&self, user: &User, url: &str) -> Email {
+///     fn magic_link_email(&self, user: &User, url: &str) -> Email {
 ///         Email {
 ///             to: user.email.clone().unwrap_or_default(),
-///             subject: format!("Confirm your {} account", self.brand),
-///             body_text: format!("Visit {url} to confirm."),
+///             subject: format!("Sign in to {}", self.brand),
+///             body_text: format!("Visit {url} to sign in."),
 ///             body_html: None,
 ///         }
 ///     }
@@ -73,34 +73,6 @@ impl EmailSender for NoopEmailSender {
 /// from `user.email.clone().unwrap_or_default()` for convenience; custom
 /// impls should do the same.
 pub trait BauthEmails: Send + Sync {
-    fn verification_email(&self, user: &User, url: &str) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
-            subject: "Verify your email address".to_string(),
-            body_text: format!(
-                "Hello,\n\n\
-                 Please confirm your email address by visiting the link below:\n\n\
-                 {url}\n\n\
-                 If you did not request this, you can ignore this message.\n"
-            ),
-            body_html: None,
-        }
-    }
-
-    fn password_reset_email(&self, user: &User, url: &str) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
-            subject: "Reset your password".to_string(),
-            body_text: format!(
-                "Hello,\n\n\
-                 A password reset was requested for your account. To choose a new password, visit:\n\n\
-                 {url}\n\n\
-                 If you did not request this you can safely ignore this message — your password will not change.\n"
-            ),
-            body_html: None,
-        }
-    }
-
     fn magic_link_email(&self, user: &User, url: &str) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),

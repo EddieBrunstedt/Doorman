@@ -39,10 +39,6 @@ pub struct Warnings {
     /// is the per-process
     /// [`InMemoryRateLimiter`](bauth_core::memory::InMemoryRateLimiter).
     pub in_memory_rate_limiter: bool,
-    /// OAuth is configured to auto-link by email but password auth does
-    /// not require local email verification — the host is implicitly
-    /// trusting every provider's `email_verified` flag.
-    pub unsafe_oauth_email_linking: bool,
 }
 
 impl Warnings {
@@ -77,14 +73,6 @@ impl Warnings {
                  .silence_warnings() once you have made an informed choice.",
             );
         }
-        if self.unsafe_oauth_email_linking {
-            out.push(
-                "OAuth allow_email_linking = true with password require_email_verification = \
-                 false. Auto-linking OAuth identities without local email verification trusts \
-                 each provider's `email_verified` field — set require_email_verification = \
-                 true on PasswordAuthConfig, or set allow_email_linking = false on OAuthConfig.",
-            );
-        }
         out
     }
 
@@ -94,7 +82,6 @@ impl Warnings {
             && !self.noop_audit
             && !self.noop_rate_limiter
             && !self.in_memory_rate_limiter
-            && !self.unsafe_oauth_email_linking
     }
 
     /// Emit the warnings to the configured sink — `tracing::warn!` when a
@@ -170,15 +157,13 @@ mod tests {
             noop_audit: true,
             noop_rate_limiter: true,
             in_memory_rate_limiter: true,
-            unsafe_oauth_email_linking: true,
         };
         let lines = w.messages();
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 4);
         assert!(lines[0].contains("cookie.secure"));
         assert!(lines[1].contains("AuditSink"));
         assert!(lines[2].contains("Rate limiting is disabled"));
         assert!(lines[3].contains("InMemoryRateLimiter"));
-        assert!(lines[4].contains("allow_email_linking"));
     }
 
     #[test]

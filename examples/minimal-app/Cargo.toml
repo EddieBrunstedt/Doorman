@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+async-trait.workspace = true
 axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1"] }
 bauth-axum = { path = "../../crates/axum" }
 bauth-core = { path = "../../crates/core" }

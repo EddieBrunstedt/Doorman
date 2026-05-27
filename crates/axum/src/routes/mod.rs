@@ -6,18 +6,18 @@
 
 use axum::Router;
 
-#[cfg(any(feature = "password", feature = "passkey", feature = "magic_link"))]
+#[cfg(any(feature = "passkey", feature = "magic_link"))]
 use axum::Json;
-#[cfg(any(feature = "password", feature = "passkey", feature = "magic_link"))]
+#[cfg(any(feature = "passkey", feature = "magic_link"))]
 use axum::http::{StatusCode, header};
-#[cfg(any(feature = "password", feature = "passkey", feature = "magic_link"))]
+#[cfg(any(feature = "passkey", feature = "magic_link"))]
 use axum::response::{IntoResponse, Response};
 
-#[cfg(any(feature = "password", feature = "passkey", feature = "magic_link"))]
+#[cfg(any(feature = "passkey", feature = "magic_link"))]
 use crate::config::CookieConfig;
-#[cfg(any(feature = "password", feature = "passkey", feature = "magic_link"))]
+#[cfg(any(feature = "passkey", feature = "magic_link"))]
 use crate::cookies::session_cookie;
-#[cfg(any(feature = "password", feature = "passkey", feature = "magic_link"))]
+#[cfg(any(feature = "passkey", feature = "magic_link"))]
 use crate::dto::AuthResponse;
 use crate::state::BauthState;
 
@@ -27,14 +27,12 @@ pub(crate) mod magic_link;
 pub(crate) mod oauth;
 #[cfg(feature = "passkey")]
 pub(crate) mod passkey;
-#[cfg(feature = "password")]
-pub(crate) mod password;
 pub(crate) mod sessions;
 
 /// Build a JSON response that issues a session cookie alongside an
-/// [`AuthResponse`] body. Shared by the password, passkey, and magic-link
-/// routes; the OAuth callback uses cookies + a 303 redirect instead.
-#[cfg(any(feature = "password", feature = "passkey", feature = "magic_link"))]
+/// [`AuthResponse`] body. Shared by the passkey and magic-link routes;
+/// the OAuth callback uses cookies + a 303 redirect instead.
+#[cfg(any(feature = "passkey", feature = "magic_link"))]
 pub(crate) fn auth_success(
     status: StatusCode,
     cookie_config: &CookieConfig,
@@ -50,11 +48,6 @@ pub(crate) fn router(state: BauthState) -> Router {
     // `mut` is only needed when at least one auth-method feature is enabled.
     #[allow(unused_mut)]
     let mut router: Router<BauthState> = Router::new().merge(sessions::routes());
-
-    #[cfg(feature = "password")]
-    if state.password.is_some() {
-        router = router.merge(password::routes());
-    }
 
     #[cfg(feature = "passkey")]
     if state.passkey.is_some() {

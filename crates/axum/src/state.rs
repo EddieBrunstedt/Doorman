@@ -20,8 +20,6 @@ use bauth_core::magic_link::MagicLinkManager;
 use bauth_core::oauth::OAuthManager;
 #[cfg(feature = "passkey")]
 use bauth_core::passkey::PasskeyManager;
-#[cfg(feature = "password")]
-use bauth_core::password_auth::PasswordAuthManager;
 
 /// Shared Axum router state holding configured auth managers and settings.
 #[derive(Clone)]
@@ -36,8 +34,6 @@ pub struct BauthState {
     #[cfg(feature = "oauth")]
     pub(crate) external_origin: Option<Url>,
 
-    #[cfg(feature = "password")]
-    pub(crate) password: Option<PasswordAuthManager>,
     #[cfg(feature = "passkey")]
     pub(crate) passkey: Option<PasskeyManager>,
     #[cfg(feature = "oauth")]

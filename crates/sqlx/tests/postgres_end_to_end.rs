@@ -17,29 +17,37 @@ use std::time::Duration;
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, MockClock};
 use bauth_core::email::EmailSender;
-use bauth_core::memory::{InMemoryEmailSender, InMemoryRateLimiter};
-use bauth_core::password::PasswordPolicy;
-use bauth_core::password_auth::{
-    PasswordAuthConfig, PasswordAuthManager, PasswordRateLimits, TOKEN_PLACEHOLDER,
+use bauth_core::magic_link::{
+    MagicLinkConfig, MagicLinkManager, MagicLinkRateLimits, TOKEN_PLACEHOLDER,
 };
+use bauth_core::memory::{InMemoryEmailSender, InMemoryRateLimiter};
 use bauth_core::rate_limit::RateLimiter;
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
 use bauth_core::storage::{OAuthIdentity, UserId, VerificationPurpose};
 use bauth_sqlx::PostgresStorage;
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use sqlx::PgPool;
 
-const VERIFY_URL: &str = "https://app.test/verify-email?token={token}";
-const RESET_URL: &str = "https://app.test/reset-password?token={token}";
+const MAGIC_URL: &str = "https://app.test/magic-link?token={token}";
 
-fn token_from_email(template: &str, body: &str) -> String {
-    let prefix = template
+fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
+        .single()
+        .expect("valid timestamp")
+}
+
+fn token_from_email(body: &str) -> String {
+    let prefix = MAGIC_URL
         .split(TOKEN_PLACEHOLDER)
         .next()
         .expect("template has prefix");
     let start = body.find(prefix).expect("body contains url prefix");
     let after = &body[start + prefix.len()..];
-    after.split_whitespace().next().unwrap().to_string()
+    after
+        .split_whitespace()
+        .next()
+        .expect("token follows prefix")
+        .to_string()
 }
 
 async fn fresh_storage() -> Option<PostgresStorage> {
@@ -72,9 +80,7 @@ async fn postgres_full_smoke_test() {
         return;
     };
 
-    let clock: Arc<MockClock> = Arc::new(MockClock::new(
-        Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
-    ));
+    let clock: Arc<MockClock> = Arc::new(MockClock::new(ts(2026, 1, 1)));
     let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
     let email: Arc<InMemoryEmailSender> = Arc::new(InMemoryEmailSender::new());
     let limiter: Arc<dyn RateLimiter> =
@@ -88,33 +94,25 @@ async fn postgres_full_smoke_test() {
             lifetime: Duration::from_secs(60 * 60),
         },
     );
-    let manager = PasswordAuthManager::new(
+    let manager = MagicLinkManager::new(
         storage.user_store(),
-        storage.password_credential_store(),
         storage.verification_token_store(),
         session_manager,
         email.clone() as Arc<dyn EmailSender>,
         clock as Arc<dyn Clock>,
         audit,
         limiter,
-        PasswordAuthConfig {
-            password_policy: PasswordPolicy { min_length: 8 },
-            verification_url_template: VERIFY_URL.to_string(),
-            password_reset_url_template: RESET_URL.to_string(),
-            rate_limits: PasswordRateLimits::disabled(),
-            ..PasswordAuthConfig::default()
+        MagicLinkConfig {
+            url_template: MAGIC_URL.to_string(),
+            rate_limits: MagicLinkRateLimits::disabled(),
+            ..MagicLinkConfig::default()
         },
     );
 
-    let outcome = manager
-        .register(
-            "alice@example.com",
-            "hunter22hunter22",
-            SessionContext::default(),
-        )
+    manager
+        .request_magic_link("alice@example.com", SessionContext::default())
         .await
-        .expect("register");
-    assert!(outcome.session.is_some(), "session issued on register");
+        .expect("request");
 
     let users = storage.user_store();
     let persisted = users
@@ -122,54 +120,41 @@ async fn postgres_full_smoke_test() {
         .await
         .expect("find")
         .expect("user persisted");
-    assert_eq!(persisted.id, outcome.user.id);
+    assert!(persisted.email_verified_at.is_none());
 
-    let verify_body = email
+    let magic_body = email
         .sent()
         .into_iter()
-        .find(|e| e.subject == "Verify your email address")
-        .expect("verify email queued")
+        .find(|e| e.subject == "Your sign-in link")
+        .expect("magic-link email queued")
         .body_text;
-    let verify_token = token_from_email(VERIFY_URL, &verify_body);
-    manager
-        .verify_email(&verify_token, SessionContext::default())
+    let token = token_from_email(&magic_body);
+    let outcome = manager
+        .consume_magic_link(&token, SessionContext::default())
         .await
-        .expect("verify");
+        .expect("consume");
+    assert!(outcome.is_new_user);
+    assert!(outcome.user.email_verified_at.is_some());
+    assert_eq!(outcome.user.id, persisted.id);
+    assert_eq!(outcome.session.session.user_id, persisted.id);
 
     manager
-        .login(
-            "alice@example.com",
-            "hunter22hunter22",
-            SessionContext::default(),
-        )
+        .request_magic_link("alice@example.com", SessionContext::default())
         .await
-        .expect("login");
-
-    manager
-        .request_password_reset("alice@example.com", SessionContext::default())
-        .await
-        .expect("reset request");
-    let reset_body = email
+        .expect("second request");
+    let second_body = email
         .sent()
         .into_iter()
         .rev()
-        .find(|e| e.subject == "Reset your password")
-        .expect("reset email queued")
+        .find(|e| e.subject == "Your sign-in link")
+        .expect("second magic-link email queued")
         .body_text;
-    let reset_token = token_from_email(RESET_URL, &reset_body);
-    manager
-        .reset_password(&reset_token, "newpass22newpass", SessionContext::default())
+    let second_token = token_from_email(&second_body);
+    let second = manager
+        .consume_magic_link(&second_token, SessionContext::default())
         .await
-        .expect("reset");
-
-    manager
-        .login(
-            "alice@example.com",
-            "newpass22newpass",
-            SessionContext::default(),
-        )
-        .await
-        .expect("login with new pw");
+        .expect("second consume");
+    assert!(!second.is_new_user);
 
     // OAuth identity round-trip on a fresh user, to exercise the
     // identity-store queries.
@@ -179,8 +164,8 @@ async fn postgres_full_smoke_test() {
             id: user_id,
             email: Some("bob@example.com".into()),
             email_verified_at: None,
-            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
-            updated_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            created_at: ts(2026, 1, 1),
+            updated_at: ts(2026, 1, 1),
         })
         .await
         .expect("create user");
@@ -192,8 +177,8 @@ async fn postgres_full_smoke_test() {
             subject: "sub-456".into(),
             user_id,
             email: Some("bob@example.com".into()),
-            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
-            updated_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            created_at: ts(2026, 1, 1),
+            updated_at: ts(2026, 1, 1),
         })
         .await
         .expect("link");
@@ -213,8 +198,8 @@ async fn postgres_full_smoke_test() {
             id: token_user,
             email: Some("carol@example.com".into()),
             email_verified_at: None,
-            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
-            updated_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            created_at: ts(2026, 1, 1),
+            updated_at: ts(2026, 1, 1),
         })
         .await
         .expect("user");
@@ -226,8 +211,8 @@ async fn postgres_full_smoke_test() {
             token_hash: hash,
             user_id: token_user,
             purpose: VerificationPurpose::MagicLink,
-            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
-            expires_at: Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap(),
+            created_at: ts(2026, 1, 1),
+            expires_at: ts(2099, 1, 1),
         })
         .await
         .expect("create");

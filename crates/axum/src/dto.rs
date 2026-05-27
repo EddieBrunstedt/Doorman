@@ -77,8 +77,8 @@ impl From<Session> for SessionDto {
     }
 }
 
-/// Returned by every endpoint that issues a session: register, login,
-/// passkey finish, magic-link consume, OAuth callback.
+/// Returned by every endpoint that issues a session: passkey finish,
+/// magic-link consume, OAuth callback.
 ///
 /// `token` is the raw bearer token. It is *also* set as an HttpOnly
 /// session cookie on the same response, so browser clients can ignore
@@ -156,46 +156,6 @@ impl From<OAuthIdentity> for OAuthIdentityDto {
 // ---------------------------------------------------------------------------
 // Request bodies
 // ---------------------------------------------------------------------------
-
-/// Request body for password registration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegisterRequest {
-    pub email: String,
-    pub password: String,
-}
-
-/// Request body for password login.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoginRequest {
-    pub email: String,
-    pub password: String,
-}
-
-/// Request body for changing a password while authenticated.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChangePasswordRequest {
-    pub current_password: String,
-    pub new_password: String,
-}
-
-/// Request body for starting password reset.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RequestPasswordResetRequest {
-    pub email: String,
-}
-
-/// Request body for completing password reset.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResetPasswordRequest {
-    pub token: String,
-    pub new_password: String,
-}
-
-/// Request body for consuming an email-verification token.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifyEmailRequest {
-    pub token: String,
-}
 
 /// Request body for sending a magic link.
 #[derive(Debug, Clone, Serialize, Deserialize)]

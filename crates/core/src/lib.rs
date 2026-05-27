@@ -14,8 +14,6 @@ pub mod magic_link;
 pub mod memory;
 pub mod oauth;
 pub mod passkey;
-pub mod password;
-pub mod password_auth;
 pub mod prelude;
 pub mod rate_limit;
 pub mod session;

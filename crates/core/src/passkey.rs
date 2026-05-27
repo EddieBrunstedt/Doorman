@@ -7,8 +7,7 @@
 //! meaningful step so the host can build a complete security timeline.
 //!
 //! Account linking falls out of the design for free: register a passkey
-//! against any existing user id, including one created via the password
-//! flow, and that user now has both credentials.
+//! against any existing user id and that user now has a passkey credential.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -390,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn email_normalisation_matches_password_module() {
+    fn email_normalisation_matches_authentication_lookup() {
         assert_eq!(normalize_email("  Bob@Example.COM "), "bob@example.com");
     }
 }

@@ -73,10 +73,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::EmailNotVerified => (StatusCode::FORBIDDEN, "email_not_verified"),
         Error::EmailAlreadyTaken => (StatusCode::CONFLICT, "email_already_taken"),
         Error::EmailAlreadyVerified => (StatusCode::CONFLICT, "email_already_verified"),
-        Error::WeakPassword { .. } => (StatusCode::BAD_REQUEST, "weak_password"),
         Error::InvalidVerificationToken => (StatusCode::BAD_REQUEST, "invalid_verification_token"),
-        Error::PasswordHashing(_) => (StatusCode::INTERNAL_SERVER_ERROR, "password_hashing"),
-        Error::PasswordHashCorrupt => (StatusCode::INTERNAL_SERVER_ERROR, "password_hash_corrupt"),
         Error::InvalidPasskeyChallenge => (StatusCode::BAD_REQUEST, "invalid_passkey_challenge"),
         Error::PasskeyNotFound => (StatusCode::NOT_FOUND, "passkey_not_found"),
         Error::PasskeyOwnershipMismatch => (StatusCode::FORBIDDEN, "passkey_ownership_mismatch"),
@@ -121,11 +118,5 @@ mod tests {
     fn invalid_credentials_is_401() {
         let response = error_response(&Error::InvalidCredentials);
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[test]
-    fn weak_password_is_400() {
-        let response = error_response(&Error::WeakPassword { min_length: 8 });
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

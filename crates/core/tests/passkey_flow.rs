@@ -185,7 +185,7 @@ async fn register_then_authenticate_round_trip() {
 }
 
 #[tokio::test]
-async fn registration_links_passkey_to_existing_password_user() {
+async fn registration_links_passkey_to_existing_user() {
     let h = fresh();
     let user = make_user(&h, "linker@example.com").await;
     let mut wa = authenticator();
