@@ -8,6 +8,12 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Core authentication primitives for the bauth library: storage traits, session management, and audit events."
 
+[features]
+default = []
+# Re-exports test-only helpers (e.g. `CapturingEmailSender`). Off by default;
+# enable via `[dev-dependencies] bauth-core = { ..., features = ["testing"] }`.
+testing = []
+
 [dependencies]
 async-trait.workspace = true
 base64.workspace = true
@@ -18,7 +24,7 @@ serde_json.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util"] }
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true

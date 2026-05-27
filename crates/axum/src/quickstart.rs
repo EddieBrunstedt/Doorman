@@ -12,7 +12,17 @@
 //! - [`Clock`] → [`SystemClock`]
 //! - [`AuditSink`] → [`NoopAuditSink`]
 //! - [`RateLimiter`] → [`InMemoryRateLimiter`]
-//! - [`EmailSender`] → [`NoopEmailSender`]
+//!
+//! The [`EmailSender`] has **no default**. Hosts must wire one
+//! explicitly via [`QuickstartBuilder::email`]; otherwise
+//! [`build`](QuickstartBuilder::build) returns
+//! [`BuilderError::MissingEmailSender`]. First-party transports:
+//! [`TerminalEmailSender`] (stdout) and [`FileEmailSender`] (`.eml`
+//! files on disk); both are intended for local development and trip
+//! a startup warning. Production hosts plug in their real transport
+//! (lettre, resend, SES, …) through the [`EmailSender`] trait. We chose
+//! a build-time error over a typestate because there is only one
+//! required input and the typestate plumbing did not pay for itself.
 //!
 //! These defaults are fine for development but not for production.
 //! [`build`](QuickstartBuilder::build) surfaces the mismatch via the
@@ -28,14 +38,15 @@
 //! [`RateLimiter`]: bauth_core::rate_limit::RateLimiter
 //! [`InMemoryRateLimiter`]: bauth_core::memory::InMemoryRateLimiter
 //! [`EmailSender`]: bauth_core::email::EmailSender
-//! [`NoopEmailSender`]: bauth_core::email::NoopEmailSender
+//! [`TerminalEmailSender`]: bauth_core::email::TerminalEmailSender
+//! [`FileEmailSender`]: bauth_core::email::FileEmailSender
 //! [`audit`]: QuickstartBuilder::audit
 
 use std::sync::Arc;
 
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
-use bauth_core::email::{EmailSender, NoopEmailSender};
+use bauth_core::email::EmailSender;
 use bauth_core::memory::InMemoryRateLimiter;
 use bauth_core::rate_limit::RateLimiter;
 use bauth_core::session::{SessionConfig, SessionManager};
@@ -144,10 +155,11 @@ impl QuickstartBuilder {
         self
     }
 
-    /// Override the default [`NoopEmailSender`]. Required for the
-    /// magic-link flows to actually deliver mail.
+    /// Wire the [`EmailSender`] used by the signup / recovery flows.
+    /// Required — [`build`](Self::build) returns
+    /// [`BuilderError::MissingEmailSender`] when not set.
     ///
-    /// [`NoopEmailSender`]: bauth_core::email::NoopEmailSender
+    /// [`EmailSender`]: bauth_core::email::EmailSender
     pub fn email(mut self, email: Arc<dyn EmailSender>) -> Self {
         self.email = Some(email);
         self
@@ -196,12 +208,11 @@ impl QuickstartBuilder {
         self
     }
 
-    /// Enable magic-link flows with the supplied config. Requires a real
-    /// [`EmailSender`] (set via [`email`](Self::email)) to actually
-    /// deliver links; the default [`NoopEmailSender`] silently drops them.
+    /// Enable magic-link flows with the supplied config. Pair with
+    /// [`email`](Self::email) so the rendered links actually leave the
+    /// process.
     ///
     /// [`EmailSender`]: bauth_core::email::EmailSender
-    /// [`NoopEmailSender`]: bauth_core::email::NoopEmailSender
     #[cfg(feature = "magic_link")]
     pub fn magic_link(mut self, config: MagicLinkConfig) -> Self {
         self.magic_link = Some(config);
@@ -219,7 +230,7 @@ impl QuickstartBuilder {
     pub fn build(self) -> Result<BauthAxum, BuilderError> {
         let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock));
         let audit: Arc<dyn AuditSink> = self.audit.unwrap_or_else(|| Arc::new(NoopAuditSink));
-        let email: Arc<dyn EmailSender> = self.email.unwrap_or_else(|| Arc::new(NoopEmailSender));
+        let email: Arc<dyn EmailSender> = self.email.ok_or(BuilderError::MissingEmailSender)?;
         let limiter: Arc<dyn RateLimiter> = self
             .rate_limiter
             .unwrap_or_else(|| Arc::new(InMemoryRateLimiter::new(clock.clone())));
@@ -238,6 +249,8 @@ impl QuickstartBuilder {
             }
             bauth_core::rate_limit::RateLimiterKind::Custom => {}
         }
+        // Dev-transport detection happens in the low-level builder via
+        // the explicit `email_sender` field; no need to repeat it here.
         // Build the cache up-front so its invalidator can be attached to
         // the `SessionManager` before any dependent manager clones it.
         // Every clone captures the same invalidation hook, so revocations
@@ -256,6 +269,7 @@ impl QuickstartBuilder {
         let mut builder = BauthAxumBuilder::default()
             .session_manager(session_manager.clone())
             .user_store(self.storage.users.clone())
+            .email_sender(email.clone())
             .session_cache(cache);
         builder.inherited_warnings = warnings;
         if self.silence_warnings {

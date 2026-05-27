@@ -151,6 +151,14 @@ impl MagicLinkManager {
         }
     }
 
+    /// Diagnostic accessor used by the axum builder's startup warnings
+    /// to detect dev-only email transports without exposing the
+    /// underlying `Arc<dyn EmailSender>`.
+    #[doc(hidden)]
+    pub fn email_kind(&self) -> crate::email::EmailSenderKind {
+        self.email.diagnostic_kind()
+    }
+
     /// Issue a magic link to `email`. Returns `Ok(())` regardless of
     /// whether the email is registered (or whether signup was triggered),
     /// so the endpoint cannot be used to enumerate accounts.

@@ -9,7 +9,6 @@ use axum::routing::get;
 use axum::{Json, Router};
 use bauth_axum::dto::{MeResponse, SessionDto};
 use bauth_axum::prelude::*;
-use bauth_core::error::EmailResult;
 use bauth_core::magic_link::TOKEN_PLACEHOLDER;
 use bauth_sqlx::SqliteStorage;
 use url::Url;
@@ -49,7 +48,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     );
 
     let auth = bauth_axum::quickstart(storage.storage())
-        .email(Arc::new(StdoutEmailSender))
+        .email(Arc::new(TerminalEmailSender))
         .magic_link(MagicLinkConfig {
             url_template: magic_link_url_template,
             ..MagicLinkConfig::default()
@@ -57,6 +56,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .passkey(passkey_config)
         .external_origin(external_origin.clone())
         .cookie(cookie_config)
+        .silence_warnings()
         .build()?;
     let app = Router::new()
         .route("/", get(index))
@@ -68,19 +68,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-struct StdoutEmailSender;
-
-#[async_trait::async_trait]
-impl EmailSender for StdoutEmailSender {
-    async fn send(&self, email: Email) -> EmailResult<()> {
-        eprintln!(
-            "\n--- bauth email ---\nTo: {}\nSubject: {}\n\n{}\n--- end bauth email ---\n",
-            email.to, email.subject, email.body_text
-        );
-        Ok(())
-    }
 }
 
 async fn index() -> Html<&'static str> {

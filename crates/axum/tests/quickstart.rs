@@ -21,7 +21,7 @@ use bauth_axum::quickstart;
 use bauth_core::email::EmailSender;
 use bauth_core::magic_link::{MagicLinkConfig, MagicLinkRateLimits, TOKEN_PLACEHOLDER};
 use bauth_core::memory::{
-    InMemoryEmailSender, InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore,
+    CapturingEmailSender, InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore,
     InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::storage::Storage;
@@ -32,7 +32,7 @@ const MAGIC_URL: &str = "https://app.test/magic-link?token={token}";
 
 #[tokio::test]
 async fn quickstart_magic_link_and_me() {
-    let email = Arc::new(InMemoryEmailSender::new());
+    let email = Arc::new(CapturingEmailSender::new());
     let storage = Storage {
         users: Arc::new(InMemoryUserStore::new()),
         sessions: Arc::new(InMemorySessionStore::new()),

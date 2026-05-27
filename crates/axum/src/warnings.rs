@@ -39,6 +39,13 @@ pub struct Warnings {
     /// is the per-process
     /// [`InMemoryRateLimiter`](bauth_core::memory::InMemoryRateLimiter).
     pub in_memory_rate_limiter: bool,
+    /// The wired-up [`EmailSender`](bauth_core::email::EmailSender) is a
+    /// dev-only transport
+    /// ([`TerminalEmailSender`](bauth_core::email::TerminalEmailSender)
+    /// or [`FileEmailSender`](bauth_core::email::FileEmailSender)) — mail
+    /// is being printed to stdout or written to disk, not delivered to
+    /// users.
+    pub dev_email_transport: bool,
 }
 
 impl Warnings {
@@ -73,6 +80,15 @@ impl Warnings {
                  .silence_warnings() once you have made an informed choice.",
             );
         }
+        if self.dev_email_transport {
+            out.push(
+                "Email transport is a dev-only sender (TerminalEmailSender or FileEmailSender). \
+                 Recovery and signup links are being printed to stdout or written to disk, not \
+                 delivered to users. Wire a real EmailSender (lettre, resend, SES, …) in \
+                 production. Silence this with .silence_warnings() once you have made an \
+                 informed choice.",
+            );
+        }
         out
     }
 
@@ -82,6 +98,7 @@ impl Warnings {
             && !self.noop_audit
             && !self.noop_rate_limiter
             && !self.in_memory_rate_limiter
+            && !self.dev_email_transport
     }
 
     /// Emit the warnings to the configured sink — `tracing::warn!` when a
@@ -157,13 +174,15 @@ mod tests {
             noop_audit: true,
             noop_rate_limiter: true,
             in_memory_rate_limiter: true,
+            dev_email_transport: true,
         };
         let lines = w.messages();
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), 5);
         assert!(lines[0].contains("cookie.secure"));
         assert!(lines[1].contains("AuditSink"));
         assert!(lines[2].contains("Rate limiting is disabled"));
         assert!(lines[3].contains("InMemoryRateLimiter"));
+        assert!(lines[4].contains("dev-only sender"));
     }
 
     #[test]

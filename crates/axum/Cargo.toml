@@ -12,6 +12,9 @@ description = "Axum HTTP integration for the bauth authentication library."
 default = ["passkey", "magic_link"]
 passkey = []
 magic_link = []
+# Forwards `bauth-core`'s testing helpers (e.g. `CapturingEmailSender`)
+# so axum-side tests can opt into them.
+testing = ["bauth-core/testing"]
 
 [dependencies]
 async-trait.workspace = true
@@ -34,7 +37,7 @@ uuid.workspace = true
 webauthn-rs.workspace = true
 
 [dev-dependencies]
-bauth-core = { path = "../core", version = "0.1.0" }
+bauth-core = { path = "../core", version = "0.1.0", features = ["testing"] }
 criterion.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }
 tokio = { workspace = true, features = ["net"] }

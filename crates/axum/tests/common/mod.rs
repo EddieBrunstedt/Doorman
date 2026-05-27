@@ -23,7 +23,7 @@ use bauth_core::magic_link::{
     MagicLinkConfig, MagicLinkManager, MagicLinkRateLimits, TOKEN_PLACEHOLDER,
 };
 use bauth_core::memory::{
-    InMemoryEmailSender, InMemoryRateLimiter, InMemorySessionStore, InMemoryUserStore,
+    CapturingEmailSender, InMemoryRateLimiter, InMemorySessionStore, InMemoryUserStore,
     InMemoryVerificationTokenStore,
 };
 use bauth_core::rate_limit::RateLimiter;
@@ -35,7 +35,7 @@ pub const MAGIC_URL: &str = "https://app.test/magic-link?token={token}";
 
 pub struct TestApp {
     pub addr: SocketAddr,
-    pub email: Arc<InMemoryEmailSender>,
+    pub email: Arc<CapturingEmailSender>,
     handle: JoinHandle<()>,
     shutdown: tokio::sync::oneshot::Sender<()>,
 }
@@ -44,7 +44,7 @@ impl TestApp {
     pub async fn start(host_routes: Router, secure_cookies: bool) -> Self {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-        let email = Arc::new(InMemoryEmailSender::new());
+        let email = Arc::new(CapturingEmailSender::new());
         let limiter: Arc<dyn RateLimiter> = Arc::new(InMemoryRateLimiter::new(clock.clone()));
 
         let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
@@ -86,6 +86,7 @@ impl TestApp {
         let auth = BauthAxum::builder()
             .session_manager(session_manager)
             .user_store(user_store)
+            .email_sender(email.clone() as Arc<dyn EmailSender>)
             .magic_link_manager(magic_link_manager)
             .session_cache(cache)
             .cookie_config(cookie_config)

@@ -7,7 +7,7 @@ use bauth_core::clock::{Clock, MockClock, SystemClock};
 use bauth_core::email::{Email, EmailSender};
 use bauth_core::error::Error;
 use bauth_core::memory::{
-    InMemoryAuditSink, InMemoryEmailSender, InMemorySessionStore, InMemoryUserStore,
+    CapturingEmailSender, InMemoryAuditSink, InMemorySessionStore, InMemoryUserStore,
 };
 use bauth_core::session::{
     SessionConfig, SessionContext, SessionInvalidationHook, SessionManager, hash_token,
@@ -459,7 +459,7 @@ async fn user_store_round_trip() {
 
 #[tokio::test]
 async fn email_sender_captures_messages() {
-    let sender = InMemoryEmailSender::new();
+    let sender = CapturingEmailSender::new();
     let email = Email {
         to: "user@example.com".into(),
         subject: "Verify".into(),

@@ -15,7 +15,7 @@ use bauth_core::email::EmailSender;
 use bauth_core::magic_link::{
     MagicLinkConfig, MagicLinkManager, MagicLinkRateLimits, TOKEN_PLACEHOLDER,
 };
-use bauth_core::memory::{InMemoryEmailSender, InMemoryRateLimiter};
+use bauth_core::memory::{CapturingEmailSender, InMemoryRateLimiter};
 use bauth_core::rate_limit::RateLimiter;
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
 use bauth_core::storage::{UserId, VerificationPurpose};
@@ -44,7 +44,7 @@ fn token_from_email(body: &str) -> String {
         .to_string()
 }
 
-async fn setup() -> (SqliteStorage, MagicLinkManager, Arc<InMemoryEmailSender>) {
+async fn setup() -> (SqliteStorage, MagicLinkManager, Arc<CapturingEmailSender>) {
     let storage = SqliteStorage::connect("sqlite::memory:")
         .await
         .expect("connect");
@@ -52,7 +52,7 @@ async fn setup() -> (SqliteStorage, MagicLinkManager, Arc<InMemoryEmailSender>) 
 
     let clock: Arc<MockClock> = Arc::new(MockClock::new(ts(2026, 1, 1)));
     let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-    let email: Arc<InMemoryEmailSender> = Arc::new(InMemoryEmailSender::new());
+    let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
     let limiter: Arc<dyn RateLimiter> =
         Arc::new(InMemoryRateLimiter::new(clock.clone() as Arc<dyn Clock>));
 

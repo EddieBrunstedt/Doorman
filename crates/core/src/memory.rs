@@ -10,8 +10,11 @@ use chrono::{DateTime, Utc};
 
 use crate::audit::{AuditEvent, AuditSink};
 use crate::clock::Clock;
-use crate::email::{Email, EmailSender};
-use crate::error::{EmailResult, StorageError, StorageResult};
+#[cfg(any(feature = "testing", test))]
+use crate::email::{Email, EmailSender, EmailSenderKind};
+#[cfg(any(feature = "testing", test))]
+use crate::error::EmailResult;
+use crate::error::{StorageError, StorageResult};
 use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter, RateLimiterKind};
 use crate::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionId,
@@ -270,13 +273,18 @@ impl AuditSink for InMemoryAuditSink {
     }
 }
 
-/// Email sender that records messages in memory for tests.
+/// Email sender that records messages in memory for tests. Behind the
+/// `testing` Cargo feature — production builds cannot see it. The
+/// `test` cfg gate keeps unit tests inside this crate building without
+/// turning on the feature.
+#[cfg(any(feature = "testing", test))]
 #[derive(Debug, Default)]
-pub struct InMemoryEmailSender {
+pub struct CapturingEmailSender {
     sent: Mutex<Vec<Email>>,
 }
 
-impl InMemoryEmailSender {
+#[cfg(any(feature = "testing", test))]
+impl CapturingEmailSender {
     pub fn new() -> Self {
         Self::default()
     }
@@ -289,14 +297,19 @@ impl InMemoryEmailSender {
     }
 }
 
+#[cfg(any(feature = "testing", test))]
 #[async_trait]
-impl EmailSender for InMemoryEmailSender {
+impl EmailSender for CapturingEmailSender {
     async fn send(&self, email: Email) -> EmailResult<()> {
         self.sent
             .lock()
             .expect("email sender mutex poisoned")
             .push(email);
         Ok(())
+    }
+
+    fn diagnostic_kind(&self) -> EmailSenderKind {
+        EmailSenderKind::Capturing
     }
 }
 

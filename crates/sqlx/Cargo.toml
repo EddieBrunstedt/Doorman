@@ -23,4 +23,5 @@ uuid.workspace = true
 webauthn-rs.workspace = true
 
 [dev-dependencies]
+bauth-core = { path = "../core", version = "0.1.0", features = ["testing"] }
 tokio.workspace = true

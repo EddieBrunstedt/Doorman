@@ -9,7 +9,7 @@ use bauth_core::magic_link::{
     MagicLinkConfig, MagicLinkManager, MagicLinkRateLimits, TOKEN_PLACEHOLDER,
 };
 use bauth_core::memory::{
-    InMemoryAuditSink, InMemoryEmailSender, InMemoryRateLimiter, InMemorySessionStore,
+    CapturingEmailSender, InMemoryAuditSink, InMemoryRateLimiter, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::rate_limit::{NoopRateLimiter, RateLimitPolicy, RateLimiter};
@@ -25,7 +25,7 @@ struct Harness {
     sessions: Arc<InMemorySessionStore>,
     tokens: Arc<InMemoryVerificationTokenStore>,
     audit: Arc<InMemoryAuditSink>,
-    email: Arc<InMemoryEmailSender>,
+    email: Arc<CapturingEmailSender>,
     clock: Arc<MockClock>,
 }
 
@@ -53,7 +53,7 @@ fn fresh_with_limiter(config: MagicLinkConfig, limiter: Arc<dyn RateLimiter>) ->
     let tokens: Arc<InMemoryVerificationTokenStore> =
         Arc::new(InMemoryVerificationTokenStore::new());
     let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
-    let email: Arc<InMemoryEmailSender> = Arc::new(InMemoryEmailSender::new());
+    let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
     let clock: Arc<MockClock> = Arc::new(MockClock::new(ts(2026, 1, 1)));
     let session_manager = SessionManager::new(
         sessions.clone() as Arc<dyn SessionStore>,

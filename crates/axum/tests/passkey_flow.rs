@@ -10,9 +10,10 @@ use bauth_axum::BauthAxum;
 use bauth_axum::config::CookieConfig;
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
+use bauth_core::email::EmailSender;
 use bauth_core::memory::{
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
-    InMemoryUserStore,
+    CapturingEmailSender, InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore,
+    InMemorySessionStore, InMemoryUserStore,
 };
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
 use bauth_core::session::{SessionConfig, SessionManager};
@@ -62,9 +63,12 @@ impl PasskeyApp {
         )
         .expect("passkey manager");
 
+        let email_sender: Arc<dyn EmailSender> = Arc::new(CapturingEmailSender::new());
+
         let auth = BauthAxum::builder()
             .session_manager(session_manager)
             .user_store(users)
+            .email_sender(email_sender)
             .passkey_manager(passkey_manager)
             .cookie_config(CookieConfig {
                 secure: false,

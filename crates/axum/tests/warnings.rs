@@ -8,11 +8,13 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
+use bauth_axum::BuilderError;
 use bauth_axum::config::CookieConfig;
 use bauth_axum::quickstart;
+use bauth_core::email::{EmailSender, FileEmailSender, TerminalEmailSender};
 use bauth_core::memory::{
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
-    InMemoryUserStore, InMemoryVerificationTokenStore,
+    CapturingEmailSender, InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore,
+    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::rate_limit::NoopRateLimiter;
 use bauth_core::storage::Storage;
@@ -61,6 +63,10 @@ fn fresh_storage() -> Storage {
     }
 }
 
+fn capturing_email() -> Arc<dyn EmailSender> {
+    Arc::new(CapturingEmailSender::new())
+}
+
 fn capture<F>(f: F) -> String
 where
     F: FnOnce(),
@@ -81,6 +87,7 @@ where
 fn quickstart_defaults_warn_about_noop_audit_and_in_memory_limiter() {
     let output = capture(|| {
         let _ = quickstart(fresh_storage())
+            .email(capturing_email())
             .cookie(CookieConfig {
                 secure: false,
                 ..CookieConfig::default()
@@ -107,6 +114,7 @@ fn quickstart_defaults_warn_about_noop_audit_and_in_memory_limiter() {
 fn explicit_noop_rate_limiter_emits_noop_warning() {
     let output = capture(|| {
         let _ = quickstart(fresh_storage())
+            .email(capturing_email())
             .limiter(Arc::new(NoopRateLimiter))
             .build()
             .expect("build");
@@ -126,6 +134,7 @@ fn explicit_noop_rate_limiter_emits_noop_warning() {
 fn cookie_secure_false_with_production_domain_warns() {
     let output = capture(|| {
         let _ = quickstart(fresh_storage())
+            .email(capturing_email())
             .cookie(CookieConfig {
                 secure: false,
                 domain: Some("example.com".into()),
@@ -147,6 +156,7 @@ fn cookie_secure_false_with_production_domain_warns() {
 fn cookie_warning_fires_when_not_silenced() {
     let output = capture(|| {
         let _ = quickstart(fresh_storage())
+            .email(capturing_email())
             .cookie(CookieConfig {
                 secure: false,
                 domain: Some("example.com".into()),
@@ -166,6 +176,7 @@ fn cookie_warning_fires_when_not_silenced() {
 fn quickstart_silence_warnings_suppresses_everything() {
     let output = capture(|| {
         let _ = quickstart(fresh_storage())
+            .email(capturing_email())
             .silence_warnings()
             .build()
             .expect("build");
@@ -175,4 +186,47 @@ fn quickstart_silence_warnings_suppresses_everything() {
         output.is_empty(),
         "silence_warnings should suppress every warning, got: {output}"
     );
+}
+
+#[test]
+fn missing_email_sender_returns_build_error() {
+    let result = quickstart(fresh_storage()).silence_warnings().build();
+    match result {
+        Err(BuilderError::MissingEmailSender) => {}
+        Err(other) => panic!("expected MissingEmailSender, got: {other:?}"),
+        Ok(_) => panic!("build should fail without email transport"),
+    }
+}
+
+#[test]
+fn terminal_email_transport_emits_dev_email_warning() {
+    let output = capture(|| {
+        let _ = quickstart(fresh_storage())
+            .email(Arc::new(TerminalEmailSender))
+            .build()
+            .expect("build");
+    });
+
+    assert!(
+        output.contains("dev-only sender"),
+        "expected dev-email-transport warning for TerminalEmailSender; got: {output}"
+    );
+}
+
+#[test]
+fn file_email_transport_emits_dev_email_warning() {
+    let dir = std::env::temp_dir().join(format!("bauth-warnings-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let output = capture(|| {
+        let _ = quickstart(fresh_storage())
+            .email(Arc::new(FileEmailSender::new(&dir)))
+            .build()
+            .expect("build");
+    });
+
+    assert!(
+        output.contains("dev-only sender"),
+        "expected dev-email-transport warning for FileEmailSender; got: {output}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

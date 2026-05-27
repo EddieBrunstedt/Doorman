@@ -1,15 +1,25 @@
 //! Email transport and email-template customization.
 //!
 //! Managers build transactional emails through [`BauthEmails`] and hand
-//! them to an [`EmailSender`]. Production hosts provide a real transport;
-//! tests and local experiments can use [`NoopEmailSender`] or the
-//! in-memory sender in [`crate::memory`].
+//! them to an [`EmailSender`]. The library does not ship a silent
+//! transport — every host wires an explicit sender. First-party
+//! implementations: [`TerminalEmailSender`] (prints rendered messages to
+//! stdout) and [`FileEmailSender`] (writes RFC 822-shaped `.eml` files
+//! into a directory). Tests use `CapturingEmailSender` from
+//! `crate::memory` behind the `testing` feature; hosts plug in real
+//! transports (lettre, resend, SES, …) through the [`EmailSender`]
+//! trait.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use chrono::Utc;
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
 
-use crate::error::EmailResult;
+use crate::error::{EmailError, EmailResult};
 use crate::storage::User;
 
 /// Transactional email ready to hand to a transport.
@@ -21,20 +31,121 @@ pub struct Email {
     pub body_html: Option<String>,
 }
 
+/// Diagnostic tag returned by [`EmailSender::diagnostic_kind`]. Used by
+/// the axum builder's startup sanity checks to surface transports that
+/// are not safe in production. `Terminal` and `File` are convenient for
+/// local development; both leave the user's recovery / signup links in
+/// places that real users will never see.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmailSenderKind {
+    /// A host-supplied transport. The default for any third-party
+    /// implementation; no warning is emitted at build time.
+    Custom,
+    /// [`TerminalEmailSender`] — prints to stdout, never delivers.
+    Terminal,
+    /// [`FileEmailSender`] — writes `.eml` files to disk, never
+    /// delivers.
+    File,
+    /// `CapturingEmailSender` from the `testing` feature — for tests
+    /// only.
+    Capturing,
+}
+
 /// Transport for sending rendered transactional emails.
 #[async_trait]
 pub trait EmailSender: Send + Sync {
     async fn send(&self, email: Email) -> EmailResult<()>;
+
+    /// Used by the axum builder's startup sanity checks to detect
+    /// dev-only transports. Third-party implementations should leave
+    /// the default in place.
+    #[doc(hidden)]
+    fn diagnostic_kind(&self) -> EmailSenderKind {
+        EmailSenderKind::Custom
+    }
 }
 
-/// Email sender that accepts mail and drops it.
+/// Prints every rendered email to stdout in a clearly-labelled block.
+///
+/// Intended for local development and the bundled example app. Does not
+/// deliver mail. Detected at build time by the axum warnings module so
+/// hosts who forget to swap in a real transport get a startup nudge.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct NoopEmailSender;
+pub struct TerminalEmailSender;
 
 #[async_trait]
-impl EmailSender for NoopEmailSender {
-    async fn send(&self, _email: Email) -> EmailResult<()> {
+impl EmailSender for TerminalEmailSender {
+    async fn send(&self, email: Email) -> EmailResult<()> {
+        println!(
+            "\n--- bauth email ---\nTo: {}\nSubject: {}\n\n{}\n--- end bauth email ---\n",
+            email.to, email.subject, email.body_text
+        );
         Ok(())
+    }
+
+    fn diagnostic_kind(&self) -> EmailSenderKind {
+        EmailSenderKind::Terminal
+    }
+}
+
+/// Writes each rendered email to `dir/<timestamp>-<seq>.eml` in an
+/// RFC 822-shaped layout. Intended for local development and inspecting
+/// flows without wiring a real SMTP / API transport.
+///
+/// The directory must already exist; the sender does not create it.
+/// Filenames combine an RFC 3339 UTC timestamp with a per-process
+/// counter so multiple emails sent in the same second do not collide.
+#[derive(Debug)]
+pub struct FileEmailSender {
+    dir: PathBuf,
+    seq: AtomicU64,
+}
+
+impl FileEmailSender {
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self {
+            dir: dir.into(),
+            seq: AtomicU64::new(0),
+        }
+    }
+
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+}
+
+#[async_trait]
+impl EmailSender for FileEmailSender {
+    async fn send(&self, email: Email) -> EmailResult<()> {
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        let stamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+        let path = self.dir.join(format!("{stamp}-{seq:06}.eml"));
+
+        let mut buf = String::new();
+        buf.push_str("To: ");
+        buf.push_str(&email.to);
+        buf.push_str("\r\n");
+        buf.push_str("Subject: ");
+        buf.push_str(&email.subject);
+        buf.push_str("\r\n");
+        buf.push_str("Content-Type: text/plain; charset=utf-8\r\n");
+        buf.push_str("\r\n");
+        buf.push_str(&email.body_text);
+        if !buf.ends_with('\n') {
+            buf.push_str("\r\n");
+        }
+
+        let mut file = fs::File::create(&path).await.map_err(EmailError::new)?;
+        file.write_all(buf.as_bytes())
+            .await
+            .map_err(EmailError::new)?;
+        file.flush().await.map_err(EmailError::new)?;
+        Ok(())
+    }
+
+    fn diagnostic_kind(&self) -> EmailSenderKind {
+        EmailSenderKind::File
     }
 }
 
@@ -100,4 +211,65 @@ impl BauthEmails for DefaultBauthEmails {}
 /// that don't otherwise specify a renderer.
 pub(crate) fn default_emails() -> Arc<dyn BauthEmails> {
     Arc::new(DefaultBauthEmails)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_sender_reports_terminal_kind() {
+        let sender: Arc<dyn EmailSender> = Arc::new(TerminalEmailSender);
+        assert_eq!(sender.diagnostic_kind(), EmailSenderKind::Terminal);
+    }
+
+    #[tokio::test]
+    async fn terminal_sender_does_not_panic() {
+        let sender = TerminalEmailSender;
+        sender
+            .send(Email {
+                to: "test@example.com".into(),
+                subject: "hi".into(),
+                body_text: "body".into(),
+                body_html: None,
+            })
+            .await
+            .expect("send");
+    }
+
+    #[tokio::test]
+    async fn file_sender_writes_to_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "bauth-file-email-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        fs::create_dir_all(&dir).await.expect("mkdir");
+        let sender = FileEmailSender::new(&dir);
+        assert_eq!(sender.diagnostic_kind(), EmailSenderKind::File);
+
+        sender
+            .send(Email {
+                to: "user@example.com".into(),
+                subject: "Hello".into(),
+                body_text: "body line".into(),
+                body_html: None,
+            })
+            .await
+            .expect("send");
+
+        let mut entries = fs::read_dir(&dir).await.expect("read_dir");
+        let mut written = Vec::new();
+        while let Some(entry) = entries.next_entry().await.expect("next") {
+            written.push(entry.path());
+        }
+        assert_eq!(written.len(), 1, "exactly one .eml written");
+        let body = fs::read_to_string(&written[0]).await.expect("read");
+        assert!(body.contains("To: user@example.com"));
+        assert!(body.contains("Subject: Hello"));
+        assert!(body.contains("body line"));
+
+        // Best-effort cleanup.
+        let _ = fs::remove_dir_all(&dir).await;
+    }
 }

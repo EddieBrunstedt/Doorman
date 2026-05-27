@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use bauth_core::email::{EmailSender, EmailSenderKind};
 use bauth_core::session::SessionManager;
 use bauth_core::storage::UserStore;
 use url::Url;
@@ -32,6 +33,16 @@ pub enum BuilderError {
     MissingSessionManager,
     #[error("user_store is required")]
     MissingUserStore,
+    /// The host did not wire an [`EmailSender`]. There is no silent
+    /// default; pick a real transport (lettre, resend, …) for
+    /// production, or use [`TerminalEmailSender`] /
+    /// [`FileEmailSender`] for local development.
+    ///
+    /// [`EmailSender`]: bauth_core::email::EmailSender
+    /// [`TerminalEmailSender`]: bauth_core::email::TerminalEmailSender
+    /// [`FileEmailSender`]: bauth_core::email::FileEmailSender
+    #[error("email_sender is required")]
+    MissingEmailSender,
     /// Only returned through [`quickstart`](crate::quickstart), which has
     /// to construct the passkey manager itself. The direct
     /// `BauthAxumBuilder` path takes a pre-built [`PasskeyManager`] and
@@ -48,6 +59,7 @@ pub enum BuilderError {
 pub struct BauthAxumBuilder {
     session_manager: Option<SessionManager>,
     user_store: Option<Arc<dyn UserStore>>,
+    email_sender: Option<Arc<dyn EmailSender>>,
     cookie_config: Option<CookieConfig>,
     cache_config: Option<SessionCacheConfig>,
     session_cache: Option<SessionCache>,
@@ -74,6 +86,20 @@ impl BauthAxumBuilder {
 
     pub fn user_store(mut self, store: Arc<dyn UserStore>) -> Self {
         self.user_store = Some(store);
+        self
+    }
+
+    /// Wire the [`EmailSender`] used by the signup / recovery flows.
+    /// Required — [`build`](Self::build) returns
+    /// [`BuilderError::MissingEmailSender`] when not set. The same
+    /// transport must be the one passed into the
+    /// [`MagicLinkManager`](bauth_core::magic_link::MagicLinkManager)
+    /// the host constructs; the builder keeps a reference so it can
+    /// detect dev transports for the startup warnings.
+    ///
+    /// [`EmailSender`]: bauth_core::email::EmailSender
+    pub fn email_sender(mut self, sender: Arc<dyn EmailSender>) -> Self {
+        self.email_sender = Some(sender);
         self
     }
 
@@ -159,11 +185,18 @@ impl BauthAxumBuilder {
             .session_manager
             .ok_or(BuilderError::MissingSessionManager)?;
         let user_store = self.user_store.ok_or(BuilderError::MissingUserStore)?;
+        let email_sender = self.email_sender.ok_or(BuilderError::MissingEmailSender)?;
         let cookie_config = Arc::new(self.cookie_config.unwrap_or_default());
 
         if !self.silence_warnings {
             let mut warnings = self.inherited_warnings.clone();
             warnings.cookie_insecure_in_production = warnings::check_cookie(&cookie_config);
+            if matches!(
+                email_sender.diagnostic_kind(),
+                EmailSenderKind::Terminal | EmailSenderKind::File
+            ) {
+                warnings.dev_email_transport = true;
+            }
             warnings.emit();
         }
 
