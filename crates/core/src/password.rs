@@ -1,11 +1,11 @@
 //! Password hashing primitives.
 //!
 //! Hashing is Argon2id with the `argon2` crate's default parameters, which
-//! target roughly 100 ms of work on commodity hardware and align with the
-//! current OWASP recommendation. The output is a self-describing PHC
-//! string, so verification needs only the stored hash and the plaintext.
+//! are intentionally CPU/memory-bound and align with the current OWASP
+//! recommendation. The output is a self-describing PHC string, so
+//! verification needs only the stored hash and the plaintext.
 //!
-//! Both the hash and verify routines are CPU-bound for ~100 ms by design.
+//! Both the hash and verify routines are CPU-bound by design.
 //! [`hash_password_async`] and [`verify_password_async`] dispatch the
 //! synchronous primitives through [`tokio::task::spawn_blocking`] so that
 //! the runtime's worker threads stay free to drive other I/O while a login
@@ -71,7 +71,7 @@ pub fn verify_password(plain: &str, hash: &str) -> Result<bool> {
 
 /// Async wrapper around [`hash_password`] that offloads the Argon2 work
 /// onto the blocking pool so the calling tokio worker is not pinned for
-/// the ~100 ms hashing window.
+/// the hardware-dependent hashing window.
 pub async fn hash_password_async(plain: String) -> Result<String> {
     tokio::task::spawn_blocking(move || hash_password(&plain))
         .await

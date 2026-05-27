@@ -714,6 +714,11 @@ impl OAuthStateStore for InMemoryOAuthStateStore {
 /// attempts and evicts ones older than `policy.window` on every check.
 /// Suitable for single-process deployments and tests; a multi-replica
 /// deployment should swap in a shared backend.
+///
+/// Known limitation: the bucket map does not proactively remove empty
+/// buckets, so sustained churn across many unique keys can grow memory
+/// until process restart. Use a shared or evicting production limiter for
+/// hostile or high-cardinality traffic patterns.
 pub struct InMemoryRateLimiter {
     clock: Arc<dyn Clock>,
     inner: Mutex<HashMap<BucketKey, Vec<DateTime<Utc>>>>,

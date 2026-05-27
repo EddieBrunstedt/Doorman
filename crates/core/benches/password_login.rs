@@ -1,8 +1,8 @@
 //! End-to-end password-login bench.
 //!
 //! Exercises [`PasswordAuthManager::login`] against the in-memory storage
-//! stack with default Argon2 parameters. The dominant cost is Argon2id
-//! hashing (~100 ms on commodity hardware), so this bench is what catches
+//! stack with default Argon2 parameters. The dominant cost is
+//! hardware-dependent Argon2id hashing, so this bench is what catches
 //! regressions in the "is the hashing on the blocking pool?" wiring as
 //! well as anything that would inflate the password-login critical path.
 //!
@@ -86,7 +86,7 @@ fn password_login(c: &mut Criterion) {
     });
 
     let mut group = c.benchmark_group("password");
-    // Argon2 alone is ~100 ms; cap the sample count so the whole bench
+    // Argon2 dominates the benchmark; cap the sample count so the whole
     // run stays under a minute on a developer laptop.
     group.sample_size(20);
 
