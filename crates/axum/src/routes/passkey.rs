@@ -17,8 +17,8 @@ use uuid::Uuid;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use crate::dto::{
-    AuthResponse, PasskeyAuthenticateFinishRequest, PasskeyAuthenticateStartRequest,
-    PasskeyChallenge, PasskeyDto, PasskeyRegisterFinishRequest,
+    AuthResponse, PasskeyAuthenticateFinishRequest, PasskeyChallenge, PasskeyDto,
+    PasskeyRegisterFinishRequest,
 };
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthUser, RequestContext};
@@ -67,9 +67,8 @@ async fn register_finish(
 
 async fn authenticate_start(
     State(state): State<BauthState>,
-    Json(body): Json<PasskeyAuthenticateStartRequest>,
 ) -> Result<Json<PasskeyChallenge<RequestChallengeResponse>>, ErrorResponse> {
-    let (id, options) = manager(&state).start_authentication(&body.email).await?;
+    let (id, options) = manager(&state).start_authentication().await?;
     Ok(Json(PasskeyChallenge {
         challenge_id: id.0.to_string(),
         options,

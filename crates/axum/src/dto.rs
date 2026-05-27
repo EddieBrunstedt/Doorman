@@ -149,12 +149,6 @@ pub struct MagicLinkConsumeRequest {
     pub token: String,
 }
 
-/// Request body for starting passkey authentication.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PasskeyAuthenticateStartRequest {
-    pub email: String,
-}
-
 /// Returned by both passkey ceremony `start` endpoints. The `options`
 /// field is the JSON `webauthn-rs` produces for
 /// `navigator.credentials.{create,get}`; we wrap it so the response also

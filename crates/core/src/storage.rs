@@ -26,7 +26,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
-use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PasskeyRegistration};
+use webauthn_rs::prelude::{DiscoverableAuthentication, Passkey, PasskeyRegistration};
 
 use crate::error::StorageResult;
 
@@ -247,14 +247,11 @@ pub struct StoredPasskeyRegistration {
     pub expires_at: DateTime<Utc>,
 }
 
-/// In-progress passkey authentication ceremony state.
+/// In-progress discoverable passkey authentication ceremony state.
 #[derive(Debug, Clone)]
 pub struct StoredPasskeyAuthentication {
     pub id: PasskeyChallengeId,
-    /// The user the ceremony was started for, if username-first. `None`
-    /// is reserved for future usernameless / discoverable flows.
-    pub user_id: Option<UserId>,
-    pub state: PasskeyAuthentication,
+    pub state: DiscoverableAuthentication,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }

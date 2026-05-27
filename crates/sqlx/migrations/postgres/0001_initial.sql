@@ -53,7 +53,6 @@ CREATE TABLE passkey_registrations (
 
 CREATE TABLE passkey_authentications (
     id BYTEA PRIMARY KEY,
-    user_id BYTEA,
     state TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL

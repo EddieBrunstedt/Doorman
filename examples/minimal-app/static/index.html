@@ -29,7 +29,7 @@
 
     <form id="passkey-login">
       <h2>Passkeys</h2>
-      <label>Email <input name="email" type="email" value="alice@example.com" required /></label>
+      <p>Passkey login is usernameless; the authenticator identifies the account.</p>
       <label>Device name <input name="name" value="local device" /></label>
       <button name="action" value="register-passkey">Register passkey</button>
       <button name="action" value="login-passkey">Login with passkey</button>
@@ -155,8 +155,8 @@
         });
       }
 
-      async function loginPasskey(email) {
-        const start = await api("/auth/passkey/authenticate/start", "POST", { email });
+      async function loginPasskey() {
+        const start = await api("/auth/passkey/authenticate/start", "POST");
         const cred = await navigator.credentials.get(decodeRequestOptions(start.options));
         if (!cred) throw new Error("passkey login cancelled");
         return api("/auth/passkey/authenticate/finish", "POST", {
@@ -185,7 +185,7 @@
         try {
           const result = event.submitter.value === "register-passkey"
             ? await registerPasskey(form.get("name"))
-            : await loginPasskey(form.get("email"));
+            : await loginPasskey();
           log(result ?? "ok");
         } catch (err) { log(String(err)); }
       });

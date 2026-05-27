@@ -13,7 +13,7 @@ use bauth_core::storage::{
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
-use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PasskeyRegistration};
+use webauthn_rs::prelude::{DiscoverableAuthentication, Passkey, PasskeyRegistration};
 
 use crate::common::{
     purpose_from_str, purpose_to_str, storage, token_hash_bytes, token_hash_from_bytes,
@@ -569,11 +569,10 @@ impl PasskeyChallengeStore for SqlitePasskeyChallengeStore {
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
         let serialized = serde_json::to_string(&value.state).map_err(storage)?;
         sqlx::query(
-            "INSERT INTO passkey_authentications (id, user_id, state, created_at, expires_at)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO passkey_authentications (id, state, created_at, expires_at)
+             VALUES (?, ?, ?, ?)",
         )
         .bind(uuid_to_bytes(value.id.0))
-        .bind(value.user_id.map(|u| uuid_to_bytes(u.0)))
         .bind(serialized)
         .bind(value.created_at)
         .bind(value.expires_at)
@@ -589,7 +588,7 @@ impl PasskeyChallengeStore for SqlitePasskeyChallengeStore {
     ) -> StorageResult<Option<StoredPasskeyAuthentication>> {
         let row = sqlx::query(
             "DELETE FROM passkey_authentications WHERE id = ?
-             RETURNING id, user_id, state, created_at, expires_at",
+             RETURNING id, state, created_at, expires_at",
         )
         .bind(uuid_to_bytes(id.0))
         .fetch_optional(&self.pool)
@@ -597,15 +596,11 @@ impl PasskeyChallengeStore for SqlitePasskeyChallengeStore {
         .map_err(storage)?;
         let Some(row) = row else { return Ok(None) };
         let id_bytes: Vec<u8> = row.try_get("id").map_err(storage)?;
-        let user_id_bytes: Option<Vec<u8>> = row.try_get("user_id").map_err(storage)?;
         let state_json: String = row.try_get("state").map_err(storage)?;
-        let state: PasskeyAuthentication = serde_json::from_str(&state_json).map_err(storage)?;
-        let user_id = user_id_bytes
-            .map(|b| uuid_from_row(b).map(UserId))
-            .transpose()?;
+        let state: DiscoverableAuthentication =
+            serde_json::from_str(&state_json).map_err(storage)?;
         Ok(Some(StoredPasskeyAuthentication {
             id: PasskeyChallengeId(uuid_from_row(id_bytes)?),
-            user_id,
             state,
             created_at: row.try_get("created_at").map_err(storage)?,
             expires_at: row.try_get("expires_at").map_err(storage)?,

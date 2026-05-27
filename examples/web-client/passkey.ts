@@ -103,12 +103,12 @@ function encodeAssertion(cred: PublicKeyCredential) {
   };
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
     credentials: "include",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    headers: body === undefined ? {} : { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`${path} -> ${res.status} ${await res.text()}`);
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
@@ -117,7 +117,6 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 export async function registerPasskey(name?: string): Promise<void> {
   const start = await postJson<{ challenge_id: string; options: ServerCreationOptions }>(
     "/auth/passkey/register/start",
-    {},
   );
   const cred = (await navigator.credentials.create(
     decodeCreationOptions(start.options),
@@ -130,10 +129,9 @@ export async function registerPasskey(name?: string): Promise<void> {
   });
 }
 
-export async function authenticatePasskey(email: string): Promise<void> {
+export async function authenticatePasskey(): Promise<void> {
   const start = await postJson<{ challenge_id: string; options: ServerRequestOptions }>(
     "/auth/passkey/authenticate/start",
-    { email },
   );
   const cred = (await navigator.credentials.get(
     decodeRequestOptions(start.options),

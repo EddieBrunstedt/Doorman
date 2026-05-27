@@ -6,7 +6,7 @@ read alongside the README and copied into a host frontend.
 
 The browser side of WebAuthn requires a small amount of base64url
 encoding/decoding because `navigator.credentials.create` / `.get` expect
-`ArrayBuffer` for `challenge`, `user.id`, and `allowCredentials[].id`,
+`ArrayBuffer` for `challenge`, `user.id`, and any credential IDs,
 while `bauth-core` (via `webauthn-rs`) returns and accepts base64url
 strings. The helpers in `passkey.ts` handle that translation.
 
@@ -16,7 +16,7 @@ strings. The helpers in `passkey.ts` handle that translation.
 | ------ | ---- | ---- | -------- |
 | POST | `/auth/passkey/register/start` | empty (user is identified by session) | `{ challenge_id, options }` |
 | POST | `/auth/passkey/register/finish` | `{ challenge_id, response, name? }` | passkey dto |
-| POST | `/auth/passkey/authenticate/start` | `{ email }` | `{ challenge_id, options }` |
+| POST | `/auth/passkey/authenticate/start` | empty | `{ challenge_id, options }` |
 | POST | `/auth/passkey/authenticate/finish` | `{ challenge_id, response }` | auth response (session cookie set) |
 
 `options` is the JSON `webauthn-rs` produces for

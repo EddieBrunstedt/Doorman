@@ -13,10 +13,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use url::Url;
+use uuid::Uuid;
 use webauthn_rs::prelude::{
-    CreationChallengeResponse, Passkey, PublicKeyCredential, RegisterPublicKeyCredential,
+    CreationChallengeResponse, DiscoverableKey, PublicKeyCredential, RegisterPublicKeyCredential,
     RequestChallengeResponse, Webauthn, WebauthnBuilder,
 };
+use webauthn_rs_proto::ResidentKeyRequirement;
 
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink, AuthMethod, CredentialKind};
 use crate::clock::Clock;
@@ -125,10 +127,11 @@ impl PasskeyManager {
             )
         };
 
-        let (ccr, reg_state) = self
+        let (mut ccr, reg_state) = self
             .webauthn
             .start_passkey_registration(user_id.0, &user_name, &user_display_name, exclude)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
+        require_discoverable_credential(&mut ccr);
 
         let now = self.clock.now();
         let id = PasskeyChallengeId::new();
@@ -199,39 +202,24 @@ impl PasskeyManager {
         Ok(credential)
     }
 
-    /// Begin authenticating an existing user by email. Returns the
+    /// Begin a discoverable passkey authentication ceremony. Returns the
     /// [`RequestChallengeResponse`] for `navigator.credentials.get` and a
-    /// [`PasskeyChallengeId`] the client must echo back. Unknown emails
-    /// are silently accepted (with no credentials) so the endpoint does
-    /// not double as an account-enumeration oracle.
-    #[tracing::instrument(skip(self, email), fields(method = "passkey", user_id = tracing::field::Empty))]
+    /// [`PasskeyChallengeId`] the client must echo back. No user input is
+    /// accepted, so every caller receives the same challenge shape and the
+    /// user is identified only at finish-time from the authenticator response.
+    #[tracing::instrument(skip(self), fields(method = "passkey"))]
     pub async fn start_authentication(
         &self,
-        email: &str,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
-        let email_normalized = normalize_email(email);
-        let user = self.users.find_user_by_email(&email_normalized).await?;
-
-        let (user_id, passkeys): (Option<UserId>, Vec<Passkey>) = match user {
-            Some(u) => {
-                tracing::Span::current().record("user_id", tracing::field::display(u.id));
-                let creds = self.credentials.list_passkeys_for_user(u.id).await?;
-                let pks = creds.into_iter().map(|c| c.passkey).collect();
-                (Some(u.id), pks)
-            }
-            None => (None, Vec::new()),
-        };
-
         let (rcr, auth_state) = self
             .webauthn
-            .start_passkey_authentication(&passkeys)
+            .start_discoverable_authentication()
             .map_err(|e| Error::Webauthn(e.to_string()))?;
 
         let now = self.clock.now();
         let id = PasskeyChallengeId::new();
         let stored = StoredPasskeyAuthentication {
             id,
-            user_id,
             state: auth_state,
             created_at: now,
             expires_at: now + challenge_lifetime(self.config.challenge_lifetime),
@@ -271,22 +259,19 @@ impl PasskeyManager {
             tracing::warn!(outcome = "credential_not_found", "passkey login failed");
             return Err(Error::PasskeyNotFound);
         };
-        tracing::Span::current().record("user_id", tracing::field::display(credential.user_id));
 
-        // If start_authentication recorded the intended user, enforce
-        // that the asserted credential actually belongs to them. This
-        // closes off "use any registered passkey to log in as anyone"
-        // when the host uses email-first UX.
-        if let Some(expected_user) = stored.user_id
-            && credential.user_id != expected_user
+        if let Some(asserted_user) = user_id_from_handle(response)?
+            && asserted_user != credential.user_id
         {
             tracing::warn!(outcome = "ownership_mismatch", "passkey login failed");
             return Err(Error::PasskeyOwnershipMismatch);
         }
+        tracing::Span::current().record("user_id", tracing::field::display(credential.user_id));
 
+        let discoverable = [DiscoverableKey::from(&credential.passkey)];
         let auth_result = self
             .webauthn
-            .finish_passkey_authentication(response, &stored.state)
+            .finish_discoverable_authentication(response, stored.state, &discoverable)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
 
         // Counter / backup-state updates are advisory per webauthn-rs;
@@ -362,8 +347,27 @@ fn display_names_for(user: &User) -> (String, String) {
     (name.clone(), name)
 }
 
-fn normalize_email(email: &str) -> String {
-    email.trim().to_ascii_lowercase()
+fn require_discoverable_credential(ccr: &mut CreationChallengeResponse) {
+    let selection = ccr
+        .public_key
+        .authenticator_selection
+        .as_mut()
+        .expect("webauthn-rs passkey registration includes authenticator selection");
+    selection.require_resident_key = true;
+    selection.resident_key = Some(ResidentKeyRequirement::Required);
+}
+
+fn user_id_from_handle(response: &PublicKeyCredential) -> Result<Option<UserId>> {
+    response
+        .response
+        .user_handle
+        .as_ref()
+        .map(|handle| {
+            Uuid::from_slice(handle.as_ref())
+                .map(UserId)
+                .map_err(|_| Error::PasskeyNotFound)
+        })
+        .transpose()
 }
 
 fn challenge_lifetime(d: Duration) -> chrono::Duration {
@@ -380,16 +384,11 @@ mod tests {
     fn config_constructor_sets_default_lifetime() {
         let c = PasskeyConfig::new(
             "example.com",
-            Url::parse("https://example.com").unwrap(),
+            Url::parse("https://example.com").expect("valid url"),
             "Example",
         );
         assert_eq!(c.challenge_lifetime, Duration::from_secs(300));
         assert_eq!(c.rp_id, "example.com");
         assert_eq!(c.rp_name, "Example");
-    }
-
-    #[test]
-    fn email_normalisation_matches_authentication_lookup() {
-        assert_eq!(normalize_email("  Bob@Example.COM "), "bob@example.com");
     }
 }
