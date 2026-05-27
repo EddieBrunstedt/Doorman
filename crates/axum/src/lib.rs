@@ -2,7 +2,7 @@
 //!
 //! Most hosts start with [`quickstart`], hand it a
 //! [`bauth_core::storage::Storage`] value from a storage adapter such as
-//! `bauth-sqlx`, enable the auth methods they want, and mount the returned
+//! `bauth-sqlx`, configure the auth methods they want, and mount the returned
 //! [`BauthAxum`] on their application router.
 //!
 //! ```ignore

@@ -58,24 +58,3 @@ CREATE TABLE passkey_authentications (
     created_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL
 );
-
-CREATE TABLE oauth_identities (
-    provider TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    user_id BYTEA NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    email TEXT,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (provider, subject)
-);
-CREATE INDEX idx_oauth_identities_user_id ON oauth_identities(user_id);
-
-CREATE TABLE oauth_states (
-    state_id TEXT PRIMARY KEY,
-    provider TEXT NOT NULL,
-    pkce_verifier TEXT NOT NULL,
-    redirect_uri TEXT NOT NULL,
-    link_user_id BYTEA,
-    created_at TIMESTAMPTZ NOT NULL,
-    expires_at TIMESTAMPTZ NOT NULL
-);

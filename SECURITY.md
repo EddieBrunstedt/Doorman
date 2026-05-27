@@ -12,7 +12,7 @@ library makes, and the operational steps a host application must take.
   stored only as hashes.
 - CSRF on cookie-authenticated state-changing endpoints.
 - Session fixation.
-- Replay of in-flight passkey, OAuth, or magic-link state.
+- Replay of in-flight passkey or magic-link state.
 
 It is not designed to defend against:
 
@@ -55,15 +55,6 @@ It is not designed to defend against:
 - Authentication enforces that the asserted credential belongs to the
   user bound to the ceremony.
 
-### OAuth
-
-- Authorization uses PKCE (S256). The verifier never leaves the server.
-- The `state` value is 256 bits of CSPRNG output and doubles as the
-  CSRF token round-tripped through the provider.
-- Pending authorizations are removed atomically when consumed.
-- `OAuthConfig::allow_email_linking` defaults to `false`. Enable it only
-  when you intentionally trust the provider's `email_verified` claim.
-
 ### Rate limiting
 
 - Managers consult a `RateLimiter` before sensitive request endpoints.
@@ -75,7 +66,7 @@ It is not designed to defend against:
 
 - Security-significant events are emitted to `AuditSink`: session
   create/revoke/expire, login success/failure, credential add/remove,
-  magic-link request/consume, and OAuth link/unlink.
+  and magic-link request/consume.
 - Login failure events include the submitted identifier for forensics.
   If your logging pipeline is sensitive to PII, filter in your sink.
 
@@ -119,9 +110,8 @@ and rate-limits delivery abuse.
 ### Operational hygiene
 
 - Run `SessionManager::purge_expired`,
-  `VerificationTokenStore::purge_expired`,
-  `PasskeyChallengeStore::purge_expired`, and
-  `OAuthStateStore::purge_expired` on a regular cadence.
+  `VerificationTokenStore::purge_expired`, and
+  `PasskeyChallengeStore::purge_expired` on a regular cadence.
 - Treat the `AuditSink` as a security log. Ship it somewhere durable and
   queryable.
 - Monitor auth-failure rates per source and per account. The library
@@ -133,7 +123,6 @@ and rate-limits delivery abuse.
 | ---- | ------- | ------ |
 | Session lifetime | 30 days | Common UX expectation; revocable instantly |
 | Magic-link lifetime | 15 minutes | The link itself is the credential |
-| `allow_email_linking` (OAuth) | `false` | Do not trust third-party email claims by default |
 | Magic-link requests per IP | 5 / 1h | Limits inbox-spam abuse |
 | Magic-link requests per identifier | 3 / 1h | Limits targeted inbox-spam abuse |
 

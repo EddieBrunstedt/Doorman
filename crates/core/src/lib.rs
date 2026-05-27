@@ -12,7 +12,6 @@ pub mod email;
 pub mod error;
 pub mod magic_link;
 pub mod memory;
-pub mod oauth;
 pub mod passkey;
 pub mod prelude;
 pub mod rate_limit;

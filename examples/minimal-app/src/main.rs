@@ -11,7 +11,6 @@ use bauth_axum::dto::{MeResponse, SessionDto};
 use bauth_axum::prelude::*;
 use bauth_core::error::EmailResult;
 use bauth_core::magic_link::TOKEN_PLACEHOLDER;
-use bauth_core::oauth::google::GoogleProvider;
 use bauth_sqlx::SqliteStorage;
 use url::Url;
 
@@ -49,7 +48,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         external_origin.as_str().trim_end_matches('/')
     );
 
-    let mut builder = bauth_axum::quickstart(storage.storage())
+    let auth = bauth_axum::quickstart(storage.storage())
         .email(Arc::new(StdoutEmailSender))
         .magic_link(MagicLinkConfig {
             url_template: magic_link_url_template,
@@ -57,25 +56,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         })
         .passkey(passkey_config)
         .external_origin(external_origin.clone())
-        .cookie(cookie_config);
-
-    match (
-        env::var("GOOGLE_CLIENT_ID"),
-        env::var("GOOGLE_CLIENT_SECRET"),
-    ) {
-        (Ok(client_id), Ok(client_secret)) => {
-            let google: Arc<dyn OAuthProvider> =
-                Arc::new(GoogleProvider::new(client_id, client_secret));
-            builder = builder.oauth([google]);
-        }
-        _ => {
-            eprintln!(
-                "Google OAuth disabled: set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable it"
-            );
-        }
-    }
-
-    let auth = builder.build()?;
+        .cookie(cookie_config)
+        .build()?;
     let app = Router::new()
         .route("/", get(index))
         .route("/api/me", get(me))

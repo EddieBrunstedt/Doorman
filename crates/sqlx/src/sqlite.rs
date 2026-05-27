@@ -5,8 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bauth_core::error::{StorageError, StorageResult};
 use bauth_core::storage::{
-    OAuthIdentity, OAuthIdentityStore, OAuthStateId, OAuthStateStore, PasskeyChallengeId,
-    PasskeyChallengeStore, PasskeyCredentialStore, PendingOAuthAuthorization, Session, SessionId,
+    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionId,
     SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
     TokenHash, User, UserId, UserStore, VerificationPurpose, VerificationToken,
     VerificationTokenStore,
@@ -67,8 +66,6 @@ impl SqliteStorage {
             verification_tokens: self.verification_token_store(),
             passkey_credentials: self.passkey_credential_store(),
             passkey_challenges: self.passkey_challenge_store(),
-            oauth_identities: self.oauth_identity_store(),
-            oauth_states: self.oauth_state_store(),
         }
     }
 
@@ -98,18 +95,6 @@ impl SqliteStorage {
 
     pub fn passkey_challenge_store(&self) -> Arc<dyn PasskeyChallengeStore> {
         Arc::new(SqlitePasskeyChallengeStore {
-            pool: self.pool.clone(),
-        })
-    }
-
-    pub fn oauth_identity_store(&self) -> Arc<dyn OAuthIdentityStore> {
-        Arc::new(SqliteOAuthIdentityStore {
-            pool: self.pool.clone(),
-        })
-    }
-
-    pub fn oauth_state_store(&self) -> Arc<dyn OAuthStateStore> {
-        Arc::new(SqliteOAuthStateStore {
             pool: self.pool.clone(),
         })
     }
@@ -641,153 +626,5 @@ impl PasskeyChallengeStore for SqlitePasskeyChallengeStore {
             .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(reg.rows_affected() + auth.rows_affected())
-    }
-}
-
-// -----------------------------------------------------------------------------
-// oauth identities
-// -----------------------------------------------------------------------------
-
-struct SqliteOAuthIdentityStore {
-    pool: SqlitePool,
-}
-
-#[async_trait]
-impl OAuthIdentityStore for SqliteOAuthIdentityStore {
-    async fn link(&self, identity: OAuthIdentity) -> StorageResult<()> {
-        sqlx::query(
-            "INSERT INTO oauth_identities
-             (provider, subject, user_id, email, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&identity.provider)
-        .bind(&identity.subject)
-        .bind(uuid_to_bytes(identity.user_id.0))
-        .bind(&identity.email)
-        .bind(identity.created_at)
-        .bind(identity.updated_at)
-        .execute(&self.pool)
-        .await
-        .map_err(storage)?;
-        Ok(())
-    }
-
-    async fn find_by_provider_subject(
-        &self,
-        provider: &str,
-        subject: &str,
-    ) -> StorageResult<Option<OAuthIdentity>> {
-        let row = sqlx::query(
-            "SELECT provider, subject, user_id, email, created_at, updated_at
-             FROM oauth_identities WHERE provider = ? AND subject = ?",
-        )
-        .bind(provider)
-        .bind(subject)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
-        row.map(row_to_oauth_identity).transpose()
-    }
-
-    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<OAuthIdentity>> {
-        let rows = sqlx::query(
-            "SELECT provider, subject, user_id, email, created_at, updated_at
-             FROM oauth_identities WHERE user_id = ?",
-        )
-        .bind(uuid_to_bytes(user_id.0))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(storage)?;
-        rows.into_iter().map(row_to_oauth_identity).collect()
-    }
-
-    async fn unlink(&self, provider: &str, subject: &str) -> StorageResult<()> {
-        sqlx::query("DELETE FROM oauth_identities WHERE provider = ? AND subject = ?")
-            .bind(provider)
-            .bind(subject)
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
-        Ok(())
-    }
-}
-
-fn row_to_oauth_identity(row: sqlx::sqlite::SqliteRow) -> StorageResult<OAuthIdentity> {
-    let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err(storage)?;
-    Ok(OAuthIdentity {
-        provider: row.try_get("provider").map_err(storage)?,
-        subject: row.try_get("subject").map_err(storage)?,
-        user_id: UserId(uuid_from_row(user_id_bytes)?),
-        email: row.try_get("email").map_err(storage)?,
-        created_at: row.try_get("created_at").map_err(storage)?,
-        updated_at: row.try_get("updated_at").map_err(storage)?,
-    })
-}
-
-// -----------------------------------------------------------------------------
-// oauth states
-// -----------------------------------------------------------------------------
-
-struct SqliteOAuthStateStore {
-    pool: SqlitePool,
-}
-
-#[async_trait]
-impl OAuthStateStore for SqliteOAuthStateStore {
-    async fn put(&self, value: PendingOAuthAuthorization) -> StorageResult<()> {
-        sqlx::query(
-            "INSERT INTO oauth_states
-             (state_id, provider, pkce_verifier, redirect_uri, link_user_id, created_at, expires_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&value.state_id.0)
-        .bind(&value.provider)
-        .bind(&value.pkce_verifier)
-        .bind(&value.redirect_uri)
-        .bind(value.link_user_id.map(|u| uuid_to_bytes(u.0)))
-        .bind(value.created_at)
-        .bind(value.expires_at)
-        .execute(&self.pool)
-        .await
-        .map_err(storage)?;
-        Ok(())
-    }
-
-    async fn take(
-        &self,
-        state_id: &OAuthStateId,
-    ) -> StorageResult<Option<PendingOAuthAuthorization>> {
-        let row = sqlx::query(
-            "DELETE FROM oauth_states WHERE state_id = ?
-             RETURNING state_id, provider, pkce_verifier, redirect_uri, link_user_id, created_at, expires_at",
-        )
-        .bind(&state_id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
-        let Some(row) = row else { return Ok(None) };
-        let state_id: String = row.try_get("state_id").map_err(storage)?;
-        let link_user_id_bytes: Option<Vec<u8>> = row.try_get("link_user_id").map_err(storage)?;
-        let link_user_id = link_user_id_bytes
-            .map(|b| uuid_from_row(b).map(UserId))
-            .transpose()?;
-        Ok(Some(PendingOAuthAuthorization {
-            state_id: OAuthStateId(state_id),
-            provider: row.try_get("provider").map_err(storage)?,
-            pkce_verifier: row.try_get("pkce_verifier").map_err(storage)?,
-            redirect_uri: row.try_get("redirect_uri").map_err(storage)?,
-            link_user_id,
-            created_at: row.try_get("created_at").map_err(storage)?,
-            expires_at: row.try_get("expires_at").map_err(storage)?,
-        }))
-    }
-
-    async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
-        let result = sqlx::query("DELETE FROM oauth_states WHERE expires_at <= ?")
-            .bind(now)
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
-        Ok(result.rows_affected())
     }
 }

@@ -11,9 +11,8 @@ use std::sync::{Arc, Mutex};
 use bauth_axum::config::CookieConfig;
 use bauth_axum::quickstart;
 use bauth_core::memory::{
-    InMemoryOAuthIdentityStore, InMemoryOAuthStateStore, InMemoryPasskeyChallengeStore,
-    InMemoryPasskeyCredentialStore, InMemorySessionStore, InMemoryUserStore,
-    InMemoryVerificationTokenStore,
+    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
+    InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::rate_limit::NoopRateLimiter;
 use bauth_core::storage::Storage;
@@ -59,8 +58,6 @@ fn fresh_storage() -> Storage {
         verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
         passkey_credentials: Arc::new(InMemoryPasskeyCredentialStore::new()),
         passkey_challenges: Arc::new(InMemoryPasskeyChallengeStore::new()),
-        oauth_identities: Arc::new(InMemoryOAuthIdentityStore::new()),
-        oauth_states: Arc::new(InMemoryOAuthStateStore::new()),
     }
 }
 

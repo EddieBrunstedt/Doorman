@@ -22,8 +22,6 @@ use crate::warnings::{self, Warnings};
 
 #[cfg(feature = "magic_link")]
 use bauth_core::magic_link::MagicLinkManager;
-#[cfg(feature = "oauth")]
-use bauth_core::oauth::OAuthManager;
 #[cfg(feature = "passkey")]
 use bauth_core::passkey::PasskeyManager;
 
@@ -34,9 +32,6 @@ pub enum BuilderError {
     MissingSessionManager,
     #[error("user_store is required")]
     MissingUserStore,
-    #[cfg(feature = "oauth")]
-    #[error("external_origin must be set when the oauth manager is configured")]
-    MissingExternalOrigin,
     /// Only returned through [`quickstart`](crate::quickstart), which has
     /// to construct the passkey manager itself. The direct
     /// `BauthAxumBuilder` path takes a pre-built [`PasskeyManager`] and
@@ -67,8 +62,6 @@ pub struct BauthAxumBuilder {
 
     #[cfg(feature = "passkey")]
     passkey: Option<PasskeyManager>,
-    #[cfg(feature = "oauth")]
-    oauth: Option<OAuthManager>,
     #[cfg(feature = "magic_link")]
     magic_link: Option<MagicLinkManager>,
 }
@@ -110,7 +103,7 @@ impl BauthAxumBuilder {
     ///
     /// If the host neither supplies a cache nor wires an invalidator,
     /// revocations made through cloned `SessionManager`s held by the
-    /// passkey / oauth / magic-link managers will not evict cached entries;
+    /// passkey / magic-link managers will not evict cached entries;
     /// they will only be cleared by the cache TTL. The
     /// [`quickstart`](crate::quickstart) entry point handles all of this
     /// automatically.
@@ -123,10 +116,8 @@ impl BauthAxumBuilder {
     }
 
     /// Absolute public origin (scheme + host [+ port] [+ path prefix])
-    /// that external clients use to reach the auth routes. Required when
-    /// the `oauth` feature is in use, because providers must be handed an
-    /// absolute callback URL at authorization time. Supplying an origin
-    /// also enables the CSRF origin-check layer by default; disable it
+    /// that external clients use to reach the auth routes. Supplying an
+    /// origin enables the CSRF origin-check layer by default; disable it
     /// explicitly with [`with_csrf`](Self::with_csrf) when you have a
     /// known non-browser deployment.
     pub fn external_origin(mut self, origin: Url) -> Self {
@@ -145,12 +136,6 @@ impl BauthAxumBuilder {
     #[cfg(feature = "passkey")]
     pub fn passkey_manager(mut self, manager: PasskeyManager) -> Self {
         self.passkey = Some(manager);
-        self
-    }
-
-    #[cfg(feature = "oauth")]
-    pub fn oauth_manager(mut self, manager: OAuthManager) -> Self {
-        self.oauth = Some(manager);
         self
     }
 
@@ -175,11 +160,6 @@ impl BauthAxumBuilder {
             .ok_or(BuilderError::MissingSessionManager)?;
         let user_store = self.user_store.ok_or(BuilderError::MissingUserStore)?;
         let cookie_config = Arc::new(self.cookie_config.unwrap_or_default());
-
-        #[cfg(feature = "oauth")]
-        if self.oauth.is_some() && self.external_origin.is_none() {
-            return Err(BuilderError::MissingExternalOrigin);
-        }
 
         if !self.silence_warnings {
             let mut warnings = self.inherited_warnings.clone();
@@ -221,13 +201,8 @@ impl BauthAxumBuilder {
             session_manager,
             user_store,
             cookie_config,
-            #[cfg(feature = "oauth")]
-            external_origin: self.external_origin,
-
             #[cfg(feature = "passkey")]
             passkey: self.passkey,
-            #[cfg(feature = "oauth")]
-            oauth: self.oauth,
             #[cfg(feature = "magic_link")]
             magic_link: self.magic_link,
         };

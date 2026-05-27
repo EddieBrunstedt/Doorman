@@ -4,8 +4,8 @@
 //! they need to construct. [`quickstart`] takes the composite
 //! [`bauth_core::storage::Storage`] (typically obtained in one call from a
 //! storage adapter such as `bauth-sqlx`) plus opt-in per-method configs,
-//! constructs the `SessionManager`/`PasskeyManager`/`OAuthManager`/
-//! `MagicLinkManager` internally with sensible defaults, and returns a
+//! constructs the `SessionManager`/`PasskeyManager`/`MagicLinkManager`
+//! internally with sensible defaults, and returns a
 //! fully built [`BauthAxum`].
 //!
 //! Defaults applied when the host does not override them:
@@ -43,8 +43,6 @@ use bauth_core::storage::Storage;
 
 #[cfg(feature = "magic_link")]
 use bauth_core::magic_link::{MagicLinkConfig, MagicLinkManager};
-#[cfg(feature = "oauth")]
-use bauth_core::oauth::{OAuthConfig, OAuthManager, OAuthProvider};
 #[cfg(feature = "passkey")]
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
 
@@ -77,7 +75,7 @@ pub fn quickstart(storage: Storage) -> QuickstartBuilder {
 ///
 /// Collects the storage, the orthogonal collaborators (clock / audit /
 /// email / rate limiter), the session config, the cookie config, and the
-/// opt-in per-method configs (passkey / oauth / magic-link).
+/// opt-in per-method configs (passkey / magic-link).
 /// Construction of the core managers happens in [`build`](Self::build).
 pub struct QuickstartBuilder {
     storage: Storage,
@@ -95,16 +93,8 @@ pub struct QuickstartBuilder {
 
     #[cfg(feature = "passkey")]
     passkey: Option<PasskeyConfig>,
-    #[cfg(feature = "oauth")]
-    oauth: Option<OAuthSetup>,
     #[cfg(feature = "magic_link")]
     magic_link: Option<MagicLinkConfig>,
-}
-
-#[cfg(feature = "oauth")]
-struct OAuthSetup {
-    providers: Vec<Arc<dyn OAuthProvider>>,
-    config: OAuthConfig,
 }
 
 impl QuickstartBuilder {
@@ -123,8 +113,6 @@ impl QuickstartBuilder {
             external_origin: None,
             #[cfg(feature = "passkey")]
             passkey: None,
-            #[cfg(feature = "oauth")]
-            oauth: None,
             #[cfg(feature = "magic_link")]
             magic_link: None,
         }
@@ -220,38 +208,8 @@ impl QuickstartBuilder {
         self
     }
 
-    /// Enable OAuth with the supplied providers and the default
-    /// [`OAuthConfig`]. Requires [`external_origin`](Self::external_origin)
-    /// to be set.
-    #[cfg(feature = "oauth")]
-    pub fn oauth<I>(mut self, providers: I) -> Self
-    where
-        I: IntoIterator<Item = Arc<dyn OAuthProvider>>,
-    {
-        self.oauth = Some(OAuthSetup {
-            providers: providers.into_iter().collect(),
-            config: OAuthConfig::default(),
-        });
-        self
-    }
-
-    /// Enable OAuth with the supplied providers and a custom
-    /// [`OAuthConfig`].
-    #[cfg(feature = "oauth")]
-    pub fn oauth_with<I>(mut self, providers: I, config: OAuthConfig) -> Self
-    where
-        I: IntoIterator<Item = Arc<dyn OAuthProvider>>,
-    {
-        self.oauth = Some(OAuthSetup {
-            providers: providers.into_iter().collect(),
-            config,
-        });
-        self
-    }
-
     /// Absolute public origin clients use to reach the auth routes.
-    /// Required when OAuth is in use. Supplying an origin also enables
-    /// CSRF origin checks by default.
+    /// Supplying an origin enables CSRF origin checks by default.
     pub fn external_origin(mut self, origin: Url) -> Self {
         self.external_origin = Some(origin);
         self
@@ -325,21 +283,6 @@ impl QuickstartBuilder {
             )
             .map_err(BuilderError::Passkey)?;
             builder = builder.passkey_manager(manager);
-        }
-
-        #[cfg(feature = "oauth")]
-        if let Some(setup) = self.oauth {
-            let manager = OAuthManager::new(
-                setup.providers,
-                self.storage.users.clone(),
-                self.storage.oauth_identities.clone(),
-                self.storage.oauth_states.clone(),
-                session_manager.clone(),
-                clock.clone(),
-                audit.clone(),
-                setup.config,
-            );
-            builder = builder.oauth_manager(manager);
         }
 
         if let Some(origin) = self.external_origin {

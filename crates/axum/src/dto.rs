@@ -4,8 +4,8 @@
 //! conversion layer rather than re-exporting the core types directly:
 //!
 //! - The core types carry a richer surface (e.g. `User::updated_at`,
-//!   the raw `StoredPasskey::passkey` blob, the OAuth `pkce_verifier`)
-//!   that we don't want to leak over the wire.
+//!   the raw `StoredPasskey::passkey` blob) that we don't want to leak
+//!   over the wire.
 //! - JSON shape stability is part of the public API for the HTTP layer,
 //!   while the storage shape inside the host's database is not.
 //!
@@ -16,7 +16,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bauth_core::session::IssuedSession;
-use bauth_core::storage::{OAuthIdentity, Session, SessionId, StoredPasskey, User, UserId};
+use bauth_core::storage::{Session, SessionId, StoredPasskey, User, UserId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -77,8 +77,8 @@ impl From<Session> for SessionDto {
     }
 }
 
-/// Returned by every endpoint that issues a session: passkey finish,
-/// magic-link consume, OAuth callback.
+/// Returned by every endpoint that issues a session: passkey finish and
+/// magic-link consume.
 ///
 /// `token` is the raw bearer token. It is *also* set as an HttpOnly
 /// session cookie on the same response, so browser clients can ignore
@@ -129,26 +129,6 @@ impl From<StoredPasskey> for PasskeyDto {
             name: value.name,
             created_at: value.created_at,
             last_used_at: value.last_used_at,
-        }
-    }
-}
-
-/// Public JSON representation of a linked OAuth identity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OAuthIdentityDto {
-    pub provider: String,
-    pub subject: String,
-    pub email: Option<String>,
-    pub created_at: DateTime<Utc>,
-}
-
-impl From<OAuthIdentity> for OAuthIdentityDto {
-    fn from(value: OAuthIdentity) -> Self {
-        Self {
-            provider: value.provider,
-            subject: value.subject,
-            email: value.email,
-            created_at: value.created_at,
         }
     }
 }

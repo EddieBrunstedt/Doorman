@@ -32,7 +32,7 @@ use crate::error::StorageResult;
 
 /// Composite handle to every storage trait the managers need.
 ///
-/// Bundles the eight per-concern `Arc<dyn ...>` stores so a host can pass
+/// Bundles the per-concern `Arc<dyn ...>` stores so a host can pass
 /// one value to the quickstart builder (or assemble it once and reuse it
 /// across multiple managers) instead of threading each store through by
 /// hand. Storage adapters typically expose a `fn storage(&self) -> Storage`
@@ -47,8 +47,6 @@ pub struct Storage {
     pub verification_tokens: Arc<dyn VerificationTokenStore>,
     pub passkey_credentials: Arc<dyn PasskeyCredentialStore>,
     pub passkey_challenges: Arc<dyn PasskeyChallengeStore>,
-    pub oauth_identities: Arc<dyn OAuthIdentityStore>,
-    pub oauth_states: Arc<dyn OAuthStateStore>,
 }
 
 /// Stable local user identifier.
@@ -299,96 +297,6 @@ pub trait PasskeyChallengeStore: Send + Sync {
         &self,
         id: PasskeyChallengeId,
     ) -> StorageResult<Option<StoredPasskeyAuthentication>>;
-
-    async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
-}
-
-/// A federated identity issued by an OAuth provider, bound to a local user.
-/// One user can own multiple identities (e.g. Google + GitHub); a single
-/// provider+subject pair belongs to at most one user.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OAuthIdentity {
-    /// Stable identifier for the provider, matching
-    /// [`OAuthProvider::name`](crate::oauth::OAuthProvider::name).
-    pub provider: String,
-    /// Provider-side stable user id (the OIDC `sub` claim, GitHub's
-    /// numeric user id, etc.). Never the email — emails change.
-    pub subject: String,
-    pub user_id: UserId,
-    /// Email address as reported by the provider at link time, lower-cased.
-    /// Stored for convenience; the authoritative copy lives on [`User`].
-    pub email: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-/// Persistence contract for linked OAuth identities.
-#[async_trait]
-pub trait OAuthIdentityStore: Send + Sync {
-    /// Persist a freshly linked identity. Implementations MUST reject the
-    /// insert if a record already exists for `(provider, subject)`.
-    async fn link(&self, identity: OAuthIdentity) -> StorageResult<()>;
-
-    async fn find_by_provider_subject(
-        &self,
-        provider: &str,
-        subject: &str,
-    ) -> StorageResult<Option<OAuthIdentity>>;
-
-    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<OAuthIdentity>>;
-
-    async fn unlink(&self, provider: &str, subject: &str) -> StorageResult<()>;
-}
-
-/// Identifier for an in-progress OAuth authorization. The plaintext value is
-/// returned to the client (typically as a cookie + as the `state` URL
-/// parameter sent to the provider), and is used as the lookup key when the
-/// callback arrives. High-entropy random; never derived from user data.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct OAuthStateId(pub String);
-
-impl fmt::Display for OAuthStateId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-/// Server-side state for an OAuth authorization round-trip, persisted
-/// between the `start` and `finish` calls. The PKCE verifier never leaves
-/// the server; the `state_id` doubles as the CSRF token echoed back by the
-/// provider.
-#[derive(Debug, Clone)]
-pub struct PendingOAuthAuthorization {
-    pub state_id: OAuthStateId,
-    /// Provider name this authorization targets. Must match
-    /// [`OAuthIdentity::provider`].
-    pub provider: String,
-    /// PKCE code verifier (RFC 7636). Sent verbatim to the provider's
-    /// token endpoint at exchange time.
-    pub pkce_verifier: String,
-    /// Redirect URI the provider was told to use. Echoed back at token
-    /// exchange because OAuth servers tie the code to this exact value.
-    pub redirect_uri: String,
-    /// If `Some`, the caller is an already-authenticated user adding an
-    /// identity to their account. The new identity will be linked to this
-    /// user instead of provisioning a new one.
-    pub link_user_id: Option<UserId>,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
-}
-
-/// Persistence contract for pending OAuth authorization state.
-#[async_trait]
-pub trait OAuthStateStore: Send + Sync {
-    async fn put(&self, value: PendingOAuthAuthorization) -> StorageResult<()>;
-
-    /// Atomically look up and remove a pending authorization. MUST delete
-    /// before returning so the same state cannot be replayed.
-    async fn take(
-        &self,
-        state_id: &OAuthStateId,
-    ) -> StorageResult<Option<PendingOAuthAuthorization>>;
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }

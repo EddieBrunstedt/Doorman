@@ -16,7 +16,7 @@
   <body>
     <h1>bauth minimal app</h1>
     <p>
-      Passkeys, magic links, optional Google OAuth, and <code>/api/me</code>
+      Passkeys, magic links, and <code>/api/me</code>
       served by one Axum process. Magic-link emails are printed to the server
       terminal for local development.
     </p>
@@ -34,16 +34,6 @@
       <button name="action" value="register-passkey">Register passkey</button>
       <button name="action" value="login-passkey">Login with passkey</button>
     </form>
-
-    <section>
-      <h2>Google OAuth</h2>
-      <p>
-        Set <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code>,
-        then register <code>http://localhost:3000/auth/oauth/google/callback</code>
-        in Google Cloud.
-      </p>
-      <p><a href="/auth/oauth/google/start?return_to=/">Continue with Google</a></p>
-    </section>
 
     <section>
       <h2>Current session</h2>

@@ -1,4 +1,4 @@
-//! Cookie helpers shared by the session and OAuth flows.
+//! Cookie helpers shared by session-issuing flows.
 //!
 //! Kept small on purpose: we use the `cookie` crate for the heavy lifting
 //! (parsing, attribute formatting) and only wrap the patterns the rest of
@@ -49,24 +49,6 @@ pub fn session_cookie(config: &CookieConfig, value: &str) -> HeaderValue {
 /// Build a `Set-Cookie` header value that clears the session cookie.
 pub fn clear_session_cookie(config: &CookieConfig) -> HeaderValue {
     encode(clear_cookie(&config.session_cookie_name, config))
-}
-
-/// Build a `Set-Cookie` header value for the OAuth state cookie.
-pub fn oauth_state_cookie(config: &CookieConfig, value: &str) -> HeaderValue {
-    encode(
-        build_cookie(
-            &config.oauth_state_cookie_name,
-            value.to_owned(),
-            config,
-            Some(config.oauth_state_max_age),
-        )
-        .build(),
-    )
-}
-
-/// Build a `Set-Cookie` header value that clears the OAuth state cookie.
-pub fn clear_oauth_state_cookie(config: &CookieConfig) -> HeaderValue {
-    encode(clear_cookie(&config.oauth_state_cookie_name, config))
 }
 
 fn build_cookie<'a>(

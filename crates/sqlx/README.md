@@ -8,7 +8,7 @@ ship behind cargo features:
 
 Both implement every storage trait the library defines: `UserStore`,
 `SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`,
-`PasskeyChallengeStore`, `OAuthIdentityStore`, `OAuthStateStore`.
+`PasskeyChallengeStore`.
 
 ## Usage
 

@@ -1,9 +1,8 @@
 //! End-to-end smoke test for the SQLx + SQLite adapter.
 //!
 //! Wires every storage trait through `SqliteStorage` and runs a
-//! happy-path magic-link flow against it. Also exercises the OAuth
-//! identity store, verification-token purging, and session-management
-//! queries.
+//! happy-path magic-link flow against it. Also exercises verification-token
+//! purging and session-management queries.
 
 #![cfg(feature = "sqlite")]
 
@@ -19,7 +18,7 @@ use bauth_core::magic_link::{
 use bauth_core::memory::{InMemoryEmailSender, InMemoryRateLimiter};
 use bauth_core::rate_limit::RateLimiter;
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
-use bauth_core::storage::{OAuthIdentity, UserId, VerificationPurpose};
+use bauth_core::storage::{UserId, VerificationPurpose};
 use bauth_sqlx::SqliteStorage;
 use chrono::{DateTime, TimeZone, Utc};
 
@@ -137,62 +136,6 @@ async fn full_magic_link_flow_against_sqlite() {
     let tokens = storage.verification_token_store();
     let purged = tokens.purge_expired(ts(2099, 1, 1)).await.expect("purge");
     assert_eq!(purged, 0, "no outstanding tokens after consume");
-}
-
-#[tokio::test]
-async fn oauth_identity_round_trip_against_sqlite() {
-    let storage = SqliteStorage::connect("sqlite::memory:")
-        .await
-        .expect("connect");
-    storage.migrate().await.expect("migrate");
-
-    let user_id = UserId::new();
-    storage
-        .user_store()
-        .create_user(bauth_core::storage::User {
-            id: user_id,
-            email: Some("alice@example.com".into()),
-            email_verified_at: None,
-            created_at: ts(2026, 1, 1),
-            updated_at: ts(2026, 1, 1),
-        })
-        .await
-        .expect("create user");
-
-    let identities = storage.oauth_identity_store();
-    identities
-        .link(OAuthIdentity {
-            provider: "google".into(),
-            subject: "sub-123".into(),
-            user_id,
-            email: Some("alice@example.com".into()),
-            created_at: ts(2026, 1, 1),
-            updated_at: ts(2026, 1, 1),
-        })
-        .await
-        .expect("link");
-
-    let found = identities
-        .find_by_provider_subject("google", "sub-123")
-        .await
-        .expect("find")
-        .expect("identity present");
-    assert_eq!(found.user_id, user_id);
-
-    let listed = identities.list_for_user(user_id).await.expect("list");
-    assert_eq!(listed.len(), 1);
-
-    identities
-        .unlink("google", "sub-123")
-        .await
-        .expect("unlink");
-    assert!(
-        identities
-            .find_by_provider_subject("google", "sub-123")
-            .await
-            .expect("find after unlink")
-            .is_none()
-    );
 }
 
 #[tokio::test]

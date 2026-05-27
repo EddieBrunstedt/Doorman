@@ -112,8 +112,8 @@ impl SessionManager {
     /// invalidation observer.
     ///
     /// The hook is captured by value: existing clones of the original
-    /// manager (including any held by `OAuthManager`, `MagicLinkManager`,
-    /// or `PasskeyManager` constructed earlier) keep their previous hook.
+    /// manager (including any held by `MagicLinkManager` or
+    /// `PasskeyManager` constructed earlier) keep their previous hook.
     /// Hosts that need every dependent manager to observe invalidations
     /// should call this _before_ constructing the dependent managers and
     /// pass the resulting `SessionManager` to them.

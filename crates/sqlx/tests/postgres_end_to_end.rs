@@ -23,7 +23,7 @@ use bauth_core::magic_link::{
 use bauth_core::memory::{InMemoryEmailSender, InMemoryRateLimiter};
 use bauth_core::rate_limit::RateLimiter;
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
-use bauth_core::storage::{OAuthIdentity, UserId, VerificationPurpose};
+use bauth_core::storage::{UserId, VerificationPurpose};
 use bauth_sqlx::PostgresStorage;
 use chrono::{DateTime, TimeZone, Utc};
 use sqlx::PgPool;
@@ -155,41 +155,6 @@ async fn postgres_full_smoke_test() {
         .await
         .expect("second consume");
     assert!(!second.is_new_user);
-
-    // OAuth identity round-trip on a fresh user, to exercise the
-    // identity-store queries.
-    let user_id = UserId::new();
-    users
-        .create_user(bauth_core::storage::User {
-            id: user_id,
-            email: Some("bob@example.com".into()),
-            email_verified_at: None,
-            created_at: ts(2026, 1, 1),
-            updated_at: ts(2026, 1, 1),
-        })
-        .await
-        .expect("create user");
-
-    let identities = storage.oauth_identity_store();
-    identities
-        .link(OAuthIdentity {
-            provider: "google".into(),
-            subject: "sub-456".into(),
-            user_id,
-            email: Some("bob@example.com".into()),
-            created_at: ts(2026, 1, 1),
-            updated_at: ts(2026, 1, 1),
-        })
-        .await
-        .expect("link");
-
-    let listed = identities.list_for_user(user_id).await.expect("list");
-    assert_eq!(listed.len(), 1);
-
-    identities
-        .unlink("google", "sub-456")
-        .await
-        .expect("unlink");
 
     // Verification-token atomic consume.
     let token_user = UserId::new();

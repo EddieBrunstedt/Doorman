@@ -81,16 +81,6 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::InvalidRelyingParty(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "invalid_relying_party")
         }
-        Error::OAuthProviderNotConfigured(_) => {
-            (StatusCode::NOT_FOUND, "oauth_provider_not_configured")
-        }
-        Error::InvalidOAuthState => (StatusCode::BAD_REQUEST, "invalid_oauth_state"),
-        Error::OAuthProvider(_) => (StatusCode::BAD_GATEWAY, "oauth_provider_error"),
-        Error::OAuthIdentityAlreadyLinked => {
-            (StatusCode::CONFLICT, "oauth_identity_already_linked")
-        }
-        Error::OAuthEmailTaken => (StatusCode::CONFLICT, "oauth_email_taken"),
-        Error::OAuthEmailMissing => (StatusCode::BAD_REQUEST, "oauth_email_missing"),
         Error::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
     }
 }

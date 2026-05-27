@@ -23,15 +23,12 @@ use crate::state::BauthState;
 
 #[cfg(feature = "magic_link")]
 pub(crate) mod magic_link;
-#[cfg(feature = "oauth")]
-pub(crate) mod oauth;
 #[cfg(feature = "passkey")]
 pub(crate) mod passkey;
 pub(crate) mod sessions;
 
 /// Build a JSON response that issues a session cookie alongside an
-/// [`AuthResponse`] body. Shared by the passkey and magic-link routes;
-/// the OAuth callback uses cookies + a 303 redirect instead.
+/// [`AuthResponse`] body. Shared by the passkey and magic-link routes.
 #[cfg(any(feature = "passkey", feature = "magic_link"))]
 pub(crate) fn auth_success(
     status: StatusCode,
@@ -52,11 +49,6 @@ pub(crate) fn router(state: BauthState) -> Router {
     #[cfg(feature = "passkey")]
     if state.passkey.is_some() {
         router = router.merge(passkey::routes());
-    }
-
-    #[cfg(feature = "oauth")]
-    if state.oauth.is_some() {
-        router = router.merge(oauth::routes());
     }
 
     #[cfg(feature = "magic_link")]

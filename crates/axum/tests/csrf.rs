@@ -16,9 +16,8 @@ use bauth_axum::quickstart;
 use bauth_core::email::EmailSender;
 use bauth_core::magic_link::{MagicLinkConfig, MagicLinkRateLimits, TOKEN_PLACEHOLDER};
 use bauth_core::memory::{
-    InMemoryEmailSender, InMemoryOAuthIdentityStore, InMemoryOAuthStateStore,
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
-    InMemoryUserStore, InMemoryVerificationTokenStore,
+    InMemoryEmailSender, InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore,
+    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::storage::Storage;
 use reqwest::header;
@@ -46,8 +45,6 @@ impl CsrfApp {
             verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
             passkey_credentials: Arc::new(InMemoryPasskeyCredentialStore::new()),
             passkey_challenges: Arc::new(InMemoryPasskeyChallengeStore::new()),
-            oauth_identities: Arc::new(InMemoryOAuthIdentityStore::new()),
-            oauth_states: Arc::new(InMemoryOAuthStateStore::new()),
         };
 
         let mut builder = quickstart(storage)

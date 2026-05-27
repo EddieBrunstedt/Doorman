@@ -68,26 +68,6 @@ pub enum Error {
     #[error("invalid relying party configuration: {0}")]
     InvalidRelyingParty(String),
 
-    #[error("oauth provider `{0}` is not configured")]
-    OAuthProviderNotConfigured(String),
-
-    #[error("oauth state is invalid or has expired")]
-    InvalidOAuthState,
-
-    #[error("oauth provider call failed: {0}")]
-    OAuthProvider(String),
-
-    #[error("oauth identity is already linked to a user account")]
-    OAuthIdentityAlreadyLinked,
-
-    #[error(
-        "oauth provider returned an email that belongs to another account; sign in with the existing method first to link"
-    )]
-    OAuthEmailTaken,
-
-    #[error("oauth provider did not return an email address")]
-    OAuthEmailMissing,
-
     #[error("rate limit exceeded; retry after {} ms", retry_after.as_millis())]
     RateLimited { retry_after: Duration },
 }

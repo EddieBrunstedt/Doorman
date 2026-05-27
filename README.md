@@ -1,8 +1,8 @@
 # bauth
 
 bauth is an Axum-first authentication library for Rust applications. It
-ships correct auth primitives — passkeys/WebAuthn, PKCE OAuth, magic
-links, server-side opaque sessions, CSRF origin checks, rate limiting,
+ships correct auth primitives — passkeys/WebAuthn, magic links,
+server-side opaque sessions, CSRF origin checks, rate limiting,
 and audit events — behind storage traits you can back with SQLx or your
 own database layer.
 
@@ -30,7 +30,6 @@ use std::sync::Arc;
 use axum::{Json, Router, routing::get};
 use bauth_axum::dto::{MeResponse, SessionDto};
 use bauth_axum::prelude::*;
-use bauth_core::oauth::google::GoogleProvider;
 use bauth_sqlx::SqliteStorage;
 
 #[tokio::main]
@@ -39,14 +38,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.migrate().await?;
 
     let origin = "https://app.example.com".parse()?;
-    let google: Arc<dyn OAuthProvider> = Arc::new(GoogleProvider::new(
-        "GOOGLE_CLIENT_ID",
-        "GOOGLE_CLIENT_SECRET",
-    ));
 
     let auth = bauth_axum::quickstart(storage.storage())
+        .email(Arc::new(NoopEmailSender))
+        .magic_link(MagicLinkConfig::default())
         .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
-        .oauth([google])
         .external_origin(origin)
         .cookie(CookieConfig::default())
         .build()?;
@@ -79,22 +75,18 @@ leave `secure = true` in production.
 ## Run the minimal app
 
 A complete runnable app lives in [`examples/minimal-app`](examples/minimal-app):
-SQLite via `bauth-sqlx`, passkeys, magic links, optional Google OAuth,
-`/api/me`, and a static HTML page with no frontend build step.
+SQLite via `bauth-sqlx`, passkeys, magic links, `/api/me`, and a static
+HTML page with no frontend build step.
 
 ```sh
 cargo run -p bauth-minimal-app
 ```
 
-Open <http://localhost:3000>. To enable Google OAuth, set
-`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` and register
-`http://localhost:3000/auth/oauth/google/callback` as the callback URL.
+Open <http://localhost:3000>.
 
 ## What ships
 
 - Passkeys / WebAuthn via [`webauthn-rs`](https://crates.io/crates/webauthn-rs).
-- OAuth social login with PKCE; Google and GitHub providers are included,
-  and custom providers implement `OAuthProvider`.
 - Magic-link sign-in using single-use, hashed email tokens.
 - Server-side opaque sessions with instant revocation and a signed-in
   devices endpoint.
@@ -128,10 +120,8 @@ These mirror the startup warnings emitted by `quickstart().build()` and
 - Wire a production `RateLimiter`. The built-in `InMemoryRateLimiter` is
   per-process, so multi-replica deployments need a shared backend.
 - Wire a real `EmailSender` before relying on magic links.
-- If you enable `OAuthConfig::allow_email_linking`, do so only when you
-  intentionally trust the provider's `email_verified` claim.
 - Run storage migrations at startup and periodically purge expired
-  sessions, verification tokens, passkey challenges, and OAuth states.
+  sessions, verification tokens, and passkey challenges.
 
 Use `.silence_warnings()` only after you have reviewed the warning and
 made an explicit operational choice.
@@ -141,15 +131,13 @@ made an explicit operational choice.
 - `SessionConfig::lifetime` — session lifetime; defaults to 30 days.
 - `PasskeyConfig` — WebAuthn relying-party id, origin, display name, and
   challenge lifetime.
-- `OAuthConfig::allow_email_linking` — auto-link provider identities to
-  an existing verified email. Defaults to `false`.
 - `MagicLinkConfig` — token lifetime, URL template, signup policy, rate
   limits, and email renderer.
-- `CookieConfig` — session/state cookie names, domain/path, `secure`,
-  `SameSite`, and max ages.
+- `CookieConfig` — session cookie name, domain/path, `secure`,
+  `SameSite`, and max age.
 - `CsrfConfig` — override or disable the origin-check layer.
 
-Feature flags on `bauth-axum`: `passkey`, `oauth`, and `magic_link` (all
+Feature flags on `bauth-axum`: `passkey` and `magic_link` (both
 enabled by default).
 
 ```toml
@@ -161,13 +149,12 @@ bauth-axum = { version = "0.1", default-features = false, features = ["passkey"]
 The happy path is `bauth-sqlx` plus `bauth_axum::quickstart(...)`. Hosts
 on another database stack implement the storage traits in `bauth-core`:
 `UserStore`, `SessionStore`, `VerificationTokenStore`,
-`PasskeyCredentialStore`, `PasskeyChallengeStore`, `OAuthIdentityStore`,
-and `OAuthStateStore`.
+`PasskeyCredentialStore`, and `PasskeyChallengeStore`.
 
 If you want full control of the HTTP surface, skip `bauth-axum` routes and
 call the core managers directly (`SessionManager`, `PasskeyManager`,
-`OAuthManager`, `MagicLinkManager`). They return framework-agnostic
-outcomes such as `IssuedSession`, `StoredPasskey`, and `OAuthOutcome`.
+`MagicLinkManager`). They return framework-agnostic outcomes such as
+`IssuedSession` and `StoredPasskey`.
 
 ## Security
 

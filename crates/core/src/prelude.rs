@@ -19,18 +19,13 @@ pub use crate::error::{Error, Result, StorageError, StorageResult};
 pub use crate::magic_link::{
     MagicLinkConfig, MagicLinkManager, MagicLinkOutcome, MagicLinkRateLimits,
 };
-pub use crate::oauth::{
-    OAuthConfig, OAuthManager, OAuthOutcome, OAuthProvider, ProviderError, ProviderUser,
-    StartedAuthorization,
-};
 pub use crate::passkey::{PasskeyConfig, PasskeyManager};
 pub use crate::rate_limit::{NoopRateLimiter, RateLimitDecision, RateLimitPolicy, RateLimiter};
 pub use crate::session::{
     IssuedSession, SessionConfig, SessionContext, SessionInvalidationHook, SessionManager,
 };
 pub use crate::storage::{
-    OAuthIdentity, OAuthIdentityStore, OAuthStateId, OAuthStateStore, PasskeyChallengeId,
-    PasskeyChallengeStore, PasskeyCredentialStore, PendingOAuthAuthorization, Session, SessionId,
+    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionId,
     SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
     TokenHash, User, UserId, UserStore, VerificationPurpose, VerificationToken,
     VerificationTokenStore,

@@ -68,7 +68,6 @@ pub enum AuditEventKind {
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
     Passkey,
-    OAuth,
     MagicLink,
 }
 
@@ -77,7 +76,6 @@ pub enum AuthMethod {
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
     Passkey,
-    OAuth,
     MagicLink,
 }
 

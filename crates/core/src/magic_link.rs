@@ -271,8 +271,7 @@ impl MagicLinkManager {
         let email_was_unverified = user.email_verified_at.is_none();
         if email_was_unverified {
             // Clicking a link sent to the address proves ownership; mark
-            // the email verified so subsequent flows that check it (e.g.
-            // OAuth linking) see a verified account.
+            // the email verified so subsequent flows see a verified account.
             user.email_verified_at = Some(now);
             user.updated_at = now;
             self.users.update_user(user.clone()).await?;
