@@ -1,9 +1,8 @@
 //! Session-management HTTP routes.
 //!
-//! Mounted under `/auth/sessions`. Always available regardless of which
-//! auth methods are enabled, since every issuer (`passkey`, `magic_link`)
-//! produces sessions managed by the same
-//! [`SessionManager`].
+//! Mounted under `/auth/sessions`. Always available since every flow that
+//! issues a session (passkey login and signup finish) produces a session
+//! managed by the same [`SessionManager`].
 
 use axum::Json;
 use axum::Router;

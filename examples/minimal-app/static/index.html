@@ -16,23 +16,22 @@
   <body>
     <h1>bauth minimal app</h1>
     <p>
-      Passkeys, magic links, and <code>/api/me</code>
-      served by one Axum process. Magic-link emails are printed to the server
-      terminal for local development.
+      Passkey sign-in plus an email-first signup flow served by one Axum
+      process. Signup links are printed to the server terminal for local
+      development; click the link in the terminal output to land back here
+      and register a passkey for the new account.
     </p>
 
-    <form id="magic-link">
-      <h2>Magic link</h2>
+    <form id="signup">
+      <h2>Sign up</h2>
       <label>Email <input name="email" type="email" value="alice@example.com" required /></label>
-      <button>Send magic link</button>
+      <button>Send signup link</button>
     </form>
 
     <form id="passkey-login">
-      <h2>Passkeys</h2>
+      <h2>Sign in</h2>
       <p>Passkey login is usernameless; the authenticator identifies the account.</p>
-      <label>Device name <input name="name" value="local device" /></label>
-      <button name="action" value="register-passkey">Register passkey</button>
-      <button name="action" value="login-passkey">Login with passkey</button>
+      <button name="action" value="login-passkey">Sign in with passkey</button>
     </form>
 
     <section>
@@ -135,23 +134,19 @@
         };
       }
 
-      async function requestMagicLink(email) {
-        await api("/auth/magic-link/request", "POST", { email });
-        return "magic link sent; copy it from the server terminal";
+      async function requestSignup(email) {
+        await api("/auth/signup/request", "POST", { email });
+        return "signup link sent; copy it from the server terminal";
       }
 
-      async function consumeMagicLink(token) {
-        return api("/auth/magic-link/consume", "POST", { token });
-      }
-
-      async function registerPasskey(name) {
-        const start = await api("/auth/passkey/register/start", "POST");
+      async function consumeAndFinishSignup(token) {
+        const start = await api("/auth/signup/consume", "POST", { token });
         const cred = await navigator.credentials.create(decodeCreationOptions(start.options));
         if (!cred) throw new Error("passkey registration cancelled");
-        return api("/auth/passkey/register/finish", "POST", {
+        return api("/auth/signup/finish", "POST", {
           challenge_id: start.challenge_id,
           response: encodeAttestation(cred),
-          name,
+          name: "local device",
         });
       }
 
@@ -165,15 +160,15 @@
         });
       }
 
-      document.querySelector("#magic-link").addEventListener("submit", async (event) => {
+      document.querySelector("#signup").addEventListener("submit", async (event) => {
         event.preventDefault();
         const form = new FormData(event.submitter.form);
-        try { log(await requestMagicLink(form.get("email"))); } catch (err) { log(String(err)); }
+        try { log(await requestSignup(form.get("email"))); } catch (err) { log(String(err)); }
       });
 
-      const magicToken = new URLSearchParams(window.location.search).get("magic_token");
-      if (magicToken) {
-        consumeMagicLink(magicToken)
+      const signupToken = new URLSearchParams(window.location.search).get("signup_token");
+      if (signupToken) {
+        consumeAndFinishSignup(signupToken)
           .then(log)
           .then(() => history.replaceState(null, "", "/"))
           .catch((err) => log(String(err)));
@@ -181,12 +176,8 @@
 
       document.querySelector("#passkey-login").addEventListener("submit", async (event) => {
         event.preventDefault();
-        const form = new FormData(event.submitter.form);
         try {
-          const result = event.submitter.value === "register-passkey"
-            ? await registerPasskey(form.get("name"))
-            : await loginPasskey();
-          log(result ?? "ok");
+          log(await loginPasskey());
         } catch (err) { log(String(err)); }
       });
 

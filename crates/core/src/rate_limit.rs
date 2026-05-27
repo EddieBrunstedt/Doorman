@@ -4,8 +4,8 @@
 //! the bundled in-memory limiter, swap in a Redis-backed implementation,
 //! or use [`NoopRateLimiter`] to disable enforcement entirely. The
 //! framework-agnostic managers in this crate (notably
-//! [`MagicLinkManager`](crate::magic_link::MagicLinkManager)) consult a
-//! limiter on sensitive operations and surface
+//! [`SignupManager`](crate::signup::SignupManager)) consult a limiter on
+//! sensitive operations and surface
 //! [`Error::RateLimited`](crate::error::Error::RateLimited) when the
 //! configured budget is exhausted.
 

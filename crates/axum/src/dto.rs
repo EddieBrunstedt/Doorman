@@ -78,7 +78,7 @@ impl From<Session> for SessionDto {
 }
 
 /// Returned by every endpoint that issues a session: passkey finish and
-/// magic-link consume.
+/// signup finish.
 ///
 /// `token` is the raw bearer token. It is *also* set as an HttpOnly
 /// session cookie on the same response, so browser clients can ignore
@@ -137,23 +137,37 @@ impl From<StoredPasskey> for PasskeyDto {
 // Request bodies
 // ---------------------------------------------------------------------------
 
-/// Request body for sending a magic link.
+/// Request body for `/auth/signup/request`. The response is always 204
+/// regardless of whether the email is already registered, so the endpoint
+/// is not an enumeration oracle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RequestMagicLinkRequest {
+pub struct SignupRequest {
     pub email: String,
 }
 
-/// Request body for consuming a magic-link token.
+/// Request body for `/auth/signup/consume`. The token comes from the
+/// signup email link.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MagicLinkConsumeRequest {
+pub struct SignupConsumeRequest {
     pub token: String,
+}
+
+/// Request body for `/auth/signup/finish`. Echoes the `challenge_id` the
+/// consume endpoint returned and carries the WebAuthn attestation the
+/// browser produced from the embedded `options`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignupFinishRequest {
+    pub challenge_id: String,
+    pub response: webauthn_rs::prelude::RegisterPublicKeyCredential,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// Returned by both passkey ceremony `start` endpoints. The `options`
 /// field is the JSON `webauthn-rs` produces for
 /// `navigator.credentials.{create,get}`; we wrap it so the response also
 /// carries the `challenge_id` the client must echo back at `finish` time.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PasskeyChallenge<T> {
     pub challenge_id: String,
     pub options: T,

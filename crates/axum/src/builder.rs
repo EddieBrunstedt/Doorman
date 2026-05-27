@@ -21,10 +21,10 @@ use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::BauthState;
 use crate::warnings::{self, Warnings};
 
-#[cfg(feature = "magic_link")]
-use bauth_core::magic_link::MagicLinkManager;
 #[cfg(feature = "passkey")]
 use bauth_core::passkey::PasskeyManager;
+#[cfg(feature = "passkey")]
+use bauth_core::signup::SignupManager;
 
 /// Errors returned when the Axum auth surface is incompletely configured.
 #[derive(Debug, thiserror::Error)]
@@ -74,8 +74,8 @@ pub struct BauthAxumBuilder {
 
     #[cfg(feature = "passkey")]
     passkey: Option<PasskeyManager>,
-    #[cfg(feature = "magic_link")]
-    magic_link: Option<MagicLinkManager>,
+    #[cfg(feature = "passkey")]
+    signup: Option<SignupManager>,
 }
 
 impl BauthAxumBuilder {
@@ -93,9 +93,9 @@ impl BauthAxumBuilder {
     /// Required — [`build`](Self::build) returns
     /// [`BuilderError::MissingEmailSender`] when not set. The same
     /// transport must be the one passed into the
-    /// [`MagicLinkManager`](bauth_core::magic_link::MagicLinkManager)
-    /// the host constructs; the builder keeps a reference so it can
-    /// detect dev transports for the startup warnings.
+    /// [`SignupManager`](bauth_core::signup::SignupManager) the host
+    /// constructs; the builder keeps a reference so it can detect dev
+    /// transports for the startup warnings.
     ///
     /// [`EmailSender`]: bauth_core::email::EmailSender
     pub fn email_sender(mut self, sender: Arc<dyn EmailSender>) -> Self {
@@ -129,8 +129,8 @@ impl BauthAxumBuilder {
     ///
     /// If the host neither supplies a cache nor wires an invalidator,
     /// revocations made through cloned `SessionManager`s held by the
-    /// passkey / magic-link managers will not evict cached entries;
-    /// they will only be cleared by the cache TTL. The
+    /// passkey / signup managers will not evict cached entries; they
+    /// will only be cleared by the cache TTL. The
     /// [`quickstart`](crate::quickstart) entry point handles all of this
     /// automatically.
     ///
@@ -165,9 +165,9 @@ impl BauthAxumBuilder {
         self
     }
 
-    #[cfg(feature = "magic_link")]
-    pub fn magic_link_manager(mut self, manager: MagicLinkManager) -> Self {
-        self.magic_link = Some(manager);
+    #[cfg(feature = "passkey")]
+    pub fn signup_manager(mut self, manager: SignupManager) -> Self {
+        self.signup = Some(manager);
         self
     }
 
@@ -236,8 +236,8 @@ impl BauthAxumBuilder {
             cookie_config,
             #[cfg(feature = "passkey")]
             passkey: self.passkey,
-            #[cfg(feature = "magic_link")]
-            magic_link: self.magic_link,
+            #[cfg(feature = "passkey")]
+            signup: self.signup,
         };
 
         Ok(BauthAxum {

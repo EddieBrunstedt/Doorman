@@ -6,30 +6,30 @@
 
 use axum::Router;
 
-#[cfg(any(feature = "passkey", feature = "magic_link"))]
+#[cfg(feature = "passkey")]
 use axum::Json;
-#[cfg(any(feature = "passkey", feature = "magic_link"))]
+#[cfg(feature = "passkey")]
 use axum::http::{StatusCode, header};
-#[cfg(any(feature = "passkey", feature = "magic_link"))]
+#[cfg(feature = "passkey")]
 use axum::response::{IntoResponse, Response};
 
-#[cfg(any(feature = "passkey", feature = "magic_link"))]
+#[cfg(feature = "passkey")]
 use crate::config::CookieConfig;
-#[cfg(any(feature = "passkey", feature = "magic_link"))]
+#[cfg(feature = "passkey")]
 use crate::cookies::session_cookie;
-#[cfg(any(feature = "passkey", feature = "magic_link"))]
+#[cfg(feature = "passkey")]
 use crate::dto::AuthResponse;
 use crate::state::BauthState;
 
-#[cfg(feature = "magic_link")]
-pub(crate) mod magic_link;
 #[cfg(feature = "passkey")]
 pub(crate) mod passkey;
 pub(crate) mod sessions;
+#[cfg(feature = "passkey")]
+pub(crate) mod signup;
 
 /// Build a JSON response that issues a session cookie alongside an
-/// [`AuthResponse`] body. Shared by the passkey and magic-link routes.
-#[cfg(any(feature = "passkey", feature = "magic_link"))]
+/// [`AuthResponse`] body. Shared by the passkey and signup routes.
+#[cfg(feature = "passkey")]
 pub(crate) fn auth_success(
     status: StatusCode,
     cookie_config: &CookieConfig,
@@ -51,9 +51,9 @@ pub(crate) fn router(state: BauthState) -> Router {
         router = router.merge(passkey::routes());
     }
 
-    #[cfg(feature = "magic_link")]
-    if state.magic_link.is_some() {
-        router = router.merge(magic_link::routes());
+    #[cfg(feature = "passkey")]
+    if state.signup.is_some() {
+        router = router.merge(signup::routes());
     }
 
     router.with_state(state)

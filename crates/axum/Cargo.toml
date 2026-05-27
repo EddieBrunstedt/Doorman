@@ -9,9 +9,8 @@ rust-version.workspace = true
 description = "Axum HTTP integration for the bauth authentication library."
 
 [features]
-default = ["passkey", "magic_link"]
+default = ["passkey"]
 passkey = []
-magic_link = []
 # Forwards `bauth-core`'s testing helpers (e.g. `CapturingEmailSender`)
 # so axum-side tests can opt into them.
 testing = ["bauth-core/testing"]
@@ -42,6 +41,8 @@ criterion.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }
 tokio = { workspace = true, features = ["net"] }
 tracing-subscriber = { workspace = true }
+webauthn-authenticator-rs.workspace = true
+webauthn-rs-proto.workspace = true
 
 [[bench]]
 name = "session_validate"

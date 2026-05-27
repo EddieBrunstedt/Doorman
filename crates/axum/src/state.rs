@@ -12,10 +12,10 @@ use bauth_core::storage::UserStore;
 
 use crate::config::CookieConfig;
 
-#[cfg(feature = "magic_link")]
-use bauth_core::magic_link::MagicLinkManager;
 #[cfg(feature = "passkey")]
 use bauth_core::passkey::PasskeyManager;
+#[cfg(feature = "passkey")]
+use bauth_core::signup::SignupManager;
 
 /// Shared Axum router state holding configured auth managers and settings.
 #[derive(Clone)]
@@ -25,8 +25,8 @@ pub struct BauthState {
     pub(crate) cookie_config: Arc<CookieConfig>,
     #[cfg(feature = "passkey")]
     pub(crate) passkey: Option<PasskeyManager>,
-    #[cfg(feature = "magic_link")]
-    pub(crate) magic_link: Option<MagicLinkManager>,
+    #[cfg(feature = "passkey")]
+    pub(crate) signup: Option<SignupManager>,
 }
 
 impl BauthState {

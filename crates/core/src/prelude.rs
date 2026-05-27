@@ -18,13 +18,13 @@ pub use crate::email::{
     BauthEmails, DefaultBauthEmails, Email, EmailSender, FileEmailSender, TerminalEmailSender,
 };
 pub use crate::error::{Error, Result, StorageError, StorageResult};
-pub use crate::magic_link::{
-    MagicLinkConfig, MagicLinkManager, MagicLinkOutcome, MagicLinkRateLimits,
-};
 pub use crate::passkey::{PasskeyConfig, PasskeyManager};
 pub use crate::rate_limit::{NoopRateLimiter, RateLimitDecision, RateLimitPolicy, RateLimiter};
 pub use crate::session::{
     IssuedSession, SessionConfig, SessionContext, SessionInvalidationHook, SessionManager,
+};
+pub use crate::signup::{
+    SignupConfig, SignupConsumeOutcome, SignupManager, SignupOutcome, SignupRateLimits,
 };
 pub use crate::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionId,

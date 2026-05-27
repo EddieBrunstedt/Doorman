@@ -9,7 +9,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use bauth_axum::dto::{MeResponse, SessionDto};
 use bauth_axum::prelude::*;
-use bauth_core::magic_link::TOKEN_PLACEHOLDER;
+use bauth_core::signup::TOKEN_PLACEHOLDER;
 use bauth_sqlx::SqliteStorage;
 use url::Url;
 
@@ -42,18 +42,18 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         ..CookieConfig::default()
     };
 
-    let magic_link_url_template = format!(
-        "{}?magic_token={TOKEN_PLACEHOLDER}",
+    let signup_url_template = format!(
+        "{}?signup_token={TOKEN_PLACEHOLDER}",
         external_origin.as_str().trim_end_matches('/')
     );
 
     let auth = bauth_axum::quickstart(storage.storage())
         .email(Arc::new(TerminalEmailSender))
-        .magic_link(MagicLinkConfig {
-            url_template: magic_link_url_template,
-            ..MagicLinkConfig::default()
-        })
         .passkey(passkey_config)
+        .signup(SignupConfig {
+            url_template: signup_url_template,
+            ..SignupConfig::default()
+        })
         .external_origin(external_origin.clone())
         .cookie(cookie_config)
         .silence_warnings()

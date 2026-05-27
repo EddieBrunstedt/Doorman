@@ -9,6 +9,10 @@
 //! `crate::memory` behind the `testing` feature; hosts plug in real
 //! transports (lettre, resend, SES, …) through the [`EmailSender`]
 //! trait.
+//!
+//! The library uses email purely as a side channel for **signup links**
+//! (and, in a later phase, recovery links). The default copy describes
+//! a passkey-driven flow; hosts override [`BauthEmails`] to brand it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -168,11 +172,11 @@ impl EmailSender for FileEmailSender {
 /// }
 ///
 /// impl BauthEmails for MyEmails {
-///     fn magic_link_email(&self, user: &User, url: &str) -> Email {
+///     fn signup_email(&self, user: &User, url: &str) -> Email {
 ///         Email {
 ///             to: user.email.clone().unwrap_or_default(),
-///             subject: format!("Sign in to {}", self.brand),
-///             body_text: format!("Visit {url} to sign in."),
+///             subject: format!("Finish creating your {} account", self.brand),
+///             body_text: format!("Visit {url} to finish setting up your account."),
 ///             body_html: None,
 ///         }
 ///     }
@@ -184,13 +188,14 @@ impl EmailSender for FileEmailSender {
 /// from `user.email.clone().unwrap_or_default()` for convenience; custom
 /// impls should do the same.
 pub trait BauthEmails: Send + Sync {
-    fn magic_link_email(&self, user: &User, url: &str) -> Email {
+    fn signup_email(&self, user: &User, url: &str) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
-            subject: "Your sign-in link".to_string(),
+            subject: "Finish setting up your account".to_string(),
             body_text: format!(
                 "Hello,\n\n\
-                 Click the link below to sign in. The link can only be used once and expires shortly:\n\n\
+                 Click the link below to finish creating your account by registering a passkey. \
+                 The link can only be used once and expires shortly:\n\n\
                  {url}\n\n\
                  If you did not request this you can safely ignore this message.\n"
             ),

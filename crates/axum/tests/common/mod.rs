@@ -1,6 +1,12 @@
-//! Shared test scaffolding: spin up an axum app backed by in-memory storage
-//! and the magic-link manager, expose a base URL for `reqwest`, and tear the
-//! server down at the end of the test.
+//! Shared test scaffolding.
+//!
+//! [`TestApp`] spins up an axum app backed by in-memory storage and a real
+//! `bauth-axum` router, exposes a base URL for `reqwest`, and tears the
+//! server down on drop. [`login`] mints a session directly via the
+//! in-process `SessionManager` so the session-management tests can grab a
+//! bearer token without driving the full passkey ceremony — tests that
+//! specifically cover the signup flow drive it end-to-end themselves via
+//! [`SignupClient`].
 
 #![allow(dead_code)]
 
@@ -13,85 +19,107 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use bauth_axum::config::CookieConfig;
-use bauth_axum::dto::{AuthResponse, MagicLinkConsumeRequest, RequestMagicLinkRequest, UserDto};
+use bauth_axum::dto::{
+    AuthResponse, PasskeyChallenge, SignupConsumeRequest, SignupFinishRequest, SignupRequest,
+    UserDto,
+};
 use bauth_axum::extractors::AuthSession;
-use bauth_axum::{BauthAxum, SessionCache, SessionCacheConfig};
-use bauth_core::audit::{AuditSink, NoopAuditSink};
-use bauth_core::clock::{Clock, SystemClock};
+use bauth_axum::quickstart;
+use bauth_core::audit::NoopAuditSink;
+use bauth_core::clock::SystemClock;
 use bauth_core::email::EmailSender;
-use bauth_core::magic_link::{
-    MagicLinkConfig, MagicLinkManager, MagicLinkRateLimits, TOKEN_PLACEHOLDER,
-};
 use bauth_core::memory::{
-    CapturingEmailSender, InMemoryRateLimiter, InMemorySessionStore, InMemoryUserStore,
-    InMemoryVerificationTokenStore,
+    CapturingEmailSender, InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore,
+    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
-use bauth_core::rate_limit::RateLimiter;
-use bauth_core::session::{SessionConfig, SessionManager};
+use bauth_core::passkey::PasskeyConfig;
+use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
+use bauth_core::signup::{SignupConfig, SignupRateLimits, TOKEN_PLACEHOLDER};
+use bauth_core::storage::{Storage, User, UserId, UserStore};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
+use url::Url as ServerUrl;
+use webauthn_authenticator_rs::WebauthnAuthenticator;
+use webauthn_authenticator_rs::prelude::Url as AuthUrl;
+use webauthn_authenticator_rs::softpasskey::SoftPasskey;
+use webauthn_rs::prelude::CreationChallengeResponse;
 
-pub const MAGIC_URL: &str = "https://app.test/magic-link?token={token}";
+pub const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 
 pub struct TestApp {
     pub addr: SocketAddr,
     pub email: Arc<CapturingEmailSender>,
+    pub rp_origin: ServerUrl,
+    session_manager: SessionManager,
+    user_store: Arc<InMemoryUserStore>,
     handle: JoinHandle<()>,
     shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
 impl TestApp {
+    /// Start an app wired through `quickstart` with the in-memory stores
+    /// and the passkey + signup configs needed for full HTTP coverage.
     pub async fn start(host_routes: Router, secure_cookies: bool) -> Self {
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-        let email = Arc::new(CapturingEmailSender::new());
-        let limiter: Arc<dyn RateLimiter> = Arc::new(InMemoryRateLimiter::new(clock.clone()));
+        Self::start_with(host_routes, secure_cookies, |b| b).await
+    }
 
+    /// Start an app, letting the caller tweak the `QuickstartBuilder`
+    /// (e.g. to set an `external_origin` for CSRF coverage).
+    pub async fn start_with<F>(host_routes: Router, secure_cookies: bool, customise: F) -> Self
+    where
+        F: FnOnce(bauth_axum::QuickstartBuilder) -> bauth_axum::QuickstartBuilder,
+    {
+        let email = Arc::new(CapturingEmailSender::new());
         let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
         let session_store: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
         let token_store: Arc<InMemoryVerificationTokenStore> =
             Arc::new(InMemoryVerificationTokenStore::new());
+        let passkey_credentials: Arc<InMemoryPasskeyCredentialStore> =
+            Arc::new(InMemoryPasskeyCredentialStore::new());
+        let passkey_challenges: Arc<InMemoryPasskeyChallengeStore> =
+            Arc::new(InMemoryPasskeyChallengeStore::new());
 
-        let cache = SessionCache::new(SessionCacheConfig::default());
+        let rp_origin = ServerUrl::parse("http://localhost:8080").expect("rp origin");
+        let storage = Storage {
+            users: user_store.clone(),
+            sessions: session_store.clone(),
+            verification_tokens: token_store,
+            passkey_credentials,
+            passkey_challenges,
+        };
+
+        let builder = quickstart(storage)
+            .email(email.clone() as Arc<dyn EmailSender>)
+            .passkey(PasskeyConfig::new(
+                "localhost",
+                rp_origin.clone(),
+                "bauth tests",
+            ))
+            .signup(SignupConfig {
+                url_template: SIGNUP_URL.to_string(),
+                rate_limits: SignupRateLimits::disabled(),
+                ..SignupConfig::default()
+            })
+            .cookie(CookieConfig {
+                secure: secure_cookies,
+                ..CookieConfig::default()
+            })
+            .silence_warnings();
+
+        let auth = customise(builder).build().expect("auth built");
+
+        // The `login` helper needs to mint sessions directly; `BauthAxum`
+        // doesn't surface the live manager, so build a sibling pointing at
+        // the same session store. Both managers operate on the same backing
+        // rows so the layer running inside the server sees what we create.
         let session_manager = SessionManager::new(
-            session_store.clone(),
-            clock.clone(),
-            audit.clone(),
+            session_store,
+            Arc::new(SystemClock),
+            Arc::new(NoopAuditSink),
             SessionConfig {
                 lifetime: Duration::from_secs(60 * 60),
             },
-        )
-        .with_invalidation_hook(cache.invalidator());
-
-        let magic_link_manager = MagicLinkManager::new(
-            user_store.clone(),
-            token_store,
-            session_manager.clone(),
-            email.clone() as Arc<dyn EmailSender>,
-            clock.clone(),
-            audit,
-            limiter,
-            MagicLinkConfig {
-                url_template: MAGIC_URL.to_string(),
-                rate_limits: MagicLinkRateLimits::disabled(),
-                ..MagicLinkConfig::default()
-            },
         );
-
-        let cookie_config = CookieConfig {
-            secure: secure_cookies,
-            ..CookieConfig::default()
-        };
-
-        let auth = BauthAxum::builder()
-            .session_manager(session_manager)
-            .user_store(user_store)
-            .email_sender(email.clone() as Arc<dyn EmailSender>)
-            .magic_link_manager(magic_link_manager)
-            .session_cache(cache)
-            .cookie_config(cookie_config)
-            .build()
-            .expect("auth built");
 
         let app = Router::new()
             .merge(auth.router())
@@ -117,6 +145,9 @@ impl TestApp {
         TestApp {
             addr,
             email,
+            rp_origin,
+            session_manager,
+            user_store,
             handle,
             shutdown: tx,
         }
@@ -132,36 +163,127 @@ impl TestApp {
     }
 }
 
-/// Request a magic link for `email`, pull the token out of the in-memory
-/// email queue, consume it, and return the issued session response.
-pub async fn login(client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
-    let before = app.email.sent().len();
-    let req = client
-        .post(app.url("/auth/magic-link/request"))
-        .json(&RequestMagicLinkRequest {
-            email: email.into(),
-        })
-        .send()
-        .await
-        .expect("request");
-    assert_eq!(req.status(), StatusCode::NO_CONTENT);
+/// Provision a user and mint a session directly via the in-process
+/// `SessionManager`. Useful for tests that exercise the session-management
+/// surface and don't need to cover the signup ceremony itself.
+pub async fn login(_client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
+    let email_normalized = email.trim().to_ascii_lowercase();
 
-    let sent = app.email.sent();
-    assert!(sent.len() > before, "magic-link email queued");
-    let token = token_from_email(sent.last().expect("email").body_text.as_str());
-
-    let consume = client
-        .post(app.url("/auth/magic-link/consume"))
-        .json(&MagicLinkConsumeRequest { token })
-        .send()
+    let user = if let Some(existing) = app
+        .user_store
+        .find_user_by_email(&email_normalized)
         .await
-        .expect("consume");
-    assert_eq!(consume.status(), StatusCode::OK);
-    consume.json().await.expect("auth body")
+        .expect("find user")
+    {
+        existing
+    } else {
+        let now = chrono::Utc::now();
+        let user = User {
+            id: UserId::new(),
+            email: Some(email_normalized),
+            email_verified_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        };
+        app.user_store
+            .create_user(user.clone())
+            .await
+            .expect("create user");
+        user
+    };
+
+    let issued = app
+        .session_manager
+        .create(user.id, SessionContext::default())
+        .await
+        .expect("create session");
+    AuthResponse::from_issued(user, issued)
 }
 
+/// Helper that drives the three-step signup flow over real HTTP, using a
+/// `SoftPasskey` to satisfy the WebAuthn ceremony. Returns the response
+/// JSON from `/auth/signup/finish` (cookies are picked up by the supplied
+/// `reqwest::Client` automatically when its cookie store is enabled).
+pub struct SignupClient {
+    inner: WebauthnAuthenticator<SoftPasskey>,
+    rp_origin: AuthUrl,
+}
+
+impl SignupClient {
+    pub fn new(app: &TestApp) -> Self {
+        Self {
+            inner: WebauthnAuthenticator::new(SoftPasskey::new(true)),
+            rp_origin: AuthUrl::parse(app.rp_origin.as_str()).expect("rp origin"),
+        }
+    }
+
+    /// Drive request → consume → finish, returning the parsed
+    /// [`AuthResponse`] from `/auth/signup/finish`.
+    pub async fn signup(
+        &mut self,
+        client: &reqwest::Client,
+        app: &TestApp,
+        email: &str,
+    ) -> AuthResponse {
+        let request = client
+            .post(app.url("/auth/signup/request"))
+            .json(&SignupRequest {
+                email: email.into(),
+            })
+            .send()
+            .await
+            .expect("signup request");
+        assert_eq!(request.status(), StatusCode::NO_CONTENT);
+
+        let sent = app.email.sent();
+        let token = token_from_email(&sent.last().expect("signup email queued").body_text.clone());
+
+        let consume = client
+            .post(app.url("/auth/signup/consume"))
+            .json(&SignupConsumeRequest { token })
+            .send()
+            .await
+            .expect("signup consume");
+        assert_eq!(consume.status(), StatusCode::OK);
+        let challenge: PasskeyChallenge<CreationChallengeResponse> =
+            consume.json().await.expect("consume body");
+
+        // Relax the resident-key flags so SoftPasskey accepts the ceremony.
+        // bauth's server still emitted resident=required earlier; we
+        // verified that elsewhere.
+        let mut options = challenge.options;
+        let selection = options
+            .public_key
+            .authenticator_selection
+            .as_mut()
+            .expect("authenticator selection present");
+        selection.require_resident_key = false;
+        selection.resident_key = None;
+
+        let attestation = self
+            .inner
+            .do_registration(self.rp_origin.clone(), options)
+            .expect("authenticator register");
+
+        let finish = client
+            .post(app.url("/auth/signup/finish"))
+            .json(&SignupFinishRequest {
+                challenge_id: challenge.challenge_id,
+                response: attestation,
+                name: Some("test device".into()),
+            })
+            .send()
+            .await
+            .expect("signup finish");
+        assert_eq!(finish.status(), StatusCode::OK);
+        finish.json().await.expect("finish body")
+    }
+}
+
+/// Locate the raw signup token in an email body whose URL was rendered
+/// from [`SIGNUP_URL`].
 pub fn token_from_email(body: &str) -> String {
-    let prefix = MAGIC_URL
+    let prefix = SIGNUP_URL
         .split(TOKEN_PLACEHOLDER)
         .next()
         .expect("template has prefix");
@@ -175,8 +297,5 @@ pub fn token_from_email(body: &str) -> String {
 }
 
 async fn me_handler(auth: AuthSession) -> Response {
-    // Echo back just the user, in the same shape the host would typically
-    // expose at /api/me. Demonstrates that the extractor sees the user
-    // loaded by the session layer.
     (StatusCode::OK, Json(UserDto::from(auth.user))).into_response()
 }

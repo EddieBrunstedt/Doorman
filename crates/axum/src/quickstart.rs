@@ -3,10 +3,10 @@
 //! Most hosts want one wired-up auth surface, not a tour of every manager
 //! they need to construct. [`quickstart`] takes the composite
 //! [`bauth_core::storage::Storage`] (typically obtained in one call from a
-//! storage adapter such as `bauth-sqlx`) plus opt-in per-method configs,
-//! constructs the `SessionManager`/`PasskeyManager`/`MagicLinkManager`
-//! internally with sensible defaults, and returns a
-//! fully built [`BauthAxum`].
+//! storage adapter such as `bauth-sqlx`) plus the passkey config,
+//! constructs the `SessionManager`/`PasskeyManager`/`SignupManager`
+//! internally with sensible defaults, and returns a fully built
+//! [`BauthAxum`].
 //!
 //! Defaults applied when the host does not override them:
 //! - [`Clock`] → [`SystemClock`]
@@ -52,10 +52,10 @@ use bauth_core::rate_limit::RateLimiter;
 use bauth_core::session::{SessionConfig, SessionManager};
 use bauth_core::storage::Storage;
 
-#[cfg(feature = "magic_link")]
-use bauth_core::magic_link::{MagicLinkConfig, MagicLinkManager};
 #[cfg(feature = "passkey")]
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
+#[cfg(feature = "passkey")]
+use bauth_core::signup::{SignupConfig, SignupManager};
 
 use url::Url;
 
@@ -74,6 +74,7 @@ use crate::warnings::Warnings;
 /// use bauth_axum::prelude::*;
 ///
 /// let auth = bauth_axum::quickstart(storage)
+///     .email(Arc::new(TerminalEmailSender))
 ///     .passkey(PasskeyConfig::new("example.com", origin, "Example"))
 ///     .cookie(CookieConfig::default())
 ///     .build()?;
@@ -86,8 +87,10 @@ pub fn quickstart(storage: Storage) -> QuickstartBuilder {
 ///
 /// Collects the storage, the orthogonal collaborators (clock / audit /
 /// email / rate limiter), the session config, the cookie config, and the
-/// opt-in per-method configs (passkey / magic-link).
-/// Construction of the core managers happens in [`build`](Self::build).
+/// passkey config. The signup flow is part of the only login UX and is
+/// configured implicitly; hosts that want to override its defaults call
+/// [`signup`](Self::signup). Construction of the core managers happens in
+/// [`build`](Self::build).
 pub struct QuickstartBuilder {
     storage: Storage,
     clock: Option<Arc<dyn Clock>>,
@@ -104,8 +107,8 @@ pub struct QuickstartBuilder {
 
     #[cfg(feature = "passkey")]
     passkey: Option<PasskeyConfig>,
-    #[cfg(feature = "magic_link")]
-    magic_link: Option<MagicLinkConfig>,
+    #[cfg(feature = "passkey")]
+    signup: Option<SignupConfig>,
 }
 
 impl QuickstartBuilder {
@@ -124,8 +127,8 @@ impl QuickstartBuilder {
             external_origin: None,
             #[cfg(feature = "passkey")]
             passkey: None,
-            #[cfg(feature = "magic_link")]
-            magic_link: None,
+            #[cfg(feature = "passkey")]
+            signup: None,
         }
     }
 
@@ -201,21 +204,22 @@ impl QuickstartBuilder {
         self
     }
 
-    /// Enable passkey flows with the supplied config.
+    /// Enable passkey flows with the supplied config. Required — the
+    /// signup flow is built around passkey enrolment, so the builder
+    /// constructs a `SignupManager` whenever a passkey config is set.
     #[cfg(feature = "passkey")]
     pub fn passkey(mut self, config: PasskeyConfig) -> Self {
         self.passkey = Some(config);
         self
     }
 
-    /// Enable magic-link flows with the supplied config. Pair with
-    /// [`email`](Self::email) so the rendered links actually leave the
-    /// process.
-    ///
-    /// [`EmailSender`]: bauth_core::email::EmailSender
-    #[cfg(feature = "magic_link")]
-    pub fn magic_link(mut self, config: MagicLinkConfig) -> Self {
-        self.magic_link = Some(config);
+    /// Override the default [`SignupConfig`] (15-minute token lifetime,
+    /// default rate limits). Pair with [`email`](Self::email) so the
+    /// rendered links actually leave the process; the signup flow is on
+    /// implicitly whenever [`passkey`](Self::passkey) is configured.
+    #[cfg(feature = "passkey")]
+    pub fn signup(mut self, config: SignupConfig) -> Self {
+        self.signup = Some(config);
         self
     }
 
@@ -249,8 +253,6 @@ impl QuickstartBuilder {
             }
             bauth_core::rate_limit::RateLimiterKind::Custom => {}
         }
-        // Dev-transport detection happens in the low-level builder via
-        // the explicit `email_sender` field; no need to repeat it here.
         // Build the cache up-front so its invalidator can be attached to
         // the `SessionManager` before any dependent manager clones it.
         // Every clone captures the same invalidation hook, so revocations
@@ -286,7 +288,7 @@ impl QuickstartBuilder {
 
         #[cfg(feature = "passkey")]
         if let Some(config) = self.passkey {
-            let manager = PasskeyManager::new(
+            let passkey_manager = PasskeyManager::new(
                 self.storage.users.clone(),
                 self.storage.passkey_credentials.clone(),
                 self.storage.passkey_challenges.clone(),
@@ -296,26 +298,29 @@ impl QuickstartBuilder {
                 config,
             )
             .map_err(BuilderError::Passkey)?;
-            builder = builder.passkey_manager(manager);
-        }
 
-        if let Some(origin) = self.external_origin {
-            builder = builder.external_origin(origin);
-        }
-
-        #[cfg(feature = "magic_link")]
-        if let Some(config) = self.magic_link {
-            let manager = MagicLinkManager::new(
+            // Signup is part of the only login UX — wire it implicitly so
+            // the host doesn't have to opt in. Hosts that need to tune
+            // the rate limits or token lifetime call `.signup(...)`.
+            let signup_manager = SignupManager::new(
                 self.storage.users.clone(),
                 self.storage.verification_tokens.clone(),
+                passkey_manager.clone(),
                 session_manager.clone(),
                 email.clone(),
                 clock.clone(),
                 audit.clone(),
                 limiter.clone(),
-                config,
+                self.signup.unwrap_or_default(),
             );
-            builder = builder.magic_link_manager(manager);
+
+            builder = builder
+                .passkey_manager(passkey_manager)
+                .signup_manager(signup_manager);
+        }
+
+        if let Some(origin) = self.external_origin {
+            builder = builder.external_origin(origin);
         }
 
         // Touch otherwise-unused values when no method features are active

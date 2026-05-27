@@ -10,12 +10,12 @@ pub mod audit;
 pub mod clock;
 pub mod email;
 pub mod error;
-pub mod magic_link;
 pub mod memory;
 pub mod passkey;
 pub mod prelude;
 pub mod rate_limit;
 pub mod session;
+pub mod signup;
 pub mod storage;
 
 pub use error::*;

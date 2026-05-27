@@ -304,13 +304,12 @@ pub trait PasskeyChallengeStore: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationPurpose {
-    EmailVerification,
-    MagicLink,
+    Signup,
 }
 
 /// A single-use, time-limited token issued for an out-of-band flow such
-/// as email verification or magic-link login. Stored keyed by token hash
-/// so that a database breach does not yield usable tokens.
+/// as the signup link emailed to a prospective user. Stored keyed by token
+/// hash so that a database breach does not yield usable tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationToken {
     pub token_hash: TokenHash,

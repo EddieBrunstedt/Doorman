@@ -4,8 +4,8 @@ mod common;
 
 use axum::Router;
 use axum::http::StatusCode;
-use bauth_axum::dto::{AuthResponse, MagicLinkConsumeRequest, RequestMagicLinkRequest, SessionDto};
-use common::{TestApp, token_from_email};
+use bauth_axum::dto::{AuthResponse, SessionDto};
+use common::TestApp;
 
 async fn login(client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
     common::login(client, app, email).await
@@ -20,8 +20,6 @@ async fn list_sessions_marks_caller_session_as_current() {
     let second = login(&client, &app, "alice@example.com").await;
     let third = login(&client, &app, "alice@example.com").await;
 
-    // Hit the list endpoint with the second session's bearer token; expect
-    // exactly that one to be flagged is_current.
     let resp = client
         .get(app.url("/auth/sessions"))
         .bearer_auth(&second.token)
@@ -43,57 +41,6 @@ async fn list_sessions_marks_caller_session_as_current() {
     assert!(ids.contains(&first.session.id));
     assert!(ids.contains(&second.session.id));
     assert!(ids.contains(&third.session.id));
-
-    app.shutdown().await;
-}
-
-#[tokio::test]
-async fn list_sessions_exposes_ip_and_user_agent() {
-    let app = TestApp::start(Router::new(), false).await;
-    let client = reqwest::Client::new();
-
-    // Drive the magic-link flow supplying an X-Forwarded-For + User-Agent so
-    // the recorded SessionContext is non-empty.
-    let resp = client
-        .post(app.url("/auth/magic-link/request"))
-        .header("x-forwarded-for", "203.0.113.5")
-        .header(reqwest::header::USER_AGENT, "test-agent/1.0")
-        .json(&RequestMagicLinkRequest {
-            email: "carol@example.com".into(),
-        })
-        .send()
-        .await
-        .expect("request");
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    let sent = app.email.sent();
-    let token = token_from_email(&sent.last().expect("email").body_text);
-
-    let consume = client
-        .post(app.url("/auth/magic-link/consume"))
-        .header("x-forwarded-for", "203.0.113.5")
-        .header(reqwest::header::USER_AGENT, "test-agent/1.0")
-        .json(&MagicLinkConsumeRequest { token })
-        .send()
-        .await
-        .expect("consume");
-    assert_eq!(consume.status(), StatusCode::OK);
-    let issued: AuthResponse = consume.json().await.expect("body");
-
-    let sessions: Vec<SessionDto> = client
-        .get(app.url("/auth/sessions"))
-        .bearer_auth(&issued.token)
-        .send()
-        .await
-        .expect("list")
-        .json()
-        .await
-        .expect("list body");
-
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].ip.as_deref(), Some("203.0.113.5"));
-    assert_eq!(sessions[0].user_agent.as_deref(), Some("test-agent/1.0"));
-    assert!(sessions[0].is_current);
 
     app.shutdown().await;
 }

@@ -3,8 +3,8 @@
 Runnable Axum app showing the `bauth_axum::quickstart` path with:
 
 - SQLite storage via `bauth-sqlx`
-- passkey registration/login
-- magic-link signup/login with email bodies printed to the server terminal
+- passkey-based sign-in
+- email-link signup that finishes with a passkey registration; email bodies are printed to the server terminal for local development
 - `/api/me`
 - one static HTML page, no frontend build step
 

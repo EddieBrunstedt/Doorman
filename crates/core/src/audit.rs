@@ -55,10 +55,10 @@ pub enum AuditEventKind {
         user_id: UserId,
         credential_kind: CredentialKind,
     },
-    MagicLinkRequested {
+    SignupRequested {
         user_id: UserId,
     },
-    MagicLinkConsumed {
+    SignupConsumed {
         user_id: UserId,
     },
 }
@@ -68,7 +68,6 @@ pub enum AuditEventKind {
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
     Passkey,
-    MagicLink,
 }
 
 /// Credential family added to or removed from a user account.
@@ -76,7 +75,6 @@ pub enum AuthMethod {
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
     Passkey,
-    MagicLink,
 }
 
 /// Normalised reason for a failed login attempt.

@@ -235,7 +235,9 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "webauthn-authenticator-rs",
  "webauthn-rs",
+ "webauthn-rs-proto",
 ]
 
 [[package]]
