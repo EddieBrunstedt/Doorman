@@ -60,8 +60,7 @@ pub struct SessionDto {
     /// Browser/CLI `User-Agent` captured at session-issue time.
     pub user_agent: Option<String>,
     /// `true` when this dto represents the session the request was made
-    /// on. Set by the routes that build a session list; defaults to
-    /// `false` for the `From<Session>` convenience impl.
+    /// on. Set by the routes that build a session list via `from_session`.
     pub is_current: bool,
 }
 
