@@ -110,7 +110,11 @@ impl Harness {
 }
 
 async fn me_handler(auth: AuthSession) -> Response {
-    (StatusCode::OK, Json(UserDto::from(auth.user))).into_response()
+    // The cache-invalidation harness wires sessions directly without a
+    // passkey manager, so the user always has zero credentials at this
+    // point. The test only cares about cache eviction behaviour, not the
+    // count value.
+    (StatusCode::OK, Json(UserDto::from_user(auth.user, 0))).into_response()
 }
 
 async fn login(harness: &Harness, email: &str) -> AuthResponse {
@@ -143,7 +147,7 @@ async fn login(harness: &Harness, email: &str) -> AuthResponse {
         .create(user.id, SessionContext::default())
         .await
         .expect("create session");
-    AuthResponse::from_issued(user, issued)
+    AuthResponse::from_issued(user, issued, 0)
 }
 
 async fn me(client: &reqwest::Client, harness: &Harness, token: &str) -> StatusCode {

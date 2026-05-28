@@ -75,9 +75,16 @@ async fn finish(
     let outcome = manager(&state)
         .finish_recovery(challenge_id, &body.response, body.name, context)
         .await?;
+    let passkey_count = state
+        .passkey
+        .as_ref()
+        .expect("passkey manager missing but recovery routes were mounted")
+        .list_passkeys(outcome.user.id)
+        .await?
+        .len();
     Ok(auth_success(
         StatusCode::OK,
         state.cookie_config(),
-        AuthResponse::from_issued(outcome.user, outcome.session),
+        AuthResponse::from_issued(outcome.user, outcome.session, passkey_count),
     ))
 }

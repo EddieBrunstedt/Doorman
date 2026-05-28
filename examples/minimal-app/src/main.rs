@@ -4,14 +4,21 @@ use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::extract::State;
 use axum::response::Html;
 use axum::routing::get;
 use axum::{Json, Router};
-use bauth_axum::dto::{MeResponse, SessionDto};
+use bauth_axum::dto::{MeResponse, SessionDto, UserDto};
 use bauth_axum::prelude::*;
 use bauth_core::signup::TOKEN_PLACEHOLDER;
+use bauth_core::storage::PasskeyCredentialStore;
 use bauth_sqlx::SqliteStorage;
 use url::Url;
+
+#[derive(Clone)]
+struct AppState {
+    passkey_credentials: Arc<dyn PasskeyCredentialStore>,
+}
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -28,6 +35,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let storage = SqliteStorage::connect(&database_url).await?;
     storage.migrate().await?;
+    let app_state = AppState {
+        passkey_credentials: storage.passkey_credential_store(),
+    };
 
     let rp_id = env::var("PASSKEY_RP_ID")
         .unwrap_or_else(|_| external_origin.host_str().unwrap_or("localhost").to_owned());
@@ -61,6 +71,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/", get(index))
         .route("/api/me", get(me))
+        .with_state(app_state)
         .merge(auth.router())
         .layer(auth.session_layer());
 
@@ -74,9 +85,18 @@ async fn index() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
 }
 
-async fn me(auth: AuthSession) -> Json<MeResponse> {
-    Json(MeResponse {
-        user: auth.user.into(),
+async fn me(
+    State(state): State<AppState>,
+    auth: AuthSession,
+) -> std::result::Result<Json<MeResponse>, axum::http::StatusCode> {
+    let passkey_count = state
+        .passkey_credentials
+        .list_passkeys_for_user(auth.user.id)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?
+        .len();
+    Ok(Json(MeResponse {
+        user: UserDto::from_user(auth.user, passkey_count),
         session: SessionDto::from_session(auth.session, true),
-    })
+    }))
 }

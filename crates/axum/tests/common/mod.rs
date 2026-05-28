@@ -15,13 +15,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use bauth_axum::config::CookieConfig;
 use bauth_axum::dto::{
-    AuthResponse, PasskeyChallenge, SignupConsumeRequest, SignupFinishRequest, SignupRequest,
-    UserDto,
+    AuthResponse, PasskeyChallenge, PasskeyDto, SignupConsumeRequest, SignupFinishRequest,
+    SignupRequest, UserDto,
 };
 use bauth_axum::extractors::AuthSession;
 use bauth_axum::quickstart;
@@ -36,7 +37,7 @@ use bauth_core::passkey::PasskeyConfig;
 use bauth_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
 use bauth_core::signup::{SignupConfig, SignupRateLimits, TOKEN_PLACEHOLDER};
-use bauth_core::storage::{Storage, User, UserId, UserStore};
+use bauth_core::storage::{PasskeyCredentialStore, Storage, User, UserId, UserStore};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use url::Url as ServerUrl;
@@ -52,6 +53,7 @@ pub struct TestApp {
     pub addr: SocketAddr,
     pub email: Arc<CapturingEmailSender>,
     pub rp_origin: ServerUrl,
+    pub passkey_credentials: Arc<InMemoryPasskeyCredentialStore>,
     session_manager: SessionManager,
     user_store: Arc<InMemoryUserStore>,
     handle: JoinHandle<()>,
@@ -86,7 +88,7 @@ impl TestApp {
             users: user_store.clone(),
             sessions: session_store.clone(),
             verification_tokens: token_store,
-            passkey_credentials,
+            passkey_credentials: passkey_credentials.clone(),
             passkey_challenges,
         };
 
@@ -128,10 +130,12 @@ impl TestApp {
             },
         );
 
+        let passkey_credentials_dyn: Arc<dyn PasskeyCredentialStore> = passkey_credentials.clone();
         let app = Router::new()
             .merge(auth.router())
             .route("/me", get(me_handler))
             .merge(host_routes)
+            .layer(Extension(passkey_credentials_dyn))
             .layer(auth.session_layer());
 
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
@@ -153,6 +157,7 @@ impl TestApp {
             addr,
             email,
             rp_origin,
+            passkey_credentials,
             session_manager,
             user_store,
             handle,
@@ -204,7 +209,7 @@ pub async fn login(_client: &reqwest::Client, app: &TestApp, email: &str) -> Aut
         .create(user.id, SessionContext::default())
         .await
         .expect("create session");
-    AuthResponse::from_issued(user, issued)
+    AuthResponse::from_issued(user, issued, 0)
 }
 
 /// Helper that drives the three-step signup flow over real HTTP, using a
@@ -285,6 +290,56 @@ impl SignupClient {
         assert_eq!(finish.status(), StatusCode::OK);
         finish.json().await.expect("finish body")
     }
+
+    /// Register an additional passkey for the authenticated session. The
+    /// caller is expected to use a fresh [`SignupClient`] (a separate
+    /// `SoftPasskey`) so the new credential is distinct from any existing
+    /// one. The returned [`PasskeyDto::credential_id`] is the URL-safe
+    /// base64 id usable with `DELETE /auth/passkey/{id}`.
+    pub async fn register_additional_passkey(
+        &mut self,
+        client: &reqwest::Client,
+        app: &TestApp,
+        bearer: &str,
+    ) -> PasskeyDto {
+        let start = client
+            .post(app.url("/auth/passkey/register/start"))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .expect("register start");
+        assert_eq!(start.status(), StatusCode::OK);
+        let challenge: PasskeyChallenge<CreationChallengeResponse> =
+            start.json().await.expect("start body");
+
+        let mut options = challenge.options;
+        let selection = options
+            .public_key
+            .authenticator_selection
+            .as_mut()
+            .expect("authenticator selection present");
+        selection.require_resident_key = false;
+        selection.resident_key = None;
+
+        let attestation = self
+            .inner
+            .do_registration(self.rp_origin.clone(), options)
+            .expect("authenticator register");
+
+        let finish = client
+            .post(app.url("/auth/passkey/register/finish"))
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({
+                "challenge_id": challenge.challenge_id,
+                "response": attestation,
+                "name": "backup device",
+            }))
+            .send()
+            .await
+            .expect("register finish");
+        assert_eq!(finish.status(), StatusCode::OK);
+        finish.json().await.expect("register finish body")
+    }
 }
 
 /// Locate the raw signup token in an email body whose URL was rendered
@@ -309,6 +364,18 @@ pub fn token_from_email_with(body: &str, template: &str) -> String {
         .to_string()
 }
 
-async fn me_handler(auth: AuthSession) -> Response {
-    (StatusCode::OK, Json(UserDto::from(auth.user))).into_response()
+async fn me_handler(
+    auth: AuthSession,
+    Extension(passkey_credentials): Extension<Arc<dyn PasskeyCredentialStore>>,
+) -> Response {
+    let passkey_count = passkey_credentials
+        .list_passkeys_for_user(auth.user.id)
+        .await
+        .map(|list| list.len())
+        .unwrap_or(0);
+    (
+        StatusCode::OK,
+        Json(UserDto::from_user(auth.user, passkey_count)),
+    )
+        .into_response()
 }

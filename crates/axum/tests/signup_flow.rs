@@ -32,6 +32,10 @@ async fn full_signup_round_trip_cookie_path() {
 
     assert_eq!(auth.user.email.as_deref(), Some("alice@example.com"));
     assert!(auth.user.email_verified);
+    assert_eq!(
+        auth.user.passkey_count, 1,
+        "freshly-registered user owns exactly the passkey just enrolled"
+    );
     assert!(!auth.token.is_empty());
 
     // Cookie-based call: the SignupClient used a cookie store, so the
@@ -177,6 +181,71 @@ async fn consume_replay_is_rejected() {
     assert_eq!(second.status(), StatusCode::BAD_REQUEST);
     let body: serde_json::Value = second.json().await.expect("body");
     assert_eq!(body["error"]["code"], "invalid_verification_token");
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn passkey_count_reflects_register_and_delete() {
+    let app = TestApp::start(Router::new(), false).await;
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .expect("client");
+
+    // Signup leaves the user with exactly one passkey on their account.
+    let mut primary = SignupClient::new(&app);
+    let auth: AuthResponse = primary.signup(&client, &app, "count@example.com").await;
+    assert_eq!(auth.user.passkey_count, 1);
+
+    let me_after_signup = client
+        .get(app.url("/me"))
+        .bearer_auth(&auth.token)
+        .send()
+        .await
+        .expect("me after signup")
+        .json::<serde_json::Value>()
+        .await
+        .expect("me json");
+    assert_eq!(me_after_signup["passkey_count"], 1);
+
+    // A fresh SoftPasskey enrols a distinct credential against the same
+    // authenticated session, so the count climbs to two.
+    let mut backup = SignupClient::new(&app);
+    let backup_passkey = backup
+        .register_additional_passkey(&client, &app, &auth.token)
+        .await;
+
+    let me_after_backup = client
+        .get(app.url("/me"))
+        .bearer_auth(&auth.token)
+        .send()
+        .await
+        .expect("me after backup")
+        .json::<serde_json::Value>()
+        .await
+        .expect("me json");
+    assert_eq!(me_after_backup["passkey_count"], 2);
+
+    // Deleting the backup credential drops the count back to one.
+    let delete = client
+        .delete(app.url(&format!("/auth/passkey/{}", backup_passkey.credential_id)))
+        .bearer_auth(&auth.token)
+        .send()
+        .await
+        .expect("delete passkey");
+    assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+    let me_after_delete = client
+        .get(app.url("/me"))
+        .bearer_auth(&auth.token)
+        .send()
+        .await
+        .expect("me after delete")
+        .json::<serde_json::Value>()
+        .await
+        .expect("me json");
+    assert_eq!(me_after_delete["passkey_count"], 1);
 
     app.shutdown().await;
 }

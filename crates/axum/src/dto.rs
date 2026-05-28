@@ -21,21 +21,28 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Public JSON representation of a user.
+///
+/// `passkey_count` is the number of passkeys the user currently has
+/// registered. Frontends use it to decide whether to nudge the user to
+/// enrol a backup credential (e.g. when the count is 1 right after
+/// signup or recovery).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserDto {
     pub id: UserId,
     pub email: Option<String>,
     pub email_verified: bool,
     pub created_at: DateTime<Utc>,
+    pub passkey_count: usize,
 }
 
-impl From<User> for UserDto {
-    fn from(value: User) -> Self {
+impl UserDto {
+    pub fn from_user(user: User, passkey_count: usize) -> Self {
         Self {
-            id: value.id,
-            email: value.email,
-            email_verified: value.email_verified_at.is_some(),
-            created_at: value.created_at,
+            id: user.id,
+            email: user.email,
+            email_verified: user.email_verified_at.is_some(),
+            created_at: user.created_at,
+            passkey_count,
         }
     }
 }
@@ -92,9 +99,9 @@ pub struct AuthResponse {
 }
 
 impl AuthResponse {
-    pub fn from_issued(user: User, issued: IssuedSession) -> Self {
+    pub fn from_issued(user: User, issued: IssuedSession, passkey_count: usize) -> Self {
         Self {
-            user: user.into(),
+            user: UserDto::from_user(user, passkey_count),
             session: SessionDto::from_session(issued.session, true),
             token: issued.token,
         }

@@ -90,10 +90,11 @@ async fn authenticate_finish(
         .await
         .map_err(bauth_core::Error::from)?
         .ok_or(ErrorResponse(bauth_core::Error::UserNotFound))?;
+    let passkey_count = manager(&state).list_passkeys(user.id).await?.len();
     Ok(auth_success(
         StatusCode::OK,
         state.cookie_config(),
-        AuthResponse::from_issued(user, issued),
+        AuthResponse::from_issued(user, issued, passkey_count),
     ))
 }
 
