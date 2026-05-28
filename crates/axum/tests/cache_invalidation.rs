@@ -23,11 +23,18 @@ use bauth_axum::{BauthAxum, CookieConfig, SessionCache, SessionCacheConfig};
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::email::EmailSender;
-use bauth_core::memory::{CapturingEmailSender, InMemorySessionStore, InMemoryUserStore};
+use bauth_core::memory::{
+    CapturingEmailSender, InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore,
+    InMemoryRateLimiter, InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
+};
+use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
+use bauth_core::recovery::{RecoveryConfig, RecoveryManager};
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
+use bauth_core::signup::{SignupConfig, SignupManager};
 use bauth_core::storage::{User, UserId, UserStore};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
+use url::Url;
 
 struct Harness {
     addr: SocketAddr,
@@ -46,24 +53,71 @@ impl Harness {
 
         let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
         let session_store: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
+        let token_store: Arc<InMemoryVerificationTokenStore> =
+            Arc::new(InMemoryVerificationTokenStore::new());
+        let passkey_credentials: Arc<InMemoryPasskeyCredentialStore> =
+            Arc::new(InMemoryPasskeyCredentialStore::new());
+        let passkey_challenges: Arc<InMemoryPasskeyChallengeStore> =
+            Arc::new(InMemoryPasskeyChallengeStore::new());
+        let limiter = Arc::new(InMemoryRateLimiter::new(clock.clone()));
 
         // Build the cache up-front so its invalidator can be attached to
         // the session manager before any dependent manager clones it.
         let cache = SessionCache::new(SessionCacheConfig::default());
         let session_manager = SessionManager::new(
             session_store,
-            clock,
-            audit,
+            clock.clone(),
+            audit.clone(),
             SessionConfig {
                 lifetime: Duration::from_secs(60 * 60),
             },
         )
         .with_invalidation_hook(cache.invalidator());
 
+        let passkey_manager = PasskeyManager::new(
+            user_store.clone(),
+            passkey_credentials,
+            passkey_challenges,
+            session_manager.clone(),
+            clock.clone(),
+            audit.clone(),
+            PasskeyConfig::new(
+                "localhost",
+                Url::parse("http://localhost:8080").expect("rp origin"),
+                "bauth tests",
+            ),
+        )
+        .expect("passkey manager");
+        let signup_manager = SignupManager::new(
+            user_store.clone(),
+            token_store.clone(),
+            passkey_manager.clone(),
+            session_manager.clone(),
+            email.clone(),
+            clock.clone(),
+            audit.clone(),
+            limiter.clone(),
+            SignupConfig::default(),
+        );
+        let recovery_manager = RecoveryManager::new(
+            user_store.clone(),
+            token_store,
+            passkey_manager.clone(),
+            session_manager.clone(),
+            email.clone(),
+            clock,
+            audit,
+            limiter,
+            RecoveryConfig::default(),
+        );
+
         let auth = BauthAxum::builder()
             .session_manager(session_manager.clone())
             .user_store(user_store.clone())
             .email_sender(email)
+            .passkey_manager(passkey_manager)
+            .signup_manager(signup_manager)
+            .recovery_manager(recovery_manager)
             .session_cache(cache.clone())
             .cookie_config(CookieConfig::default())
             .build()

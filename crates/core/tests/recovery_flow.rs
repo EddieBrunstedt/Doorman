@@ -244,15 +244,11 @@ async fn request_for_registered_email_sends_link_and_notification() {
     assert_eq!(new.len(), 2, "link + notification queued");
     let subjects: Vec<&str> = new.iter().map(|e| e.subject.as_str()).collect();
     assert!(
-        subjects
-            .iter()
-            .any(|s| *s == "Recover access to your account"),
+        subjects.contains(&"Recover access to your account"),
         "recovery link sent ({subjects:?})",
     );
     assert!(
-        subjects
-            .iter()
-            .any(|s| *s == "Security notice: account recovery activity"),
+        subjects.contains(&"Security notice: account recovery activity"),
         "notification sent ({subjects:?})",
     );
 
@@ -507,7 +503,7 @@ async fn successful_recovery_enrols_passkey_and_sends_success_notification() {
             .any(|c| c.name.as_deref() == Some("backup device")),
         "recovery-enrolled passkey shows up in list_passkeys for the user",
     );
-    assert!(h.sessions.len() >= 1, "session issued");
+    assert!(!h.sessions.is_empty(), "session issued");
 
     let after_finish = &h.email.sent()[mail_before_finish..];
     assert_eq!(after_finish.len(), 1, "success notification sent");

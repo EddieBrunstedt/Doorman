@@ -1,37 +1,26 @@
 //! Mountable HTTP router.
 //!
 //! [`router`] is called by [`BauthAxum::router`](crate::BauthAxum::router)
-//! to assemble the per-method route trees gated by the corresponding
-//! feature flags and only when their backing manager has been supplied.
+//! to assemble the always-on passkey, signup, recovery, and session route
+//! trees.
 
-use axum::Router;
-
-#[cfg(feature = "passkey")]
 use axum::Json;
-#[cfg(feature = "passkey")]
+use axum::Router;
 use axum::http::{StatusCode, header};
-#[cfg(feature = "passkey")]
 use axum::response::{IntoResponse, Response};
 
-#[cfg(feature = "passkey")]
 use crate::config::CookieConfig;
-#[cfg(feature = "passkey")]
 use crate::cookies::session_cookie;
-#[cfg(feature = "passkey")]
 use crate::dto::AuthResponse;
 use crate::state::BauthState;
 
-#[cfg(feature = "passkey")]
 pub(crate) mod passkey;
-#[cfg(feature = "passkey")]
 pub(crate) mod recovery;
 pub(crate) mod sessions;
-#[cfg(feature = "passkey")]
 pub(crate) mod signup;
 
 /// Build a JSON response that issues a session cookie alongside an
-/// [`AuthResponse`] body. Shared by the passkey and signup routes.
-#[cfg(feature = "passkey")]
+/// [`AuthResponse`] body. Shared by every route that issues a session.
 pub(crate) fn auth_success(
     status: StatusCode,
     cookie_config: &CookieConfig,
@@ -44,24 +33,10 @@ pub(crate) fn auth_success(
 }
 
 pub(crate) fn router(state: BauthState) -> Router {
-    // `mut` is only needed when at least one auth-method feature is enabled.
-    #[allow(unused_mut)]
-    let mut router: Router<BauthState> = Router::new().merge(sessions::routes());
-
-    #[cfg(feature = "passkey")]
-    if state.passkey.is_some() {
-        router = router.merge(passkey::routes());
-    }
-
-    #[cfg(feature = "passkey")]
-    if state.signup.is_some() {
-        router = router.merge(signup::routes());
-    }
-
-    #[cfg(feature = "passkey")]
-    if state.recovery.is_some() {
-        router = router.merge(recovery::routes());
-    }
-
-    router.with_state(state)
+    Router::new()
+        .merge(passkey::routes())
+        .merge(signup::routes())
+        .merge(recovery::routes())
+        .merge(sessions::routes())
+        .with_state(state)
 }

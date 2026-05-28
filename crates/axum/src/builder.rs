@@ -21,11 +21,8 @@ use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::BauthState;
 use crate::warnings::{self, Warnings};
 
-#[cfg(feature = "passkey")]
 use bauth_core::passkey::PasskeyManager;
-#[cfg(feature = "passkey")]
 use bauth_core::recovery::RecoveryManager;
-#[cfg(feature = "passkey")]
 use bauth_core::signup::SignupManager;
 
 /// Errors returned when the Axum auth surface is incompletely configured.
@@ -45,13 +42,23 @@ pub enum BuilderError {
     /// [`FileEmailSender`]: bauth_core::email::FileEmailSender
     #[error("email_sender is required")]
     MissingEmailSender,
-    /// Only returned through [`quickstart`](crate::quickstart), which has
-    /// to construct the passkey manager itself. The direct
-    /// `BauthAxumBuilder` path takes a pre-built [`PasskeyManager`] and
-    /// surfaces the same error to the host at construction time.
+    /// The quickstart builder cannot construct the passkey manager until
+    /// the host supplies the WebAuthn relying-party configuration via
+    /// [`QuickstartBuilder::passkey`](crate::quickstart::QuickstartBuilder::passkey).
+    #[error("passkey config is required")]
+    MissingPasskeyConfig,
+    #[error("passkey_manager is required")]
+    MissingPasskeyManager,
+    #[error("signup_manager is required")]
+    MissingSignupManager,
+    #[error("recovery_manager is required")]
+    MissingRecoveryManager,
+    /// Returned through [`quickstart`](crate::quickstart), which has to
+    /// construct the passkey manager itself. The direct `BauthAxumBuilder`
+    /// path takes a pre-built [`PasskeyManager`] and surfaces the same
+    /// error to the host at construction time.
     ///
     /// [`PasskeyManager`]: bauth_core::passkey::PasskeyManager
-    #[cfg(feature = "passkey")]
     #[error("passkey manager construction failed: {0}")]
     Passkey(bauth_core::error::Error),
 }
@@ -74,11 +81,8 @@ pub struct BauthAxumBuilder {
     external_origin: Option<Url>,
     csrf_config: Option<CsrfConfig>,
 
-    #[cfg(feature = "passkey")]
     passkey: Option<PasskeyManager>,
-    #[cfg(feature = "passkey")]
     signup: Option<SignupManager>,
-    #[cfg(feature = "passkey")]
     recovery: Option<RecoveryManager>,
 }
 
@@ -163,19 +167,16 @@ impl BauthAxumBuilder {
         self
     }
 
-    #[cfg(feature = "passkey")]
     pub fn passkey_manager(mut self, manager: PasskeyManager) -> Self {
         self.passkey = Some(manager);
         self
     }
 
-    #[cfg(feature = "passkey")]
     pub fn signup_manager(mut self, manager: SignupManager) -> Self {
         self.signup = Some(manager);
         self
     }
 
-    #[cfg(feature = "passkey")]
     pub fn recovery_manager(mut self, manager: RecoveryManager) -> Self {
         self.recovery = Some(manager);
         self
@@ -196,6 +197,9 @@ impl BauthAxumBuilder {
             .ok_or(BuilderError::MissingSessionManager)?;
         let user_store = self.user_store.ok_or(BuilderError::MissingUserStore)?;
         let email_sender = self.email_sender.ok_or(BuilderError::MissingEmailSender)?;
+        let passkey = self.passkey.ok_or(BuilderError::MissingPasskeyManager)?;
+        let signup = self.signup.ok_or(BuilderError::MissingSignupManager)?;
+        let recovery = self.recovery.ok_or(BuilderError::MissingRecoveryManager)?;
         let cookie_config = Arc::new(self.cookie_config.unwrap_or_default());
 
         if !self.silence_warnings {
@@ -244,12 +248,9 @@ impl BauthAxumBuilder {
             session_manager,
             user_store,
             cookie_config,
-            #[cfg(feature = "passkey")]
-            passkey: self.passkey,
-            #[cfg(feature = "passkey")]
-            signup: self.signup,
-            #[cfg(feature = "passkey")]
-            recovery: self.recovery,
+            passkey,
+            signup,
+            recovery,
         };
 
         Ok(BauthAxum {

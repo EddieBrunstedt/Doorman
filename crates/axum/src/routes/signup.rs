@@ -1,10 +1,9 @@
 //! Signup HTTP routes.
 //!
-//! Mounted under `/auth/signup` by [`crate::routes::router`] only when a
-//! [`SignupManager`] was supplied to the builder. The three endpoints
-//! mirror the three-step signup flow: request a link, consume the link
-//! and start a passkey registration ceremony, finish the registration
-//! and receive a session.
+//! Mounted under `/auth/signup` by [`crate::routes::router`]. The three
+//! endpoints mirror the three-step signup flow: request a link, consume
+//! the link and start a passkey registration ceremony, finish the
+//! registration and receive a session.
 
 use axum::Json;
 use axum::Router;
@@ -33,10 +32,7 @@ pub(crate) fn routes() -> Router<BauthState> {
 }
 
 fn manager(state: &BauthState) -> &SignupManager {
-    state
-        .signup
-        .as_ref()
-        .expect("signup manager missing but signup routes were mounted")
+    &state.signup
 }
 
 async fn request(
@@ -71,13 +67,7 @@ async fn finish(
     let outcome = manager(&state)
         .finish_signup(challenge_id, &body.response, body.name, context)
         .await?;
-    let passkey_count = state
-        .passkey
-        .as_ref()
-        .expect("passkey manager missing but signup routes were mounted")
-        .list_passkeys(outcome.user.id)
-        .await?
-        .len();
+    let passkey_count = state.passkey.list_passkeys(outcome.user.id).await?.len();
     Ok(auth_success(
         StatusCode::OK,
         state.cookie_config(),

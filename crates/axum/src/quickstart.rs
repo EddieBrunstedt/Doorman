@@ -4,25 +4,26 @@
 //! they need to construct. [`quickstart`] takes the composite
 //! [`bauth_core::storage::Storage`] (typically obtained in one call from a
 //! storage adapter such as `bauth-sqlx`) plus the passkey config,
-//! constructs the `SessionManager`/`PasskeyManager`/`SignupManager`
-//! internally with sensible defaults, and returns a fully built
-//! [`BauthAxum`].
+//! constructs the `SessionManager`/`PasskeyManager`/`SignupManager`/
+//! `RecoveryManager` internally with sensible defaults, and returns a
+//! fully built [`BauthAxum`].
 //!
 //! Defaults applied when the host does not override them:
 //! - [`Clock`] → [`SystemClock`]
 //! - [`AuditSink`] → [`NoopAuditSink`]
 //! - [`RateLimiter`] → [`InMemoryRateLimiter`]
 //!
-//! The [`EmailSender`] has **no default**. Hosts must wire one
-//! explicitly via [`QuickstartBuilder::email`]; otherwise
-//! [`build`](QuickstartBuilder::build) returns
-//! [`BuilderError::MissingEmailSender`]. First-party transports:
+//! The [`EmailSender`] and [`PasskeyConfig`] have **no defaults**. Hosts
+//! must wire them explicitly via [`QuickstartBuilder::email`] and
+//! [`QuickstartBuilder::passkey`]; otherwise [`build`](QuickstartBuilder::build)
+//! returns [`BuilderError::MissingEmailSender`] or
+//! [`BuilderError::MissingPasskeyConfig`]. First-party email transports:
 //! [`TerminalEmailSender`] (stdout) and [`FileEmailSender`] (`.eml`
 //! files on disk); both are intended for local development and trip
 //! a startup warning. Production hosts plug in their real transport
-//! (lettre, resend, SES, …) through the [`EmailSender`] trait. We chose
-//! a build-time error over a typestate because there is only one
-//! required input and the typestate plumbing did not pay for itself.
+//! (lettre, resend, SES, …) through the [`EmailSender`] trait. We keep
+//! build-time errors rather than typestate because the required inputs are
+//! few and the simpler builder is easier to read.
 //!
 //! These defaults are fine for development but not for production.
 //! [`build`](QuickstartBuilder::build) surfaces the mismatch via the
@@ -38,6 +39,7 @@
 //! [`RateLimiter`]: bauth_core::rate_limit::RateLimiter
 //! [`InMemoryRateLimiter`]: bauth_core::memory::InMemoryRateLimiter
 //! [`EmailSender`]: bauth_core::email::EmailSender
+//! [`PasskeyConfig`]: bauth_core::passkey::PasskeyConfig
 //! [`TerminalEmailSender`]: bauth_core::email::TerminalEmailSender
 //! [`FileEmailSender`]: bauth_core::email::FileEmailSender
 //! [`audit`]: QuickstartBuilder::audit
@@ -48,16 +50,12 @@ use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::email::EmailSender;
 use bauth_core::memory::InMemoryRateLimiter;
-use bauth_core::rate_limit::RateLimiter;
-use bauth_core::session::{SessionConfig, SessionManager};
-use bauth_core::storage::Storage;
-
-#[cfg(feature = "passkey")]
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
-#[cfg(feature = "passkey")]
+use bauth_core::rate_limit::RateLimiter;
 use bauth_core::recovery::{RecoveryConfig, RecoveryManager};
-#[cfg(feature = "passkey")]
+use bauth_core::session::{SessionConfig, SessionManager};
 use bauth_core::signup::{SignupConfig, SignupManager};
+use bauth_core::storage::Storage;
 
 use url::Url;
 
@@ -107,11 +105,8 @@ pub struct QuickstartBuilder {
 
     external_origin: Option<Url>,
 
-    #[cfg(feature = "passkey")]
     passkey: Option<PasskeyConfig>,
-    #[cfg(feature = "passkey")]
     signup: Option<SignupConfig>,
-    #[cfg(feature = "passkey")]
     recovery: Option<RecoveryConfig>,
 }
 
@@ -129,11 +124,8 @@ impl QuickstartBuilder {
             csrf_config: None,
             silence_warnings: false,
             external_origin: None,
-            #[cfg(feature = "passkey")]
             passkey: None,
-            #[cfg(feature = "passkey")]
             signup: None,
-            #[cfg(feature = "passkey")]
             recovery: None,
         }
     }
@@ -210,10 +202,9 @@ impl QuickstartBuilder {
         self
     }
 
-    /// Enable passkey flows with the supplied config. Required — the
-    /// signup flow is built around passkey enrolment, so the builder
-    /// constructs a `SignupManager` whenever a passkey config is set.
-    #[cfg(feature = "passkey")]
+    /// Configure the WebAuthn relying party for the always-on passkey
+    /// flows. Required — [`build`](Self::build) returns
+    /// [`BuilderError::MissingPasskeyConfig`] when not set.
     pub fn passkey(mut self, config: PasskeyConfig) -> Self {
         self.passkey = Some(config);
         self
@@ -222,8 +213,7 @@ impl QuickstartBuilder {
     /// Override the default [`SignupConfig`] (15-minute token lifetime,
     /// default rate limits). Pair with [`email`](Self::email) so the
     /// rendered links actually leave the process; the signup flow is on
-    /// implicitly whenever [`passkey`](Self::passkey) is configured.
-    #[cfg(feature = "passkey")]
+    /// implicitly.
     pub fn signup(mut self, config: SignupConfig) -> Self {
         self.signup = Some(config);
         self
@@ -231,8 +221,7 @@ impl QuickstartBuilder {
 
     /// Override the default [`RecoveryConfig`] (15-minute token lifetime,
     /// aggressive default rate limits). Like signup, the recovery flow is
-    /// on implicitly whenever [`passkey`](Self::passkey) is configured.
-    #[cfg(feature = "passkey")]
+    /// always on.
     pub fn recovery(mut self, config: RecoveryConfig) -> Self {
         self.recovery = Some(config);
         self
@@ -250,6 +239,7 @@ impl QuickstartBuilder {
         let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock));
         let audit: Arc<dyn AuditSink> = self.audit.unwrap_or_else(|| Arc::new(NoopAuditSink));
         let email: Arc<dyn EmailSender> = self.email.ok_or(BuilderError::MissingEmailSender)?;
+        let passkey_config = self.passkey.ok_or(BuilderError::MissingPasskeyConfig)?;
         let limiter: Arc<dyn RateLimiter> = self
             .rate_limiter
             .unwrap_or_else(|| Arc::new(InMemoryRateLimiter::new(clock.clone())));
@@ -301,63 +291,55 @@ impl QuickstartBuilder {
             builder = builder.with_csrf(csrf_config);
         }
 
-        #[cfg(feature = "passkey")]
-        if let Some(config) = self.passkey {
-            let passkey_manager = PasskeyManager::new(
-                self.storage.users.clone(),
-                self.storage.passkey_credentials.clone(),
-                self.storage.passkey_challenges.clone(),
-                session_manager.clone(),
-                clock.clone(),
-                audit.clone(),
-                config,
-            )
-            .map_err(BuilderError::Passkey)?;
+        let passkey_manager = PasskeyManager::new(
+            self.storage.users.clone(),
+            self.storage.passkey_credentials.clone(),
+            self.storage.passkey_challenges.clone(),
+            session_manager.clone(),
+            clock.clone(),
+            audit.clone(),
+            passkey_config,
+        )
+        .map_err(BuilderError::Passkey)?;
 
-            // Signup is part of the only login UX — wire it implicitly so
-            // the host doesn't have to opt in. Hosts that need to tune
-            // the rate limits or token lifetime call `.signup(...)`.
-            let signup_manager = SignupManager::new(
-                self.storage.users.clone(),
-                self.storage.verification_tokens.clone(),
-                passkey_manager.clone(),
-                session_manager.clone(),
-                email.clone(),
-                clock.clone(),
-                audit.clone(),
-                limiter.clone(),
-                self.signup.unwrap_or_default(),
-            );
+        // Signup is part of the only login UX — wire it implicitly so the
+        // host doesn't have to opt in. Hosts that need to tune the rate
+        // limits or token lifetime call `.signup(...)`.
+        let signup_manager = SignupManager::new(
+            self.storage.users.clone(),
+            self.storage.verification_tokens.clone(),
+            passkey_manager.clone(),
+            session_manager.clone(),
+            email.clone(),
+            clock.clone(),
+            audit.clone(),
+            limiter.clone(),
+            self.signup.unwrap_or_default(),
+        );
 
-            // Recovery rides on the same primitives as signup and is
-            // similarly always-on. Hosts override the defaults via
-            // `.recovery(...)` to tune the aggressive rate limits.
-            let recovery_manager = RecoveryManager::new(
-                self.storage.users.clone(),
-                self.storage.verification_tokens.clone(),
-                passkey_manager.clone(),
-                session_manager.clone(),
-                email.clone(),
-                clock.clone(),
-                audit.clone(),
-                limiter.clone(),
-                self.recovery.unwrap_or_default(),
-            );
+        // Recovery rides on the same primitives as signup and is similarly
+        // always-on. Hosts override the defaults via `.recovery(...)` to
+        // tune the aggressive rate limits.
+        let recovery_manager = RecoveryManager::new(
+            self.storage.users.clone(),
+            self.storage.verification_tokens.clone(),
+            passkey_manager.clone(),
+            session_manager.clone(),
+            email.clone(),
+            clock.clone(),
+            audit.clone(),
+            limiter.clone(),
+            self.recovery.unwrap_or_default(),
+        );
 
-            builder = builder
-                .passkey_manager(passkey_manager)
-                .signup_manager(signup_manager)
-                .recovery_manager(recovery_manager);
-        }
+        builder = builder
+            .passkey_manager(passkey_manager)
+            .signup_manager(signup_manager)
+            .recovery_manager(recovery_manager);
 
         if let Some(origin) = self.external_origin {
             builder = builder.external_origin(origin);
         }
-
-        // Touch otherwise-unused values when no method features are active
-        // so the unused-binding lint doesn't fire on a host that compiles
-        // with `default-features = false`.
-        let _ = (&email, &limiter);
 
         builder.build()
     }

@@ -13,11 +13,15 @@ use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::email::EmailSender;
 use bauth_core::memory::{
     CapturingEmailSender, InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore,
-    InMemorySessionStore, InMemoryUserStore,
+    InMemoryRateLimiter, InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
+use bauth_core::recovery::{RecoveryConfig, RecoveryManager};
 use bauth_core::session::{SessionConfig, SessionManager};
-use bauth_core::storage::{PasskeyChallengeStore, PasskeyCredentialStore, SessionStore, UserStore};
+use bauth_core::signup::{SignupConfig, SignupManager};
+use bauth_core::storage::{
+    PasskeyChallengeStore, PasskeyCredentialStore, SessionStore, UserStore, VerificationTokenStore,
+};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -39,6 +43,9 @@ impl PasskeyApp {
             Arc::new(InMemoryPasskeyCredentialStore::new());
         let passkey_challenges: Arc<InMemoryPasskeyChallengeStore> =
             Arc::new(InMemoryPasskeyChallengeStore::new());
+        let tokens: Arc<InMemoryVerificationTokenStore> =
+            Arc::new(InMemoryVerificationTokenStore::new());
+        let limiter = Arc::new(InMemoryRateLimiter::new(clock.clone()));
 
         let session_manager = SessionManager::new(
             sessions as Arc<dyn SessionStore>,
@@ -53,8 +60,8 @@ impl PasskeyApp {
             passkey_credentials as Arc<dyn PasskeyCredentialStore>,
             passkey_challenges as Arc<dyn PasskeyChallengeStore>,
             session_manager.clone(),
-            clock,
-            audit,
+            clock.clone(),
+            audit.clone(),
             PasskeyConfig::new(
                 "localhost",
                 Url::parse("http://localhost:8080").expect("valid rp origin"),
@@ -64,12 +71,36 @@ impl PasskeyApp {
         .expect("passkey manager");
 
         let email_sender: Arc<dyn EmailSender> = Arc::new(CapturingEmailSender::new());
+        let signup_manager = SignupManager::new(
+            users.clone() as Arc<dyn UserStore>,
+            tokens.clone() as Arc<dyn VerificationTokenStore>,
+            passkey_manager.clone(),
+            session_manager.clone(),
+            email_sender.clone(),
+            clock.clone(),
+            audit.clone(),
+            limiter.clone(),
+            SignupConfig::default(),
+        );
+        let recovery_manager = RecoveryManager::new(
+            users.clone() as Arc<dyn UserStore>,
+            tokens as Arc<dyn VerificationTokenStore>,
+            passkey_manager.clone(),
+            session_manager.clone(),
+            email_sender.clone(),
+            clock,
+            audit,
+            limiter,
+            RecoveryConfig::default(),
+        );
 
         let auth = BauthAxum::builder()
             .session_manager(session_manager)
             .user_store(users)
             .email_sender(email_sender)
             .passkey_manager(passkey_manager)
+            .signup_manager(signup_manager)
+            .recovery_manager(recovery_manager)
             .cookie_config(CookieConfig {
                 secure: false,
                 ..CookieConfig::default()

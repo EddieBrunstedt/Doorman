@@ -2,19 +2,23 @@
 //!
 //! Most hosts start with [`quickstart`], hand it a
 //! [`bauth_core::storage::Storage`] value from a storage adapter such as
-//! `bauth-sqlx`, configure the auth methods they want, and mount the returned
-//! [`BauthAxum`] on their application router.
+//! `bauth-sqlx`, configure the passkey relying party and email transport,
+//! and mount the returned [`BauthAxum`] on their application router.
 //!
 //! ```ignore
+//! use std::sync::Arc;
+//!
 //! use bauth_axum::prelude::*;
 //! use bauth_sqlx::SqliteStorage;
 //!
 //! let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").await?;
 //! storage.migrate().await?;
 //!
+//! let origin = "https://app.example.com".parse()?;
 //! let auth = bauth_axum::quickstart(storage.storage())
-//!     .passkey(PasskeyConfig::new("example.com", origin, "Example"))
-//!     .external_origin("https://app.example.com".parse()?)
+//!     .email(Arc::new(TerminalEmailSender))
+//!     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
+//!     .external_origin(origin)
 //!     .cookie(CookieConfig::default())
 //!     .build()?;
 //!
@@ -74,7 +78,7 @@ impl BauthAxum {
         BauthAxumBuilder::default()
     }
 
-    /// A `Router` carrying every enabled auth endpoint, scoped under the
+    /// A `Router` carrying every auth endpoint, scoped under the
     /// `/auth` prefix. Merge it into the application router. The router
     /// is returned with its state already applied (`Router<()>`), so the
     /// host can `.merge` or `.nest` freely.

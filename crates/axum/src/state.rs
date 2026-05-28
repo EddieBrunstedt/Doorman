@@ -10,14 +10,11 @@ use std::sync::Arc;
 use bauth_core::session::SessionManager;
 use bauth_core::storage::UserStore;
 
-use crate::config::CookieConfig;
-
-#[cfg(feature = "passkey")]
 use bauth_core::passkey::PasskeyManager;
-#[cfg(feature = "passkey")]
 use bauth_core::recovery::RecoveryManager;
-#[cfg(feature = "passkey")]
 use bauth_core::signup::SignupManager;
+
+use crate::config::CookieConfig;
 
 /// Shared Axum router state holding configured auth managers and settings.
 #[derive(Clone)]
@@ -25,12 +22,9 @@ pub struct BauthState {
     pub(crate) session_manager: SessionManager,
     pub(crate) user_store: Arc<dyn UserStore>,
     pub(crate) cookie_config: Arc<CookieConfig>,
-    #[cfg(feature = "passkey")]
-    pub(crate) passkey: Option<PasskeyManager>,
-    #[cfg(feature = "passkey")]
-    pub(crate) signup: Option<SignupManager>,
-    #[cfg(feature = "passkey")]
-    pub(crate) recovery: Option<RecoveryManager>,
+    pub(crate) passkey: PasskeyManager,
+    pub(crate) signup: SignupManager,
+    pub(crate) recovery: RecoveryManager,
 }
 
 impl BauthState {

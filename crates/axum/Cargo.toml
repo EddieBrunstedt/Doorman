@@ -9,8 +9,7 @@ rust-version.workspace = true
 description = "Axum HTTP integration for the bauth authentication library."
 
 [features]
-default = ["passkey"]
-passkey = []
+default = []
 # Forwards `bauth-core`'s testing helpers (e.g. `CapturingEmailSender`)
 # so axum-side tests can opt into them.
 testing = ["bauth-core/testing"]

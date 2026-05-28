@@ -1,8 +1,8 @@
 # bauth
 
 bauth is an Axum-first authentication library for Rust applications. It
-ships correct auth primitives — passkeys/WebAuthn, magic links,
-server-side opaque sessions, CSRF origin checks, rate limiting,
+ships a passkey/WebAuthn-only auth surface with email-gated signup and
+recovery, server-side opaque sessions, CSRF origin checks, rate limiting,
 and audit events — behind storage traits you can back with SQLx or your
 own database layer.
 
@@ -27,9 +27,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```rust
 use std::sync::Arc;
 
-use axum::{Json, Router, routing::get};
-use bauth_axum::dto::{MeResponse, SessionDto};
+use axum::{Router, routing::get};
 use bauth_axum::prelude::*;
+use bauth_core::signup::TOKEN_PLACEHOLDER;
 use bauth_sqlx::SqliteStorage;
 
 #[tokio::main]
@@ -38,11 +38,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.migrate().await?;
 
     let origin = "https://app.example.com".parse()?;
+    let base = origin.as_str().trim_end_matches('/');
 
     let auth = bauth_axum::quickstart(storage.storage())
-        .email(Arc::new(NoopEmailSender))
-        .magic_link(MagicLinkConfig::default())
+        .email(Arc::new(TerminalEmailSender))
         .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
+        .signup(SignupConfig {
+            url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"),
+            ..SignupConfig::default()
+        })
+        .recovery(RecoveryConfig {
+            url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"),
+            ..RecoveryConfig::default()
+        })
         .external_origin(origin)
         .cookie(CookieConfig::default())
         .build()?;
@@ -57,15 +65,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn me(auth: AuthSession) -> Json<MeResponse> {
-    Json(MeResponse {
-        user: auth.user.into(),
-        session: SessionDto::from_session(auth.session, true),
-    })
+async fn me(auth: AuthSession) -> String {
+    auth.user.email.unwrap_or_else(|| "unknown".to_owned())
 }
 ```
 
-`auth.router()` mounts `/auth/*` routes for every method you enabled.
+`auth.router()` mounts the `/auth/*` passkey, signup, recovery, and session routes.
 `auth.session_layer()` reads the session cookie or bearer token and makes
 `AuthUser`, `OptionalAuthUser`, and `AuthSession` work in your handlers.
 
@@ -75,8 +80,8 @@ leave `secure = true` in production.
 ## Run the minimal app
 
 A complete runnable app lives in [`examples/minimal-app`](examples/minimal-app):
-SQLite via `bauth-sqlx`, passkeys, magic links, `/api/me`, and a static
-HTML page with no frontend build step.
+SQLite via `bauth-sqlx`, passkeys, signup/recovery email links,
+`/api/me`, and a static HTML page with no frontend build step.
 
 ```sh
 cargo run -p bauth-minimal-app
@@ -87,7 +92,7 @@ Open <http://localhost:3000>.
 ## What ships
 
 - Passkeys / WebAuthn via [`webauthn-rs`](https://crates.io/crates/webauthn-rs).
-- Magic-link sign-in using single-use, hashed email tokens.
+- Email-gated signup and recovery using single-use, hashed tokens.
 - Server-side opaque sessions with instant revocation and a signed-in
   devices endpoint.
 - CSRF origin checks for cookie-backed state-changing requests.
@@ -119,7 +124,7 @@ These mirror the startup warnings emitted by `quickstart().build()` and
 - Wire a real `AuditSink`; `NoopAuditSink` discards security events.
 - Wire a production `RateLimiter`. The built-in `InMemoryRateLimiter` is
   per-process, so multi-replica deployments need a shared backend.
-- Wire a real `EmailSender` before relying on magic links.
+- Wire a real `EmailSender` before relying on signup or recovery emails.
 - Run storage migrations at startup and periodically purge expired
   sessions, verification tokens, and passkey challenges.
 
@@ -131,18 +136,14 @@ made an explicit operational choice.
 - `SessionConfig::lifetime` — session lifetime; defaults to 30 days.
 - `PasskeyConfig` — WebAuthn relying-party id, origin, display name, and
   challenge lifetime.
-- `MagicLinkConfig` — token lifetime, URL template, signup policy, rate
-  limits, and email renderer.
+- `SignupConfig` / `RecoveryConfig` — token lifetimes, URL templates,
+  rate limits, email renderers, and recovery cool-down.
 - `CookieConfig` — session cookie name, domain/path, `secure`,
   `SameSite`, and max age.
 - `CsrfConfig` — override or disable the origin-check layer.
 
-Feature flags on `bauth-axum`: `passkey` and `magic_link` (both
-enabled by default).
-
-```toml
-bauth-axum = { version = "0.1", default-features = false, features = ["passkey"] }
-```
+`bauth-axum` has no method-specific feature flags; the passkey, signup,
+recovery, and session routes are always compiled.
 
 ## Custom storage and direct manager use
 
@@ -153,8 +154,8 @@ on another database stack implement the storage traits in `bauth-core`:
 
 If you want full control of the HTTP surface, skip `bauth-axum` routes and
 call the core managers directly (`SessionManager`, `PasskeyManager`,
-`MagicLinkManager`). They return framework-agnostic outcomes such as
-`IssuedSession` and `StoredPasskey`.
+`SignupManager`, `RecoveryManager`). They return framework-agnostic
+outcomes such as `IssuedSession` and `StoredPasskey`.
 
 ## Security
 

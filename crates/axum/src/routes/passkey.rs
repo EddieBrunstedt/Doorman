@@ -1,7 +1,6 @@
 //! Passkey (WebAuthn) HTTP routes.
 //!
-//! Mounted under `/auth/passkey` by [`crate::routes::router`] only when
-//! a [`PasskeyManager`] was supplied to the builder.
+//! Mounted under `/auth/passkey` by [`crate::routes::router`].
 
 use axum::Json;
 use axum::Router;
@@ -36,10 +35,7 @@ pub(crate) fn routes() -> Router<BauthState> {
 }
 
 fn manager(state: &BauthState) -> &PasskeyManager {
-    state
-        .passkey
-        .as_ref()
-        .expect("passkey manager missing but passkey routes were mounted")
+    &state.passkey
 }
 
 async fn register_start(

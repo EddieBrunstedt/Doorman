@@ -8,15 +8,18 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use bauth_axum::BuilderError;
 use bauth_axum::config::CookieConfig;
-use bauth_axum::quickstart;
+use bauth_axum::{BauthAxum, BuilderError, quickstart};
+use bauth_core::audit::NoopAuditSink;
+use bauth_core::clock::SystemClock;
 use bauth_core::email::{EmailSender, FileEmailSender, TerminalEmailSender};
 use bauth_core::memory::{
     CapturingEmailSender, InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore,
     InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
+use bauth_core::passkey::PasskeyConfig;
 use bauth_core::rate_limit::NoopRateLimiter;
+use bauth_core::session::{SessionConfig, SessionManager};
 use bauth_core::storage::Storage;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -67,6 +70,14 @@ fn capturing_email() -> Arc<dyn EmailSender> {
     Arc::new(CapturingEmailSender::new())
 }
 
+fn passkey_config() -> PasskeyConfig {
+    PasskeyConfig::new(
+        "localhost",
+        "http://localhost:8080".parse().expect("rp origin"),
+        "bauth tests",
+    )
+}
+
 fn capture<F>(f: F) -> String
 where
     F: FnOnce(),
@@ -88,6 +99,7 @@ fn quickstart_defaults_warn_about_noop_audit_and_in_memory_limiter() {
     let output = capture(|| {
         let _ = quickstart(fresh_storage())
             .email(capturing_email())
+            .passkey(passkey_config())
             .cookie(CookieConfig {
                 secure: false,
                 ..CookieConfig::default()
@@ -115,6 +127,7 @@ fn explicit_noop_rate_limiter_emits_noop_warning() {
     let output = capture(|| {
         let _ = quickstart(fresh_storage())
             .email(capturing_email())
+            .passkey(passkey_config())
             .limiter(Arc::new(NoopRateLimiter))
             .build()
             .expect("build");
@@ -135,6 +148,7 @@ fn cookie_secure_false_with_production_domain_warns() {
     let output = capture(|| {
         let _ = quickstart(fresh_storage())
             .email(capturing_email())
+            .passkey(passkey_config())
             .cookie(CookieConfig {
                 secure: false,
                 domain: Some("example.com".into()),
@@ -157,6 +171,7 @@ fn cookie_warning_fires_when_not_silenced() {
     let output = capture(|| {
         let _ = quickstart(fresh_storage())
             .email(capturing_email())
+            .passkey(passkey_config())
             .cookie(CookieConfig {
                 secure: false,
                 domain: Some("example.com".into()),
@@ -177,6 +192,7 @@ fn quickstart_silence_warnings_suppresses_everything() {
     let output = capture(|| {
         let _ = quickstart(fresh_storage())
             .email(capturing_email())
+            .passkey(passkey_config())
             .silence_warnings()
             .build()
             .expect("build");
@@ -199,10 +215,48 @@ fn missing_email_sender_returns_build_error() {
 }
 
 #[test]
+fn missing_passkey_config_returns_build_error() {
+    let result = quickstart(fresh_storage())
+        .email(capturing_email())
+        .silence_warnings()
+        .build();
+    match result {
+        Err(BuilderError::MissingPasskeyConfig) => {}
+        Err(other) => panic!("expected MissingPasskeyConfig, got: {other:?}"),
+        Ok(_) => panic!("build should fail without passkey config"),
+    }
+}
+
+#[test]
+fn low_level_builder_rejects_missing_passkey_manager() {
+    let storage = fresh_storage();
+    let session_manager = SessionManager::new(
+        storage.sessions.clone(),
+        Arc::new(SystemClock),
+        Arc::new(NoopAuditSink),
+        SessionConfig::default(),
+    );
+
+    let result = BauthAxum::builder()
+        .session_manager(session_manager)
+        .user_store(storage.users.clone())
+        .email_sender(capturing_email())
+        .silence_warnings()
+        .build();
+
+    match result {
+        Err(BuilderError::MissingPasskeyManager) => {}
+        Err(other) => panic!("expected MissingPasskeyManager, got: {other:?}"),
+        Ok(_) => panic!("build should fail without passkey manager"),
+    }
+}
+
+#[test]
 fn terminal_email_transport_emits_dev_email_warning() {
     let output = capture(|| {
         let _ = quickstart(fresh_storage())
             .email(Arc::new(TerminalEmailSender))
+            .passkey(passkey_config())
             .build()
             .expect("build");
     });
@@ -220,6 +274,7 @@ fn file_email_transport_emits_dev_email_warning() {
     let output = capture(|| {
         let _ = quickstart(fresh_storage())
             .email(Arc::new(FileEmailSender::new(&dir)))
+            .passkey(passkey_config())
             .build()
             .expect("build");
     });
