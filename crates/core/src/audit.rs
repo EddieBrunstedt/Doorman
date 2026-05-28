@@ -61,6 +61,26 @@ pub enum AuditEventKind {
     SignupConsumed {
         user_id: UserId,
     },
+    /// Emitted every time the recovery request endpoint is hit, including
+    /// when the email does not resolve to a registered user (in which case
+    /// `user_id` is `None`). The matching audit row makes a sustained
+    /// enumeration probe visible even though the wire response is
+    /// identical for known and unknown emails.
+    RecoveryRequested {
+        user_id: Option<UserId>,
+    },
+    /// Emitted when a recovery token is successfully consumed and a passkey
+    /// registration ceremony is started against the user it identifies.
+    RecoveryConsumed {
+        user_id: UserId,
+    },
+    /// Emitted on any recovery failure path — unknown email, rate-limit
+    /// rejection, invalid token, expired token. Pairs with the
+    /// [`RecoveryFailureReason`] for after-the-fact triage.
+    RecoveryFailed {
+        user_id: Option<UserId>,
+        reason: RecoveryFailureReason,
+    },
 }
 
 /// Authentication method that produced a successful login.
@@ -85,6 +105,23 @@ pub enum LoginFailureReason {
     InvalidCredential,
     AccountLocked,
     EmailNotVerified,
+}
+
+/// Why a recovery attempt did not succeed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryFailureReason {
+    /// The request endpoint was asked to recover an email address that is
+    /// not in the user table.
+    UnknownEmail,
+    /// A rate-limit policy rejected the request before any user lookup.
+    RateLimited,
+    /// A `recovery/consume` call presented a token the store did not
+    /// recognise.
+    InvalidToken,
+    /// A `recovery/consume` call presented a token whose `expires_at` has
+    /// already passed.
+    ExpiredToken,
 }
 
 /// Destination for audit events emitted by the managers.

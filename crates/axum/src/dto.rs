@@ -163,6 +163,32 @@ pub struct SignupFinishRequest {
     pub name: Option<String>,
 }
 
+/// Request body for `/auth/recovery/request`. The response is always 204
+/// regardless of whether the email resolves to a registered user, so the
+/// endpoint is not an enumeration oracle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryRequest {
+    pub email: String,
+}
+
+/// Request body for `/auth/recovery/consume`. The token comes from the
+/// recovery email link.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryConsumeRequest {
+    pub token: String,
+}
+
+/// Request body for `/auth/recovery/finish`. Echoes the `challenge_id`
+/// the consume endpoint returned and carries the WebAuthn attestation the
+/// browser produced from the embedded `options`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryFinishRequest {
+    pub challenge_id: String,
+    pub response: webauthn_rs::prelude::RegisterPublicKeyCredential,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 /// Returned by both passkey ceremony `start` endpoints. The `options`
 /// field is the JSON `webauthn-rs` produces for
 /// `navigator.credentials.{create,get}`; we wrap it so the response also

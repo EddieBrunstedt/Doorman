@@ -15,6 +15,8 @@ use crate::config::CookieConfig;
 #[cfg(feature = "passkey")]
 use bauth_core::passkey::PasskeyManager;
 #[cfg(feature = "passkey")]
+use bauth_core::recovery::RecoveryManager;
+#[cfg(feature = "passkey")]
 use bauth_core::signup::SignupManager;
 
 /// Shared Axum router state holding configured auth managers and settings.
@@ -27,6 +29,8 @@ pub struct BauthState {
     pub(crate) passkey: Option<PasskeyManager>,
     #[cfg(feature = "passkey")]
     pub(crate) signup: Option<SignupManager>,
+    #[cfg(feature = "passkey")]
+    pub(crate) recovery: Option<RecoveryManager>,
 }
 
 impl BauthState {

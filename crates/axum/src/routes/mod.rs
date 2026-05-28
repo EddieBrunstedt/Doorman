@@ -23,6 +23,8 @@ use crate::state::BauthState;
 
 #[cfg(feature = "passkey")]
 pub(crate) mod passkey;
+#[cfg(feature = "passkey")]
+pub(crate) mod recovery;
 pub(crate) mod sessions;
 #[cfg(feature = "passkey")]
 pub(crate) mod signup;
@@ -54,6 +56,11 @@ pub(crate) fn router(state: BauthState) -> Router {
     #[cfg(feature = "passkey")]
     if state.signup.is_some() {
         router = router.merge(signup::routes());
+    }
+
+    #[cfg(feature = "passkey")]
+    if state.recovery.is_some() {
+        router = router.merge(recovery::routes());
     }
 
     router.with_state(state)

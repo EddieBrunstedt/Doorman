@@ -305,6 +305,7 @@ pub trait PasskeyChallengeStore: Send + Sync {
 #[serde(rename_all = "snake_case")]
 pub enum VerificationPurpose {
     Signup,
+    Recovery,
 }
 
 /// A single-use, time-limited token issued for an out-of-band flow such

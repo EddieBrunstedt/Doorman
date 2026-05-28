@@ -24,6 +24,8 @@ use crate::warnings::{self, Warnings};
 #[cfg(feature = "passkey")]
 use bauth_core::passkey::PasskeyManager;
 #[cfg(feature = "passkey")]
+use bauth_core::recovery::RecoveryManager;
+#[cfg(feature = "passkey")]
 use bauth_core::signup::SignupManager;
 
 /// Errors returned when the Axum auth surface is incompletely configured.
@@ -76,6 +78,8 @@ pub struct BauthAxumBuilder {
     passkey: Option<PasskeyManager>,
     #[cfg(feature = "passkey")]
     signup: Option<SignupManager>,
+    #[cfg(feature = "passkey")]
+    recovery: Option<RecoveryManager>,
 }
 
 impl BauthAxumBuilder {
@@ -171,6 +175,12 @@ impl BauthAxumBuilder {
         self
     }
 
+    #[cfg(feature = "passkey")]
+    pub fn recovery_manager(mut self, manager: RecoveryManager) -> Self {
+        self.recovery = Some(manager);
+        self
+    }
+
     /// Suppress the build-time configuration warnings. Use after you have
     /// reviewed the warnings and made an informed choice — e.g. you are
     /// intentionally running with an in-memory rate limiter in a
@@ -238,6 +248,8 @@ impl BauthAxumBuilder {
             passkey: self.passkey,
             #[cfg(feature = "passkey")]
             signup: self.signup,
+            #[cfg(feature = "passkey")]
+            recovery: self.recovery,
         };
 
         Ok(BauthAxum {

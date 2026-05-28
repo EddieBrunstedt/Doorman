@@ -33,6 +33,7 @@ use bauth_core::memory::{
     InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::passkey::PasskeyConfig;
+use bauth_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
 use bauth_core::signup::{SignupConfig, SignupRateLimits, TOKEN_PLACEHOLDER};
 use bauth_core::storage::{Storage, User, UserId, UserStore};
@@ -45,6 +46,7 @@ use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
 pub const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
+pub const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
 
 pub struct TestApp {
     pub addr: SocketAddr,
@@ -99,6 +101,11 @@ impl TestApp {
                 url_template: SIGNUP_URL.to_string(),
                 rate_limits: SignupRateLimits::disabled(),
                 ..SignupConfig::default()
+            })
+            .recovery(RecoveryConfig {
+                url_template: RECOVERY_URL.to_string(),
+                rate_limits: RecoveryRateLimits::disabled(),
+                ..RecoveryConfig::default()
             })
             .cookie(CookieConfig {
                 secure: secure_cookies,
@@ -283,7 +290,13 @@ impl SignupClient {
 /// Locate the raw signup token in an email body whose URL was rendered
 /// from [`SIGNUP_URL`].
 pub fn token_from_email(body: &str) -> String {
-    let prefix = SIGNUP_URL
+    token_from_email_with(body, SIGNUP_URL)
+}
+
+/// Locate the raw token in an email body whose URL was rendered from the
+/// given template (signup or recovery).
+pub fn token_from_email_with(body: &str, template: &str) -> String {
+    let prefix = template
         .split(TOKEN_PLACEHOLDER)
         .next()
         .expect("template has prefix");

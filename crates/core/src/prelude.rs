@@ -11,7 +11,7 @@
 
 pub use crate::audit::{
     AuditEvent, AuditEventKind, AuditSink, AuthMethod, CredentialKind, LoginFailureReason,
-    NoopAuditSink,
+    NoopAuditSink, RecoveryFailureReason,
 };
 pub use crate::clock::{Clock, SystemClock};
 pub use crate::email::{
@@ -20,6 +20,9 @@ pub use crate::email::{
 pub use crate::error::{Error, Result, StorageError, StorageResult};
 pub use crate::passkey::{PasskeyConfig, PasskeyManager};
 pub use crate::rate_limit::{NoopRateLimiter, RateLimitDecision, RateLimitPolicy, RateLimiter};
+pub use crate::recovery::{
+    RecoveryConfig, RecoveryConsumeOutcome, RecoveryManager, RecoveryOutcome, RecoveryRateLimits,
+};
 pub use crate::session::{
     IssuedSession, SessionConfig, SessionContext, SessionInvalidationHook, SessionManager,
 };

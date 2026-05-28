@@ -55,6 +55,8 @@ use bauth_core::storage::Storage;
 #[cfg(feature = "passkey")]
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
 #[cfg(feature = "passkey")]
+use bauth_core::recovery::{RecoveryConfig, RecoveryManager};
+#[cfg(feature = "passkey")]
 use bauth_core::signup::{SignupConfig, SignupManager};
 
 use url::Url;
@@ -109,6 +111,8 @@ pub struct QuickstartBuilder {
     passkey: Option<PasskeyConfig>,
     #[cfg(feature = "passkey")]
     signup: Option<SignupConfig>,
+    #[cfg(feature = "passkey")]
+    recovery: Option<RecoveryConfig>,
 }
 
 impl QuickstartBuilder {
@@ -129,6 +133,8 @@ impl QuickstartBuilder {
             passkey: None,
             #[cfg(feature = "passkey")]
             signup: None,
+            #[cfg(feature = "passkey")]
+            recovery: None,
         }
     }
 
@@ -223,6 +229,15 @@ impl QuickstartBuilder {
         self
     }
 
+    /// Override the default [`RecoveryConfig`] (15-minute token lifetime,
+    /// aggressive default rate limits). Like signup, the recovery flow is
+    /// on implicitly whenever [`passkey`](Self::passkey) is configured.
+    #[cfg(feature = "passkey")]
+    pub fn recovery(mut self, config: RecoveryConfig) -> Self {
+        self.recovery = Some(config);
+        self
+    }
+
     /// Absolute public origin clients use to reach the auth routes.
     /// Supplying an origin enables CSRF origin checks by default.
     pub fn external_origin(mut self, origin: Url) -> Self {
@@ -314,9 +329,25 @@ impl QuickstartBuilder {
                 self.signup.unwrap_or_default(),
             );
 
+            // Recovery rides on the same primitives as signup and is
+            // similarly always-on. Hosts override the defaults via
+            // `.recovery(...)` to tune the aggressive rate limits.
+            let recovery_manager = RecoveryManager::new(
+                self.storage.users.clone(),
+                self.storage.verification_tokens.clone(),
+                passkey_manager.clone(),
+                session_manager.clone(),
+                email.clone(),
+                clock.clone(),
+                audit.clone(),
+                limiter.clone(),
+                self.recovery.unwrap_or_default(),
+            );
+
             builder = builder
                 .passkey_manager(passkey_manager)
-                .signup_manager(signup_manager);
+                .signup_manager(signup_manager)
+                .recovery_manager(recovery_manager);
         }
 
         if let Some(origin) = self.external_origin {

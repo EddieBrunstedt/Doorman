@@ -14,6 +14,7 @@ pub mod memory;
 pub mod passkey;
 pub mod prelude;
 pub mod rate_limit;
+pub mod recovery;
 pub mod session;
 pub mod signup;
 pub mod storage;

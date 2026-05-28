@@ -11,8 +11,10 @@
 //! trait.
 //!
 //! The library uses email purely as a side channel for **signup links**
-//! (and, in a later phase, recovery links). The default copy describes
-//! a passkey-driven flow; hosts override [`BauthEmails`] to brand it.
+//! and **recovery links** (plus the recovery-notification email a
+//! registered user receives whenever recovery is attempted against their
+//! address). The default copy describes a passkey-driven flow; hosts
+//! override [`BauthEmails`] to brand it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -199,6 +201,49 @@ pub trait BauthEmails: Send + Sync {
                  {url}\n\n\
                  If you did not request this you can safely ignore this message.\n"
             ),
+            body_html: None,
+        }
+    }
+
+    /// Sent to a registered user when their address shows up at the
+    /// recovery request endpoint. The link redeems for exactly one action:
+    /// starting a passkey registration ceremony against the user. No
+    /// session is issued from the click.
+    fn recovery_email(&self, user: &User, url: &str) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Recover access to your account".to_string(),
+            body_text: format!(
+                "Hello,\n\n\
+                 Someone — hopefully you — asked to recover access to your account. \
+                 Click the link below to register a new passkey on this device:\n\n\
+                 {url}\n\n\
+                 The link can only be used once and expires shortly. \
+                 If you did not request a recovery, ignore this message and \
+                 sign in with one of your existing passkeys.\n"
+            ),
+            body_html: None,
+        }
+    }
+
+    /// Sent to the registered user alongside the recovery link, and again
+    /// when a recovery completes successfully. The goal is to make every
+    /// recovery attempt visible to the legitimate inbox owner so they
+    /// notice an attacker enrolling a new passkey before that passkey is
+    /// out of cool-down. Hosts override the copy to point at their
+    /// support / sign-out workflow.
+    fn recovery_notification_email(&self, user: &User) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Security notice: account recovery activity".to_string(),
+            body_text: "Hello,\n\n\
+                 We're letting you know that account recovery activity was just initiated \
+                 or completed for your account. \
+                 If this was you, no action is needed.\n\n\
+                 If this was not you, sign in with one of your existing passkeys, \
+                 review the passkeys registered to your account, and revoke any you \
+                 do not recognise. Contact support if you cannot regain access.\n"
+                .to_string(),
             body_html: None,
         }
     }
