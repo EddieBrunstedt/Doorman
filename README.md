@@ -9,7 +9,6 @@ a passkey registration before any session is issued. There are no
 passwords, OAuth providers, TOTP codes, or general-purpose email login
 links.
 
-The design rationale lives in [`PASSKEY_PIVOT.md`](PASSKEY_PIVOT.md).
 This crate is pre-1.0; breaking changes can still land before the public
 surface is declared stable.
 
