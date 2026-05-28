@@ -20,10 +20,9 @@
 //!
 //! No session is issued from the email click alone. A passkey is always
 //! interposed; an attacker who phishes the link still has to leave a
-//! visible credential on the user's authenticator list. Phase 7 layers
-//! a 24h cool-down on the resulting session — until that lands the
-//! recovery session is unrestricted, but the rest of the design is
-//! already in place.
+//! visible credential on the user's authenticator list. The resulting
+//! session carries a post-recovery cool-down (24h by default) that blocks
+//! destructive auth actions while the legitimate user has time to react.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -76,7 +75,7 @@ pub struct RecoveryConfig {
     /// host's destructive surfaces (delete passkey, revoke other sessions
     /// — see [`crate::error::Error::RecoveryCooldownActive`]) refuse to
     /// run from that session. Floor of one hour enforced by
-    /// [`RecoveryConfig::validated`].
+    /// [`RecoveryManager::new`].
     pub cooldown: Duration,
 }
 

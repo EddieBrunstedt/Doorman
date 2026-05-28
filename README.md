@@ -1,19 +1,19 @@
 # bauth
 
-bauth is an Axum-first authentication library for Rust applications. It
-ships a passkey/WebAuthn-only auth surface with email-gated signup and
-recovery, server-side opaque sessions, CSRF origin checks, rate limiting,
-and audit events — behind storage traits you can back with SQLx or your
-own database layer.
+bauth is an opinionated passkey-only Axum auth library, with email magic
+links for recovery only.
 
-The user-facing crate is `bauth-axum`. `bauth-core` stays
-framework-agnostic so the auth logic is testable without a router, but
-Axum is the supported integration today.
+It gives an Axum app one steady-state login method — discoverable
+passkeys/WebAuthn — plus email-gated signup and recovery flows that force
+a passkey registration before any session is issued. There are no
+passwords, OAuth providers, TOTP codes, or general-purpose email login
+links.
 
-Status: pre-1.0. The surface is usable, but breaking changes can land
-between minor versions until 1.0.
+The design rationale lives in [`PASSKEY_PIVOT.md`](PASSKEY_PIVOT.md).
+This crate is pre-1.0; breaking changes can still land before the public
+surface is declared stable.
 
-## Quickstart: mount bauth on Axum
+## Quickstart
 
 ```toml
 [dependencies]
@@ -26,142 +26,124 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 ```rust
 use std::sync::Arc;
-
-use axum::{Router, routing::get};
+use axum::{routing::get, Router};
 use bauth_axum::prelude::*;
 use bauth_core::signup::TOKEN_PLACEHOLDER;
 use bauth_sqlx::SqliteStorage;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let storage = SqliteStorage::connect("sqlite:///var/lib/myapp/auth.db?mode=rwc").await?;
-    storage.migrate().await?;
-
-    let origin = "https://app.example.com".parse()?;
-    let base = origin.as_str().trim_end_matches('/');
-
-    let auth = bauth_axum::quickstart(storage.storage())
-        .email(Arc::new(TerminalEmailSender))
-        .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
-        .signup(SignupConfig {
-            url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"),
-            ..SignupConfig::default()
-        })
-        .recovery(RecoveryConfig {
-            url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"),
-            ..RecoveryConfig::default()
-        })
-        .external_origin(origin)
-        .cookie(CookieConfig::default())
-        .build()?;
-
-    let app = Router::new()
-        .merge(auth.router())
-        .route("/api/me", get(me))
-        .layer(auth.session_layer());
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-async fn me(auth: AuthSession) -> String {
-    auth.user.email.unwrap_or_else(|| "unknown".to_owned())
-}
+let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").await?;
+storage.migrate().await?;
+let origin = "https://app.example.com".parse()?;
+let base = origin.as_str().trim_end_matches('/');
+let auth = bauth_axum::quickstart(storage.storage())
+    .email(Arc::new(TerminalEmailSender))
+    .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
+    .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
+    .recovery(RecoveryConfig { url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
+    .external_origin(origin)
+    .cookie(CookieConfig::default())
+    .build()?;
+let app = Router::new().merge(auth.router()).route("/api/me", get(me)).layer(auth.session_layer());
 ```
 
-`auth.router()` mounts the `/auth/*` passkey, signup, recovery, and session routes.
-`auth.session_layer()` reads the session cookie or bearer token and makes
-`AuthUser`, `OptionalAuthUser`, and `AuthSession` work in your handlers.
+`auth.router()` mounts the passkey, signup, recovery, and session-management
+routes under `/auth`. `auth.session_layer()` resolves the session cookie or
+bearer token so your handlers can use `AuthUser`, `OptionalAuthUser`, and
+`AuthSession`.
 
-For local plain-HTTP development, set `CookieConfig { secure: false, .. }`;
-leave `secure = true` in production.
+`TerminalEmailSender` is for local development. In production, implement
+`EmailSender` with your transactional email provider and keep
+`CookieConfig::secure = true`.
+
+## User flows
+
+- **Sign up:** `POST /auth/signup/request` sends an email link. Consuming
+  that link starts passkey registration; `/auth/signup/finish` registers
+  the first passkey and issues the session.
+- **Sign in:** `POST /auth/passkey/authenticate/start` takes no email or
+  username. The browser shows the user's discoverable passkeys, and the
+  server identifies the user from the WebAuthn response.
+- **Recover:** `POST /auth/recovery/request` sends a recovery email for a
+  registered account. The link can only start a new passkey registration.
+  `/auth/recovery/finish` issues a session restricted by the default 24h
+  post-recovery cool-down.
+- **Manage access:** authenticated users can list/add/delete passkeys and
+  list/revoke sessions. Cool-down sessions cannot delete passkeys or revoke
+  other sessions.
+
+Encourage every user to register at least two passkeys: for example a
+platform passkey plus a password-manager or hardware-key backup. The
+`UserDto.passkey_count` field exists so hosts can render that nudge.
 
 ## Run the minimal app
-
-A complete runnable app lives in [`examples/minimal-app`](examples/minimal-app):
-SQLite via `bauth-sqlx`, passkeys, signup/recovery email links,
-`/api/me`, and a static HTML page with no frontend build step.
 
 ```sh
 cargo run -p bauth-minimal-app
 ```
 
-Open <http://localhost:3000>.
+Open <http://localhost:3000>. Signup and recovery emails are printed to
+the terminal, so copy the link from stdout and complete the flow in the
+browser. The example uses SQLite, Axum, the bundled router, and a static
+HTML page with no frontend build step.
 
 ## What ships
 
-- Passkeys / WebAuthn via [`webauthn-rs`](https://crates.io/crates/webauthn-rs).
-- Email-gated signup and recovery using single-use, hashed tokens.
-- Server-side opaque sessions with instant revocation and a signed-in
-  devices endpoint.
-- CSRF origin checks for cookie-backed state-changing requests.
-- Rate limiting and audit events for sensitive auth operations.
-- First-party SQLx storage adapter for SQLite and Postgres.
+- Passkey/WebAuthn registration and discoverable authentication via
+  [`webauthn-rs`](https://crates.io/crates/webauthn-rs).
+- Email-gated signup and recovery with single-use hashed tokens.
+- Server-side opaque sessions with instant revocation.
+- Post-recovery session cool-down for destructive auth actions.
+- Cookie and bearer-token session presentation.
+- CSRF origin checks for cookie-authenticated state-changing requests.
+- Audit and rate-limiter traits, with development defaults.
+- First-party SQLx storage for SQLite and Postgres.
+- Development email transports: terminal and `.eml` file output.
+
+## Production checklist
+
+Review the startup warnings emitted by `quickstart().build()` or
+`BauthAxum::builder().build()` and make explicit choices before silencing
+them.
+
+- Replace `TerminalEmailSender` / `FileEmailSender` with a real
+  `EmailSender`.
+- Wire a durable `AuditSink`; `NoopAuditSink` discards security events.
+- Wire a shared production `RateLimiter`; `InMemoryRateLimiter` is
+  per-process.
+- Set `external_origin` to the exact public origin and keep the default
+  CSRF layer enabled for browser cookie flows.
+- Keep secure, HttpOnly, SameSite session cookies outside local HTTP
+  development.
+- Run storage migrations and periodically purge expired sessions,
+  verification tokens, and passkey challenges.
+- Monitor recovery requests and failed WebAuthn ceremonies.
+- Prompt users with `passkey_count < 2` to add a backup passkey.
 
 ## Workspace layout
 
 ```text
-crates/
-  core/    # bauth-core: managers, storage traits, auth primitives
-  axum/    # bauth-axum: router, extractors, session layer, CSRF layer
-  sqlx/    # bauth-sqlx: SQLite/Postgres storage adapter
-examples/
-  minimal-app/  # runnable Axum + SQLite app
-  web-client/   # browser-side passkey helper reference
+crates/core/   framework-agnostic managers, storage traits, email/audit/rate-limit traits
+crates/axum/   Axum router, extractors, session layer, CSRF layer
+crates/sqlx/   SQLite/Postgres storage adapter
+examples/minimal-app/  runnable Axum + SQLite app
+examples/web-client/   browser-side WebAuthn helper reference
 ```
 
-## Production checklist
+## Custom storage or HTTP surface
 
-These mirror the startup warnings emitted by `quickstart().build()` and
-`BauthAxum::builder().build()`.
-
-- Keep `CookieConfig::secure = true` outside local HTTP development.
-- Set `external_origin("https://app.example.com".parse()?)`; this also
-  enables the default CSRF origin-check layer.
-- Do not disable CSRF unless authenticated browser cookies are not in
-  scope and every client uses bearer tokens.
-- Wire a real `AuditSink`; `NoopAuditSink` discards security events.
-- Wire a production `RateLimiter`. The built-in `InMemoryRateLimiter` is
-  per-process, so multi-replica deployments need a shared backend.
-- Wire a real `EmailSender` before relying on signup or recovery emails.
-- Run storage migrations at startup and periodically purge expired
-  sessions, verification tokens, and passkey challenges.
-
-Use `.silence_warnings()` only after you have reviewed the warning and
-made an explicit operational choice.
-
-## Configuration knobs
-
-- `SessionConfig::lifetime` — session lifetime; defaults to 30 days.
-- `PasskeyConfig` — WebAuthn relying-party id, origin, display name, and
-  challenge lifetime.
-- `SignupConfig` / `RecoveryConfig` — token lifetimes, URL templates,
-  rate limits, email renderers, and recovery cool-down.
-- `CookieConfig` — session cookie name, domain/path, `secure`,
-  `SameSite`, and max age.
-- `CsrfConfig` — override or disable the origin-check layer.
-
-`bauth-axum` has no method-specific feature flags; the passkey, signup,
-recovery, and session routes are always compiled.
-
-## Custom storage and direct manager use
-
-The happy path is `bauth-sqlx` plus `bauth_axum::quickstart(...)`. Hosts
-on another database stack implement the storage traits in `bauth-core`:
+The quickest path is `bauth-sqlx` plus `bauth_axum::quickstart(...)`.
+Hosts on another database stack implement the `bauth-core` storage traits:
 `UserStore`, `SessionStore`, `VerificationTokenStore`,
 `PasskeyCredentialStore`, and `PasskeyChallengeStore`.
 
-If you want full control of the HTTP surface, skip `bauth-axum` routes and
-call the core managers directly (`SessionManager`, `PasskeyManager`,
-`SignupManager`, `RecoveryManager`). They return framework-agnostic
-outcomes such as `IssuedSession` and `StoredPasskey`.
+If you want a custom HTTP API, call the core managers directly:
+`SessionManager`, `PasskeyManager`, `SignupManager`, and
+`RecoveryManager`.
 
 ## Security
 
-See [`SECURITY.md`](SECURITY.md) for the threat model, host hardening
-requirements, cookie and CSRF guidance, operational cleanup, and the
-vulnerability disclosure address.
+See [`SECURITY.md`](SECURITY.md) for the threat model, recovery design,
+defaults, and host hardening requirements.
 
 ## License
 

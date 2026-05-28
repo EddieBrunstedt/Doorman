@@ -2,49 +2,87 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>bauth passkey demo</title>
+    <title>bauth web-client reference</title>
   </head>
   <body>
-    <h1>bauth passkey demo</h1>
+    <h1>bauth web-client reference</h1>
+
     <section>
-      <h2>Register a new passkey</h2>
-      <p>You must already be signed in for this to work.</p>
-      <label>Device name <input id="device-name" type="text" placeholder="MacBook" /></label>
-      <button id="register">Register passkey</button>
+      <h2>Sign up</h2>
+      <input id="signup-email" type="email" value="alice@example.com" />
+      <button id="request-signup">Request signup email</button>
+      <input id="signup-token" placeholder="token from email" />
+      <button id="finish-signup">Finish signup</button>
     </section>
+
     <section>
-      <h2>Sign in with a passkey</h2>
-      <p>No email is required; the authenticator identifies the account.</p>
-      <button id="authenticate">Sign in</button>
+      <h2>Sign in</h2>
+      <button id="authenticate">Sign in with discoverable passkey</button>
     </section>
+
+    <section>
+      <h2>Recover</h2>
+      <input id="recovery-email" type="email" value="alice@example.com" />
+      <button id="request-recovery">Request recovery email</button>
+      <input id="recovery-token" placeholder="token from email" />
+      <button id="finish-recovery">Finish recovery</button>
+    </section>
+
+    <section>
+      <h2>Passkeys</h2>
+      <input id="passkey-name" placeholder="new passkey name" />
+      <button id="register">Register additional passkey</button>
+      <button id="list-passkeys">List passkeys</button>
+    </section>
+
+    <section>
+      <h2>Sessions</h2>
+      <button id="list-sessions">List sessions</button>
+      <button id="revoke-others">Sign out everywhere else</button>
+    </section>
+
     <pre id="log"></pre>
 
     <script type="module">
-      import { registerPasskey, authenticatePasskey } from "./passkey.ts";
+      import {
+        authenticatePasskey,
+        finishRecovery,
+        finishSignup,
+        listPasskeys,
+        listSessions,
+        registerPasskey,
+        requestRecovery,
+        requestSignup,
+        revokeOtherSessions,
+      } from "./passkey.ts";
 
+      const value = (id) => document.getElementById(id).value;
       const log = (msg) => {
-        const el = document.getElementById("log");
-        el.textContent += msg + "\n";
+        document.getElementById("log").textContent +=
+          (typeof msg === "string" ? msg : JSON.stringify(msg, null, 2)) + "\n";
+      };
+      const run = (label, fn) => async () => {
+        try { log(await fn()); } catch (e) { log(`${label} error: ${e.message}`); }
       };
 
-      document.getElementById("register").addEventListener("click", async () => {
-        try {
-          const name = document.getElementById("device-name").value || undefined;
-          await registerPasskey(name);
-          log("registered ok");
-        } catch (e) {
-          log("register error: " + e.message);
-        }
-      });
-
-      document.getElementById("authenticate").addEventListener("click", async () => {
-        try {
-          await authenticatePasskey();
-          log("signed in ok");
-        } catch (e) {
-          log("auth error: " + e.message);
-        }
-      });
+      document.getElementById("request-signup").addEventListener("click", run("signup request", async () => {
+        await requestSignup(value("signup-email"));
+        return "signup email requested";
+      }));
+      document.getElementById("finish-signup").addEventListener("click", run("signup finish", () => finishSignup(value("signup-token"), "first passkey")));
+      document.getElementById("authenticate").addEventListener("click", run("auth", authenticatePasskey));
+      document.getElementById("request-recovery").addEventListener("click", run("recovery request", async () => {
+        await requestRecovery(value("recovery-email"));
+        return "recovery request accepted";
+      }));
+      document.getElementById("finish-recovery").addEventListener("click", run("recovery finish", () => finishRecovery(value("recovery-token"), "recovery passkey")));
+      document.getElementById("register").addEventListener("click", run("register", () => registerPasskey(value("passkey-name") || undefined)));
+      document.getElementById("list-passkeys").addEventListener("click", run("list passkeys", listPasskeys));
+      document.getElementById("list-sessions").addEventListener("click", run("list sessions", listSessions));
+      document.getElementById("revoke-others").addEventListener("click", run("revoke others", async () => {
+        await revokeOtherSessions();
+        return "revoked other sessions";
+      }));
     </script>
   </body>
 </html>

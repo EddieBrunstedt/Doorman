@@ -101,7 +101,8 @@ impl BauthAxumBuilder {
     /// Required — [`build`](Self::build) returns
     /// [`BuilderError::MissingEmailSender`] when not set. The same
     /// transport must be the one passed into the
-    /// [`SignupManager`](bauth_core::signup::SignupManager) the host
+    /// [`SignupManager`](bauth_core::signup::SignupManager) and
+    /// [`RecoveryManager`](bauth_core::recovery::RecoveryManager) the host
     /// constructs; the builder keeps a reference so it can detect dev
     /// transports for the startup warnings.
     ///

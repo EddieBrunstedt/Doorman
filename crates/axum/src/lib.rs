@@ -9,15 +9,19 @@
 //! use std::sync::Arc;
 //!
 //! use bauth_axum::prelude::*;
+//! use bauth_core::signup::TOKEN_PLACEHOLDER;
 //! use bauth_sqlx::SqliteStorage;
 //!
 //! let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").await?;
 //! storage.migrate().await?;
 //!
 //! let origin = "https://app.example.com".parse()?;
+//! let base = origin.as_str().trim_end_matches('/');
 //! let auth = bauth_axum::quickstart(storage.storage())
 //!     .email(Arc::new(TerminalEmailSender))
 //!     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
+//!     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
+//!     .recovery(RecoveryConfig { url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
 //!     .external_origin(origin)
 //!     .cookie(CookieConfig::default())
 //!     .build()?;

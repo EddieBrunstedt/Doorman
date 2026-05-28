@@ -1,29 +1,48 @@
-# bauth web-client (passkey example)
+# bauth web-client reference
 
-Worked TypeScript example for the passkey ceremonies exposed by
-`bauth-core`. There is no `npm` package — this directory is intended to be
-read alongside the README and copied into a host frontend.
+Small TypeScript reference for browser code that talks to the `bauth-axum`
+HTTP routes. This is not an npm package; copy the pieces you want into your
+frontend.
 
-The browser side of WebAuthn requires a small amount of base64url
-encoding/decoding because `navigator.credentials.create` / `.get` expect
-`ArrayBuffer` for `challenge`, `user.id`, and any credential IDs,
-while `bauth-core` (via `webauthn-rs`) returns and accepts base64url
-strings. The helpers in `passkey.ts` handle that translation.
+`passkey.ts` does the only awkward part of WebAuthn integration: converting
+between the base64url strings returned by `webauthn-rs` JSON and the
+`ArrayBuffer` fields required by `navigator.credentials.create()` and
+`navigator.credentials.get()`.
 
-## Endpoints assumed
+## Helpers
+
+- `requestSignup(email)` → `POST /auth/signup/request`
+- `finishSignup(token, passkeyName?)` → consume signup token, register the
+  first passkey, receive `AuthResponse`
+- `authenticatePasskey()` → discoverable passkey sign-in, receive
+  `AuthResponse`
+- `requestRecovery(email)` → `POST /auth/recovery/request`
+- `finishRecovery(token, passkeyName?)` → consume recovery token, register a
+  new passkey, receive a recovery cool-down session
+- `registerPasskey(name?)` → add a passkey for the current session
+- `listPasskeys()` / `deletePasskey(id)`
+- `listSessions()` / `revokeSession(id)` / `revokeOtherSessions()`
+
+## Endpoint shape
 
 | Method | Path | Body | Response |
-| ------ | ---- | ---- | -------- |
-| POST | `/auth/passkey/register/start` | empty (user is identified by session) | `{ challenge_id, options }` |
-| POST | `/auth/passkey/register/finish` | `{ challenge_id, response, name? }` | passkey dto |
+| --- | --- | --- | --- |
+| POST | `/auth/signup/request` | `{ email }` | `204` |
+| POST | `/auth/signup/consume` | `{ token }` | `{ challenge_id, options }` |
+| POST | `/auth/signup/finish` | `{ challenge_id, response, name? }` | `AuthResponse` |
 | POST | `/auth/passkey/authenticate/start` | empty | `{ challenge_id, options }` |
-| POST | `/auth/passkey/authenticate/finish` | `{ challenge_id, response }` | auth response (session cookie set) |
+| POST | `/auth/passkey/authenticate/finish` | `{ challenge_id, response }` | `AuthResponse` |
+| POST | `/auth/recovery/request` | `{ email }` | `204` |
+| POST | `/auth/recovery/consume` | `{ token }` | `{ challenge_id, options }` |
+| POST | `/auth/recovery/finish` | `{ challenge_id, response, name? }` | `AuthResponse` |
+| POST | `/auth/passkey/register/start` | empty, authenticated | `{ challenge_id, options }` |
+| POST | `/auth/passkey/register/finish` | `{ challenge_id, response, name? }` | `PasskeyDto` |
+| GET | `/auth/passkey` | authenticated | `PasskeyDto[]` |
+| DELETE | `/auth/passkey/{credential_id}` | authenticated | `204` or `409 recovery_cooldown_active` |
+| GET | `/auth/sessions` | authenticated | `SessionDto[]` |
+| DELETE | `/auth/sessions/{id}` | authenticated | `204` or `409 recovery_cooldown_active` for other sessions |
+| DELETE | `/auth/sessions` | authenticated | `204` or `409 recovery_cooldown_active` |
 
-`options` is the JSON `webauthn-rs` produces for
-`CreationChallengeResponse` / `RequestChallengeResponse` and `response`
-is the result returned by the authenticator, serialised back to JSON.
-
-## Files
-
-- `passkey.ts` — `registerPasskey()` and `authenticatePasskey()`
-- `index.html` — minimal page wiring the two functions to buttons
+`index.html` wires the helpers to a minimal page. The bundled
+`examples/minimal-app` contains a fuller no-build static client that shows
+signup, sign-in, recovery, passkeys, and sessions against a live Axum app.

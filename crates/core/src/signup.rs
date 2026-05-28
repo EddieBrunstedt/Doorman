@@ -20,9 +20,9 @@
 //! No session is issued from the email click alone. A passkey is always
 //! interposed, so the steady-state login path stays phishing-resistant.
 //!
-//! Recovery uses a sibling primitive in a later phase; the two flows
-//! deliberately use distinct token purposes so a leaked link of one kind
-//! cannot be redeemed as the other.
+//! Recovery uses a sibling primitive; the two flows deliberately use
+//! distinct token purposes so a leaked link of one kind cannot be redeemed
+//! as the other.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -205,8 +205,7 @@ impl SignupManager {
         if let Some(existing) = self.users.find_user_by_email(&email_normalized).await? {
             // Existing account: silent success preserves enumeration
             // resistance. The legitimate user falls back to passkey
-            // sign-in, or — once recovery ships — uses the recovery flow
-            // to enrol a new passkey.
+            // sign-in or uses the recovery flow to enrol a new passkey.
             tracing::Span::current().record("user_id", tracing::field::display(existing.id));
             self.audit
                 .emit(AuditEvent {

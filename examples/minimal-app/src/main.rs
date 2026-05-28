@@ -1,23 +1,17 @@
 //! Minimal Axum application using bauth with SQLite storage.
 
-use std::env;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{env, net::SocketAddr, sync::Arc};
 
-use axum::extract::State;
-use axum::response::Html;
-use axum::routing::get;
-use axum::{Json, Router};
-use bauth_axum::dto::{MeResponse, SessionDto, UserDto};
+use axum::{Json, Router, extract::State, response::Html, routing::get};
+use bauth_axum::dto::{SessionDto, UserDto};
 use bauth_axum::prelude::*;
-use bauth_core::signup::TOKEN_PLACEHOLDER;
-use bauth_core::storage::PasskeyCredentialStore;
+use bauth_core::{signup::TOKEN_PLACEHOLDER, storage::PasskeyCredentialStore};
 use bauth_sqlx::SqliteStorage;
 use url::Url;
 
 #[derive(Clone)]
 struct AppState {
-    passkey_credentials: Arc<dyn PasskeyCredentialStore>,
+    passkeys: Arc<dyn PasskeyCredentialStore>,
 }
 
 #[tokio::main]
@@ -36,7 +30,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let storage = SqliteStorage::connect(&database_url).await?;
     storage.migrate().await?;
     let app_state = AppState {
-        passkey_credentials: storage.passkey_credential_store(),
+        passkeys: storage.passkey_credential_store(),
     };
 
     let rp_id = env::var("PASSKEY_RP_ID")
@@ -46,28 +40,28 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         external_origin.clone(),
         env::var("PASSKEY_RP_NAME").unwrap_or_else(|_| "bauth minimal app".to_owned()),
     );
-
     let cookie_config = CookieConfig {
         secure: external_origin.scheme() == "https",
         ..CookieConfig::default()
     };
-
-    let signup_url_template = format!(
-        "{}?signup_token={TOKEN_PLACEHOLDER}",
-        external_origin.as_str().trim_end_matches('/')
-    );
+    let base = external_origin.as_str().trim_end_matches('/');
 
     let auth = bauth_axum::quickstart(storage.storage())
         .email(Arc::new(TerminalEmailSender))
         .passkey(passkey_config)
         .signup(SignupConfig {
-            url_template: signup_url_template,
+            url_template: format!("{base}/?signup_token={TOKEN_PLACEHOLDER}"),
             ..SignupConfig::default()
         })
-        .external_origin(external_origin.clone())
+        .recovery(RecoveryConfig {
+            url_template: format!("{base}/?recovery_token={TOKEN_PLACEHOLDER}"),
+            ..RecoveryConfig::default()
+        })
+        .external_origin(external_origin)
         .cookie(cookie_config)
         .silence_warnings()
         .build()?;
+
     let app = Router::new()
         .route("/", get(index))
         .route("/api/me", get(me))
@@ -88,15 +82,17 @@ async fn index() -> Html<&'static str> {
 async fn me(
     State(state): State<AppState>,
     auth: AuthSession,
-) -> std::result::Result<Json<MeResponse>, axum::http::StatusCode> {
+) -> std::result::Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    let cooldown = auth.is_in_recovery_cooldown();
     let passkey_count = state
-        .passkey_credentials
+        .passkeys
         .list_passkeys_for_user(auth.user.id)
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?
         .len();
-    Ok(Json(MeResponse {
-        user: UserDto::from_user(auth.user, passkey_count),
-        session: SessionDto::from_session(auth.session, true),
-    }))
+    Ok(Json(serde_json::json!({
+        "user": UserDto::from_user(auth.user, passkey_count),
+        "session": SessionDto::from_session(auth.session, true),
+        "recovery_cooldown_active": cooldown,
+    })))
 }

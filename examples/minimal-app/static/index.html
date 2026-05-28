@@ -5,47 +5,77 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>bauth minimal app</title>
     <style>
-      body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+      body { font-family: system-ui, sans-serif; max-width: 920px; margin: 2rem auto; padding: 0 1rem; }
       form, section { border: 1px solid #ddd; border-radius: 8px; margin: 1rem 0; padding: 1rem; }
       label { display: block; margin: .5rem 0; }
-      input { min-width: 20rem; padding: .4rem; }
-      button { margin-top: .5rem; padding: .45rem .7rem; }
-      pre { background: #111; color: #eee; padding: 1rem; overflow: auto; }
+      input { min-width: 22rem; padding: .4rem; }
+      button { margin: .25rem .25rem .25rem 0; padding: .45rem .7rem; }
+      pre, code { background: #111; color: #eee; }
+      pre { padding: 1rem; overflow: auto; }
+      .cooldown { border-color: #d97706; background: #fffbeb; }
+      .muted { color: #666; }
     </style>
   </head>
   <body>
     <h1>bauth minimal app</h1>
     <p>
-      Passkey sign-in plus an email-first signup flow served by one Axum
-      process. Signup links are printed to the server terminal for local
-      development; click the link in the terminal output to land back here
-      and register a passkey for the new account.
+      Passkey-only auth with email-gated signup and recovery. Email bodies are
+      printed to the server terminal; copy a link from stdout to complete a
+      signup or recovery flow.
     </p>
+
+    <section id="status"><p class="muted">Checking current session…</p></section>
 
     <form id="signup">
       <h2>Sign up</h2>
       <label>Email <input name="email" type="email" value="alice@example.com" required /></label>
       <button>Send signup link</button>
-    </form>
-
-    <form id="passkey-login">
-      <h2>Sign in</h2>
-      <p>Passkey login is usernameless; the authenticator identifies the account.</p>
-      <button name="action" value="login-passkey">Sign in with passkey</button>
+      <p class="muted">Then open the printed link and register your first passkey.</p>
     </form>
 
     <section>
-      <h2>Current session</h2>
-      <button id="me">GET /api/me</button>
-      <button id="logout">Logout (revoke current session)</button>
+      <h2>Sign in</h2>
+      <p>Discoverable passkey sign-in takes no email; the authenticator identifies the account.</p>
+      <button id="signin">Sign in with passkey</button>
+    </section>
+
+    <form id="recovery">
+      <h2>Recover</h2>
+      <label>Email <input name="email" type="email" value="alice@example.com" required /></label>
+      <button>Send recovery link</button>
+      <p class="muted">The recovery link only starts new-passkey registration. The resulting session is restricted for 24 hours.</p>
+    </form>
+
+    <section>
+      <h2>Your passkeys</h2>
+      <label>New passkey name <input id="backup-name" type="text" placeholder="backup key" /></label>
+      <button id="add-passkey">Register another passkey</button>
+      <ul id="passkeys"><li class="muted">Sign in to list passkeys.</li></ul>
+    </section>
+
+    <section>
+      <h2>Your sessions</h2>
+      <button id="refresh">Refresh</button>
+      <button id="revoke-others">Sign out everywhere else</button>
+      <ul id="sessions"><li class="muted">Sign in to list sessions.</li></ul>
+    </section>
+
+    <section>
+      <h2>Log</h2>
       <pre id="out">ready</pre>
     </section>
 
     <script>
+      const statusEl = document.querySelector("#status");
+      const passkeysEl = document.querySelector("#passkeys");
+      const sessionsEl = document.querySelector("#sessions");
       const out = document.querySelector("#out");
       const log = (value) => {
         out.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
       };
+      const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
+      }[c]));
 
       async function api(path, method = "GET", body) {
         const res = await fetch(path, {
@@ -55,9 +85,12 @@
           body: body === undefined ? undefined : JSON.stringify(body),
         });
         const text = await res.text();
-        const data = text ? JSON.parse(text) : null;
-        if (!res.ok) throw new Error(`${method} ${path} -> ${res.status}: ${text}`);
-        return data;
+        if (!res.ok) {
+          let detail = text;
+          try { detail = JSON.parse(text).error?.code ?? text; } catch (_) {}
+          throw new Error(`${method} ${path} -> ${res.status}: ${detail}`);
+        }
+        return text ? JSON.parse(text) : null;
       }
 
       function base64UrlToBuffer(input) {
@@ -67,131 +100,115 @@
         for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
         return out.buffer;
       }
-
       function bufferToBase64Url(buf) {
         const bytes = new Uint8Array(buf);
         let bin = "";
         for (const b of bytes) bin += String.fromCharCode(b);
         return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
       }
-
       function decodeCreationOptions(options) {
         const p = options.publicKey;
-        return {
-          publicKey: {
-            ...p,
-            challenge: base64UrlToBuffer(p.challenge),
-            user: { ...p.user, id: base64UrlToBuffer(p.user.id) },
-            excludeCredentials: p.excludeCredentials?.map((c) => ({
-              ...c,
-              id: base64UrlToBuffer(c.id),
-            })),
-          },
-        };
+        return { publicKey: { ...p, challenge: base64UrlToBuffer(p.challenge), user: { ...p.user, id: base64UrlToBuffer(p.user.id) }, excludeCredentials: p.excludeCredentials?.map((c) => ({ ...c, id: base64UrlToBuffer(c.id) })) } };
       }
-
       function decodeRequestOptions(options) {
         const p = options.publicKey;
-        return {
-          publicKey: {
-            ...p,
-            challenge: base64UrlToBuffer(p.challenge),
-            allowCredentials: p.allowCredentials?.map((c) => ({
-              ...c,
-              id: base64UrlToBuffer(c.id),
-            })),
-          },
-        };
+        return { publicKey: { ...p, challenge: base64UrlToBuffer(p.challenge), allowCredentials: p.allowCredentials?.map((c) => ({ ...c, id: base64UrlToBuffer(c.id) })) } };
       }
-
       function encodeAttestation(cred) {
-        const response = cred.response;
-        return {
-          id: cred.id,
-          rawId: bufferToBase64Url(cred.rawId),
-          type: cred.type,
-          response: {
-            attestationObject: bufferToBase64Url(response.attestationObject),
-            clientDataJSON: bufferToBase64Url(response.clientDataJSON),
-          },
-          clientExtensionResults: cred.getClientExtensionResults(),
-        };
+        const r = cred.response;
+        return { id: cred.id, rawId: bufferToBase64Url(cred.rawId), type: cred.type, response: { attestationObject: bufferToBase64Url(r.attestationObject), clientDataJSON: bufferToBase64Url(r.clientDataJSON) }, clientExtensionResults: cred.getClientExtensionResults() };
       }
-
       function encodeAssertion(cred) {
-        const response = cred.response;
-        return {
-          id: cred.id,
-          rawId: bufferToBase64Url(cred.rawId),
-          type: cred.type,
-          response: {
-            authenticatorData: bufferToBase64Url(response.authenticatorData),
-            clientDataJSON: bufferToBase64Url(response.clientDataJSON),
-            signature: bufferToBase64Url(response.signature),
-            userHandle: response.userHandle ? bufferToBase64Url(response.userHandle) : null,
-          },
-          clientExtensionResults: cred.getClientExtensionResults(),
-        };
+        const r = cred.response;
+        return { id: cred.id, rawId: bufferToBase64Url(cred.rawId), type: cred.type, response: { authenticatorData: bufferToBase64Url(r.authenticatorData), clientDataJSON: bufferToBase64Url(r.clientDataJSON), signature: bufferToBase64Url(r.signature), userHandle: r.userHandle ? bufferToBase64Url(r.userHandle) : null }, clientExtensionResults: cred.getClientExtensionResults() };
       }
 
-      async function requestSignup(email) {
-        await api("/auth/signup/request", "POST", { email });
-        return "signup link sent; copy it from the server terminal";
-      }
-
-      async function consumeAndFinishSignup(token) {
-        const start = await api("/auth/signup/consume", "POST", { token });
+      async function finishEmailFlow(kind, token) {
+        const start = await api(`/auth/${kind}/consume`, "POST", { token });
         const cred = await navigator.credentials.create(decodeCreationOptions(start.options));
         if (!cred) throw new Error("passkey registration cancelled");
-        return api("/auth/signup/finish", "POST", {
+        const result = await api(`/auth/${kind}/finish`, "POST", {
           challenge_id: start.challenge_id,
           response: encodeAttestation(cred),
-          name: "local device",
+          name: `${kind} passkey`,
         });
+        log(result);
+        await refresh();
       }
-
-      async function loginPasskey() {
+      async function signIn() {
         const start = await api("/auth/passkey/authenticate/start", "POST");
         const cred = await navigator.credentials.get(decodeRequestOptions(start.options));
-        if (!cred) throw new Error("passkey login cancelled");
-        return api("/auth/passkey/authenticate/finish", "POST", {
-          challenge_id: start.challenge_id,
-          response: encodeAssertion(cred),
-        });
+        if (!cred) throw new Error("passkey sign-in cancelled");
+        const result = await api("/auth/passkey/authenticate/finish", "POST", { challenge_id: start.challenge_id, response: encodeAssertion(cred) });
+        log(result);
+        await refresh();
+      }
+      async function addPasskey() {
+        const start = await api("/auth/passkey/register/start", "POST");
+        const cred = await navigator.credentials.create(decodeCreationOptions(start.options));
+        if (!cred) throw new Error("passkey registration cancelled");
+        const name = document.querySelector("#backup-name").value || "backup passkey";
+        const result = await api("/auth/passkey/register/finish", "POST", { challenge_id: start.challenge_id, response: encodeAttestation(cred), name });
+        log(result);
+        await refresh();
+      }
+
+      async function refresh() {
+        try {
+          const me = await api("/api/me");
+          statusEl.className = me.recovery_cooldown_active ? "cooldown" : "";
+          statusEl.innerHTML = `<h2>Signed in</h2><p>${escapeHtml(me.user.email)} · ${me.user.passkey_count} passkey(s)</p>` +
+            (me.recovery_cooldown_active ? `<p><strong>Recovery cool-down active.</strong> Deleting passkeys and revoking other sessions will return <code>409 recovery_cooldown_active</code>.</p>` : `<p>No recovery cool-down on this session.</p>`);
+
+          const passkeys = await api("/auth/passkey");
+          passkeysEl.innerHTML = passkeys.length ? passkeys.map((p) => `<li><strong>${escapeHtml(p.name || "unnamed")}</strong> <code>${p.credential_id}</code> last used ${escapeHtml(p.last_used_at || "never")} <button data-delete-passkey="${p.credential_id}">Delete</button></li>`).join("") : `<li>No passkeys registered.</li>`;
+
+          const sessions = await api("/auth/sessions");
+          sessionsEl.innerHTML = sessions.length ? sessions.map((s) => `<li><code>${s.id}</code>${s.is_current ? " (current)" : ""} expires ${escapeHtml(s.expires_at)} <button data-revoke-session="${s.id}">${s.is_current ? "Sign out" : "Revoke"}</button></li>`).join("") : `<li>No active sessions.</li>`;
+        } catch (err) {
+          statusEl.className = "";
+          statusEl.innerHTML = `<h2>Signed out</h2><p class="muted">${escapeHtml(err.message)}</p>`;
+          passkeysEl.innerHTML = `<li class="muted">Sign in to list passkeys.</li>`;
+          sessionsEl.innerHTML = `<li class="muted">Sign in to list sessions.</li>`;
+        }
       }
 
       document.querySelector("#signup").addEventListener("submit", async (event) => {
         event.preventDefault();
-        const form = new FormData(event.submitter.form);
-        try { log(await requestSignup(form.get("email"))); } catch (err) { log(String(err)); }
+        const email = new FormData(event.currentTarget).get("email");
+        try { await api("/auth/signup/request", "POST", { email }); log("Signup email queued. Open the link printed in the server terminal."); } catch (err) { log(String(err)); }
+      });
+      document.querySelector("#recovery").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const email = new FormData(event.currentTarget).get("email");
+        try { await api("/auth/recovery/request", "POST", { email }); log("Recovery request accepted. If the email is registered, links were printed in the server terminal."); } catch (err) { log(String(err)); }
+      });
+      document.querySelector("#signin").addEventListener("click", () => signIn().catch((err) => log(String(err))));
+      document.querySelector("#add-passkey").addEventListener("click", () => addPasskey().catch((err) => log(String(err))));
+      document.querySelector("#refresh").addEventListener("click", () => refresh());
+      document.querySelector("#revoke-others").addEventListener("click", async () => {
+        try { await api("/auth/sessions", "DELETE"); log("Revoked other sessions."); await refresh(); } catch (err) { log(String(err)); }
+      });
+      passkeysEl.addEventListener("click", async (event) => {
+        const id = event.target?.dataset?.deletePasskey;
+        if (!id) return;
+        try { await api(`/auth/passkey/${id}`, "DELETE"); log("Deleted passkey."); await refresh(); } catch (err) { log(String(err)); }
+      });
+      sessionsEl.addEventListener("click", async (event) => {
+        const id = event.target?.dataset?.revokeSession;
+        if (!id) return;
+        try { await api(`/auth/sessions/${id}`, "DELETE"); log("Revoked session."); await refresh(); } catch (err) { log(String(err)); }
       });
 
-      const signupToken = new URLSearchParams(window.location.search).get("signup_token");
-      if (signupToken) {
-        consumeAndFinishSignup(signupToken)
-          .then(log)
+      const params = new URLSearchParams(window.location.search);
+      const signupToken = params.get("signup_token");
+      const recoveryToken = params.get("recovery_token");
+      if (signupToken || recoveryToken) {
+        finishEmailFlow(signupToken ? "signup" : "recovery", signupToken || recoveryToken)
           .then(() => history.replaceState(null, "", "/"))
           .catch((err) => log(String(err)));
       }
-
-      document.querySelector("#passkey-login").addEventListener("submit", async (event) => {
-        event.preventDefault();
-        try {
-          log(await loginPasskey());
-        } catch (err) { log(String(err)); }
-      });
-
-      document.querySelector("#me").addEventListener("click", async () => {
-        try { log(await api("/api/me")); } catch (err) { log(String(err)); }
-      });
-
-      document.querySelector("#logout").addEventListener("click", async () => {
-        try {
-          const me = await api("/api/me");
-          await api(`/auth/sessions/${me.session.id}`, "DELETE");
-          log("logged out");
-        } catch (err) { log(String(err)); }
-      });
+      refresh();
     </script>
   </body>
 </html>

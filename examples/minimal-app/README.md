@@ -1,12 +1,16 @@
 # bauth minimal app
 
-Runnable Axum app showing the `bauth_axum::quickstart` path with:
+Runnable Axum + SQLite app for the final passkey-only bauth surface.
 
-- SQLite storage via `bauth-sqlx`
-- passkey-based sign-in
-- email-link signup that finishes with a passkey registration; email bodies are printed to the server terminal for local development
-- `/api/me`
-- one static HTML page, no frontend build step
+It demonstrates:
+
+- email-first signup that finishes by registering the user's first passkey;
+- discoverable passkey sign-in with no email prompt;
+- recovery by email link followed by forced new-passkey registration;
+- the post-recovery cool-down UX (`409 recovery_cooldown_active` on blocked actions);
+- passkey listing, adding, and deletion;
+- session listing, current-session logout, and "sign out everywhere else";
+- a `/api/me` host route that includes `passkey_count` and recovery cool-down state.
 
 ## Run
 
@@ -14,17 +18,20 @@ Runnable Axum app showing the `bauth_axum::quickstart` path with:
 cargo run -p bauth-minimal-app
 ```
 
-Open <http://localhost:3000>.
+Open <http://localhost:3000>. The app uses `TerminalEmailSender`, so signup
+and recovery emails are printed to the process stdout. Copy the printed URL
+into the browser to consume the token and register a passkey.
 
-Environment variables:
+## Environment
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | `sqlite://bauth-minimal-app.db?mode=rwc` | SQLite database URL. |
-| `EXTERNAL_ORIGIN` | `http://localhost:3000` | Public origin used for CSRF and passkeys. |
+| `EXTERNAL_ORIGIN` | `http://localhost:3000` | Public origin used for passkeys, CSRF, and email links. |
 | `BIND_ADDR` | `127.0.0.1:3000` | Socket address to bind. |
 | `PASSKEY_RP_ID` | host from `EXTERNAL_ORIGIN` | WebAuthn relying-party id. |
 | `PASSKEY_RP_NAME` | `bauth minimal app` | WebAuthn display name. |
-This example uses a terminal-printing email sender and the development
-rate-limiter default. It is a quickstart reference, not a production
-deployment template.
+
+This is a development reference, not a production template. It silences
+startup warnings because it intentionally uses terminal email and the
+in-memory rate-limiter default.

@@ -72,10 +72,15 @@ use crate::warnings::Warnings;
 ///
 /// ```ignore
 /// use bauth_axum::prelude::*;
+/// use bauth_core::signup::TOKEN_PLACEHOLDER;
 ///
+/// let base = origin.as_str().trim_end_matches('/');
 /// let auth = bauth_axum::quickstart(storage)
 ///     .email(Arc::new(TerminalEmailSender))
-///     .passkey(PasskeyConfig::new("example.com", origin, "Example"))
+///     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
+///     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
+///     .recovery(RecoveryConfig { url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
+///     .external_origin(origin)
 ///     .cookie(CookieConfig::default())
 ///     .build()?;
 /// ```

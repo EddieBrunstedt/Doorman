@@ -2,8 +2,8 @@
 //!
 //! Two adapters ship behind cargo features:
 //!
-//! - `sqlite` — [`SqliteStorage`] for SQLite databases.
-//! - `postgres` — [`PostgresStorage`] for Postgres databases.
+//! - `sqlite` — `SqliteStorage` for SQLite databases.
+//! - `postgres` — `PostgresStorage` for Postgres databases.
 //!
 //! Both expose `connect`, `from_pool`, `pool`, `migrate`, and `storage`.
 //! `storage()` returns a [`bauth_core::storage::Storage`] populated with

@@ -229,9 +229,9 @@ pub trait BauthEmails: Send + Sync {
     /// Sent to the registered user alongside the recovery link, and again
     /// when a recovery completes successfully. The goal is to make every
     /// recovery attempt visible to the legitimate inbox owner so they
-    /// notice an attacker enrolling a new passkey before that passkey is
-    /// out of cool-down. Hosts override the copy to point at their
-    /// support / sign-out workflow.
+    /// notice an attacker enrolling a new passkey while the recovery
+    /// session is still in cool-down. Hosts override the copy to point at
+    /// their support / sign-out workflow.
     fn recovery_notification_email(&self, user: &User) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),

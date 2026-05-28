@@ -84,8 +84,8 @@ impl From<Session> for SessionDto {
     }
 }
 
-/// Returned by every endpoint that issues a session: passkey finish and
-/// signup finish.
+/// Returned by every endpoint that issues a session: passkey sign-in,
+/// signup finish, and recovery finish.
 ///
 /// `token` is the raw bearer token. It is *also* set as an HttpOnly
 /// session cookie on the same response, so browser clients can ignore

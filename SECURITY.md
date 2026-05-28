@@ -1,130 +1,163 @@
 # Security policy
 
-This document covers the threat model `bauth` targets, the guarantees the
-library makes, and the operational steps a host application must take.
+This document describes bauth's security model after the passkey-only
+pivot, what the library enforces, and what the host application must still
+operate correctly.
+
+## Supported surface
+
+bauth has one steady-state login method: passkeys/WebAuthn using the
+discoverable-credential ceremony. Email is used only to start signup or
+recovery, and an email link never creates a session by itself.
+
+Out of scope by design: password authentication, OAuth, TOTP, recovery
+codes, admin impersonation, roles/permissions, and general-purpose email
+login.
 
 ## Threat model
 
-`bauth` is designed to defend against:
+bauth is designed to defend against:
 
-- Account enumeration via timing or distinct error responses.
-- Token theft from a database read: session and verification tokens are
-  stored only as hashes.
-- CSRF on cookie-authenticated state-changing endpoints.
-- Session fixation.
-- Replay of in-flight passkey or magic-link state.
+- phishing of steady-state logins by relying on origin-bound WebAuthn
+  signatures;
+- user enumeration in signup, recovery, and passkey authentication;
+- replay of session tokens, verification tokens, and passkey ceremony
+  state from normal HTTP flows;
+- database reads yielding usable bearer tokens, because tokens are stored
+  as hashes;
+- CSRF against cookie-authenticated state-changing endpoints.
 
-It is not designed to defend against:
+bauth cannot defend against:
 
-- A host process that is itself compromised.
-- A database that is both readable and writable by the attacker.
-- Social engineering or compromise of a user's email inbox.
+- a compromised host process;
+- a database attacker with both read and write access;
+- a compromised user email inbox exercising the recovery flow;
+- social engineering that convinces a user to approve recovery;
+- users with no passkey-capable authenticator or no recoverable email
+  address.
 
-## What the library guarantees
+## Passkeys
 
-### Sessions
+- Authentication starts with no email or username. Every caller receives
+  the same discoverable challenge shape, and the server learns the user at
+  finish time from the WebAuthn response.
+- Registration forces resident/discoverable credentials so the
+  username-less ceremony works for every passkey bauth creates.
+- Ceremony state is persisted server-side and atomically removed on
+  finish. A challenge cannot be replayed after a successful or failed
+  consume path.
+- WebAuthn verification is performed by `webauthn-rs`; signatures are
+  bound to the configured relying-party ID and origin.
+- Passkey credential IDs are checked against the authenticated user before
+  deletion, so one account cannot remove another account's credential by
+  guessing an ID.
+
+## Signup
+
+`/auth/signup/request` returns the same response whether the address is new
+or already registered. For a new address, bauth stores a single-use token
+hash and sends a signup email. Consuming the token marks the email verified
+and starts passkey registration. The session is issued only after
+`/auth/signup/finish` successfully registers that passkey.
+
+A leaked signup link cannot be redeemed as a recovery link because token
+purposes are distinct.
+
+## Recovery
+
+Recovery exists for users who lost every passkey. It deliberately requires
+the visitor to enrol a new visible passkey before any session is issued.
+
+- `/auth/recovery/request` is enumeration-resistant. Registered addresses
+  receive a recovery link and a separate notification email. Unknown
+  addresses receive no email, because sending one would create an
+  enumeration side channel.
+- Recovery request rate limits default to 5/hour and 10/day per email,
+  20/hour per IP, and no global ceiling unless the host configures one.
+- Recovery tokens are single-use, short-lived, hashed at rest, and scoped
+  only to starting a passkey registration ceremony.
+- Expired-token clicks are audited but do not send another notification.
+- `/auth/recovery/finish` registers the new passkey, sends a completion
+  notification, and issues a session with a default 24h cool-down.
+
+During the cool-down, bauth blocks actions that could lock out the
+legitimate user: deleting passkeys, revoking other sessions, and
+"sign out everywhere else". The session may still add another passkey and
+may revoke itself. A later normal passkey login creates an unrestricted
+session even if an older recovery session is still cooling down.
+
+## Sessions
 
 - Session tokens are 256 bits of OS-CSPRNG output, URL-safe base64
   encoded.
-- Only the SHA-256 hash of the token is persisted.
-- `TokenHash` equality is constant-time in process.
-- Session expiry is enforced server-side.
-- `revoke()` is immediate because sessions are server-side opaque rows,
+- Only SHA-256 token hashes are persisted.
+- In-process token-hash equality is constant-time.
+- Expiry is enforced server-side.
+- Revocation is immediate because sessions are opaque server-side rows,
   not self-contained bearer claims.
+- The Axum layer accepts either the HttpOnly cookie or an
+  `Authorization: Bearer` token.
 
-### Magic links
+## CSRF and cookies
 
-- Magic-link tokens are 256 bits of CSPRNG output; only the hash is
-  stored.
-- Tokens are single-use: `consume_token` atomically deletes the row
-  before returning it.
-- Tokens are namespaced by `VerificationPurpose`.
-- Issuing a fresh magic link revokes earlier outstanding magic-link
-  tokens for that user.
-- `request_magic_link` returns success even when signup is disabled and
-  the email is unknown, so the endpoint does not reveal which addresses
-  are registered.
-- A magic link is a bearer credential delivered to the user's inbox. If
-  the inbox is compromised, the account can be taken over.
+For browser cookie flows, keep the default CSRF layer enabled. When
+`external_origin` is configured, mutating requests that carry the session
+cookie must present a matching `Origin` header or, if `Origin` is absent, a
+matching `Referer` origin.
 
-### Passkeys / WebAuthn
+Set session cookies with `HttpOnly`, `Secure` outside local HTTP
+development, `SameSite=Lax`, and `Path=/` unless you intentionally scope
+them tighter. Avoid a `Domain` attribute unless cross-subdomain sessions
+are required.
 
-- Server-side ceremony state lives in `PasskeyChallengeStore` and is
-  removed atomically on completion (`take_*` returns and deletes), so
-  the same challenge cannot be replayed.
-- Authentication enforces that the asserted credential belongs to the
-  user bound to the ceremony.
+Bearer-token clients are not in CSRF scope, but they must protect the raw
+token as a credential.
 
-### Rate limiting
+## Audit and rate limiting
 
-- Managers consult a `RateLimiter` before sensitive request endpoints.
-- The built-in `InMemoryRateLimiter` is accurate only for single-process
-  deployments. Multi-replica deployments need a shared backend.
-- Exceeding a policy returns `Error::RateLimited { retry_after }`.
+Security-significant events are emitted to `AuditSink`: signup request and
+consume, recovery request/consume/failure, login success/failure,
+credential add/remove, and session create/revoke/expire. Production hosts
+should ship these events to durable, queryable storage.
 
-### Audit log
+Managers consult `RateLimiter` before sensitive request endpoints. The
+built-in in-memory limiter is correct only inside one process; multi-node
+deployments need a shared backend.
 
-- Security-significant events are emitted to `AuditSink`: session
-  create/revoke/expire, login success/failure, credential add/remove,
-  and magic-link request/consume.
-- Login failure events include the submitted identifier for forensics.
-  If your logging pipeline is sensitive to PII, filter in your sink.
+## Email transport
 
-## What the host must do
+`TerminalEmailSender` and `FileEmailSender` are development transports.
+They expose signup and recovery links locally and do not deliver mail to
+users. Production hosts must implement `EmailSender` using their email
+provider and operate SPF, DKIM, DMARC, bounce handling, and provider-side
+abuse controls.
 
-### Cookie flags
+## Operational hygiene
 
-Set authentication cookies with:
+- Run SQL migrations before serving traffic.
+- Periodically purge expired sessions, verification tokens, and passkey
+  challenges.
+- Index token-hash and user lookup columns in custom storage adapters.
+- Monitor recovery volume, rate-limit hits, WebAuthn failures, and
+  passkey deletions.
+- Prompt users to register at least two passkeys.
+- Treat email compromise as account compromise and make recovery activity
+  visible in product UI and support workflows.
 
-- `HttpOnly`
-- `Secure` outside local HTTP development
-- `SameSite=Lax` for the session cookie
-- `Path=/` unless you intentionally scope tighter
-- no `Domain` unless cross-subdomain sessions are required
+## Defaults
 
-### CSRF on cookie-based endpoints
+| Knob | Default | Notes |
+| --- | --- | --- |
+| Session lifetime | 30 days | Server-side revocable |
+| Passkey challenge lifetime | 5 minutes | Applies to registration and authentication ceremonies |
+| Signup token lifetime | 15 minutes | Email link can only start first-passkey registration |
+| Signup request limits | 5/hour per IP, 3/hour per email | Enumeration-resistant response |
+| Recovery token lifetime | 15 minutes | Email link can only start recovery passkey registration |
+| Recovery request limits | 20/hour per IP, 5/hour per email, 10/day per email | Global ceiling off by default |
+| Recovery cool-down | 24 hours | Configurable, minimum 1 hour |
+| Cookie `secure` | `true` | Disable only for local plain-HTTP development |
 
-`bauth-axum` enables its `CsrfLayer` by default when
-`external_origin` is configured. For any non-GET/HEAD/OPTIONS request
-that carries the configured session cookie, the layer requires either an
-`Origin` header matching the application origin or, when `Origin` is
-absent, a matching `Referer` origin.
+## Reporting vulnerabilities
 
-Requests authenticated with `Authorization: Bearer ...` are not in CSRF
-scope. Disable the layer only for tests or known non-browser deployments.
-
-### Storage-layer timing
-
-Production adapters should index token-hash columns and look up by hash
-equality. The library cannot enforce constant-time comparison inside a
-DB, but a SHA-256 hash of a 256-bit random token is uniformly
-distributed, so DB equality is not a practical timing leak.
-
-### Email deliverability
-
-`bauth` hands off to `EmailSender` and does not track bounces or
-complaints. If you rely on email links, make sure your provider
-authenticates outgoing mail (SPF, DKIM, DMARC), surfaces hard bounces,
-and rate-limits delivery abuse.
-
-### Operational hygiene
-
-- Run `SessionManager::purge_expired`,
-  `VerificationTokenStore::purge_expired`, and
-  `PasskeyChallengeStore::purge_expired` on a regular cadence.
-- Treat the `AuditSink` as a security log. Ship it somewhere durable and
-  queryable.
-- Monitor auth-failure rates per source and per account. The library
-  enforces per-policy caps, but anomaly detection above that is on you.
-
-## Defaults we deliberately picked
-
-| Knob | Default | Reason |
-| ---- | ------- | ------ |
-| Session lifetime | 30 days | Common UX expectation; revocable instantly |
-| Magic-link lifetime | 15 minutes | The link itself is the credential |
-| Magic-link requests per IP | 5 / 1h | Limits inbox-spam abuse |
-| Magic-link requests per identifier | 3 / 1h | Limits targeted inbox-spam abuse |
-
-Anything in this table can be overridden via the relevant `*Config`
-struct.
+Use the repository's private security-advisory workflow if available. If
+not, contact the maintainers out of band before opening a public issue.

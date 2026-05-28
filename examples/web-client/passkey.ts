@@ -1,7 +1,9 @@
-// Passkey registration and authentication helpers for a frontend talking
-// to the bauth-axum endpoints. The only non-obvious work is converting
-// between the base64url strings the server sends and the ArrayBuffers
-// the WebAuthn DOM APIs require.
+// Browser helpers for the bauth-axum passkey-only HTTP surface.
+//
+// The server serializes WebAuthn options and responses as base64url JSON.
+// The browser APIs require ArrayBuffer fields, so these helpers translate
+// challenge/user/credential IDs in both directions and then call the bauth
+// endpoints for signup, sign-in, recovery, passkey management, and sessions.
 
 function base64UrlToBuffer(input: string): ArrayBuffer {
   const padded = input.padEnd(input.length + ((4 - (input.length % 4)) % 4), "=");
@@ -42,6 +44,38 @@ type ServerRequestOptions = {
     userVerification?: UserVerificationRequirement;
     extensions?: AuthenticationExtensionsClientInputs;
   };
+};
+
+type Challenge<T> = { challenge_id: string; options: T };
+
+export type UserDto = {
+  id: string;
+  email: string | null;
+  email_verified: boolean;
+  created_at: string;
+  passkey_count: number;
+};
+
+export type SessionDto = {
+  id: string;
+  created_at: string;
+  expires_at: string;
+  ip: string | null;
+  user_agent: string | null;
+  is_current: boolean;
+};
+
+export type AuthResponse = {
+  user: UserDto;
+  session: SessionDto;
+  token: string;
+};
+
+export type PasskeyDto = {
+  credential_id: string;
+  name: string | null;
+  created_at: string;
+  last_used_at: string | null;
 };
 
 function decodeCreationOptions(o: ServerCreationOptions): CredentialCreationOptions {
@@ -88,57 +122,111 @@ function encodeAttestation(cred: PublicKeyCredential) {
 }
 
 function encodeAssertion(cred: PublicKeyCredential) {
-  const a = cred.response as AuthenticatorAssertionResponse;
+  const assertion = cred.response as AuthenticatorAssertionResponse;
   return {
     id: cred.id,
     rawId: bufferToBase64Url(cred.rawId),
     type: cred.type,
     response: {
-      authenticatorData: bufferToBase64Url(a.authenticatorData),
-      clientDataJSON: bufferToBase64Url(a.clientDataJSON),
-      signature: bufferToBase64Url(a.signature),
-      userHandle: a.userHandle ? bufferToBase64Url(a.userHandle) : null,
+      authenticatorData: bufferToBase64Url(assertion.authenticatorData),
+      clientDataJSON: bufferToBase64Url(assertion.clientDataJSON),
+      signature: bufferToBase64Url(assertion.signature),
+      userHandle: assertion.userHandle ? bufferToBase64Url(assertion.userHandle) : null,
     },
     clientExtensionResults: cred.getClientExtensionResults(),
   };
 }
 
+async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(path, { credentials: "include", ...init });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`${init.method ?? "GET"} ${path} -> ${res.status} ${text}`);
+  return text ? (JSON.parse(text) as T) : (undefined as T);
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  return requestJson<T>(path);
+}
+
 async function postJson<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+  return requestJson<T>(path, {
     method: "POST",
-    credentials: "include",
     headers: body === undefined ? {} : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${path} -> ${res.status} ${await res.text()}`);
-  return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
 
-export async function registerPasskey(name?: string): Promise<void> {
-  const start = await postJson<{ challenge_id: string; options: ServerCreationOptions }>(
-    "/auth/passkey/register/start",
-  );
+async function deleteJson(path: string): Promise<void> {
+  await requestJson<void>(path, { method: "DELETE" });
+}
+
+async function finishRegistration<T>(
+  start: Challenge<ServerCreationOptions>,
+  finishPath: string,
+  name?: string,
+): Promise<T> {
   const cred = (await navigator.credentials.create(
     decodeCreationOptions(start.options),
   )) as PublicKeyCredential | null;
   if (!cred) throw new Error("user cancelled passkey registration");
-  await postJson("/auth/passkey/register/finish", {
+  return postJson<T>(finishPath, {
     challenge_id: start.challenge_id,
     response: encodeAttestation(cred),
     name,
   });
 }
 
-export async function authenticatePasskey(): Promise<void> {
-  const start = await postJson<{ challenge_id: string; options: ServerRequestOptions }>(
-    "/auth/passkey/authenticate/start",
-  );
+export async function requestSignup(email: string): Promise<void> {
+  await postJson<void>("/auth/signup/request", { email });
+}
+
+export async function finishSignup(token: string, passkeyName?: string): Promise<AuthResponse> {
+  const start = await postJson<Challenge<ServerCreationOptions>>("/auth/signup/consume", { token });
+  return finishRegistration<AuthResponse>(start, "/auth/signup/finish", passkeyName);
+}
+
+export async function requestRecovery(email: string): Promise<void> {
+  await postJson<void>("/auth/recovery/request", { email });
+}
+
+export async function finishRecovery(token: string, passkeyName?: string): Promise<AuthResponse> {
+  const start = await postJson<Challenge<ServerCreationOptions>>("/auth/recovery/consume", { token });
+  return finishRegistration<AuthResponse>(start, "/auth/recovery/finish", passkeyName);
+}
+
+export async function registerPasskey(name?: string): Promise<PasskeyDto> {
+  const start = await postJson<Challenge<ServerCreationOptions>>("/auth/passkey/register/start");
+  return finishRegistration<PasskeyDto>(start, "/auth/passkey/register/finish", name);
+}
+
+export async function authenticatePasskey(): Promise<AuthResponse> {
+  const start = await postJson<Challenge<ServerRequestOptions>>("/auth/passkey/authenticate/start");
   const cred = (await navigator.credentials.get(
     decodeRequestOptions(start.options),
   )) as PublicKeyCredential | null;
   if (!cred) throw new Error("user cancelled passkey authentication");
-  await postJson("/auth/passkey/authenticate/finish", {
+  return postJson<AuthResponse>("/auth/passkey/authenticate/finish", {
     challenge_id: start.challenge_id,
     response: encodeAssertion(cred),
   });
+}
+
+export async function listPasskeys(): Promise<PasskeyDto[]> {
+  return getJson<PasskeyDto[]>("/auth/passkey");
+}
+
+export async function deletePasskey(credentialId: string): Promise<void> {
+  await deleteJson(`/auth/passkey/${credentialId}`);
+}
+
+export async function listSessions(): Promise<SessionDto[]> {
+  return getJson<SessionDto[]>("/auth/sessions");
+}
+
+export async function revokeSession(id: string): Promise<void> {
+  await deleteJson(`/auth/sessions/${id}`);
+}
+
+export async function revokeOtherSessions(): Promise<void> {
+  await deleteJson("/auth/sessions");
 }
