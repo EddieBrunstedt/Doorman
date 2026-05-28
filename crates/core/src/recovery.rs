@@ -71,7 +71,20 @@ pub struct RecoveryConfig {
     /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails); hosts
     /// override this for branded copy.
     pub emails: Arc<dyn BauthEmails>,
+    /// Length of the post-recovery cool-down applied to the session
+    /// issued by `finish_recovery`. While the cool-down is active the
+    /// host's destructive surfaces (delete passkey, revoke other sessions
+    /// — see [`crate::error::Error::RecoveryCooldownActive`]) refuse to
+    /// run from that session. Floor of one hour enforced by
+    /// [`RecoveryConfig::validated`].
+    pub cooldown: Duration,
 }
+
+/// Minimum permitted [`RecoveryConfig::cooldown`]. Set well below the 24h
+/// default so hosts have room to shorten the window in tests and local
+/// development, but high enough that a real deployment cannot accidentally
+/// disable the property.
+pub const MIN_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 
 /// Rate-limit policies for the recovery request endpoint. The consume
 /// endpoint is gated by single-use token possession and is
@@ -122,6 +135,7 @@ impl Default for RecoveryConfig {
             url_template: format!("https://example.invalid/recovery?token={TOKEN_PLACEHOLDER}"),
             rate_limits: RecoveryRateLimits::default(),
             emails: default_emails(),
+            cooldown: Duration::from_secs(60 * 60 * 24),
         }
     }
 }
@@ -158,6 +172,14 @@ pub struct RecoveryManager {
 }
 
 impl RecoveryManager {
+    /// Construct a `RecoveryManager`.
+    ///
+    /// Panics if `config.cooldown` is below [`MIN_COOLDOWN`] (one hour).
+    /// The floor exists because the cool-down is the only thing protecting
+    /// a freshly-recovered account from an attacker who phished the link
+    /// before the legitimate owner reacted; setting it shorter than that
+    /// would defeat the property documented in `PASSKEY_PIVOT.md`
+    /// decision 3.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         users: Arc<dyn UserStore>,
@@ -170,6 +192,12 @@ impl RecoveryManager {
         rate_limiter: Arc<dyn RateLimiter>,
         config: RecoveryConfig,
     ) -> Self {
+        assert!(
+            config.cooldown >= MIN_COOLDOWN,
+            "RecoveryConfig.cooldown ({:?}) is below the documented floor of {:?}",
+            config.cooldown,
+            MIN_COOLDOWN,
+        );
         Self {
             users,
             tokens,
@@ -401,7 +429,13 @@ impl RecoveryManager {
         let Some(user) = self.users.find_user_by_id(passkey.user_id).await? else {
             return Err(Error::UserNotFound);
         };
-        let session = self.sessions.create(user.id, context.clone()).await?;
+        let cooldown = chrono::Duration::from_std(self.config.cooldown)
+            .expect("recovery cooldown overflows chrono::Duration; configure a smaller value");
+        let cooldown_until = self.clock.now() + cooldown;
+        let session = self
+            .sessions
+            .create_restricted(user.id, context.clone(), cooldown_until)
+            .await?;
 
         // Notify the registered user that recovery completed. Best-effort
         // — a notification-send failure is logged but does not roll back

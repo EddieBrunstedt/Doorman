@@ -19,7 +19,8 @@ CREATE TABLE sessions (
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     ip TEXT,
-    user_agent TEXT
+    user_agent TEXT,
+    recovery_cooldown_until TEXT
 );
 CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);

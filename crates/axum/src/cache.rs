@@ -222,6 +222,7 @@ mod tests {
             expires_at: Utc.with_ymd_and_hms(2026, 12, 31, 0, 0, 0).unwrap(),
             ip: None,
             user_agent: None,
+            recovery_cooldown_until: None,
         }
     }
 

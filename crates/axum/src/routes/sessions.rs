@@ -19,7 +19,7 @@ use crate::state::BauthState;
 
 pub(crate) fn routes() -> Router<BauthState> {
     Router::new()
-        .route("/sessions", get(list))
+        .route("/sessions", get(list).delete(remove_others))
         .route("/sessions/{id}", delete(remove))
 }
 
@@ -48,6 +48,14 @@ async fn remove(
         .map(SessionId)
         .map_err(|_| ErrorResponse(bauth_core::Error::SessionNotFound))?;
 
+    // The post-recovery cool-down blocks revoking *other* sessions so a
+    // phished link cannot kick the legitimate user off their devices. The
+    // recovery session itself stays revocable so the user can still sign
+    // out of the cool-down session.
+    if id != auth.session.id && state.session_manager.is_in_recovery_cooldown(&auth.session) {
+        return Err(ErrorResponse(bauth_core::Error::RecoveryCooldownActive));
+    }
+
     // Ownership check: a user can only revoke their own sessions, and a
     // missing session reads as "not yours" rather than leaking the
     // existence of someone else's id.
@@ -62,5 +70,22 @@ async fn remove(
     }
 
     state.session_manager.revoke_by_id(id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Revoke every session belonging to the caller *except* the current one.
+/// Powers the "sign out everywhere else" surface. Blocked while the
+/// current session is within the post-recovery cool-down window.
+async fn remove_others(
+    State(state): State<BauthState>,
+    auth: AuthSession,
+) -> Result<StatusCode, ErrorResponse> {
+    if state.session_manager.is_in_recovery_cooldown(&auth.session) {
+        return Err(ErrorResponse(bauth_core::Error::RecoveryCooldownActive));
+    }
+    state
+        .session_manager
+        .revoke_others_for_user(auth.user.id, auth.session.id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }

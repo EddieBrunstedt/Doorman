@@ -112,6 +112,7 @@ async fn session_list_and_delete_others_against_sqlite() {
         expires_at: now + ChronoDuration::hours(1),
         ip: Some("203.0.113.1".into()),
         user_agent: Some("agent".into()),
+        recovery_cooldown_until: None,
     };
 
     let s_keep = mk_session("keep", user_id);

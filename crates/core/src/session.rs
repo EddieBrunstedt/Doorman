@@ -10,6 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use chrono::{DateTime, Utc};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
@@ -124,6 +125,33 @@ impl SessionManager {
 
     #[tracing::instrument(skip(self, context), fields(user_id = %user_id))]
     pub async fn create(&self, user_id: UserId, context: SessionContext) -> Result<IssuedSession> {
+        self.issue(user_id, context, None).await
+    }
+
+    /// Issue a session restricted by a post-recovery cool-down. The
+    /// resulting session reports `is_in_recovery_cooldown(now)` until
+    /// `cooldown_until`; routes that gate on the cool-down (delete
+    /// passkey, revoke other sessions, etc.) refuse to proceed while that
+    /// is true.
+    #[tracing::instrument(
+        skip(self, context),
+        fields(user_id = %user_id, cooldown_until = %cooldown_until),
+    )]
+    pub async fn create_restricted(
+        &self,
+        user_id: UserId,
+        context: SessionContext,
+        cooldown_until: DateTime<Utc>,
+    ) -> Result<IssuedSession> {
+        self.issue(user_id, context, Some(cooldown_until)).await
+    }
+
+    async fn issue(
+        &self,
+        user_id: UserId,
+        context: SessionContext,
+        cooldown_until: Option<DateTime<Utc>>,
+    ) -> Result<IssuedSession> {
         let (token, token_hash) = generate_token();
         let now = self.clock.now();
         let expires_at = now
@@ -138,6 +166,7 @@ impl SessionManager {
             expires_at,
             ip: context.ip.clone(),
             user_agent: context.user_agent.clone(),
+            recovery_cooldown_until: cooldown_until,
         };
 
         self.sessions.create_session(session.clone()).await?;
@@ -216,6 +245,14 @@ impl SessionManager {
             .await;
         tracing::info!(count, outcome = "revoked_all", "user sessions revoked");
         Ok(count)
+    }
+
+    /// Report whether `session` is currently inside its post-recovery
+    /// cool-down window, using this manager's clock. Routes call this
+    /// to decide whether to reject destructive actions with
+    /// [`Error::RecoveryCooldownActive`].
+    pub fn is_in_recovery_cooldown(&self, session: &Session) -> bool {
+        session.is_in_recovery_cooldown(self.clock.now())
     }
 
     /// Return every still-valid session belonging to `user_id`. Sessions

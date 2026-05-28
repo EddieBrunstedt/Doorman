@@ -202,8 +202,8 @@ struct SqliteSessionStore {
 impl SessionStore for SqliteSessionStore {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at, ip, user_agent)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at, ip, user_agent, recovery_cooldown_until)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(uuid_to_bytes(session.id.0))
         .bind(uuid_to_bytes(session.user_id.0))
@@ -212,6 +212,7 @@ impl SessionStore for SqliteSessionStore {
         .bind(session.expires_at)
         .bind(&session.ip)
         .bind(&session.user_agent)
+        .bind(session.recovery_cooldown_until)
         .execute(&self.pool)
         .await
         .map_err(storage)?;
@@ -220,7 +221,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
         let row = sqlx::query(
-            "SELECT id, user_id, token_hash, created_at, expires_at, ip, user_agent
+            "SELECT id, user_id, token_hash, created_at, expires_at, ip, user_agent, recovery_cooldown_until
              FROM sessions WHERE token_hash = ?",
         )
         .bind(token_hash_bytes(hash))
@@ -232,7 +233,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>> {
         let row = sqlx::query(
-            "SELECT id, user_id, token_hash, created_at, expires_at, ip, user_agent
+            "SELECT id, user_id, token_hash, created_at, expires_at, ip, user_agent, recovery_cooldown_until
              FROM sessions WHERE id = ?",
         )
         .bind(uuid_to_bytes(id.0))
@@ -244,7 +245,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
         let rows = sqlx::query(
-            "SELECT id, user_id, token_hash, created_at, expires_at, ip, user_agent
+            "SELECT id, user_id, token_hash, created_at, expires_at, ip, user_agent, recovery_cooldown_until
              FROM sessions WHERE user_id = ?",
         )
         .bind(uuid_to_bytes(user_id.0))
@@ -308,6 +309,7 @@ fn row_to_session(row: sqlx::sqlite::SqliteRow) -> StorageResult<Session> {
         expires_at: row.try_get("expires_at").map_err(storage)?,
         ip: row.try_get("ip").map_err(storage)?,
         user_agent: row.try_get("user_agent").map_err(storage)?,
+        recovery_cooldown_until: row.try_get("recovery_cooldown_until").map_err(storage)?,
     })
 }
 

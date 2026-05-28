@@ -21,7 +21,7 @@ use crate::dto::{
     PasskeyRegisterFinishRequest,
 };
 use crate::error::ErrorResponse;
-use crate::extractors::{AuthUser, RequestContext};
+use crate::extractors::{AuthSession, AuthUser, RequestContext};
 use crate::routes::auth_success;
 use crate::state::BauthState;
 
@@ -107,15 +107,18 @@ async fn list(
 
 async fn remove(
     State(state): State<BauthState>,
-    AuthUser(user): AuthUser,
+    auth: AuthSession,
     RequestContext(context): RequestContext,
     Path(credential_id): Path<String>,
 ) -> Result<StatusCode, ErrorResponse> {
+    if state.session_manager.is_in_recovery_cooldown(&auth.session) {
+        return Err(ErrorResponse(bauth_core::Error::RecoveryCooldownActive));
+    }
     let bytes = URL_SAFE_NO_PAD
         .decode(credential_id.as_bytes())
         .map_err(|_| ErrorResponse(bauth_core::Error::PasskeyNotFound))?;
     manager(&state)
-        .remove_passkey(user.id, &bytes, context)
+        .remove_passkey(auth.user.id, &bytes, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

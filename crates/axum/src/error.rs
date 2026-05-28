@@ -82,6 +82,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
             (StatusCode::INTERNAL_SERVER_ERROR, "invalid_relying_party")
         }
         Error::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+        Error::RecoveryCooldownActive => (StatusCode::CONFLICT, "recovery_cooldown_active"),
     }
 }
 

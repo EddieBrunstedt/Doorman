@@ -632,6 +632,7 @@ async fn session_store_rejects_id_and_hash_collisions() {
         expires_at: Utc::now() + ChronoDuration::hours(1),
         ip: None,
         user_agent: None,
+        recovery_cooldown_until: None,
     };
     store.create_session(session.clone()).await.expect("first");
 

@@ -63,6 +63,16 @@ pub struct AuthSession {
     pub token: String,
 }
 
+impl AuthSession {
+    /// `true` if the underlying session is still within the post-recovery
+    /// cool-down window relative to the current wall clock. Handlers gate
+    /// destructive actions on this and return
+    /// [`bauth_core::Error::RecoveryCooldownActive`] when it holds.
+    pub fn is_in_recovery_cooldown(&self) -> bool {
+        self.session.is_in_recovery_cooldown(chrono::Utc::now())
+    }
+}
+
 impl<S: Send + Sync> FromRequestParts<S> for AuthSession {
     type Rejection = ErrorResponse;
 

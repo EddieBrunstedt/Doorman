@@ -650,6 +650,154 @@ impl BauthEmails for BrandedEmails {
 }
 
 #[tokio::test]
+async fn finish_recovery_issues_session_with_cooldown_until() {
+    let h = fresh(default_config());
+    let _ = provision_user(&h, "alice@example.com").await;
+
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+
+    let consume = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect("consume");
+    let mut wa = ResidentTestAuthenticator::new();
+    let attestation = wa.do_registration(consume.options);
+    let now_at_finish = h.clock.now();
+    let outcome = h
+        .recovery
+        .finish_recovery(
+            consume.challenge_id,
+            &attestation,
+            Some("backup device".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish");
+
+    let expected = now_at_finish + ChronoDuration::hours(24);
+    assert_eq!(
+        outcome.session.session.recovery_cooldown_until,
+        Some(expected),
+    );
+    assert!(
+        outcome
+            .session
+            .session
+            .is_in_recovery_cooldown(h.clock.now())
+    );
+}
+
+#[tokio::test]
+async fn recovery_cooldown_expires_after_window() {
+    let h = fresh(default_config());
+    let _ = provision_user(&h, "alice@example.com").await;
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+    let consume = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect("consume");
+    let mut wa = ResidentTestAuthenticator::new();
+    let attestation = wa.do_registration(consume.options);
+    let outcome = h
+        .recovery
+        .finish_recovery(
+            consume.challenge_id,
+            &attestation,
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish");
+
+    assert!(
+        outcome
+            .session
+            .session
+            .is_in_recovery_cooldown(h.clock.now())
+    );
+    h.clock
+        .advance(ChronoDuration::hours(24) + ChronoDuration::seconds(1));
+    assert!(
+        !outcome
+            .session
+            .session
+            .is_in_recovery_cooldown(h.clock.now())
+    );
+}
+
+#[test]
+#[should_panic(expected = "below the documented floor")]
+fn recovery_config_with_subhour_cooldown_panics() {
+    let users: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
+    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
+    let tokens: Arc<InMemoryVerificationTokenStore> =
+        Arc::new(InMemoryVerificationTokenStore::new());
+    let credentials: Arc<InMemoryPasskeyCredentialStore> =
+        Arc::new(InMemoryPasskeyCredentialStore::new());
+    let challenges: Arc<InMemoryPasskeyChallengeStore> =
+        Arc::new(InMemoryPasskeyChallengeStore::new());
+    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
+    let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
+    let clock: Arc<MockClock> = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let session_manager = SessionManager::new(
+        sessions as Arc<dyn SessionStore>,
+        clock.clone() as Arc<dyn Clock>,
+        audit.clone() as Arc<dyn AuditSink>,
+        SessionConfig {
+            lifetime: Duration::from_secs(60 * 60),
+        },
+    );
+    let passkey_manager = PasskeyManager::new(
+        users.clone() as Arc<dyn UserStore>,
+        credentials as Arc<dyn PasskeyCredentialStore>,
+        challenges as Arc<dyn PasskeyChallengeStore>,
+        session_manager.clone(),
+        clock.clone() as Arc<dyn Clock>,
+        audit.clone() as Arc<dyn AuditSink>,
+        PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
+    )
+    .expect("build passkey manager");
+    let _ = RecoveryManager::new(
+        users as Arc<dyn UserStore>,
+        tokens as Arc<dyn VerificationTokenStore>,
+        passkey_manager,
+        session_manager,
+        email as Arc<dyn EmailSender>,
+        clock as Arc<dyn Clock>,
+        audit as Arc<dyn AuditSink>,
+        Arc::new(NoopRateLimiter) as Arc<dyn RateLimiter>,
+        RecoveryConfig {
+            cooldown: Duration::from_secs(60 * 30),
+            ..default_config()
+        },
+    );
+}
+
+#[tokio::test]
 async fn custom_emails_override_recovery_subjects_and_html() {
     let h = fresh(RecoveryConfig {
         emails: Arc::new(BrandedEmails),

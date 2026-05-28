@@ -70,6 +70,11 @@ pub enum Error {
 
     #[error("rate limit exceeded; retry after {} ms", retry_after.as_millis())]
     RateLimited { retry_after: Duration },
+
+    #[error(
+        "the action is blocked because the session is within the post-recovery cool-down window"
+    )]
+    RecoveryCooldownActive,
 }
 
 /// Opaque storage-backend failure.

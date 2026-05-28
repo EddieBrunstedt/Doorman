@@ -144,6 +144,22 @@ pub struct Session {
     pub expires_at: DateTime<Utc>,
     pub ip: Option<String>,
     pub user_agent: Option<String>,
+    /// When set, the session was issued via the recovery flow and any
+    /// destructive action (delete passkey, revoke other sessions, etc.) must
+    /// be refused with [`crate::error::Error::RecoveryCooldownActive`] until
+    /// this instant passes. `None` means an ordinary session with no
+    /// restriction.
+    pub recovery_cooldown_until: Option<DateTime<Utc>>,
+}
+
+impl Session {
+    /// Returns `true` if the session is currently restricted by a recovery
+    /// cool-down. The comparison is `now < cool-down`; sessions whose
+    /// cool-down has already elapsed are treated as unrestricted.
+    pub fn is_in_recovery_cooldown(&self, now: DateTime<Utc>) -> bool {
+        self.recovery_cooldown_until
+            .is_some_and(|until| now < until)
+    }
 }
 
 /// Persistence contract for local user records.

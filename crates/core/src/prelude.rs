@@ -21,7 +21,8 @@ pub use crate::error::{Error, Result, StorageError, StorageResult};
 pub use crate::passkey::{PasskeyConfig, PasskeyManager};
 pub use crate::rate_limit::{NoopRateLimiter, RateLimitDecision, RateLimitPolicy, RateLimiter};
 pub use crate::recovery::{
-    RecoveryConfig, RecoveryConsumeOutcome, RecoveryManager, RecoveryOutcome, RecoveryRateLimits,
+    MIN_COOLDOWN, RecoveryConfig, RecoveryConsumeOutcome, RecoveryManager, RecoveryOutcome,
+    RecoveryRateLimits,
 };
 pub use crate::session::{
     IssuedSession, SessionConfig, SessionContext, SessionInvalidationHook, SessionManager,
