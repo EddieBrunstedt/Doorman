@@ -78,12 +78,6 @@ impl SessionDto {
     }
 }
 
-impl From<Session> for SessionDto {
-    fn from(value: Session) -> Self {
-        Self::from_session(value, false)
-    }
-}
-
 /// Returned by every endpoint that issues a session: passkey sign-in,
 /// signup finish, and recovery finish.
 ///
@@ -106,15 +100,6 @@ impl AuthResponse {
             token: issued.token,
         }
     }
-}
-
-/// Returned by an authenticated "who am I" endpoint. Includes the active
-/// session id and its expiry so a host frontend can render a session-aware
-/// header (and prompt re-auth before the cookie quietly stops working).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MeResponse {
-    pub user: UserDto,
-    pub session: SessionDto,
 }
 
 /// Public JSON representation of a registered passkey.

@@ -350,12 +350,6 @@ pub trait VerificationTokenStore: Send + Sync {
         purpose: VerificationPurpose,
     ) -> StorageResult<Option<VerificationToken>>;
 
-    async fn find_token(
-        &self,
-        hash: &TokenHash,
-        purpose: VerificationPurpose,
-    ) -> StorageResult<Option<VerificationToken>>;
-
     /// Drop all outstanding tokens of a given purpose for a user. Used
     /// when issuing a fresh token to invalidate older ones.
     async fn delete_tokens_for_user(

@@ -37,23 +37,12 @@ pub enum AuditEventKind {
     },
     LoginSucceeded {
         user_id: UserId,
-        method: AuthMethod,
-    },
-    LoginFailed {
-        identifier: String,
-        reason: LoginFailureReason,
-    },
-    LogoutSucceeded {
-        user_id: UserId,
-        session_id: SessionId,
     },
     CredentialAdded {
         user_id: UserId,
-        credential_kind: CredentialKind,
     },
     CredentialRemoved {
         user_id: UserId,
-        credential_kind: CredentialKind,
     },
     SignupRequested {
         user_id: UserId,
@@ -81,30 +70,6 @@ pub enum AuditEventKind {
         user_id: Option<UserId>,
         reason: RecoveryFailureReason,
     },
-}
-
-/// Authentication method that produced a successful login.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthMethod {
-    Passkey,
-}
-
-/// Credential family added to or removed from a user account.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialKind {
-    Passkey,
-}
-
-/// Normalised reason for a failed login attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LoginFailureReason {
-    UserNotFound,
-    InvalidCredential,
-    AccountLocked,
-    EmailNotVerified,
 }
 
 /// Why a recovery attempt did not succeed.

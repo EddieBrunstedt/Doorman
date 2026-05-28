@@ -365,18 +365,6 @@ impl VerificationTokenStore for InMemoryVerificationTokenStore {
         Ok(pos.map(|i| state.remove(i)))
     }
 
-    async fn find_token(
-        &self,
-        hash: &TokenHash,
-        purpose: VerificationPurpose,
-    ) -> StorageResult<Option<VerificationToken>> {
-        let state = self.lock();
-        Ok(state
-            .iter()
-            .find(|t| t.token_hash == *hash && t.purpose == purpose)
-            .cloned())
-    }
-
     async fn delete_tokens_for_user(
         &self,
         user_id: UserId,

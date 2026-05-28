@@ -33,7 +33,7 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
-use crate::audit::{AuditEvent, AuditEventKind, AuditSink, AuthMethod};
+use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
 use crate::email::{BauthEmails, EmailSender, default_emails};
 use crate::error::{Error, Result};
@@ -348,10 +348,7 @@ impl SignupManager {
                 timestamp: self.clock.now(),
                 ip: context.ip,
                 user_agent: context.user_agent,
-                kind: AuditEventKind::LoginSucceeded {
-                    user_id: user.id,
-                    method: AuthMethod::Passkey,
-                },
+                kind: AuditEventKind::LoginSucceeded { user_id: user.id },
             })
             .await;
         tracing::info!(outcome = "succeeded", "signup finished");

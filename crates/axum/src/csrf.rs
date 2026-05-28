@@ -43,11 +43,6 @@ impl CsrfConfig {
         }
     }
 
-    /// Alias for [`CsrfConfig::new`].
-    pub fn enabled(external_origin: Url) -> Self {
-        Self::new(external_origin)
-    }
-
     /// Disable CSRF checks.
     pub fn disabled() -> Self {
         Self {

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_core::audit::{AuditEventKind, AuditSink, AuthMethod, CredentialKind};
+use bauth_core::audit::{AuditEventKind, AuditSink};
 use bauth_core::clock::{Clock, MockClock};
 use bauth_core::error::Error;
 use bauth_core::memory::{
@@ -300,20 +300,16 @@ async fn register_then_discoverable_authenticate_round_trip() {
     assert!(stored.last_used_at.is_some(), "last_used_at advanced");
 
     let events = kinds(&h.audit.events());
-    assert!(events.iter().any(|k| matches!(
-        k,
-        AuditEventKind::CredentialAdded {
-            credential_kind: CredentialKind::Passkey,
-            ..
-        }
-    )));
-    assert!(events.iter().any(|k| matches!(
-        k,
-        AuditEventKind::LoginSucceeded {
-            method: AuthMethod::Passkey,
-            ..
-        }
-    )));
+    assert!(
+        events
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::CredentialAdded { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. }))
+    );
 }
 
 #[tokio::test]
@@ -522,13 +518,11 @@ async fn remove_passkey_emits_audit_and_blocks_login() {
         .expect("remove");
     assert!(h.credentials.is_empty());
     let events = kinds(&h.audit.events());
-    assert!(events.iter().any(|k| matches!(
-        k,
-        AuditEventKind::CredentialRemoved {
-            credential_kind: CredentialKind::Passkey,
-            ..
-        }
-    )));
+    assert!(
+        events
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::CredentialRemoved { .. }))
+    );
 }
 
 #[tokio::test]

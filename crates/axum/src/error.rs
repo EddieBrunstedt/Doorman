@@ -67,12 +67,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::SessionNotFound => (StatusCode::UNAUTHORIZED, "session_not_found"),
         Error::SessionExpired => (StatusCode::UNAUTHORIZED, "session_expired"),
         Error::UserNotFound => (StatusCode::NOT_FOUND, "user_not_found"),
-        Error::UserHasNoEmail => (StatusCode::BAD_REQUEST, "user_has_no_email"),
         Error::InvalidEmail => (StatusCode::BAD_REQUEST, "invalid_email"),
-        Error::InvalidCredentials => (StatusCode::UNAUTHORIZED, "invalid_credentials"),
-        Error::EmailNotVerified => (StatusCode::FORBIDDEN, "email_not_verified"),
-        Error::EmailAlreadyTaken => (StatusCode::CONFLICT, "email_already_taken"),
-        Error::EmailAlreadyVerified => (StatusCode::CONFLICT, "email_already_verified"),
         Error::InvalidVerificationToken => (StatusCode::BAD_REQUEST, "invalid_verification_token"),
         Error::InvalidPasskeyChallenge => (StatusCode::BAD_REQUEST, "invalid_passkey_challenge"),
         Error::PasskeyNotFound => (StatusCode::NOT_FOUND, "passkey_not_found"),
@@ -103,11 +98,5 @@ mod tests {
             .expect("retry-after present");
         // 2.4 s rounds down to 2 s (max with 1 s floor).
         assert_eq!(header, "2");
-    }
-
-    #[test]
-    fn invalid_credentials_is_401() {
-        let response = error_response(&Error::InvalidCredentials);
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

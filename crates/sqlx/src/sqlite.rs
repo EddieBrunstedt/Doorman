@@ -357,23 +357,6 @@ impl VerificationTokenStore for SqliteVerificationTokenStore {
         row.map(row_to_verification_token).transpose()
     }
 
-    async fn find_token(
-        &self,
-        hash: &TokenHash,
-        purpose: VerificationPurpose,
-    ) -> StorageResult<Option<VerificationToken>> {
-        let row = sqlx::query(
-            "SELECT token_hash, purpose, user_id, created_at, expires_at
-             FROM verification_tokens WHERE token_hash = ? AND purpose = ?",
-        )
-        .bind(token_hash_bytes(hash))
-        .bind(purpose_to_str(purpose))
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
-        row.map(row_to_verification_token).transpose()
-    }
-
     async fn delete_tokens_for_user(
         &self,
         user_id: UserId,

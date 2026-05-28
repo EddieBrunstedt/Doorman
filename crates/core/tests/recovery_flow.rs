@@ -1,9 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_core::audit::{
-    AuditEvent, AuditEventKind, AuditSink, AuthMethod, CredentialKind, RecoveryFailureReason,
-};
+use bauth_core::audit::{AuditEvent, AuditEventKind, AuditSink, RecoveryFailureReason};
 use bauth_core::clock::{Clock, MockClock};
 use bauth_core::email::{BauthEmails, Email, EmailSender};
 use bauth_core::error::Error;
@@ -517,20 +515,16 @@ async fn successful_recovery_enrols_passkey_and_sends_success_notification() {
         k,
         AuditEventKind::RecoveryConsumed { user_id } if *user_id == user.id,
     )));
-    assert!(events.iter().any(|k| matches!(
-        k,
-        AuditEventKind::CredentialAdded {
-            credential_kind: CredentialKind::Passkey,
-            ..
-        }
-    )));
-    assert!(events.iter().any(|k| matches!(
-        k,
-        AuditEventKind::LoginSucceeded {
-            method: AuthMethod::Passkey,
-            ..
-        }
-    )));
+    assert!(
+        events
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::CredentialAdded { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. }))
+    );
 }
 
 #[tokio::test]

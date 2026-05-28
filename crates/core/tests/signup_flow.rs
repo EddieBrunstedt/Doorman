@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_core::audit::{AuditEvent, AuditEventKind, AuditSink, AuthMethod, CredentialKind};
+use bauth_core::audit::{AuditEvent, AuditEventKind, AuditSink};
 use bauth_core::clock::{Clock, MockClock};
 use bauth_core::email::{BauthEmails, Email, EmailSender};
 use bauth_core::error::Error;
@@ -301,20 +301,16 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
     assert_eq!(h.sessions.len(), 1, "session issued");
     assert_eq!(h.credentials.len(), 1, "passkey registered");
     let events = kinds(&h.audit.events());
-    assert!(events.iter().any(|k| matches!(
-        k,
-        AuditEventKind::CredentialAdded {
-            credential_kind: CredentialKind::Passkey,
-            ..
-        }
-    )));
-    assert!(events.iter().any(|k| matches!(
-        k,
-        AuditEventKind::LoginSucceeded {
-            method: AuthMethod::Passkey,
-            ..
-        }
-    )));
+    assert!(
+        events
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::CredentialAdded { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. }))
+    );
 }
 
 #[tokio::test]

@@ -10,8 +10,7 @@
 //! individual modules instead.
 
 pub use crate::audit::{
-    AuditEvent, AuditEventKind, AuditSink, AuthMethod, CredentialKind, LoginFailureReason,
-    NoopAuditSink, RecoveryFailureReason,
+    AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, RecoveryFailureReason,
 };
 pub use crate::clock::{Clock, SystemClock};
 pub use crate::email::{

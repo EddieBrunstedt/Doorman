@@ -33,7 +33,7 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
-use crate::audit::{AuditEvent, AuditEventKind, AuditSink, AuthMethod, RecoveryFailureReason};
+use crate::audit::{AuditEvent, AuditEventKind, AuditSink, RecoveryFailureReason};
 use crate::clock::Clock;
 use crate::email::{BauthEmails, EmailSender, default_emails};
 use crate::error::{Error, Result};
@@ -63,8 +63,8 @@ pub struct RecoveryConfig {
     pub url_template: String,
     /// Rate-limit policies applied to the recovery request endpoint.
     /// The per-IP and per-identifier policies are independent and any
-    /// non-`None` policy is enforced. Aggressive defaults match the
-    /// numbers in `PASSKEY_PIVOT.md` decision 4.
+    /// non-`None` policy is enforced. Aggressive defaults are applied; see
+    /// [`RecoveryRateLimits::default`].
     pub rate_limits: RecoveryRateLimits,
     /// Renderer for the recovery emails. Defaults to
     /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails); hosts
@@ -177,8 +177,7 @@ impl RecoveryManager {
     /// The floor exists because the cool-down is the only thing protecting
     /// a freshly-recovered account from an attacker who phished the link
     /// before the legitimate owner reacted; setting it shorter than that
-    /// would defeat the property documented in `PASSKEY_PIVOT.md`
-    /// decision 3.
+    /// would defeat the post-recovery cool-down protection.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         users: Arc<dyn UserStore>,
@@ -449,10 +448,7 @@ impl RecoveryManager {
                 timestamp: self.clock.now(),
                 ip: context.ip,
                 user_agent: context.user_agent,
-                kind: AuditEventKind::LoginSucceeded {
-                    user_id: user.id,
-                    method: AuthMethod::Passkey,
-                },
+                kind: AuditEventKind::LoginSucceeded { user_id: user.id },
             })
             .await;
         tracing::info!(outcome = "succeeded", "recovery finished");

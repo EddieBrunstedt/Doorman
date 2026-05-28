@@ -20,7 +20,7 @@ use webauthn_rs::prelude::{
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
 
-use crate::audit::{AuditEvent, AuditEventKind, AuditSink, AuthMethod, CredentialKind};
+use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
@@ -194,7 +194,6 @@ impl PasskeyManager {
                 user_agent: context.user_agent,
                 kind: AuditEventKind::CredentialAdded {
                     user_id: stored.user_id,
-                    credential_kind: CredentialKind::Passkey,
                 },
             })
             .await;
@@ -286,10 +285,7 @@ impl PasskeyManager {
                 timestamp: now,
                 ip: context.ip.clone(),
                 user_agent: context.user_agent.clone(),
-                kind: AuditEventKind::LoginSucceeded {
-                    user_id,
-                    method: AuthMethod::Passkey,
-                },
+                kind: AuditEventKind::LoginSucceeded { user_id },
             })
             .await;
 
@@ -330,10 +326,7 @@ impl PasskeyManager {
                 timestamp: self.clock.now(),
                 ip: context.ip,
                 user_agent: context.user_agent,
-                kind: AuditEventKind::CredentialRemoved {
-                    user_id,
-                    credential_kind: CredentialKind::Passkey,
-                },
+                kind: AuditEventKind::CredentialRemoved { user_id },
             })
             .await;
         tracing::info!(outcome = "removed", "passkey removed");
