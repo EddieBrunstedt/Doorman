@@ -9,7 +9,7 @@
 //!
 //! The in-memory storage adapters and [`InMemoryRateLimiter`] are *not*
 //! here — those live in [`bauth_core::memory`] because they back local
-//! experiments and the quickstart default, not just tests.
+//! experiments and the high-level builder default, not just tests.
 //!
 //! [`Clock`]: bauth_core::clock::Clock
 //! [`AuditSink`]: bauth_core::audit::AuditSink

@@ -3,7 +3,7 @@
 //! the process and lookups hold a `std::sync::Mutex` for their duration.
 //!
 //! The stores and [`InMemoryRateLimiter`] are always available: the limiter is
-//! the quickstart default and the stores back local experiments. The pure
+//! the high-level builder default and the stores back local experiments. The pure
 //! test doubles (mock clock, in-memory audit sink, capturing email sender)
 //! live in `bauth-test-support` so they never compile into a production build.
 

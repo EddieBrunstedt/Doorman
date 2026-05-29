@@ -23,7 +23,7 @@ use bauth_sqlx::SqliteStorage;
 let storage = SqliteStorage::connect("sqlite:///var/lib/myapp/auth.db?mode=rwc").await?;
 storage.migrate().await?;
 
-let composite = storage.storage();   // bauth_core::storage::Storage — hand to the quickstart builder
+let composite = storage.storage();   // bauth_core::storage::Storage — hand to BauthAxum::builder
 ```
 
 For an ephemeral in-memory database (handy in tests), use

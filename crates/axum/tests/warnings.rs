@@ -1,5 +1,5 @@
-//! Build-time configuration warnings emitted by `quickstart().build()`
-//! and `BauthAxum::builder().build()`.
+//! Build-time configuration warnings emitted by `BauthAxum::builder().build()`
+//! and `BauthAxum::from_managers().build()`.
 //!
 //! Each test installs its own thread-scoped `tracing` subscriber that
 //! captures warnings into an in-memory buffer, then asserts the messages
@@ -9,7 +9,7 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use bauth_axum::config::CookieConfig;
-use bauth_axum::{BauthAxum, BuilderError, quickstart};
+use bauth_axum::{BauthAxum, BuilderError};
 use bauth_core::audit::NoopAuditSink;
 use bauth_core::clock::SystemClock;
 use bauth_core::email::{EmailSender, FileEmailSender, TerminalEmailSender};
@@ -98,7 +98,7 @@ where
 #[test]
 fn quickstart_defaults_warn_about_noop_audit_and_in_memory_limiter() {
     let output = capture(|| {
-        let _ = quickstart(fresh_storage())
+        let _ = BauthAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .cookie(CookieConfig {
@@ -126,7 +126,7 @@ fn quickstart_defaults_warn_about_noop_audit_and_in_memory_limiter() {
 #[test]
 fn explicit_noop_rate_limiter_emits_noop_warning() {
     let output = capture(|| {
-        let _ = quickstart(fresh_storage())
+        let _ = BauthAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .limiter(Arc::new(NoopRateLimiter))
@@ -147,7 +147,7 @@ fn explicit_noop_rate_limiter_emits_noop_warning() {
 #[test]
 fn cookie_secure_false_with_production_domain_warns() {
     let output = capture(|| {
-        let _ = quickstart(fresh_storage())
+        let _ = BauthAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .cookie(CookieConfig {
@@ -170,7 +170,7 @@ fn cookie_secure_false_with_production_domain_warns() {
 #[test]
 fn cookie_warning_fires_when_not_silenced() {
     let output = capture(|| {
-        let _ = quickstart(fresh_storage())
+        let _ = BauthAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .cookie(CookieConfig {
@@ -191,7 +191,7 @@ fn cookie_warning_fires_when_not_silenced() {
 #[test]
 fn quickstart_silence_warnings_suppresses_everything() {
     let output = capture(|| {
-        let _ = quickstart(fresh_storage())
+        let _ = BauthAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .silence_warnings()
@@ -207,7 +207,7 @@ fn quickstart_silence_warnings_suppresses_everything() {
 
 #[test]
 fn missing_email_sender_returns_build_error() {
-    let result = quickstart(fresh_storage()).silence_warnings().build();
+    let result = BauthAxum::builder(fresh_storage()).silence_warnings().build();
     match result {
         Err(BuilderError::MissingEmailSender) => {}
         Err(other) => panic!("expected MissingEmailSender, got: {other:?}"),
@@ -217,7 +217,7 @@ fn missing_email_sender_returns_build_error() {
 
 #[test]
 fn missing_passkey_config_returns_build_error() {
-    let result = quickstart(fresh_storage())
+    let result = BauthAxum::builder(fresh_storage())
         .email(capturing_email())
         .silence_warnings()
         .build();
@@ -238,7 +238,7 @@ fn low_level_builder_rejects_missing_passkey_manager() {
         SessionConfig::default(),
     );
 
-    let result = BauthAxum::builder()
+    let result = BauthAxum::from_managers()
         .session_manager(session_manager)
         .user_store(storage.users.clone())
         .silence_warnings()
@@ -254,7 +254,7 @@ fn low_level_builder_rejects_missing_passkey_manager() {
 #[test]
 fn terminal_email_transport_emits_dev_email_warning() {
     let output = capture(|| {
-        let _ = quickstart(fresh_storage())
+        let _ = BauthAxum::builder(fresh_storage())
             .email(Arc::new(TerminalEmailSender))
             .passkey(passkey_config())
             .build()
@@ -272,7 +272,7 @@ fn file_email_transport_emits_dev_email_warning() {
     let dir = std::env::temp_dir().join(format!("bauth-warnings-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("mkdir");
     let output = capture(|| {
-        let _ = quickstart(fresh_storage())
+        let _ = BauthAxum::builder(fresh_storage())
             .email(Arc::new(FileEmailSender::new(&dir)))
             .passkey(passkey_config())
             .build()

@@ -18,4 +18,4 @@ pub use crate::csrf::{CsrfConfig, CsrfLayer};
 pub use crate::error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use crate::extractors::{AuthSession, AuthUser, OptionalAuthUser, RequestContext};
 pub use crate::session::{AuthContext, SessionLayer};
-pub use crate::{BauthAxum, BauthAxumBuilder, BuilderError, QuickstartBuilder, quickstart};
+pub use crate::{BauthAxum, BauthBuilder, BuilderError, ManagerBuilder};

@@ -1,9 +1,9 @@
-//! Quickstart builder smoke test.
+//! High-level builder smoke test.
 //!
-//! Drives the three-step signup flow end-to-end through the `quickstart`
-//! wiring path. Validates that the quickstart-built app produces a working
-//! session cookie, a working bearer token, and that the resulting session
-//! resolves through the session layer on a host route.
+//! Drives the three-step signup flow end-to-end through the
+//! [`BauthAxum::builder`] wiring path. Validates that the builder-built app
+//! produces a working session cookie, a working bearer token, and that the
+//! resulting session resolves through the session layer on a host route.
 
 mod common;
 
@@ -12,7 +12,7 @@ use bauth_axum::dto::AuthResponse;
 use common::{SignupClient, TestApp};
 
 #[tokio::test]
-async fn quickstart_signup_and_me() {
+async fn builder_signup_and_me() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::builder()
         .cookie_store(true)

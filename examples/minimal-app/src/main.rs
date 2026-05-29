@@ -46,7 +46,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     };
     let base = external_origin.as_str().trim_end_matches('/');
 
-    let auth = bauth_axum::quickstart(storage.storage())
+    let auth = BauthAxum::builder(storage.storage())
         .email(Arc::new(TerminalEmailSender))
         .passkey(passkey_config)
         .signup(SignupConfig {

@@ -7,7 +7,7 @@
 //!
 //! Both expose `connect`, `from_pool`, `pool`, `migrate`, and `storage`.
 //! `storage()` returns a [`bauth_core::storage::Storage`] populated with
-//! every store implementation, ready to hand to the quickstart builder in
+//! every store implementation, ready to hand to `BauthAxum::builder` in
 //! `bauth-axum`.
 //!
 //! ```ignore

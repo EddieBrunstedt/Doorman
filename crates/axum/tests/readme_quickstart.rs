@@ -19,7 +19,7 @@ async fn readme_quickstart_snippet_compiles() -> std::result::Result<(), Box<dyn
     storage.migrate().await?;
     let origin: Url = "http://localhost:3000".parse()?;
     let base = origin.as_str().trim_end_matches('/');
-    let auth = bauth_axum::quickstart(storage.storage())
+    let auth = BauthAxum::builder(storage.storage())
         .email(Arc::new(TerminalEmailSender))
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
         .signup(SignupConfig {

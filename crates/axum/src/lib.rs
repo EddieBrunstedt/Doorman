@@ -1,6 +1,6 @@
 //! Axum-first HTTP integration for bauth.
 //!
-//! Most hosts start with [`quickstart`], hand it a
+//! Most hosts start with [`BauthAxum::builder`], hand it a
 //! [`bauth_core::storage::Storage`] value from a storage adapter such as
 //! `bauth-sqlx`, configure the passkey relying party and email transport,
 //! and mount the returned [`BauthAxum`] on their application router.
@@ -17,7 +17,7 @@
 //!
 //! let origin = "https://app.example.com".parse()?;
 //! let base = origin.as_str().trim_end_matches('/');
-//! let auth = bauth_axum::quickstart(storage.storage())
+//! let auth = BauthAxum::builder(storage.storage())
 //!     .email(Arc::new(TerminalEmailSender))
 //!     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
 //!     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
@@ -33,7 +33,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! [`BauthAxum::builder`] remains available for hosts that want to
+//! [`BauthAxum::from_managers`] remains available for hosts that want to
 //! construct the core managers by hand.
 
 pub mod cache;
@@ -44,27 +44,29 @@ pub mod dto;
 pub mod error;
 pub mod extractors;
 pub mod prelude;
-mod quickstart;
 mod routes;
 pub mod session;
 mod state;
 pub mod warnings;
 
 mod builder;
+mod manager_builder;
 
 pub use bauth_core as core;
 
-pub use builder::{BauthAxumBuilder, BuilderError};
+pub use builder::BauthBuilder;
 pub use cache::{DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, SessionCache, SessionCacheConfig};
 pub use config::CookieConfig;
 pub use csrf::{CsrfConfig, CsrfLayer};
 pub use error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use extractors::{AuthSession, AuthUser, OptionalAuthUser, RequestContext};
-pub use quickstart::{QuickstartBuilder, quickstart};
+pub use manager_builder::{BuilderError, ManagerBuilder};
 pub use session::{AuthContext, SessionLayer};
 pub use state::BauthState;
 
 use axum::Router;
+
+use bauth_core::storage::Storage;
 
 /// Wired-up authentication HTTP layer. Construct via
 /// [`BauthAxum::builder`], then mount the [`router()`](BauthAxum::router)
@@ -77,9 +79,24 @@ pub struct BauthAxum {
 }
 
 impl BauthAxum {
+    /// Start the high-level builder from a composite [`Storage`]. This is
+    /// the path most hosts want: it constructs the core managers for you
+    /// from sensible defaults. See [`BauthBuilder`].
+    pub fn builder(storage: Storage) -> BauthBuilder {
+        BauthBuilder::new(storage)
+    }
+
     /// Start the low-level builder that accepts pre-constructed managers.
-    pub fn builder() -> BauthAxumBuilder {
-        BauthAxumBuilder::default()
+    /// Use this when you have built the [`SessionManager`], [`PasskeyManager`],
+    /// [`SignupManager`], and [`RecoveryManager`] yourself. See
+    /// [`ManagerBuilder`].
+    ///
+    /// [`SessionManager`]: bauth_core::session::SessionManager
+    /// [`PasskeyManager`]: bauth_core::passkey::PasskeyManager
+    /// [`SignupManager`]: bauth_core::signup::SignupManager
+    /// [`RecoveryManager`]: bauth_core::recovery::RecoveryManager
+    pub fn from_managers() -> ManagerBuilder {
+        ManagerBuilder::default()
     }
 
     /// A `Router` carrying every auth endpoint, scoped under the

@@ -26,7 +26,7 @@ use crate::common::{
 };
 
 /// Postgres storage adapter. Construct once at startup and hand
-/// `storage()` to the quickstart builder, or pull individual stores via
+/// `storage()` to `BauthAxum::builder`, or pull individual stores via
 /// the helpers below when wiring managers by hand.
 #[derive(Clone)]
 pub struct PostgresStorage {

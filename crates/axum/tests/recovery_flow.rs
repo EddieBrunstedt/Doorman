@@ -1,6 +1,6 @@
 //! End-to-end HTTP tests for the recovery routes.
 //!
-//! Exercises the quickstart wiring path so the test covers manager
+//! Exercises the high-level builder wiring path so the test covers manager
 //! construction, route mounting, email delivery (link + notification),
 //! the passkey ceremony at consume / finish time, session cookie
 //! issuance, and the session layer loading the newly issued session.

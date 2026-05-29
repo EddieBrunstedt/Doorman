@@ -34,7 +34,7 @@ let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").a
 storage.migrate().await?;
 let origin = "https://app.example.com".parse()?;
 let base = origin.as_str().trim_end_matches('/');
-let auth = bauth_axum::quickstart(storage.storage())
+let auth = BauthAxum::builder(storage.storage())
     .email(Arc::new(TerminalEmailSender))
     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
@@ -104,9 +104,9 @@ HTML page with no frontend build step.
 
 ## Production checklist
 
-Review the startup warnings emitted by `quickstart().build()` or
-`BauthAxum::builder().build()` and make explicit choices before silencing
-them.
+Review the startup warnings emitted by `BauthAxum::builder().build()` or
+`BauthAxum::from_managers().build()` and make explicit choices before
+silencing them.
 
 - Replace `TerminalEmailSender` / `FileEmailSender` with a real
   `EmailSender`.
@@ -134,7 +134,7 @@ examples/web-client/   browser-side WebAuthn helper reference
 
 ## Custom storage or HTTP surface
 
-The quickest path is `bauth-sqlx` plus `bauth_axum::quickstart(...)`.
+The quickest path is `bauth-sqlx` plus `BauthAxum::builder(...)`.
 Hosts on another database stack implement the `bauth-core` storage traits:
 `UserStore`, `SessionStore`, `VerificationTokenStore`,
 `PasskeyCredentialStore`, and `PasskeyChallengeStore`.

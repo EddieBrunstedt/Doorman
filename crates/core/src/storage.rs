@@ -33,7 +33,7 @@ use crate::error::StorageResult;
 /// Composite handle to every storage trait the managers need.
 ///
 /// Bundles the per-concern `Arc<dyn ...>` stores so a host can pass
-/// one value to the quickstart builder (or assemble it once and reuse it
+/// one value to the high-level builder (or assemble it once and reuse it
 /// across multiple managers) instead of threading each store through by
 /// hand. Storage adapters typically expose a `fn storage(&self) -> Storage`
 /// that returns this struct populated against a single backend; hosts that

@@ -1,7 +1,7 @@
 //! Startup sanity checks.
 //!
-//! Both [`BauthAxumBuilder::build`](crate::builder::BauthAxumBuilder::build)
-//! and [`QuickstartBuilder::build`](crate::quickstart::QuickstartBuilder::build)
+//! Both [`ManagerBuilder::build`](crate::manager_builder::ManagerBuilder::build)
+//! and [`BauthBuilder::build`](crate::builder::BauthBuilder::build)
 //! produce a [`Warnings`] snapshot describing apparent misconfigurations
 //! (insecure cookies in apparent production, a [`NoopAuditSink`], an
 //! [`InMemoryRateLimiter`] in a multi-replica-friendly deployment, etc.)

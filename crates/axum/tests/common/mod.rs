@@ -24,8 +24,8 @@ use bauth_axum::dto::{
     AuthResponse, PasskeyChallenge, PasskeyDto, SignupConsumeRequest, SignupFinishRequest,
     SignupRequest, UserDto,
 };
+use bauth_axum::BauthAxum;
 use bauth_axum::extractors::AuthSession;
-use bauth_axum::quickstart;
 use bauth_core::email::EmailSender;
 use bauth_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
@@ -68,17 +68,17 @@ pub struct TestApp {
 }
 
 impl TestApp {
-    /// Start an app wired through `quickstart` with the in-memory stores
-    /// and the passkey + signup configs needed for full HTTP coverage.
+    /// Start an app wired through [`BauthAxum::builder`] with the in-memory
+    /// stores and the passkey + signup configs needed for full HTTP coverage.
     pub async fn start(host_routes: Router, secure_cookies: bool) -> Self {
         Self::start_with(host_routes, secure_cookies, |b| b).await
     }
 
-    /// Start an app, letting the caller tweak the `QuickstartBuilder`
+    /// Start an app, letting the caller tweak the `BauthBuilder`
     /// (e.g. to set an `external_origin` for CSRF coverage).
     pub async fn start_with<F>(host_routes: Router, secure_cookies: bool, customise: F) -> Self
     where
-        F: FnOnce(bauth_axum::QuickstartBuilder) -> bauth_axum::QuickstartBuilder,
+        F: FnOnce(bauth_axum::BauthBuilder) -> bauth_axum::BauthBuilder,
     {
         let email = Arc::new(CapturingEmailSender::new());
         let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
@@ -99,7 +99,7 @@ impl TestApp {
             passkey_challenges,
         };
 
-        let builder = quickstart(storage)
+        let builder = BauthAxum::builder(storage)
             .email(email.clone() as Arc<dyn EmailSender>)
             .passkey(PasskeyConfig::new(
                 "localhost",
@@ -127,7 +127,7 @@ impl TestApp {
         // `login` mints sessions directly through the same live,
         // invalidation-hooked `SessionManager` the app runs on, so a
         // revoke routed through it evicts the cache the layer reads. The
-        // quickstart path wires the cache invalidator onto this manager,
+        // high-level builder wires the cache invalidator onto this manager,
         // so the cache-invalidation tests can drive it via `session_manager`.
         let session_manager = auth.state().session_manager().clone();
         let cache = auth.cache().clone();
