@@ -12,16 +12,12 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::post;
 use bauth_core::signup::SignupManager;
-use bauth_core::storage::PasskeyChallengeId;
-use uuid::Uuid;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
-use crate::dto::{
-    AuthResponse, PasskeyChallenge, SignupConsumeRequest, SignupFinishRequest, SignupRequest,
-};
+use crate::dto::{PasskeyChallenge, SignupConsumeRequest, SignupFinishRequest, SignupRequest};
 use crate::error::ErrorResponse;
 use crate::extractors::RequestContext;
-use crate::routes::auth_success;
+use crate::routes::{consume_response, enrollment_success, parse_challenge_id};
 use crate::state::BauthState;
 
 pub(crate) fn routes() -> Router<BauthState> {
@@ -50,10 +46,7 @@ async fn consume(
     Json(body): Json<SignupConsumeRequest>,
 ) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ErrorResponse> {
     let outcome = manager(&state).consume_signup(&body.token, context).await?;
-    Ok(Json(PasskeyChallenge {
-        challenge_id: outcome.challenge_id.0.to_string(),
-        options: outcome.options,
-    }))
+    Ok(consume_response(outcome))
 }
 
 async fn finish(
@@ -61,16 +54,9 @@ async fn finish(
     RequestContext(context): RequestContext,
     Json(body): Json<SignupFinishRequest>,
 ) -> Result<Response, ErrorResponse> {
-    let challenge_id = Uuid::parse_str(&body.challenge_id)
-        .map(PasskeyChallengeId)
-        .map_err(|_| ErrorResponse(bauth_core::Error::InvalidPasskeyChallenge))?;
+    let challenge_id = parse_challenge_id(&body.challenge_id)?;
     let outcome = manager(&state)
         .finish_signup(challenge_id, &body.response, body.name, context)
         .await?;
-    let passkey_count = state.passkey.list_passkeys(outcome.user.id).await?.len();
-    Ok(auth_success(
-        StatusCode::OK,
-        state.cookie_config(),
-        AuthResponse::from_issued(outcome.user, outcome.session, passkey_count),
-    ))
+    enrollment_success(&state, outcome).await
 }

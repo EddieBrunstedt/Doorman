@@ -11,8 +11,6 @@ use axum::routing::{delete, get, post};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bauth_core::passkey::PasskeyManager;
-use bauth_core::storage::PasskeyChallengeId;
-use uuid::Uuid;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use crate::dto::{
@@ -21,7 +19,7 @@ use crate::dto::{
 };
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, AuthUser, RequestContext};
-use crate::routes::auth_success;
+use crate::routes::{auth_success, parse_challenge_id};
 use crate::state::BauthState;
 
 pub(crate) fn routes() -> Router<BauthState> {
@@ -118,10 +116,4 @@ async fn remove(
         .remove_passkey(auth.user.id, &bytes, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-fn parse_challenge_id(raw: &str) -> Result<PasskeyChallengeId, ErrorResponse> {
-    Uuid::parse_str(raw)
-        .map(PasskeyChallengeId)
-        .map_err(|_| ErrorResponse(bauth_core::Error::InvalidPasskeyChallenge))
 }
