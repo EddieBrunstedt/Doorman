@@ -36,3 +36,19 @@ bauth-test-support = { path = "../test-support" }
 criterion.workspace = true
 tokio.workspace = true
 webauthn-authenticator-rs.workspace = true
+
+[[bench]]
+name = "session"
+harness = false
+
+[[bench]]
+name = "rate_limit"
+harness = false
+
+[[bench]]
+name = "enrollment"
+harness = false
+
+[[bench]]
+name = "passkey_auth"
+harness = false

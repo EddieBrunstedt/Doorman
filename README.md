@@ -134,6 +134,18 @@ examples/minimal-app/  runnable Axum + SQLite app
 examples/web-client/   browser-side WebAuthn helper reference
 ```
 
+## Benchmarks
+
+Criterion benches cover the hot auth paths at the manager, HTTP, and
+storage layers. See [`BENCHMARKS.md`](BENCHMARKS.md) for what is measured
+and how to read the numbers. Quick start:
+
+```sh
+cargo bench -p bauth-core
+cargo bench -p bauth-axum
+cargo bench -p bauth-sqlx --features sqlite
+```
+
 ## Custom storage or HTTP surface
 
 The quickest path is `bauth-sqlx` plus `BauthAxum::builder(...)`.

@@ -23,4 +23,10 @@ uuid.workspace = true
 webauthn-rs.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 tokio.workspace = true
+
+[[bench]]
+name = "storage"
+harness = false
+required-features = ["sqlite"]

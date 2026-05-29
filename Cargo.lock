@@ -298,6 +298,7 @@ dependencies = [
  "async-trait",
  "bauth-core",
  "chrono",
+ "criterion",
  "serde_json",
  "sqlx",
  "tokio",
