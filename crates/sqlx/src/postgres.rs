@@ -1,4 +1,9 @@
 //! Postgres adapter backed by `sqlx::PgPool`.
+//!
+//! Keep this adapter a mirror of `sqlite.rs`: the two bodies differ only
+//! in placeholder syntax, row/pool types, and dialect quirks. The shared
+//! storage-conformance suite (`tests/conformance`) runs the same
+//! assertions against both, so any silent divergence fails a test.
 
 use std::sync::Arc;
 

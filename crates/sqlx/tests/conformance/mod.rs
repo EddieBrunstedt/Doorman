@@ -1,0 +1,429 @@
+//! Backend-agnostic storage-conformance suite.
+//!
+//! Every check takes a [`Storage`] and asserts the contract the
+//! `bauth-core` managers rely on, independent of how the rows are stored.
+//! The same [`run`] entry point is executed against the in-memory
+//! reference stores (`tests/in_memory.rs`), SQLite (`tests/sqlite.rs`),
+//! and Postgres (`tests/postgres.rs`, gated on `PG_URL`). Running the
+//! identical assertions everywhere closes the gap that previously let the
+//! two SQLx adapters drift apart, and pins the in-memory stores to the
+//! same contract the docs claim they model.
+//!
+//! Checks share a single `Storage` instance, so each uses freshly minted
+//! ids and token hashes to stay isolated; assertions that touch
+//! whole-table operations (`purge_expired`) target a specific row rather
+//! than an exact count.
+
+#![allow(dead_code)]
+
+use bauth_core::session::hash_token;
+use bauth_core::storage::{
+    Session, SessionId, Storage, User, UserId, VerificationPurpose, VerificationToken,
+};
+use chrono::{DateTime, Duration, TimeZone, Utc};
+
+fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
+        .single()
+        .expect("valid timestamp")
+}
+
+fn user(id: UserId, email: &str) -> User {
+    User {
+        id,
+        email: Some(email.to_string()),
+        email_verified_at: None,
+        created_at: ts(2026, 1, 1),
+        updated_at: ts(2026, 1, 1),
+    }
+}
+
+/// Run the full suite against `storage`.
+pub async fn run(storage: &Storage) {
+    users_round_trip(storage).await;
+    verification_token_single_use(storage).await;
+    verification_token_purge_and_delete(storage).await;
+    sessions_crud_and_queries(storage).await;
+    sessions_purge_expired(storage).await;
+}
+
+async fn users_round_trip(storage: &Storage) {
+    let users = &storage.users;
+    let id = UserId::new();
+    let record = user(id, "round-trip@example.com");
+    users.create_user(record.clone()).await.expect("create");
+
+    assert_eq!(
+        users.find_user_by_id(id).await.expect("find by id"),
+        Some(record.clone()),
+    );
+    assert_eq!(
+        users
+            .find_user_by_email("round-trip@example.com")
+            .await
+            .expect("find by email"),
+        Some(record.clone()),
+    );
+
+    // Duplicate id is rejected.
+    users
+        .create_user(user(id, "different@example.com"))
+        .await
+        .expect_err("duplicate id should error");
+    // Duplicate email is rejected.
+    users
+        .create_user(user(UserId::new(), "round-trip@example.com"))
+        .await
+        .expect_err("duplicate email should error");
+
+    // Update is observable.
+    let verified = User {
+        email_verified_at: Some(ts(2026, 2, 1)),
+        updated_at: ts(2026, 2, 1),
+        ..record
+    };
+    users.update_user(verified.clone()).await.expect("update");
+    assert_eq!(
+        users.find_user_by_id(id).await.expect("find updated"),
+        Some(verified),
+    );
+
+    // Delete removes both lookups.
+    users.delete_user(id).await.expect("delete");
+    assert!(
+        users
+            .find_user_by_id(id)
+            .await
+            .expect("find after delete")
+            .is_none()
+    );
+    assert!(
+        users
+            .find_user_by_email("round-trip@example.com")
+            .await
+            .expect("find email after delete")
+            .is_none()
+    );
+}
+
+async fn verification_token_single_use(storage: &Storage) {
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "single-use@example.com"))
+        .await
+        .expect("user");
+
+    let tokens = &storage.verification_tokens;
+    let hash = hash_token("single-use-token");
+    tokens
+        .create_token(VerificationToken {
+            token_hash: hash,
+            user_id,
+            purpose: VerificationPurpose::Signup,
+            created_at: ts(2026, 1, 1),
+            expires_at: ts(2099, 1, 1),
+        })
+        .await
+        .expect("create");
+
+    assert!(
+        tokens
+            .consume_token(&hash, VerificationPurpose::Signup)
+            .await
+            .expect("first consume")
+            .is_some(),
+        "first consume returns the token",
+    );
+    assert!(
+        tokens
+            .consume_token(&hash, VerificationPurpose::Signup)
+            .await
+            .expect("second consume")
+            .is_none(),
+        "second consume returns nothing",
+    );
+
+    // A token of one purpose cannot be redeemed under another.
+    let signup_hash = hash_token("purpose-scoped-token");
+    tokens
+        .create_token(VerificationToken {
+            token_hash: signup_hash,
+            user_id,
+            purpose: VerificationPurpose::Signup,
+            created_at: ts(2026, 1, 1),
+            expires_at: ts(2099, 1, 1),
+        })
+        .await
+        .expect("create scoped");
+    assert!(
+        tokens
+            .consume_token(&signup_hash, VerificationPurpose::Recovery)
+            .await
+            .expect("wrong-purpose consume")
+            .is_none(),
+        "consuming under the wrong purpose returns nothing",
+    );
+    assert!(
+        tokens
+            .consume_token(&signup_hash, VerificationPurpose::Signup)
+            .await
+            .expect("right-purpose consume")
+            .is_some(),
+        "the token still redeems under its own purpose",
+    );
+}
+
+async fn verification_token_purge_and_delete(storage: &Storage) {
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "purge-tokens@example.com"))
+        .await
+        .expect("user");
+
+    let tokens = &storage.verification_tokens;
+    let signup_hash = hash_token("delete-signup");
+    let recovery_hash = hash_token("delete-recovery");
+    tokens
+        .create_token(VerificationToken {
+            token_hash: signup_hash,
+            user_id,
+            purpose: VerificationPurpose::Signup,
+            created_at: ts(2026, 1, 1),
+            expires_at: ts(2099, 1, 1),
+        })
+        .await
+        .expect("create signup");
+    tokens
+        .create_token(VerificationToken {
+            token_hash: recovery_hash,
+            user_id,
+            purpose: VerificationPurpose::Recovery,
+            created_at: ts(2026, 1, 1),
+            expires_at: ts(2099, 1, 1),
+        })
+        .await
+        .expect("create recovery");
+
+    // Deleting one purpose leaves the other intact.
+    let removed = tokens
+        .delete_tokens_for_user(user_id, VerificationPurpose::Signup)
+        .await
+        .expect("delete signup tokens");
+    assert_eq!(removed, 1, "exactly the signup token was deleted");
+    assert!(
+        tokens
+            .consume_token(&signup_hash, VerificationPurpose::Signup)
+            .await
+            .expect("consume deleted")
+            .is_none(),
+        "the deleted signup token no longer redeems",
+    );
+    assert!(
+        tokens
+            .consume_token(&recovery_hash, VerificationPurpose::Recovery)
+            .await
+            .expect("consume surviving")
+            .is_some(),
+        "the recovery token of another purpose survived the delete",
+    );
+
+    // An expired token is purged; a live one is not.
+    let expired_hash = hash_token("expired-token");
+    tokens
+        .create_token(VerificationToken {
+            token_hash: expired_hash,
+            user_id,
+            purpose: VerificationPurpose::Signup,
+            created_at: ts(2020, 1, 1),
+            expires_at: ts(2020, 1, 2),
+        })
+        .await
+        .expect("create expired");
+    let purged = tokens.purge_expired(ts(2026, 1, 1)).await.expect("purge");
+    assert!(purged >= 1, "at least the expired token was purged");
+    assert!(
+        tokens
+            .consume_token(&expired_hash, VerificationPurpose::Signup)
+            .await
+            .expect("consume purged")
+            .is_none(),
+        "the expired token was removed by purge_expired",
+    );
+}
+
+async fn sessions_crud_and_queries(storage: &Storage) {
+    let now = ts(2026, 1, 1);
+    let user_id = UserId::new();
+    let other_user = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "sessions@example.com"))
+        .await
+        .expect("user");
+    storage
+        .users
+        .create_user(user(other_user, "neighbour@example.com"))
+        .await
+        .expect("other user");
+
+    let sessions = &storage.sessions;
+    let mk = |token: &str, owner: UserId, cooldown: Option<DateTime<Utc>>| Session {
+        id: SessionId::new(),
+        user_id: owner,
+        token_hash: hash_token(token),
+        created_at: now,
+        expires_at: now + Duration::hours(1),
+        ip: Some("203.0.113.1".into()),
+        user_agent: Some("agent".into()),
+        recovery_cooldown_until: cooldown,
+    };
+
+    let keep = mk("keep", user_id, None);
+    let other_a = mk("other-a", user_id, None);
+    let other_b = mk("other-b", user_id, None);
+    let neighbour = mk("neighbour", other_user, None);
+    // Recovery-issued session carries a cool-down instant that must survive
+    // the round-trip through storage.
+    let cooldown_until = now + Duration::hours(24);
+    let with_cooldown = mk("cooldown", user_id, Some(cooldown_until));
+
+    for session in [&keep, &other_a, &other_b, &neighbour, &with_cooldown] {
+        sessions
+            .create_session(session.clone())
+            .await
+            .expect("create session");
+    }
+
+    // find_session_by_token_hash round-trips the row, cool-down included.
+    let by_hash = sessions
+        .find_session_by_token_hash(&hash_token("cooldown"))
+        .await
+        .expect("find by hash")
+        .expect("session present");
+    assert_eq!(by_hash.id, with_cooldown.id);
+    assert_eq!(by_hash.recovery_cooldown_until, Some(cooldown_until));
+    assert_eq!(by_hash.ip.as_deref(), Some("203.0.113.1"));
+
+    let by_id = sessions
+        .find_session_by_id(with_cooldown.id)
+        .await
+        .expect("find by id")
+        .expect("session present");
+    assert_eq!(by_id.recovery_cooldown_until, Some(cooldown_until));
+
+    // list_for_user returns every (unexpired) session for the user.
+    let listed = sessions.list_for_user(user_id).await.expect("list");
+    let listed_ids: std::collections::HashSet<_> = listed.iter().map(|s| s.id).collect();
+    let expected: std::collections::HashSet<_> =
+        [keep.id, other_a.id, other_b.id, with_cooldown.id].into();
+    assert_eq!(
+        listed_ids, expected,
+        "list returns only this user's sessions"
+    );
+
+    // delete_other_sessions_for_user keeps the exception, removes the rest.
+    let removed = sessions
+        .delete_other_sessions_for_user(user_id, keep.id)
+        .await
+        .expect("delete others");
+    assert_eq!(removed, 3, "every session except the exception was removed");
+    let after = sessions.list_for_user(user_id).await.expect("list after");
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].id, keep.id);
+
+    // The neighbouring user's session is untouched.
+    assert!(
+        sessions
+            .find_session_by_id(neighbour.id)
+            .await
+            .expect("find neighbour")
+            .is_some()
+    );
+
+    // delete_sessions_for_user clears the rest for this user.
+    let removed = sessions
+        .delete_sessions_for_user(user_id)
+        .await
+        .expect("delete all");
+    assert_eq!(removed, 1, "the surviving session was removed");
+    assert!(
+        sessions
+            .list_for_user(user_id)
+            .await
+            .expect("list cleared")
+            .is_empty()
+    );
+    // delete_session on the neighbour's row.
+    sessions
+        .delete_session(neighbour.id)
+        .await
+        .expect("delete neighbour");
+    assert!(
+        sessions
+            .find_session_by_id(neighbour.id)
+            .await
+            .expect("find deleted neighbour")
+            .is_none()
+    );
+}
+
+async fn sessions_purge_expired(storage: &Storage) {
+    let now = ts(2026, 1, 1);
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "purge-sessions@example.com"))
+        .await
+        .expect("user");
+
+    let sessions = &storage.sessions;
+    let expired = Session {
+        id: SessionId::new(),
+        user_id,
+        token_hash: hash_token("expired-session"),
+        created_at: now - Duration::hours(2),
+        expires_at: now - Duration::hours(1),
+        ip: None,
+        user_agent: None,
+        recovery_cooldown_until: None,
+    };
+    let live = Session {
+        id: SessionId::new(),
+        user_id,
+        token_hash: hash_token("live-session"),
+        created_at: now,
+        expires_at: now + Duration::hours(1),
+        ip: None,
+        user_agent: None,
+        recovery_cooldown_until: None,
+    };
+    sessions
+        .create_session(expired.clone())
+        .await
+        .expect("create expired");
+    sessions
+        .create_session(live.clone())
+        .await
+        .expect("create live");
+
+    let removed = sessions.purge_expired(now).await.expect("purge");
+    assert!(removed >= 1, "at least the expired session was purged");
+    assert!(
+        sessions
+            .find_session_by_id(expired.id)
+            .await
+            .expect("find expired")
+            .is_none(),
+        "the expired session was purged",
+    );
+    assert!(
+        sessions
+            .find_session_by_id(live.id)
+            .await
+            .expect("find live")
+            .is_some(),
+        "the live session survived the purge",
+    );
+}
