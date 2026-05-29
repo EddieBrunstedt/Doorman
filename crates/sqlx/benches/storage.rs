@@ -2,7 +2,11 @@
 //! to compare against the in-memory reference baseline (`bauth-core`'s
 //! `session` bench).
 //!
-//! - `create` — insert a fresh session row.
+//! - `create` — insert a fresh session row into a table pre-seeded to a
+//!   representative size, so the number reflects a populated table rather
+//!   than the empty-table fast path. (Note: an insert-only bench grows the
+//!   table over a run, so very long runs drift upward; the seed keeps the
+//!   number stable and realistic across normal runs.)
 //! - `find_by_token_hash` — the per-request hot path the session layer
 //!   runs on every authenticated request.
 //! - `find_by_id` — the indexed primary-key lookup.
@@ -51,7 +55,23 @@ async fn build_scaffold() -> Scaffold {
     let user_id = user.id;
     users.create_user(user).await.expect("create user");
 
-    // One seeded session for the read benches.
+    // Pre-seed the table to a representative size so `create` measures
+    // inserts into a populated B-tree, not the empty-table fast path, and
+    // the read benches resolve against a realistically sized index.
+    const SEED_ROWS: u32 = 2_000;
+    for n in 0..SEED_ROWS {
+        sessions
+            .create_session(make_session(
+                SessionId::new(),
+                user_id,
+                hash_token(&format!("seed-{n}")),
+                now,
+            ))
+            .await
+            .expect("seed session");
+    }
+
+    // One known seeded session for the read benches.
     let seeded_token_hash = hash_token("seeded-token");
     let seeded_id = SessionId::new();
     sessions

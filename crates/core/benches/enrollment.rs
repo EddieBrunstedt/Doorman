@@ -3,9 +3,12 @@
 //! provisioning, single-use token issuance, link render, and the (captured,
 //! non-networked) email send.
 //!
-//! Each iteration uses a fresh email so it exercises the full
-//! provision-and-issue path rather than the cheaper "already registered"
-//! silent branch.
+//! Each iteration runs against a fresh, empty manager (built in the
+//! untimed `iter_batched` setup) so it measures the steady-state cost of a
+//! single provision-and-issue against an empty store. Reusing one manager
+//! across iterations would instead measure the cost of an ever-growing
+//! token store (the `Vec`-backed in-memory store scans every entry on each
+//! write), which is a property of the test double, not the signup path.
 //!
 //! Run with:
 //!
@@ -14,7 +17,6 @@
 //! ```
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bauth_core::audit::{AuditSink, NoopAuditSink};
@@ -33,7 +35,7 @@ use bauth_core::storage::{
 };
 use bauth_core::verification::EnrollmentFlow;
 use bauth_test_support::CapturingEmailSender;
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use tokio::runtime::Runtime;
 use url::Url;
 
@@ -95,18 +97,18 @@ fn signup_manager() -> SignupManager {
 
 fn enrollment(c: &mut Criterion) {
     let runtime = Runtime::new().expect("tokio runtime");
-    let manager = signup_manager();
-    let counter = AtomicU64::new(0);
 
     c.bench_function("signup_request", |b| {
-        b.to_async(&runtime).iter(|| async {
-            let n = counter.fetch_add(1, Ordering::Relaxed);
-            let email = format!("user{n}@example.com");
-            manager
-                .request_signup(&email, SessionContext::default())
-                .await
-                .expect("request signup");
-        });
+        b.to_async(&runtime).iter_batched(
+            signup_manager,
+            |manager| async move {
+                manager
+                    .request_signup("user@example.com", SessionContext::default())
+                    .await
+                    .expect("request signup");
+            },
+            BatchSize::SmallInput,
+        );
     });
 }
 
