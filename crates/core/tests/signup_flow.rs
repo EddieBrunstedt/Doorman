@@ -1,184 +1,25 @@
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_core::audit::{AuditEvent, AuditEventKind, AuditSink};
+use bauth_core::audit::AuditEventKind;
 use bauth_core::clock::{Clock, MockClock};
-use bauth_core::email::{BauthEmails, Email, EmailSender};
+use bauth_core::email::{BauthEmails, Email};
 use bauth_core::error::Error;
-use bauth_core::memory::{
-    CapturingEmailSender, InMemoryAuditSink, InMemoryPasskeyChallengeStore,
-    InMemoryPasskeyCredentialStore, InMemoryRateLimiter, InMemorySessionStore, InMemoryUserStore,
-    InMemoryVerificationTokenStore,
-};
-use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
-use bauth_core::rate_limit::{NoopRateLimiter, RateLimitPolicy, RateLimiter};
-use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
-use bauth_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
-use bauth_core::storage::{
-    PasskeyChallengeStore, PasskeyCredentialStore, SessionStore, User, UserStore,
-    VerificationTokenStore,
-};
-use bauth_core::verification::TOKEN_PLACEHOLDER;
-use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
-use url::Url;
-use webauthn_authenticator_rs::WebauthnAuthenticator;
-use webauthn_authenticator_rs::prelude::Url as AuthUrl;
-use webauthn_authenticator_rs::softpasskey::SoftPasskey;
-use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
+use bauth_core::memory::InMemoryRateLimiter;
+use bauth_core::rate_limit::{RateLimitPolicy, RateLimiter};
+use bauth_core::session::SessionContext;
+use bauth_core::signup::{SignupConfig, SignupRateLimits};
+use bauth_core::storage::{User, UserStore};
+use chrono::Duration as ChronoDuration;
 
-const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
-const RP_ID: &str = "localhost";
-const RP_NAME: &str = "bauth tests";
-
-fn rp_origin() -> Url {
-    Url::parse("http://localhost:8080").expect("valid url")
-}
-
-fn auth_origin() -> AuthUrl {
-    AuthUrl::parse("http://localhost:8080").expect("valid auth url")
-}
-
-fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
-        .single()
-        .expect("valid timestamp")
-}
-
-struct Harness {
-    manager: SignupManager,
-    users: Arc<InMemoryUserStore>,
-    sessions: Arc<InMemorySessionStore>,
-    tokens: Arc<InMemoryVerificationTokenStore>,
-    credentials: Arc<InMemoryPasskeyCredentialStore>,
-    audit: Arc<InMemoryAuditSink>,
-    email: Arc<CapturingEmailSender>,
-    clock: Arc<MockClock>,
-}
-
-fn default_config() -> SignupConfig {
-    SignupConfig {
-        url_template: SIGNUP_URL.to_string(),
-        rate_limits: SignupRateLimits::disabled(),
-        ..SignupConfig::default()
-    }
-}
-
-fn fresh(config: SignupConfig) -> Harness {
-    fresh_with_limiter(config, Arc::new(NoopRateLimiter) as Arc<dyn RateLimiter>)
-}
-
-fn fresh_with_limiter(config: SignupConfig, limiter: Arc<dyn RateLimiter>) -> Harness {
-    let users: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
-    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-    let tokens: Arc<InMemoryVerificationTokenStore> =
-        Arc::new(InMemoryVerificationTokenStore::new());
-    let credentials: Arc<InMemoryPasskeyCredentialStore> =
-        Arc::new(InMemoryPasskeyCredentialStore::new());
-    let challenges: Arc<InMemoryPasskeyChallengeStore> =
-        Arc::new(InMemoryPasskeyChallengeStore::new());
-    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
-    let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
-    let clock: Arc<MockClock> = Arc::new(MockClock::new(ts(2026, 1, 1)));
-    let session_manager = SessionManager::new(
-        sessions.clone() as Arc<dyn SessionStore>,
-        clock.clone() as Arc<dyn Clock>,
-        audit.clone() as Arc<dyn AuditSink>,
-        SessionConfig {
-            lifetime: Duration::from_secs(60 * 60),
-        },
-    );
-    let passkey_manager = PasskeyManager::new(
-        users.clone() as Arc<dyn UserStore>,
-        credentials.clone() as Arc<dyn PasskeyCredentialStore>,
-        challenges.clone() as Arc<dyn PasskeyChallengeStore>,
-        session_manager.clone(),
-        clock.clone() as Arc<dyn Clock>,
-        audit.clone() as Arc<dyn AuditSink>,
-        PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
-    )
-    .expect("build passkey manager");
-    let manager = SignupManager::new(
-        users.clone() as Arc<dyn UserStore>,
-        tokens.clone() as Arc<dyn VerificationTokenStore>,
-        passkey_manager,
-        session_manager,
-        email.clone() as Arc<dyn EmailSender>,
-        clock.clone() as Arc<dyn Clock>,
-        audit.clone() as Arc<dyn AuditSink>,
-        limiter,
-        config,
-    );
-    Harness {
-        manager,
-        users,
-        sessions,
-        tokens,
-        credentials,
-        audit,
-        email,
-        clock,
-    }
-}
-
-fn token_from_email(body: &str) -> String {
-    let prefix = SIGNUP_URL
-        .split(TOKEN_PLACEHOLDER)
-        .next()
-        .expect("template has prefix");
-    let start = body.find(prefix).expect("body contains url prefix");
-    let after = &body[start + prefix.len()..];
-    after
-        .split_whitespace()
-        .next()
-        .expect("token follows prefix")
-        .to_string()
-}
-
-fn kinds(events: &[AuditEvent]) -> Vec<AuditEventKind> {
-    events.iter().map(|e| e.kind.clone()).collect()
-}
-
-fn authenticator() -> ResidentTestAuthenticator {
-    ResidentTestAuthenticator::new()
-}
-
-/// Test authenticator that records the user_handle from each registration
-/// so a subsequent discoverable authentication can claim residency.
-struct ResidentTestAuthenticator {
-    inner: WebauthnAuthenticator<SoftPasskey>,
-}
-
-impl ResidentTestAuthenticator {
-    fn new() -> Self {
-        Self {
-            inner: WebauthnAuthenticator::new(SoftPasskey::new(true)),
-        }
-    }
-
-    fn do_registration(
-        &mut self,
-        challenge: CreationChallengeResponse,
-    ) -> RegisterPublicKeyCredential {
-        // SoftPasskey can't create resident keys; relax the local input
-        // after we've already verified the server-issued options.
-        let mut compatible = challenge;
-        let selection = compatible
-            .public_key
-            .authenticator_selection
-            .as_mut()
-            .expect("authenticator selection present");
-        selection.require_resident_key = false;
-        selection.resident_key = None;
-        self.inner
-            .do_registration(auth_origin(), compatible)
-            .expect("authenticator register")
-    }
-}
+use common::{Harness, SIGNUP_URL, authenticator, kinds, signup_config, token_from_email, ts};
 
 #[tokio::test]
 async fn request_provisions_user_for_new_email() {
-    let h = fresh(default_config());
-    h.manager
+    let h = Harness::fresh();
+    h.signup
         .request_signup("Alice@Example.com", SessionContext::default())
         .await
         .expect("request");
@@ -201,9 +42,9 @@ async fn request_provisions_user_for_new_email() {
 
 #[tokio::test]
 async fn request_for_existing_email_is_silent_and_audited() {
-    let h = fresh(default_config());
+    let h = Harness::fresh();
     // First request creates the user.
-    h.manager
+    h.signup
         .request_signup("alice@example.com", SessionContext::default())
         .await
         .expect("first request");
@@ -211,7 +52,7 @@ async fn request_for_existing_email_is_silent_and_audited() {
     let tokens_before = h.tokens.len();
 
     // Second request: user exists → silent no-op, no new email or token.
-    h.manager
+    h.signup
         .request_signup("alice@example.com", SessionContext::default())
         .await
         .expect("silent ok");
@@ -236,15 +77,15 @@ async fn request_for_existing_email_is_silent_and_audited() {
 
 #[tokio::test]
 async fn consume_verifies_email_and_starts_passkey_registration() {
-    let h = fresh(default_config());
-    h.manager
+    let h = Harness::fresh();
+    h.signup
         .request_signup("user@example.com", SessionContext::default())
         .await
         .expect("request");
-    let token = token_from_email(&h.email.sent()[0].body_text);
+    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
 
     let outcome = h
-        .manager
+        .signup
         .consume_signup(&token, SessionContext::default())
         .await
         .expect("consume");
@@ -271,15 +112,15 @@ async fn consume_verifies_email_and_starts_passkey_registration() {
 
 #[tokio::test]
 async fn consume_then_finish_registers_passkey_and_issues_session() {
-    let h = fresh(default_config());
-    h.manager
+    let h = Harness::fresh();
+    h.signup
         .request_signup("alice@example.com", SessionContext::default())
         .await
         .expect("request");
-    let token = token_from_email(&h.email.sent()[0].body_text);
+    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
 
     let consume = h
-        .manager
+        .signup
         .consume_signup(&token, SessionContext::default())
         .await
         .expect("consume");
@@ -287,7 +128,7 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
     let mut wa = authenticator();
     let attestation = wa.do_registration(consume.options);
     let outcome = h
-        .manager
+        .signup
         .finish_signup(
             consume.challenge_id,
             &attestation,
@@ -316,19 +157,19 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
 
 #[tokio::test]
 async fn consume_rejects_replayed_token() {
-    let h = fresh(default_config());
-    h.manager
+    let h = Harness::fresh();
+    h.signup
         .request_signup("u@example.com", SessionContext::default())
         .await
         .expect("request");
-    let token = token_from_email(&h.email.sent()[0].body_text);
+    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
 
-    h.manager
+    h.signup
         .consume_signup(&token, SessionContext::default())
         .await
         .expect("first consume");
     let err = h
-        .manager
+        .signup
         .consume_signup(&token, SessionContext::default())
         .await
         .expect_err("second consume");
@@ -337,20 +178,22 @@ async fn consume_rejects_replayed_token() {
 
 #[tokio::test]
 async fn consume_rejects_expired_token() {
-    let h = fresh(SignupConfig {
-        token_lifetime: Duration::from_secs(60),
-        ..default_config()
-    });
-    h.manager
+    let h = Harness::builder()
+        .signup_config(SignupConfig {
+            token_lifetime: Duration::from_secs(60),
+            ..signup_config()
+        })
+        .build();
+    h.signup
         .request_signup("u@example.com", SessionContext::default())
         .await
         .expect("request");
-    let token = token_from_email(&h.email.sent()[0].body_text);
+    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
 
     h.clock.advance(ChronoDuration::seconds(120));
 
     let err = h
-        .manager
+        .signup
         .consume_signup(&token, SessionContext::default())
         .await
         .expect_err("expired");
@@ -359,9 +202,9 @@ async fn consume_rejects_expired_token() {
 
 #[tokio::test]
 async fn request_rejects_invalid_email() {
-    let h = fresh(default_config());
+    let h = Harness::fresh();
     let err = h
-        .manager
+        .signup
         .request_signup("not-an-email", SessionContext::default())
         .await
         .expect_err("invalid");
@@ -375,31 +218,31 @@ async fn rate_limit_per_ip_blocks_after_budget() {
         clock_for_limiter as Arc<dyn Clock>,
     )) as Arc<dyn RateLimiter>;
     let policy = RateLimitPolicy::new(2, Duration::from_secs(60 * 60));
-    let h = fresh_with_limiter(
-        SignupConfig {
+    let h = Harness::builder()
+        .signup_limiter(limiter)
+        .signup_config(SignupConfig {
             rate_limits: SignupRateLimits {
                 request_per_ip: Some(policy),
                 ..SignupRateLimits::disabled()
             },
-            ..default_config()
-        },
-        limiter,
-    );
+            ..signup_config()
+        })
+        .build();
 
     let ctx = SessionContext {
         ip: Some("9.9.9.9".into()),
         user_agent: None,
     };
-    h.manager
+    h.signup
         .request_signup("a@example.com", ctx.clone())
         .await
         .expect("1");
-    h.manager
+    h.signup
         .request_signup("b@example.com", ctx.clone())
         .await
         .expect("2");
     let err = h
-        .manager
+        .signup
         .request_signup("c@example.com", ctx)
         .await
         .expect_err("limited");
@@ -413,19 +256,19 @@ async fn rate_limit_per_identifier_blocks_across_ips() {
         clock_for_limiter as Arc<dyn Clock>,
     )) as Arc<dyn RateLimiter>;
     let policy = RateLimitPolicy::new(2, Duration::from_secs(60 * 60));
-    let h = fresh_with_limiter(
-        SignupConfig {
+    let h = Harness::builder()
+        .signup_limiter(limiter)
+        .signup_config(SignupConfig {
             rate_limits: SignupRateLimits {
                 request_per_identifier: Some(policy),
                 ..SignupRateLimits::disabled()
             },
-            ..default_config()
-        },
-        limiter,
-    );
+            ..signup_config()
+        })
+        .build();
 
     for ip in ["1.1.1.1", "2.2.2.2"] {
-        h.manager
+        h.signup
             .request_signup(
                 "target@example.com",
                 SessionContext {
@@ -438,7 +281,7 @@ async fn rate_limit_per_identifier_blocks_across_ips() {
     }
 
     let err = h
-        .manager
+        .signup
         .request_signup(
             "target@example.com",
             SessionContext {
@@ -466,12 +309,14 @@ impl BauthEmails for BrandedEmails {
 
 #[tokio::test]
 async fn custom_emails_override_signup_subject_and_html() {
-    let h = fresh(SignupConfig {
-        emails: Arc::new(BrandedEmails),
-        ..default_config()
-    });
+    let h = Harness::builder()
+        .signup_config(SignupConfig {
+            emails: Arc::new(BrandedEmails),
+            ..signup_config()
+        })
+        .build();
 
-    h.manager
+    h.signup
         .request_signup("user@example.com", SessionContext::default())
         .await
         .expect("request");

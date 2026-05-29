@@ -12,13 +12,13 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::Router;
 use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
+use bauth_axum::SessionCache;
 use bauth_axum::config::CookieConfig;
 use bauth_axum::dto::{
     AuthResponse, PasskeyChallenge, PasskeyDto, SignupConsumeRequest, SignupFinishRequest,
@@ -26,8 +26,6 @@ use bauth_axum::dto::{
 };
 use bauth_axum::extractors::AuthSession;
 use bauth_axum::quickstart;
-use bauth_core::audit::NoopAuditSink;
-use bauth_core::clock::SystemClock;
 use bauth_core::email::EmailSender;
 use bauth_core::memory::{
     CapturingEmailSender, InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore,
@@ -35,7 +33,7 @@ use bauth_core::memory::{
 };
 use bauth_core::passkey::PasskeyConfig;
 use bauth_core::recovery::{RecoveryConfig, RecoveryRateLimits};
-use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
+use bauth_core::session::{SessionContext, SessionManager};
 use bauth_core::signup::{SignupConfig, SignupRateLimits};
 use bauth_core::storage::{PasskeyCredentialStore, Storage, User, UserId, UserStore};
 use bauth_core::verification::TOKEN_PLACEHOLDER;
@@ -55,7 +53,14 @@ pub struct TestApp {
     pub email: Arc<CapturingEmailSender>,
     pub rp_origin: ServerUrl,
     pub passkey_credentials: Arc<InMemoryPasskeyCredentialStore>,
-    session_manager: SessionManager,
+    /// The session-resolution cache the running layer reads from, and the
+    /// one the `session_manager` below evicts on revoke. Surfaced so the
+    /// cache-invalidation tests can observe eviction directly.
+    pub cache: SessionCache,
+    /// The live, invalidation-hooked `SessionManager` the app runs on
+    /// (cloned out of the built `BauthAxum`). `login` mints sessions
+    /// through it, and revoking through it evicts [`Self::cache`].
+    pub session_manager: SessionManager,
     user_store: Arc<InMemoryUserStore>,
     handle: JoinHandle<()>,
     shutdown: tokio::sync::oneshot::Sender<()>,
@@ -118,18 +123,13 @@ impl TestApp {
 
         let auth = customise(builder).build().expect("auth built");
 
-        // The `login` helper needs to mint sessions directly; `BauthAxum`
-        // doesn't surface the live manager, so build a sibling pointing at
-        // the same session store. Both managers operate on the same backing
-        // rows so the layer running inside the server sees what we create.
-        let session_manager = SessionManager::new(
-            session_store,
-            Arc::new(SystemClock),
-            Arc::new(NoopAuditSink),
-            SessionConfig {
-                lifetime: Duration::from_secs(60 * 60),
-            },
-        );
+        // `login` mints sessions directly through the same live,
+        // invalidation-hooked `SessionManager` the app runs on, so a
+        // revoke routed through it evicts the cache the layer reads. The
+        // quickstart path wires the cache invalidator onto this manager,
+        // so the cache-invalidation tests can drive it via `session_manager`.
+        let session_manager = auth.state().session_manager().clone();
+        let cache = auth.cache().clone();
 
         let passkey_credentials_dyn: Arc<dyn PasskeyCredentialStore> = passkey_credentials.clone();
         let app = Router::new()
@@ -159,6 +159,7 @@ impl TestApp {
             email,
             rp_origin,
             passkey_credentials,
+            cache,
             session_manager,
             user_store,
             handle,
