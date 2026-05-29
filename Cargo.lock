@@ -211,6 +211,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bauth"
+version = "0.1.0"
+dependencies = [
+ "bauth-axum",
+ "bauth-core",
+ "bauth-sqlx",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "bauth-axum"
 version = "0.1.0"
 dependencies = [

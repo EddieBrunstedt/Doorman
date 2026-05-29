@@ -1,0 +1,29 @@
+[package]
+name = "bauth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Opinionated passkey-only authentication for Rust web apps. Umbrella crate re-exporting bauth-core, bauth-axum, and bauth-sqlx behind features."
+
+[features]
+default = []
+# Axum HTTP integration (the supported user-facing surface).
+axum = ["dep:bauth-axum"]
+# SQLx storage adapters.
+sqlite = ["dep:bauth-sqlx", "bauth-sqlx/sqlite"]
+postgres = ["dep:bauth-sqlx", "bauth-sqlx/postgres"]
+
+[dependencies]
+bauth-core = { path = "../core", version = "0.1.0" }
+bauth-axum = { path = "../axum", version = "0.1.0", optional = true }
+bauth-sqlx = { path = "../sqlx", version = "0.1.0", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+url.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

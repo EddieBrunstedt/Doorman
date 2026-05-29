@@ -17,18 +17,20 @@ surface is declared stable.
 ```toml
 [dependencies]
 axum = "0.8"
-bauth-axum = "0.1"
-bauth-core = "0.1"
-bauth-sqlx = { version = "0.1", features = ["sqlite"] }
+bauth = { version = "0.1", features = ["axum", "sqlite"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
+
+`bauth` is the umbrella crate: one dependency, one version to bump. It
+re-exports `bauth-core`, `bauth-axum`, and `bauth-sqlx` behind features as
+`bauth::core`, `bauth::axum`, and `bauth::sqlx`. Hosts that want only a
+subset can still depend on the individual crates directly.
 
 ```rust
 use std::sync::Arc;
 use axum::{routing::get, Router};
-use bauth_axum::prelude::*;
-use bauth_core::verification::TOKEN_PLACEHOLDER;
-use bauth_sqlx::SqliteStorage;
+use bauth::prelude::*;
+use bauth::core::verification::TOKEN_PLACEHOLDER;
 
 let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").await?;
 storage.migrate().await?;
