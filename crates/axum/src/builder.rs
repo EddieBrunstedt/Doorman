@@ -57,6 +57,7 @@ use bauth_core::recovery::{RecoveryConfig, RecoveryManager};
 use bauth_core::session::{SessionConfig, SessionManager};
 use bauth_core::signup::{SignupConfig, SignupManager};
 use bauth_core::storage::Storage;
+use bauth_core::verification::EnrollmentFlow;
 
 use url::Url;
 
@@ -308,10 +309,9 @@ impl BauthBuilder {
         )
         .map_err(BuilderError::Passkey)?;
 
-        // Signup is part of the only login UX — wire it implicitly so the
-        // host doesn't have to opt in. Hosts that need to tune the rate
-        // limits or token lifetime call `.signup(...)`.
-        let signup_manager = SignupManager::new(
+        // Signup and recovery share the same dependencies and consume/finish
+        // skeleton; build one EnrollmentFlow and hand a clone to each manager.
+        let enrollment_flow = EnrollmentFlow::new(
             self.storage.users.clone(),
             self.storage.verification_tokens.clone(),
             passkey_manager.clone(),
@@ -320,23 +320,19 @@ impl BauthBuilder {
             clock.clone(),
             audit.clone(),
             limiter.clone(),
-            self.signup.unwrap_or_default(),
         );
+
+        // Signup is part of the only login UX — wire it implicitly so the
+        // host doesn't have to opt in. Hosts that need to tune the rate
+        // limits or token lifetime call `.signup(...)`.
+        let signup_manager =
+            SignupManager::new(enrollment_flow.clone(), self.signup.unwrap_or_default());
 
         // Recovery rides on the same primitives as signup and is similarly
         // always-on. Hosts override the defaults via `.recovery(...)` to
         // tune the aggressive rate limits.
-        let recovery_manager = RecoveryManager::new(
-            self.storage.users.clone(),
-            self.storage.verification_tokens.clone(),
-            passkey_manager.clone(),
-            session_manager.clone(),
-            email.clone(),
-            clock.clone(),
-            audit.clone(),
-            limiter.clone(),
-            self.recovery.unwrap_or_default(),
-        );
+        let recovery_manager =
+            RecoveryManager::new(enrollment_flow, self.recovery.unwrap_or_default());
 
         builder = builder
             .passkey_manager(passkey_manager)

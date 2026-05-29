@@ -37,6 +37,7 @@ use bauth_core::storage::{
     PasskeyChallengeStore, PasskeyCredentialStore, SessionStore, StoredPasskey, User, UserId,
     UserStore, VerificationTokenStore,
 };
+use bauth_core::verification::EnrollmentFlow;
 use bauth_core::verification::TOKEN_PLACEHOLDER;
 use bauth_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
 use chrono::{DateTime, TimeZone, Utc};
@@ -210,7 +211,11 @@ impl HarnessBuilder {
             PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
         )
         .expect("build passkey manager");
-        let signup = SignupManager::new(
+        // Signup and recovery hold their own EnrollmentFlow. The two flows
+        // differ only in their rate limiter, kept separate so a recovery
+        // rate-limit test can provision users through signup without
+        // spending the budget it is measuring.
+        let signup_flow = EnrollmentFlow::new(
             users.clone() as Arc<dyn UserStore>,
             tokens.clone() as Arc<dyn VerificationTokenStore>,
             passkey.clone(),
@@ -219,9 +224,8 @@ impl HarnessBuilder {
             clock.clone() as Arc<dyn Clock>,
             audit.clone() as Arc<dyn AuditSink>,
             self.signup_limiter,
-            self.signup,
         );
-        let recovery = RecoveryManager::new(
+        let recovery_flow = EnrollmentFlow::new(
             users.clone() as Arc<dyn UserStore>,
             tokens.clone() as Arc<dyn VerificationTokenStore>,
             passkey.clone(),
@@ -230,8 +234,9 @@ impl HarnessBuilder {
             clock.clone() as Arc<dyn Clock>,
             audit.clone() as Arc<dyn AuditSink>,
             self.recovery_limiter,
-            self.recovery,
         );
+        let signup = SignupManager::new(signup_flow, self.signup);
+        let recovery = RecoveryManager::new(recovery_flow, self.recovery);
 
         Harness {
             passkey,

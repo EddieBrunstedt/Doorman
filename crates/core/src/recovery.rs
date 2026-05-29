@@ -29,17 +29,16 @@ use std::time::Duration;
 
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
-use crate::audit::{AuditEvent, AuditEventKind, AuditSink, RecoveryFailureReason};
-use crate::clock::Clock;
-use crate::email::{BauthEmails, EmailSender, default_emails};
-use crate::error::{Error, Result};
-use crate::passkey::PasskeyManager;
-use crate::rate_limit::{RateLimitPolicy, RateLimiter};
-use crate::session::{SessionContext, SessionManager, hash_token};
-use crate::storage::{
-    PasskeyChallengeId, UserId, UserStore, VerificationPurpose, VerificationTokenStore,
+use crate::audit::{AuditEventKind, RecoveryFailureReason};
+use crate::email::{BauthEmails, default_emails};
+use crate::error::Result;
+use crate::rate_limit::RateLimitPolicy;
+use crate::session::SessionContext;
+use crate::storage::{PasskeyChallengeId, VerificationPurpose};
+use crate::verification::{
+    self, EnrollmentFlow, EnrollmentOutcome, FlowKind, TOKEN_PLACEHOLDER,
+    VerificationConsumeOutcome,
 };
-use crate::verification::{self, EnrollmentOutcome, TOKEN_PLACEHOLDER, VerificationConsumeOutcome};
 
 /// Configuration for issuing and consuming recovery tokens.
 #[derive(Clone)]
@@ -131,16 +130,15 @@ impl Default for RecoveryConfig {
 }
 
 /// Manager for the three-step recovery flow.
+///
+/// A thin wrapper over the shared [`EnrollmentFlow`]: `consume_recovery`
+/// delegates directly and `finish_recovery` delegates with the cool-down
+/// and success-notification knobs set. `request_recovery` stays here — its
+/// silent-no-op-on-unknown-email behaviour and extra rate-limit policies
+/// are what make it distinct from signup's request path.
 #[derive(Clone)]
 pub struct RecoveryManager {
-    users: Arc<dyn UserStore>,
-    tokens: Arc<dyn VerificationTokenStore>,
-    passkey: PasskeyManager,
-    sessions: SessionManager,
-    email: Arc<dyn EmailSender>,
-    clock: Arc<dyn Clock>,
-    audit: Arc<dyn AuditSink>,
-    rate_limiter: Arc<dyn RateLimiter>,
+    flow: EnrollmentFlow,
     config: RecoveryConfig,
 }
 
@@ -152,35 +150,14 @@ impl RecoveryManager {
     /// a freshly-recovered account from an attacker who phished the link
     /// before the legitimate owner reacted; setting it shorter than that
     /// would defeat the post-recovery cool-down protection.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        users: Arc<dyn UserStore>,
-        tokens: Arc<dyn VerificationTokenStore>,
-        passkey: PasskeyManager,
-        sessions: SessionManager,
-        email: Arc<dyn EmailSender>,
-        clock: Arc<dyn Clock>,
-        audit: Arc<dyn AuditSink>,
-        rate_limiter: Arc<dyn RateLimiter>,
-        config: RecoveryConfig,
-    ) -> Self {
+    pub fn new(flow: EnrollmentFlow, config: RecoveryConfig) -> Self {
         assert!(
             config.cooldown >= MIN_COOLDOWN,
             "RecoveryConfig.cooldown ({:?}) is below the documented floor of {:?}",
             config.cooldown,
             MIN_COOLDOWN,
         );
-        Self {
-            users,
-            tokens,
-            passkey,
-            sessions,
-            email,
-            clock,
-            audit,
-            rate_limiter,
-            config,
-        }
+        Self { flow, config }
     }
 
     /// Diagnostic accessor used by the axum builder's startup warnings
@@ -188,7 +165,7 @@ impl RecoveryManager {
     /// underlying `Arc<dyn EmailSender>`.
     #[doc(hidden)]
     pub fn email_kind(&self) -> crate::email::EmailSenderKind {
-        self.email.diagnostic_kind()
+        self.flow.email_kind()
     }
 
     /// Issue a recovery link to `email`. Returns `Ok(())` regardless of
@@ -205,70 +182,58 @@ impl RecoveryManager {
         let email_normalized = verification::normalize_email(email);
         verification::validate_email(&email_normalized)?;
 
-        if let Err(err) = verification::enforce_rate_limit(
-            self.rate_limiter.as_ref(),
-            self.config.rate_limits.request_per_ip,
-            "recovery/request/ip",
-            context.ip.as_deref(),
+        let rate_limits = &self.config.rate_limits;
+        verification::enforce_all(
+            self.flow.rate_limiter().as_ref(),
+            &[
+                (
+                    rate_limits.request_per_ip,
+                    "recovery/request/ip",
+                    context.ip.as_deref(),
+                ),
+                (
+                    rate_limits.request_per_identifier,
+                    "recovery/request/email",
+                    Some(email_normalized.as_str()),
+                ),
+                (
+                    rate_limits.request_per_identifier_daily,
+                    "recovery/request/email/daily",
+                    Some(email_normalized.as_str()),
+                ),
+                (
+                    rate_limits.request_global,
+                    "recovery/request/global",
+                    Some("global"),
+                ),
+            ],
+            || async {
+                self.flow
+                    .audit_recovery_failed(None, RecoveryFailureReason::RateLimited, &context)
+                    .await;
+            },
         )
-        .await
-        {
-            self.audit_failed(None, RecoveryFailureReason::RateLimited, &context)
-                .await;
-            return Err(err);
-        }
-        if let Err(err) = verification::enforce_rate_limit(
-            self.rate_limiter.as_ref(),
-            self.config.rate_limits.request_per_identifier,
-            "recovery/request/email",
-            Some(email_normalized.as_str()),
-        )
-        .await
-        {
-            self.audit_failed(None, RecoveryFailureReason::RateLimited, &context)
-                .await;
-            return Err(err);
-        }
-        if let Err(err) = verification::enforce_rate_limit(
-            self.rate_limiter.as_ref(),
-            self.config.rate_limits.request_per_identifier_daily,
-            "recovery/request/email/daily",
-            Some(email_normalized.as_str()),
-        )
-        .await
-        {
-            self.audit_failed(None, RecoveryFailureReason::RateLimited, &context)
-                .await;
-            return Err(err);
-        }
-        if let Err(err) = verification::enforce_rate_limit(
-            self.rate_limiter.as_ref(),
-            self.config.rate_limits.request_global,
-            "recovery/request/global",
-            Some("global"),
-        )
-        .await
-        {
-            self.audit_failed(None, RecoveryFailureReason::RateLimited, &context)
-                .await;
-            return Err(err);
-        }
+        .await?;
 
-        let now = self.clock.now();
-        let Some(user) = self.users.find_user_by_email(&email_normalized).await? else {
+        let now = self.flow.now();
+        let Some(user) = self
+            .flow
+            .users()
+            .find_user_by_email(&email_normalized)
+            .await?
+        else {
             // Unknown email: audit the attempt and silently no-op so the
             // endpoint cannot tell the caller whether or not the address
             // is on file. No notification email is sent — doing so would
             // re-introduce the enumeration oracle by side-channel.
-            self.audit
-                .emit(AuditEvent {
-                    timestamp: now,
-                    ip: context.ip.clone(),
-                    user_agent: context.user_agent.clone(),
-                    kind: AuditEventKind::RecoveryRequested { user_id: None },
-                })
+            self.flow
+                .emit(
+                    &context,
+                    AuditEventKind::RecoveryRequested { user_id: None },
+                )
                 .await;
-            self.audit_failed(None, RecoveryFailureReason::UnknownEmail, &context)
+            self.flow
+                .audit_recovery_failed(None, RecoveryFailureReason::UnknownEmail, &context)
                 .await;
             tracing::info!(outcome = "unknown_email", "recovery request (silent)");
             return Ok(());
@@ -278,7 +243,7 @@ impl RecoveryManager {
         // Invalidate any prior recovery tokens for the user, store a fresh
         // single-use token, and render the link URL.
         let url = verification::issue_link(
-            self.tokens.as_ref(),
+            self.flow.tokens().as_ref(),
             user.id,
             VerificationPurpose::Recovery,
             self.config.token_lifetime,
@@ -287,19 +252,17 @@ impl RecoveryManager {
         )
         .await?;
         let link_email = self.config.emails.recovery_email(&user, &url);
-        self.email.send(link_email).await?;
+        self.flow.email_sender().send(link_email).await?;
         let notification = self.config.emails.recovery_notification_email(&user);
-        self.email.send(notification).await?;
+        self.flow.email_sender().send(notification).await?;
 
-        self.audit
-            .emit(AuditEvent {
-                timestamp: now,
-                ip: context.ip,
-                user_agent: context.user_agent,
-                kind: AuditEventKind::RecoveryRequested {
+        self.flow
+            .emit(
+                &context,
+                AuditEventKind::RecoveryRequested {
                     user_id: Some(user.id),
                 },
-            })
+            )
             .await;
         tracing::info!(outcome = "sent", "recovery email sent");
         Ok(())
@@ -318,66 +281,13 @@ impl RecoveryManager {
         token: &str,
         context: SessionContext,
     ) -> Result<VerificationConsumeOutcome> {
-        let hash = hash_token(token);
-        let now = self.clock.now();
-        let Some(record) = self
-            .tokens
-            .consume_token(&hash, VerificationPurpose::Recovery)
-            .await?
-        else {
-            self.audit_failed(None, RecoveryFailureReason::InvalidToken, &context)
-                .await;
-            tracing::warn!(outcome = "invalid_token", "recovery consume failed");
-            return Err(Error::InvalidVerificationToken);
-        };
-        if record.expires_at <= now {
-            // Expired tokens are audited but the user is *not* notified:
-            // an expired link grants nothing, and emailing on every stale
-            // click would train users to ignore the real alerts.
-            self.audit_failed(
-                Some(record.user_id),
-                RecoveryFailureReason::ExpiredToken,
-                &context,
-            )
-            .await;
-            tracing::warn!(outcome = "expired_token", "recovery consume failed");
-            return Err(Error::InvalidVerificationToken);
-        }
-        let Some(user) = self.users.find_user_by_id(record.user_id).await? else {
-            // The user vanished between request and consume. Treat the
-            // token as invalid to keep the response consistent with the
-            // "no such user" path.
-            self.audit_failed(
-                Some(record.user_id),
-                RecoveryFailureReason::InvalidToken,
-                &context,
-            )
-            .await;
-            tracing::warn!(outcome = "user_not_found", "recovery consume failed");
-            return Err(Error::UserNotFound);
-        };
-        tracing::Span::current().record("user_id", tracing::field::display(user.id));
-
-        let (challenge_id, options) = self.passkey.start_registration(user.id).await?;
-
-        self.audit
-            .emit(AuditEvent {
-                timestamp: now,
-                ip: context.ip,
-                user_agent: context.user_agent,
-                kind: AuditEventKind::RecoveryConsumed { user_id: user.id },
-            })
-            .await;
-        tracing::info!(outcome = "consumed", "recovery token consumed");
-        Ok(VerificationConsumeOutcome {
-            challenge_id,
-            options,
-        })
+        self.flow.consume(FlowKind::Recovery, token, context).await
     }
 
     /// Complete the recovery-time passkey registration ceremony and issue
-    /// a session. Sends a second notification email so the user sees that
-    /// the recovery completed and a new passkey was enrolled.
+    /// a session. The session carries a post-recovery cool-down, and a
+    /// notification email goes out so the user sees that the recovery
+    /// completed and a new passkey was enrolled.
     pub async fn finish_recovery(
         &self,
         challenge_id: PasskeyChallengeId,
@@ -385,58 +295,16 @@ impl RecoveryManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<EnrollmentOutcome> {
-        let passkey = self
-            .passkey
-            .finish_registration(challenge_id, response, name, context.clone())
-            .await?;
-        let Some(user) = self.users.find_user_by_id(passkey.user_id).await? else {
-            return Err(Error::UserNotFound);
-        };
-        let cooldown = chrono::Duration::from_std(self.config.cooldown)
-            .expect("recovery cooldown overflows chrono::Duration; configure a smaller value");
-        let cooldown_until = self.clock.now() + cooldown;
-        let session = self
-            .sessions
-            .create_restricted(user.id, context.clone(), cooldown_until)
-            .await?;
-
-        // Notify the registered user that recovery completed. Best-effort
-        // — a notification-send failure is logged but does not roll back
-        // the recovery (the passkey is already enrolled).
-        let notification = self.config.emails.recovery_notification_email(&user);
-        if let Err(err) = self.email.send(notification).await {
-            tracing::warn!(error = %err, "recovery success notification failed");
-        }
-
-        self.audit
-            .emit(AuditEvent {
-                timestamp: self.clock.now(),
-                ip: context.ip,
-                user_agent: context.user_agent,
-                kind: AuditEventKind::LoginSucceeded { user_id: user.id },
-            })
-            .await;
-        tracing::info!(outcome = "succeeded", "recovery finished");
-        Ok(EnrollmentOutcome {
-            user,
-            session,
-            passkey,
-        })
-    }
-
-    async fn audit_failed(
-        &self,
-        user_id: Option<UserId>,
-        reason: RecoveryFailureReason,
-        context: &SessionContext,
-    ) {
-        self.audit
-            .emit(AuditEvent {
-                timestamp: self.clock.now(),
-                ip: context.ip.clone(),
-                user_agent: context.user_agent.clone(),
-                kind: AuditEventKind::RecoveryFailed { user_id, reason },
-            })
-            .await;
+        self.flow
+            .finish(
+                FlowKind::Recovery,
+                challenge_id,
+                response,
+                name,
+                context,
+                Some(self.config.cooldown),
+                Some(&|user| self.config.emails.recovery_notification_email(user)),
+            )
+            .await
     }
 }
