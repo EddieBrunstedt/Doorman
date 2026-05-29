@@ -160,7 +160,7 @@ impl ManagerBuilder {
     /// Absolute public origin (scheme + host [+ port] [+ path prefix])
     /// that external clients use to reach the auth routes. Supplying an
     /// origin enables the CSRF origin-check layer by default; disable it
-    /// explicitly with [`with_csrf`](Self::with_csrf) when you have a
+    /// explicitly with [`csrf`](Self::csrf) when you have a
     /// known non-browser deployment.
     pub fn external_origin(mut self, origin: Url) -> Self {
         self.external_origin = Some(origin);
@@ -170,7 +170,7 @@ impl ManagerBuilder {
     /// Override the CSRF origin-check behaviour. By default, CSRF checks
     /// are enabled when [`external_origin`](Self::external_origin) is set
     /// and disabled otherwise.
-    pub fn with_csrf(mut self, config: CsrfConfig) -> Self {
+    pub fn csrf(mut self, config: CsrfConfig) -> Self {
         self.csrf_config = Some(config);
         self
     }

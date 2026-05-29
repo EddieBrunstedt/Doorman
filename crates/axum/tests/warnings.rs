@@ -207,7 +207,9 @@ fn quickstart_silence_warnings_suppresses_everything() {
 
 #[test]
 fn missing_email_sender_returns_build_error() {
-    let result = BauthAxum::builder(fresh_storage()).silence_warnings().build();
+    let result = BauthAxum::builder(fresh_storage())
+        .silence_warnings()
+        .build();
     match result {
         Err(BuilderError::MissingEmailSender) => {}
         Err(other) => panic!("expected MissingEmailSender, got: {other:?}"),

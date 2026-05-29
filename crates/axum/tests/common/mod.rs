@@ -18,13 +18,13 @@ use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
+use bauth_axum::BauthAxum;
 use bauth_axum::SessionCache;
 use bauth_axum::config::CookieConfig;
 use bauth_axum::dto::{
     AuthResponse, PasskeyChallenge, PasskeyDto, SignupConsumeRequest, SignupFinishRequest,
     SignupRequest, UserDto,
 };
-use bauth_axum::BauthAxum;
 use bauth_axum::extractors::AuthSession;
 use bauth_core::email::EmailSender;
 use bauth_core::memory::{

@@ -17,7 +17,7 @@ async fn start(csrf_config: Option<CsrfConfig>) -> TestApp {
     TestApp::start_with(Router::new(), false, |builder| {
         let builder = builder.external_origin(Url::parse(APP_ORIGIN).expect("origin"));
         if let Some(config) = csrf_config {
-            builder.with_csrf(config)
+            builder.csrf(config)
         } else {
             builder
         }

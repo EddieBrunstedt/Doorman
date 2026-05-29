@@ -61,10 +61,10 @@ use bauth_core::storage::Storage;
 use url::Url;
 
 use crate::BauthAxum;
-use crate::manager_builder::{BuilderError, ManagerBuilder};
 use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
+use crate::manager_builder::{BuilderError, ManagerBuilder};
 use crate::warnings::Warnings;
 
 /// High-level builder returned from [`BauthAxum::builder`].
@@ -204,7 +204,7 @@ impl BauthBuilder {
     /// Override the CSRF origin-check behaviour. By default, CSRF checks
     /// are enabled when [`external_origin`](Self::external_origin) is set
     /// and disabled otherwise.
-    pub fn with_csrf(mut self, config: CsrfConfig) -> Self {
+    pub fn csrf(mut self, config: CsrfConfig) -> Self {
         self.csrf_config = Some(config);
         self
     }
@@ -294,7 +294,7 @@ impl BauthBuilder {
         }
 
         if let Some(csrf_config) = self.csrf_config {
-            builder = builder.with_csrf(csrf_config);
+            builder = builder.csrf(csrf_config);
         }
 
         let passkey_manager = PasskeyManager::new(
