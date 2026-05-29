@@ -12,15 +12,14 @@ use bauth_core::memory::{
 };
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
 use bauth_core::rate_limit::{NoopRateLimiter, RateLimitPolicy, RateLimiter};
-use bauth_core::recovery::{
-    RecoveryConfig, RecoveryManager, RecoveryRateLimits, TOKEN_PLACEHOLDER,
-};
+use bauth_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
 use bauth_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use bauth_core::storage::{
     PasskeyChallengeStore, PasskeyCredentialStore, SessionStore, User, UserStore,
     VerificationTokenStore,
 };
+use bauth_core::verification::TOKEN_PLACEHOLDER;
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
 use url::Url;
 use webauthn_authenticator_rs::WebauthnAuthenticator;

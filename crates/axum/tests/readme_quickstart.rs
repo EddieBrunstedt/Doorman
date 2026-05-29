@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::{Router, routing::get};
 use bauth_axum::prelude::*;
-use bauth_core::signup::TOKEN_PLACEHOLDER;
+use bauth_core::verification::TOKEN_PLACEHOLDER;
 use bauth_sqlx::SqliteStorage;
 use url::Url;
 

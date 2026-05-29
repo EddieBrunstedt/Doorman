@@ -5,7 +5,7 @@ use std::{env, net::SocketAddr, sync::Arc};
 use axum::{Json, Router, extract::State, response::Html, routing::get};
 use bauth_axum::dto::{SessionDto, UserDto};
 use bauth_axum::prelude::*;
-use bauth_core::{signup::TOKEN_PLACEHOLDER, storage::PasskeyCredentialStore};
+use bauth_core::{storage::PasskeyCredentialStore, verification::TOKEN_PLACEHOLDER};
 use bauth_sqlx::SqliteStorage;
 use url::Url;
 

@@ -27,28 +27,19 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rand::RngCore;
-use rand::rngs::OsRng;
-use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
+use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink, RecoveryFailureReason};
 use crate::clock::Clock;
 use crate::email::{BauthEmails, EmailSender, default_emails};
 use crate::error::{Error, Result};
 use crate::passkey::PasskeyManager;
-use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
-use crate::session::{IssuedSession, SessionContext, SessionManager, hash_token};
+use crate::rate_limit::{RateLimitPolicy, RateLimiter};
+use crate::session::{SessionContext, SessionManager, hash_token};
 use crate::storage::{
-    PasskeyChallengeId, StoredPasskey, TokenHash, User, UserId, UserStore, VerificationPurpose,
-    VerificationToken, VerificationTokenStore,
+    PasskeyChallengeId, UserId, UserStore, VerificationPurpose, VerificationTokenStore,
 };
-
-const RECOVERY_TOKEN_BYTES: usize = 32;
-
-/// Placeholder substituted with the generated token in URL templates.
-pub const TOKEN_PLACEHOLDER: &str = "{token}";
+use crate::verification::{self, EnrollmentOutcome, TOKEN_PLACEHOLDER, VerificationConsumeOutcome};
 
 /// Configuration for issuing and consuming recovery tokens.
 #[derive(Clone)]
@@ -139,23 +130,6 @@ impl Default for RecoveryConfig {
     }
 }
 
-/// Result of a successful [`RecoveryManager::consume_recovery`] call: the
-/// caller hands `options` to `navigator.credentials.create` and echoes
-/// `challenge_id` back at finish time.
-#[derive(Debug)]
-pub struct RecoveryConsumeOutcome {
-    pub challenge_id: PasskeyChallengeId,
-    pub options: CreationChallengeResponse,
-}
-
-/// Result of a successful [`RecoveryManager::finish_recovery`] call.
-#[derive(Debug, Clone)]
-pub struct RecoveryOutcome {
-    pub user: User,
-    pub session: IssuedSession,
-    pub passkey: StoredPasskey,
-}
-
 /// Manager for the three-step recovery flow.
 #[derive(Clone)]
 pub struct RecoveryManager {
@@ -228,52 +202,52 @@ impl RecoveryManager {
         fields(method = "recovery", user_id = tracing::field::Empty),
     )]
     pub async fn request_recovery(&self, email: &str, context: SessionContext) -> Result<()> {
-        let email_normalized = normalize_email(email);
-        validate_email(&email_normalized)?;
+        let email_normalized = verification::normalize_email(email);
+        verification::validate_email(&email_normalized)?;
 
-        if let Err(err) = self
-            .enforce_rate_limit(
-                self.config.rate_limits.request_per_ip,
-                "recovery/request/ip",
-                context.ip.as_deref(),
-            )
-            .await
+        if let Err(err) = verification::enforce_rate_limit(
+            self.rate_limiter.as_ref(),
+            self.config.rate_limits.request_per_ip,
+            "recovery/request/ip",
+            context.ip.as_deref(),
+        )
+        .await
         {
             self.audit_failed(None, RecoveryFailureReason::RateLimited, &context)
                 .await;
             return Err(err);
         }
-        if let Err(err) = self
-            .enforce_rate_limit(
-                self.config.rate_limits.request_per_identifier,
-                "recovery/request/email",
-                Some(email_normalized.as_str()),
-            )
-            .await
+        if let Err(err) = verification::enforce_rate_limit(
+            self.rate_limiter.as_ref(),
+            self.config.rate_limits.request_per_identifier,
+            "recovery/request/email",
+            Some(email_normalized.as_str()),
+        )
+        .await
         {
             self.audit_failed(None, RecoveryFailureReason::RateLimited, &context)
                 .await;
             return Err(err);
         }
-        if let Err(err) = self
-            .enforce_rate_limit(
-                self.config.rate_limits.request_per_identifier_daily,
-                "recovery/request/email/daily",
-                Some(email_normalized.as_str()),
-            )
-            .await
+        if let Err(err) = verification::enforce_rate_limit(
+            self.rate_limiter.as_ref(),
+            self.config.rate_limits.request_per_identifier_daily,
+            "recovery/request/email/daily",
+            Some(email_normalized.as_str()),
+        )
+        .await
         {
             self.audit_failed(None, RecoveryFailureReason::RateLimited, &context)
                 .await;
             return Err(err);
         }
-        if let Err(err) = self
-            .enforce_rate_limit(
-                self.config.rate_limits.request_global,
-                "recovery/request/global",
-                Some("global"),
-            )
-            .await
+        if let Err(err) = verification::enforce_rate_limit(
+            self.rate_limiter.as_ref(),
+            self.config.rate_limits.request_global,
+            "recovery/request/global",
+            Some("global"),
+        )
+        .await
         {
             self.audit_failed(None, RecoveryFailureReason::RateLimited, &context)
                 .await;
@@ -301,26 +275,17 @@ impl RecoveryManager {
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
-        // Invalidate any prior recovery tokens for the user so a stale
-        // link cannot still be redeemed after a fresh request.
-        self.tokens
-            .delete_tokens_for_user(user.id, VerificationPurpose::Recovery)
-            .await?;
-
-        let lifetime = chrono::Duration::from_std(self.config.token_lifetime)
-            .expect("recovery lifetime overflows chrono::Duration; configure a smaller value");
-        let (token, token_hash) = generate_token();
-        self.tokens
-            .create_token(VerificationToken {
-                token_hash,
-                user_id: user.id,
-                purpose: VerificationPurpose::Recovery,
-                created_at: now,
-                expires_at: now + lifetime,
-            })
-            .await?;
-
-        let url = build_url(&self.config.url_template, &token);
+        // Invalidate any prior recovery tokens for the user, store a fresh
+        // single-use token, and render the link URL.
+        let url = verification::issue_link(
+            self.tokens.as_ref(),
+            user.id,
+            VerificationPurpose::Recovery,
+            self.config.token_lifetime,
+            &self.config.url_template,
+            now,
+        )
+        .await?;
         let link_email = self.config.emails.recovery_email(&user, &url);
         self.email.send(link_email).await?;
         let notification = self.config.emails.recovery_notification_email(&user);
@@ -342,7 +307,7 @@ impl RecoveryManager {
 
     /// Redeem a recovery token and start a passkey registration ceremony.
     /// The token is atomically consumed so the same link cannot be
-    /// replayed; the returned [`RecoveryConsumeOutcome`] carries the
+    /// replayed; the returned [`VerificationConsumeOutcome`] carries the
     /// registration challenge.
     #[tracing::instrument(
         skip(self, token, context),
@@ -352,7 +317,7 @@ impl RecoveryManager {
         &self,
         token: &str,
         context: SessionContext,
-    ) -> Result<RecoveryConsumeOutcome> {
+    ) -> Result<VerificationConsumeOutcome> {
         let hash = hash_token(token);
         let now = self.clock.now();
         let Some(record) = self
@@ -404,7 +369,7 @@ impl RecoveryManager {
             })
             .await;
         tracing::info!(outcome = "consumed", "recovery token consumed");
-        Ok(RecoveryConsumeOutcome {
+        Ok(VerificationConsumeOutcome {
             challenge_id,
             options,
         })
@@ -419,7 +384,7 @@ impl RecoveryManager {
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
         context: SessionContext,
-    ) -> Result<RecoveryOutcome> {
+    ) -> Result<EnrollmentOutcome> {
         let passkey = self
             .passkey
             .finish_registration(challenge_id, response, name, context.clone())
@@ -452,27 +417,11 @@ impl RecoveryManager {
             })
             .await;
         tracing::info!(outcome = "succeeded", "recovery finished");
-        Ok(RecoveryOutcome {
+        Ok(EnrollmentOutcome {
             user,
             session,
             passkey,
         })
-    }
-
-    async fn enforce_rate_limit(
-        &self,
-        policy: Option<RateLimitPolicy>,
-        prefix: &str,
-        scope: Option<&str>,
-    ) -> Result<()> {
-        let (Some(policy), Some(scope)) = (policy, scope) else {
-            return Ok(());
-        };
-        let key = format!("{prefix}:{scope}");
-        match self.rate_limiter.check(&key, policy).await? {
-            RateLimitDecision::Allowed => Ok(()),
-            RateLimitDecision::Limited { retry_after } => Err(Error::RateLimited { retry_after }),
-        }
     }
 
     async fn audit_failed(
@@ -489,47 +438,5 @@ impl RecoveryManager {
                 kind: AuditEventKind::RecoveryFailed { user_id, reason },
             })
             .await;
-    }
-}
-
-fn normalize_email(email: &str) -> String {
-    email.trim().to_ascii_lowercase()
-}
-
-fn validate_email(email: &str) -> Result<()> {
-    if email.is_empty() || !email.contains('@') {
-        return Err(Error::InvalidEmail);
-    }
-    Ok(())
-}
-
-fn build_url(template: &str, token: &str) -> String {
-    template.replace(TOKEN_PLACEHOLDER, token)
-}
-
-fn generate_token() -> (String, TokenHash) {
-    let mut bytes = [0u8; RECOVERY_TOKEN_BYTES];
-    OsRng.fill_bytes(&mut bytes);
-    let token = URL_SAFE_NO_PAD.encode(bytes);
-    let hash = hash_token(&token);
-    (token, hash)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn build_url_substitutes_placeholder() {
-        let url = build_url("https://x.test/r?token={token}", "abc");
-        assert_eq!(url, "https://x.test/r?token=abc");
-    }
-
-    #[test]
-    fn tokens_are_unique() {
-        let (a, ha) = generate_token();
-        let (b, hb) = generate_token();
-        assert_ne!(a, b);
-        assert_ne!(ha, hb);
     }
 }

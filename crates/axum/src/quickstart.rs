@@ -72,7 +72,7 @@ use crate::warnings::Warnings;
 ///
 /// ```ignore
 /// use bauth_axum::prelude::*;
-/// use bauth_core::signup::TOKEN_PLACEHOLDER;
+/// use bauth_core::verification::TOKEN_PLACEHOLDER;
 ///
 /// let base = origin.as_str().trim_end_matches('/');
 /// let auth = bauth_axum::quickstart(storage)

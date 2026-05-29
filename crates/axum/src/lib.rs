@@ -9,7 +9,7 @@
 //! use std::sync::Arc;
 //!
 //! use bauth_axum::prelude::*;
-//! use bauth_core::signup::TOKEN_PLACEHOLDER;
+//! use bauth_core::verification::TOKEN_PLACEHOLDER;
 //! use bauth_sqlx::SqliteStorage;
 //!
 //! let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").await?;
