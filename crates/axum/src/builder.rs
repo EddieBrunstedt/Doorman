@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use bauth_core::email::{EmailSender, EmailSenderKind};
+use bauth_core::email::EmailSenderKind;
 use bauth_core::session::SessionManager;
 use bauth_core::storage::UserStore;
 use url::Url;
@@ -32,10 +32,13 @@ pub enum BuilderError {
     MissingSessionManager,
     #[error("user_store is required")]
     MissingUserStore,
-    /// The host did not wire an [`EmailSender`]. There is no silent
-    /// default; pick a real transport (lettre, resend, …) for
-    /// production, or use [`TerminalEmailSender`] /
-    /// [`FileEmailSender`] for local development.
+    /// The [`quickstart`](crate::quickstart) builder, which constructs the
+    /// signup / recovery managers itself, was not given an
+    /// [`EmailSender`]. There is no silent default; pick a real transport
+    /// (lettre, resend, …) for production, or use [`TerminalEmailSender`] /
+    /// [`FileEmailSender`] for local development. The low-level
+    /// [`BauthAxumBuilder`] takes pre-built managers that already own their
+    /// sender, so it never returns this error.
     ///
     /// [`EmailSender`]: bauth_core::email::EmailSender
     /// [`TerminalEmailSender`]: bauth_core::email::TerminalEmailSender
@@ -63,12 +66,25 @@ pub enum BuilderError {
     Passkey(bauth_core::error::Error),
 }
 
-/// Low-level builder for hosts that construct core managers themselves.
+/// Low-level builder for hosts that construct the core managers
+/// themselves.
+///
+/// Use this when you build the [`SessionManager`], [`PasskeyManager`],
+/// [`SignupManager`], and [`RecoveryManager`] yourself (wiring your own
+/// clock, audit sink, rate limiter, email transport, etc.) and just need
+/// the HTTP presentation layer bolted on. Each manager already owns its
+/// [`EmailSender`](bauth_core::email::EmailSender); the builder reads the
+/// signup / recovery managers' [`email_kind`](SignupManager::email_kind)
+/// diagnostic to emit the dev-transport startup warning, so it does not
+/// take a separate sender.
+///
+/// If you would rather hand over a [`Storage`](bauth_core::storage::Storage)
+/// plus passkey / email config and let the managers be constructed for you,
+/// use [`quickstart`](crate::quickstart) instead.
 #[derive(Default)]
 pub struct BauthAxumBuilder {
     session_manager: Option<SessionManager>,
     user_store: Option<Arc<dyn UserStore>>,
-    email_sender: Option<Arc<dyn EmailSender>>,
     cookie_config: Option<CookieConfig>,
     cache_config: Option<SessionCacheConfig>,
     session_cache: Option<SessionCache>,
@@ -94,21 +110,6 @@ impl BauthAxumBuilder {
 
     pub fn user_store(mut self, store: Arc<dyn UserStore>) -> Self {
         self.user_store = Some(store);
-        self
-    }
-
-    /// Wire the [`EmailSender`] used by the signup / recovery flows.
-    /// Required — [`build`](Self::build) returns
-    /// [`BuilderError::MissingEmailSender`] when not set. The same
-    /// transport must be the one passed into the
-    /// [`SignupManager`](bauth_core::signup::SignupManager) and
-    /// [`RecoveryManager`](bauth_core::recovery::RecoveryManager) the host
-    /// constructs; the builder keeps a reference so it can detect dev
-    /// transports for the startup warnings.
-    ///
-    /// [`EmailSender`]: bauth_core::email::EmailSender
-    pub fn email_sender(mut self, sender: Arc<dyn EmailSender>) -> Self {
-        self.email_sender = Some(sender);
         self
     }
 
@@ -197,7 +198,6 @@ impl BauthAxumBuilder {
             .session_manager
             .ok_or(BuilderError::MissingSessionManager)?;
         let user_store = self.user_store.ok_or(BuilderError::MissingUserStore)?;
-        let email_sender = self.email_sender.ok_or(BuilderError::MissingEmailSender)?;
         let passkey = self.passkey.ok_or(BuilderError::MissingPasskeyManager)?;
         let signup = self.signup.ok_or(BuilderError::MissingSignupManager)?;
         let recovery = self.recovery.ok_or(BuilderError::MissingRecoveryManager)?;
@@ -206,10 +206,12 @@ impl BauthAxumBuilder {
         if !self.silence_warnings {
             let mut warnings = self.inherited_warnings.clone();
             warnings.cookie_insecure_in_production = warnings::check_cookie(&cookie_config);
-            if matches!(
-                email_sender.diagnostic_kind(),
-                EmailSenderKind::Terminal | EmailSenderKind::File
-            ) {
+            // The signup / recovery managers own the email transport; read
+            // their diagnostic to flag a dev-only sender rather than taking
+            // a redundant sender input that the host has to keep in sync.
+            let is_dev_transport =
+                |kind| matches!(kind, EmailSenderKind::Terminal | EmailSenderKind::File);
+            if is_dev_transport(signup.email_kind()) || is_dev_transport(recovery.email_kind()) {
                 warnings.dev_email_transport = true;
             }
             warnings.emit();

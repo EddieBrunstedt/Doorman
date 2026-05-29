@@ -240,7 +240,6 @@ fn low_level_builder_rejects_missing_passkey_manager() {
     let result = BauthAxum::builder()
         .session_manager(session_manager)
         .user_store(storage.users.clone())
-        .email_sender(capturing_email())
         .silence_warnings()
         .build();
 

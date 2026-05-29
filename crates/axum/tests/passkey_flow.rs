@@ -97,7 +97,6 @@ impl PasskeyApp {
         let auth = BauthAxum::builder()
             .session_manager(session_manager)
             .user_store(users)
-            .email_sender(email_sender)
             .passkey_manager(passkey_manager)
             .signup_manager(signup_manager)
             .recovery_manager(recovery_manager)

@@ -114,7 +114,6 @@ impl Harness {
         let auth = BauthAxum::builder()
             .session_manager(session_manager.clone())
             .user_store(user_store.clone())
-            .email_sender(email)
             .passkey_manager(passkey_manager)
             .signup_manager(signup_manager)
             .recovery_manager(recovery_manager)

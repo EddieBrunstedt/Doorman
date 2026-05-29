@@ -281,7 +281,6 @@ impl QuickstartBuilder {
         let mut builder = BauthAxumBuilder::default()
             .session_manager(session_manager.clone())
             .user_store(self.storage.users.clone())
-            .email_sender(email.clone())
             .session_cache(cache);
         builder.inherited_warnings = warnings;
         if self.silence_warnings {
