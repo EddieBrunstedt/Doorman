@@ -19,10 +19,6 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rand::RngCore;
-use rand::rngs::OsRng;
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink, RecoveryFailureReason};
@@ -31,15 +27,11 @@ use crate::email::{Email, EmailSender, EmailSenderKind};
 use crate::error::{Error, Result};
 use crate::passkey::PasskeyManager;
 use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
-use crate::session::{IssuedSession, SessionContext, SessionManager, hash_token};
+use crate::session::{IssuedSession, SessionContext, SessionManager, generate_token, hash_token};
 use crate::storage::{
-    PasskeyChallengeId, StoredPasskey, TokenHash, User, UserId, UserStore, VerificationPurpose,
+    PasskeyChallengeId, StoredPasskey, User, UserId, UserStore, VerificationPurpose,
     VerificationToken, VerificationTokenStore,
 };
-
-/// Length in bytes of a freshly-generated verification token before
-/// base64 encoding. 32 bytes is 256 bits of entropy.
-const TOKEN_BYTES: usize = 32;
 
 /// Placeholder substituted with the generated token in URL templates. The
 /// literal substring `{token}` is replaced with the generated token at
@@ -83,16 +75,6 @@ pub(crate) fn validate_email(email: &str) -> Result<()> {
 /// generated token.
 pub(crate) fn build_url(template: &str, token: &str) -> String {
     template.replace(TOKEN_PLACEHOLDER, token)
-}
-
-/// Generate a fresh token and its at-rest hash. The cleartext token goes
-/// in the email link; only the hash is persisted.
-pub(crate) fn generate_token() -> (String, TokenHash) {
-    let mut bytes = [0u8; TOKEN_BYTES];
-    OsRng.fill_bytes(&mut bytes);
-    let token = URL_SAFE_NO_PAD.encode(bytes);
-    let hash = hash_token(&token);
-    (token, hash)
 }
 
 /// Enforce one rate-limit policy for a `prefix:scope` key. A `None` policy

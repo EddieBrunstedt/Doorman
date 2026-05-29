@@ -20,7 +20,8 @@ use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 
-/// Length of the random token in bytes. 256 bits of entropy.
+/// Length of the random token in bytes. 256 bits of entropy. Shared by
+/// session tokens and verification tokens (see [`generate_token`]).
 const TOKEN_BYTES: usize = 32;
 
 /// A session that has just been issued, paired with the plaintext token to
@@ -332,7 +333,10 @@ pub fn hash_token(token: &str) -> TokenHash {
     TokenHash(out)
 }
 
-fn generate_token() -> (String, TokenHash) {
+/// Generate a fresh random token and its at-rest hash. The cleartext token
+/// is handed to the client (session cookie or email link); only the hash is
+/// persisted. Shared by [`SessionManager`] and the verification flows.
+pub(crate) fn generate_token() -> (String, TokenHash) {
     let mut bytes = [0u8; TOKEN_BYTES];
     OsRng.fill_bytes(&mut bytes);
     let token = URL_SAFE_NO_PAD.encode(bytes);
