@@ -7,11 +7,13 @@
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::routing::{delete, get};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, post};
 use bauth_core::storage::SessionId;
 use uuid::Uuid;
 
+use crate::cookies::clear_session_cookie;
 use crate::dto::SessionDto;
 use crate::error::ErrorResponse;
 use crate::extractors::AuthSession;
@@ -19,8 +21,27 @@ use crate::state::BauthState;
 
 pub(crate) fn routes() -> Router<BauthState> {
     Router::new()
+        .route("/logout", post(logout))
         .route("/sessions", get(list).delete(remove_others))
         .route("/sessions/{id}", delete(remove))
+}
+
+/// End the caller's *own* session: revoke it server-side and clear the
+/// session cookie so the browser stops replaying a dead token.
+///
+/// Not gated by the post-recovery cool-down — signing out of your own
+/// session is always allowed, the same way `DELETE /sessions/{id}` lets you
+/// drop the current session during the cool-down window. The session
+/// layer's origin check covers CSRF for cookie-bearing POSTs.
+async fn logout(
+    State(state): State<BauthState>,
+    auth: AuthSession,
+) -> Result<Response, ErrorResponse> {
+    state.session_manager.revoke(&auth.token).await?;
+    let cookie = clear_session_cookie(&state.cookie_config);
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response.headers_mut().insert(header::SET_COOKIE, cookie);
+    Ok(response)
 }
 
 async fn list(

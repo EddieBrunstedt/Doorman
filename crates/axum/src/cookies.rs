@@ -4,11 +4,6 @@
 //! (parsing, attribute formatting) and only wrap the patterns the rest of
 //! the crate needs — read by name, build a Set-Cookie value, build a
 //! cleared-cookie value.
-//!
-//! Several helpers are only consulted by feature-gated route modules, so
-//! we tolerate `dead_code` here rather than fragmenting the module with
-//! `cfg` attributes that don't add information for a reader.
-#![allow(dead_code)]
 
 use std::time::Duration;
 

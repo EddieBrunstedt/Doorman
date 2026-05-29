@@ -69,6 +69,10 @@ bearer token so your handlers can use `AuthUser`, `OptionalAuthUser`, and
 - **Manage access:** authenticated users can list/add/delete passkeys and
   list/revoke sessions. Cool-down sessions cannot delete passkeys or revoke
   other sessions.
+- **Sign out:** `POST /auth/logout` revokes the caller's current session
+  and returns `204` with a `Set-Cookie` that clears the session cookie.
+  Signing out of your own session is allowed even during the post-recovery
+  cool-down.
 
 Encourage every user to register at least two passkeys: for example a
 platform passkey plus a password-manager or hardware-key backup. The

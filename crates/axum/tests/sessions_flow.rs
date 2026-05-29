@@ -87,6 +87,60 @@ async fn delete_session_revokes_target_and_leaves_caller_authenticated() {
 }
 
 #[tokio::test]
+async fn logout_revokes_current_session_and_clears_cookie() {
+    let app = TestApp::start(Router::new(), false).await;
+    let client = reqwest::Client::new();
+
+    let caller = login(&client, &app, "erin@example.com").await;
+
+    let resp = client
+        .post(app.url("/auth/logout"))
+        .bearer_auth(&caller.token)
+        .send()
+        .await
+        .expect("logout");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // The response clears the session cookie.
+    let set_cookie = resp
+        .headers()
+        .get(axum::http::header::SET_COOKIE)
+        .expect("Set-Cookie present")
+        .to_str()
+        .expect("ascii cookie");
+    assert!(set_cookie.contains("bauth_session="));
+    assert!(set_cookie.contains("Max-Age=0"));
+
+    // The revoked token no longer authenticates.
+    let stale = client
+        .get(app.url("/me"))
+        .bearer_auth(&caller.token)
+        .send()
+        .await
+        .expect("me stale");
+    assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn logout_requires_authentication() {
+    let app = TestApp::start(Router::new(), false).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(app.url("/auth/logout"))
+        .send()
+        .await
+        .expect("logout anon");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let body: serde_json::Value = resp.json().await.expect("body");
+    assert_eq!(body["error"]["code"], "session_not_found");
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
 async fn delete_session_owned_by_another_user_returns_session_not_found() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
