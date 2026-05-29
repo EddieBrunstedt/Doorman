@@ -6,9 +6,8 @@
 //! implementations: [`TerminalEmailSender`] (prints rendered messages to
 //! stdout) and [`FileEmailSender`] (writes RFC 822-shaped `.eml` files
 //! into a directory). Tests use `CapturingEmailSender` from
-//! `crate::memory` behind the `testing` feature; hosts plug in real
-//! transports (lettre, resend, SES, …) through the [`EmailSender`]
-//! trait.
+//! `bauth-test-support`; hosts plug in real transports (lettre, resend,
+//! SES, …) through the [`EmailSender`] trait.
 //!
 //! The library uses email purely as a side channel for **signup links**
 //! and **recovery links** (plus the recovery-notification email a
@@ -53,8 +52,7 @@ pub enum EmailSenderKind {
     /// [`FileEmailSender`] — writes `.eml` files to disk, never
     /// delivers.
     File,
-    /// `CapturingEmailSender` from the `testing` feature — for tests
-    /// only.
+    /// `CapturingEmailSender` from `bauth-test-support` — for tests only.
     Capturing,
 }
 

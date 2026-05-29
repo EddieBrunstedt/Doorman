@@ -28,8 +28,8 @@ use bauth_axum::extractors::AuthSession;
 use bauth_axum::quickstart;
 use bauth_core::email::EmailSender;
 use bauth_core::memory::{
-    CapturingEmailSender, InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore,
-    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
+    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
+    InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::passkey::PasskeyConfig;
 use bauth_core::recovery::{RecoveryConfig, RecoveryRateLimits};
@@ -37,6 +37,7 @@ use bauth_core::session::{SessionContext, SessionManager};
 use bauth_core::signup::{SignupConfig, SignupRateLimits};
 use bauth_core::storage::{PasskeyCredentialStore, Storage, User, UserId, UserStore};
 use bauth_core::verification::TOKEN_PLACEHOLDER;
+use bauth_test_support::CapturingEmailSender;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use url::Url as ServerUrl;

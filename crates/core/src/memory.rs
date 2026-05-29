@@ -1,6 +1,11 @@
 //! In-memory implementations of every storage trait, intended for tests and
 //! local experiments. Not suitable for production: data lives only as long as
 //! the process and lookups hold a `std::sync::Mutex` for their duration.
+//!
+//! The stores and [`InMemoryRateLimiter`] are always available: the limiter is
+//! the quickstart default and the stores back local experiments. The pure
+//! test doubles (mock clock, in-memory audit sink, capturing email sender)
+//! live in `bauth-test-support` so they never compile into a production build.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -8,12 +13,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::audit::{AuditEvent, AuditSink};
 use crate::clock::Clock;
-#[cfg(any(feature = "testing", test))]
-use crate::email::{Email, EmailSender, EmailSenderKind};
-#[cfg(any(feature = "testing", test))]
-use crate::error::EmailResult;
 use crate::error::{StorageError, StorageResult};
 use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter, RateLimiterKind};
 use crate::storage::{
@@ -233,83 +233,6 @@ impl SessionStore for InMemorySessionStore {
             }
         }
         Ok(count)
-    }
-}
-
-/// Audit sink that records events in memory for tests.
-#[derive(Debug, Default)]
-pub struct InMemoryAuditSink {
-    events: Mutex<Vec<AuditEvent>>,
-}
-
-impl InMemoryAuditSink {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn events(&self) -> Vec<AuditEvent> {
-        self.events
-            .lock()
-            .expect("audit sink mutex poisoned")
-            .clone()
-    }
-
-    pub fn len(&self) -> usize {
-        self.events.lock().expect("audit sink mutex poisoned").len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
-#[async_trait]
-impl AuditSink for InMemoryAuditSink {
-    async fn emit(&self, event: AuditEvent) {
-        self.events
-            .lock()
-            .expect("audit sink mutex poisoned")
-            .push(event);
-    }
-}
-
-/// Email sender that records messages in memory for tests. Behind the
-/// `testing` Cargo feature — production builds cannot see it. The
-/// `test` cfg gate keeps unit tests inside this crate building without
-/// turning on the feature.
-#[cfg(any(feature = "testing", test))]
-#[derive(Debug, Default)]
-pub struct CapturingEmailSender {
-    sent: Mutex<Vec<Email>>,
-}
-
-#[cfg(any(feature = "testing", test))]
-impl CapturingEmailSender {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn sent(&self) -> Vec<Email> {
-        self.sent
-            .lock()
-            .expect("email sender mutex poisoned")
-            .clone()
-    }
-}
-
-#[cfg(any(feature = "testing", test))]
-#[async_trait]
-impl EmailSender for CapturingEmailSender {
-    async fn send(&self, email: Email) -> EmailResult<()> {
-        self.sent
-            .lock()
-            .expect("email sender mutex poisoned")
-            .push(email);
-        Ok(())
-    }
-
-    fn diagnostic_kind(&self) -> EmailSenderKind {
-        EmailSenderKind::Capturing
     }
 }
 

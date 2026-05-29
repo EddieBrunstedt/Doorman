@@ -3,16 +3,15 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bauth_core::audit::{AuditEventKind, AuditSink};
-use bauth_core::clock::{Clock, MockClock, SystemClock};
+use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::email::{Email, EmailSender};
 use bauth_core::error::Error;
-use bauth_core::memory::{
-    CapturingEmailSender, InMemoryAuditSink, InMemorySessionStore, InMemoryUserStore,
-};
+use bauth_core::memory::{InMemorySessionStore, InMemoryUserStore};
 use bauth_core::session::{
     SessionConfig, SessionContext, SessionInvalidationHook, SessionManager, hash_token,
 };
 use bauth_core::storage::{Session, SessionId, SessionStore, User, UserId, UserStore};
+use bauth_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
 use std::sync::Mutex;
 

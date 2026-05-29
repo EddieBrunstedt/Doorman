@@ -10,9 +10,6 @@ description = "Core authentication primitives for the bauth library: storage tra
 
 [features]
 default = []
-# Re-exports test-only helpers (e.g. `CapturingEmailSender`). Off by default;
-# enable via `[dev-dependencies] bauth-core = { ..., features = ["testing"] }`.
-testing = []
 
 [dependencies]
 async-trait.workspace = true
@@ -32,6 +29,10 @@ webauthn-rs.workspace = true
 webauthn-rs-proto.workspace = true
 
 [dev-dependencies]
+# Test-only collaborators (mock clock, in-memory audit sink, capturing email
+# sender) live in their own crate so they never reach a production build. The
+# path-only edge means a `cargo publish` of bauth-core drops it.
+bauth-test-support = { path = "../test-support" }
 criterion.workspace = true
 tokio.workspace = true
 webauthn-authenticator-rs.workspace = true

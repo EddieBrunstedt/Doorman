@@ -10,9 +10,6 @@ description = "Axum HTTP integration for the bauth authentication library."
 
 [features]
 default = []
-# Forwards `bauth-core`'s testing helpers (e.g. `CapturingEmailSender`)
-# so axum-side tests can opt into them.
-testing = ["bauth-core/testing"]
 
 [dependencies]
 async-trait.workspace = true
@@ -35,7 +32,7 @@ uuid.workspace = true
 webauthn-rs.workspace = true
 
 [dev-dependencies]
-bauth-core = { path = "../core", version = "0.1.0", features = ["testing"] }
+bauth-test-support = { path = "../test-support" }
 bauth-sqlx = { path = "../sqlx", version = "0.1.0", features = ["sqlite"] }
 criterion.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }

@@ -219,6 +219,7 @@ dependencies = [
  "base64 0.22.1",
  "bauth-core",
  "bauth-sqlx",
+ "bauth-test-support",
  "chrono",
  "cookie",
  "criterion",
@@ -247,6 +248,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "bauth-test-support",
  "chrono",
  "criterion",
  "rand 0.8.6",
@@ -290,6 +292,15 @@ dependencies = [
  "tokio",
  "uuid",
  "webauthn-rs",
+]
+
+[[package]]
+name = "bauth-test-support"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bauth-core",
+ "chrono",
 ]
 
 [[package]]

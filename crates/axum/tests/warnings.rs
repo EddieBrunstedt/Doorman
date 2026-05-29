@@ -14,13 +14,14 @@ use bauth_core::audit::NoopAuditSink;
 use bauth_core::clock::SystemClock;
 use bauth_core::email::{EmailSender, FileEmailSender, TerminalEmailSender};
 use bauth_core::memory::{
-    CapturingEmailSender, InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore,
-    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
+    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
+    InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::passkey::PasskeyConfig;
 use bauth_core::rate_limit::NoopRateLimiter;
 use bauth_core::session::{SessionConfig, SessionManager};
 use bauth_core::storage::Storage;
+use bauth_test_support::CapturingEmailSender;
 use tracing_subscriber::fmt::MakeWriter;
 
 #[derive(Default, Clone)]

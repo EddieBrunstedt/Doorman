@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bauth_core::audit::AuditEventKind;
-use bauth_core::clock::{Clock, MockClock};
+use bauth_core::clock::Clock;
 use bauth_core::email::{BauthEmails, Email};
 use bauth_core::error::Error;
 use bauth_core::memory::InMemoryRateLimiter;
@@ -12,6 +12,7 @@ use bauth_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use bauth_core::session::SessionContext;
 use bauth_core::signup::{SignupConfig, SignupRateLimits};
 use bauth_core::storage::{User, UserStore};
+use bauth_test_support::MockClock;
 use chrono::Duration as ChronoDuration;
 
 use common::{Harness, SIGNUP_URL, authenticator, kinds, signup_config, token_from_email, ts};

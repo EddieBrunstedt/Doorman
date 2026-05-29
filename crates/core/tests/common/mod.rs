@@ -22,12 +22,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bauth_core::audit::{AuditEvent, AuditEventKind, AuditSink};
-use bauth_core::clock::{Clock, MockClock};
+use bauth_core::clock::Clock;
 use bauth_core::email::EmailSender;
 use bauth_core::memory::{
-    CapturingEmailSender, InMemoryAuditSink, InMemoryPasskeyChallengeStore,
-    InMemoryPasskeyCredentialStore, InMemorySessionStore, InMemoryUserStore,
-    InMemoryVerificationTokenStore,
+    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
+    InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
 use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
@@ -39,6 +38,7 @@ use bauth_core::storage::{
     UserStore, VerificationTokenStore,
 };
 use bauth_core::verification::TOKEN_PLACEHOLDER;
+use bauth_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
 use chrono::{DateTime, TimeZone, Utc};
 use url::Url;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
