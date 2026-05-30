@@ -288,6 +288,30 @@ pub trait BauthEmails: Send + Sync {
             body_html: None,
         }
     }
+
+    /// Sent whenever a passkey is successfully removed from the account.
+    /// `passkey_name` is the optional user-supplied friendly label; raw
+    /// credential ids and other credential material are not exposed to email
+    /// templates.
+    fn passkey_removed_notification_email(&self, user: &User, passkey_name: Option<&str>) -> Email {
+        let detail = display_passkey_name(passkey_name)
+            .map(|name| format!("The passkey named \"{name}\" was just removed from your account."))
+            .unwrap_or_else(|| "A passkey was just removed from your account.".to_string());
+
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Security notice: passkey removed".to_string(),
+            body_text: format!(
+                "Hello,\n\n\
+                 {detail} If this was you, no action is needed.\n\n\
+                 If this was not you, sign in with one of your remaining passkeys \
+                 immediately, review the passkeys and sessions on your account, and revoke \
+                 anything you do not recognise. Contact support if you cannot sign in or \
+                 regain access.\n"
+            ),
+            body_html: None,
+        }
+    }
 }
 
 fn display_passkey_name(passkey_name: Option<&str>) -> Option<String> {
@@ -344,6 +368,27 @@ impl SecurityEmailNotifier {
                 error = %err,
                 user_id = %user.id,
                 "passkey registered notification failed"
+            );
+        }
+    }
+
+    pub async fn passkey_removed(&self, user: &User, passkey_name: Option<&str>) {
+        if user.email.is_none() {
+            tracing::debug!(
+                user_id = %user.id,
+                "passkey removed notification skipped because user has no email"
+            );
+            return;
+        }
+
+        let email = self
+            .emails
+            .passkey_removed_notification_email(user, passkey_name);
+        if let Err(err) = self.sender.send(email).await {
+            tracing::warn!(
+                error = %err,
+                user_id = %user.id,
+                "passkey removed notification failed"
             );
         }
     }

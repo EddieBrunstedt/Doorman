@@ -29,6 +29,7 @@ const RECOVERY_LINK_SUBJECT: &str = "Recover access to your account";
 const RECOVERY_REQUESTED_NOTIFICATION_SUBJECT: &str = "Security notice: account recovery requested";
 const RECOVERY_COMPLETED_NOTIFICATION_SUBJECT: &str = "Security notice: account recovery completed";
 const PASSKEY_REGISTERED_NOTIFICATION_SUBJECT: &str = "Security notice: passkey registered";
+const PASSKEY_REMOVED_NOTIFICATION_SUBJECT: &str = "Security notice: passkey removed";
 
 #[derive(Clone)]
 struct ResidentCredential {
@@ -523,6 +524,7 @@ async fn delete_passkey_during_cooldown_returns_409() {
     let passkeys: Vec<bauth_axum::dto::PasskeyDto> = list.json().await.expect("list body");
     let first = passkeys.first().expect("at least one passkey").clone();
 
+    let mail_before_delete = app.email.sent().len();
     let resp = cookie_client
         .delete(app.url(&format!("/auth/passkey/{}", first.credential_id)))
         .bearer_auth(&auth.token)
@@ -532,6 +534,18 @@ async fn delete_passkey_during_cooldown_returns_409() {
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json().await.expect("body");
     assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+    let sent = app.email.sent();
+    assert_eq!(
+        sent.len(),
+        mail_before_delete,
+        "cooldown block sent no mail"
+    );
+    assert!(
+        !sent[mail_before_delete..]
+            .iter()
+            .any(|email| email.subject == PASSKEY_REMOVED_NOTIFICATION_SUBJECT),
+        "cooldown-blocked removal sent no passkey removal notification"
+    );
 
     app.shutdown().await;
 }

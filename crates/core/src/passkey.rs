@@ -4,8 +4,8 @@
 //! it with the user store, the passkey credential store, and a separate
 //! challenge store that holds the per-ceremony server-side state between
 //! the `start_*` and `finish_*` calls. Audit events are emitted at every
-//! meaningful step, and successful registrations send best-effort security
-//! notifications after the credential is stored.
+//! meaningful step, and successful passkey lifecycle changes send
+//! best-effort security notifications after the credential store changes.
 //!
 //! Account linking falls out of the design for free: register a passkey
 //! against any existing user id and that user now has a passkey credential.
@@ -320,6 +320,25 @@ impl PasskeyManager {
         }
     }
 
+    async fn notify_passkey_removed(&self, user_id: UserId, passkey_name: Option<&str>) {
+        match self.users.find_user_by_id(user_id).await {
+            Ok(Some(user)) => self.notifier.passkey_removed(&user, passkey_name).await,
+            Ok(None) => {
+                tracing::warn!(
+                    %user_id,
+                    "passkey removed notification skipped because user was not found"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    %user_id,
+                    "passkey removed notification skipped because user lookup failed"
+                );
+            }
+        }
+    }
+
     /// Begin a discoverable passkey authentication ceremony. Returns the
     /// [`RequestChallengeResponse`] for `navigator.credentials.get` and a
     /// [`PasskeyChallengeId`] the client must echo back. No user input is
@@ -460,6 +479,8 @@ impl PasskeyManager {
                 user_agent: context.user_agent,
                 kind: AuditEventKind::CredentialRemoved { user_id },
             })
+            .await;
+        self.notify_passkey_removed(user_id, credential.name.as_deref())
             .await;
         tracing::info!(outcome = "removed", "passkey removed");
         Ok(())

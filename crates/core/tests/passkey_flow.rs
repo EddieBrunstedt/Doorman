@@ -357,17 +357,25 @@ async fn finish_authentication_rejects_expired_challenge() {
 }
 
 #[tokio::test]
-async fn remove_passkey_emits_audit_and_blocks_login() {
+async fn remove_passkey_emits_audit_sends_notification_and_blocks_login() {
     let h = Harness::fresh();
     let user = make_user(&h, "remover@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+    let cred = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
+    let mail_before = h.email.sent().len();
 
     h.passkey
         .remove_passkey(user.id, &cred.credential_id, SessionContext::default())
         .await
         .expect("remove");
     assert!(h.credentials.is_empty());
+    let sent = h.email.sent();
+    let removal_mail = &sent[mail_before..];
+    assert_eq!(removal_mail.len(), 1, "passkey removal notification sent");
+    assert_eq!(removal_mail[0].subject, "Security notice: passkey removed");
+    assert!(removal_mail[0].body_text.contains("old phone"));
+    assert!(removal_mail[0].body_text.contains("If this was not you"));
+
     let events = kinds(&h.audit.events());
     assert!(
         events
@@ -377,12 +385,13 @@ async fn remove_passkey_emits_audit_and_blocks_login() {
 }
 
 #[tokio::test]
-async fn remove_passkey_refuses_other_users_credential() {
+async fn remove_passkey_refuses_other_users_credential_without_notification() {
     let h = Harness::fresh();
     let alice = make_user(&h, "a@example.com").await;
     let bob = make_user(&h, "b@example.com").await;
     let mut wa = authenticator();
     let cred = register_passkey(&h, alice.id, &mut wa, None).await;
+    let mail_before = h.email.sent().len();
 
     let err = h
         .passkey
@@ -391,6 +400,50 @@ async fn remove_passkey_refuses_other_users_credential() {
         .expect_err("ownership check");
     assert!(matches!(err, Error::PasskeyOwnershipMismatch));
     assert_eq!(h.credentials.len(), 1, "alice's passkey untouched");
+    assert_eq!(h.email.sent().len(), mail_before, "no removal email sent");
+}
+
+#[tokio::test]
+async fn remove_missing_passkey_sends_no_notification() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "missing@example.com").await;
+
+    let err = h
+        .passkey
+        .remove_passkey(user.id, b"missing credential", SessionContext::default())
+        .await
+        .expect_err("missing credential");
+    assert!(matches!(err, Error::PasskeyNotFound));
+    assert_eq!(h.email.sent().len(), 0, "no removal email sent");
+}
+
+#[tokio::test]
+async fn remove_passkey_notification_failure_does_not_undo_removal() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "remove-failure@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
+    let mail_before = h.email.sent().len();
+    h.email.fail_after_successful_sends(mail_before);
+
+    h.passkey
+        .remove_passkey(user.id, &cred.credential_id, SessionContext::default())
+        .await
+        .expect("remove succeeds despite notification failure");
+
+    assert!(
+        h.credentials
+            .find_passkey_by_credential_id(&cred.credential_id)
+            .await
+            .expect("find credential")
+            .is_none(),
+        "credential was still removed"
+    );
+    assert_eq!(
+        h.email.sent().len(),
+        mail_before,
+        "failed notification was not captured"
+    );
 }
 
 #[tokio::test]
