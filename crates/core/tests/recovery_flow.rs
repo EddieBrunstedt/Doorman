@@ -327,26 +327,45 @@ async fn successful_recovery_enrols_passkey_and_sends_success_notification() {
     );
     assert!(!h.sessions.is_empty(), "session issued");
 
-    let after_finish = &h.email.sent()[mail_before_finish..];
-    assert_eq!(after_finish.len(), 1, "completed notification sent");
+    let sent = h.email.sent();
+    let after_finish = &sent[mail_before_finish..];
     assert_eq!(
-        after_finish[0].subject,
-        "Security notice: account recovery completed",
+        after_finish.len(),
+        2,
+        "passkey + completed notifications sent",
     );
+    let subjects: Vec<&str> = after_finish.iter().map(|e| e.subject.as_str()).collect();
+    let Some(passkey_notification) = after_finish
+        .iter()
+        .find(|e| e.subject == "Security notice: passkey registered")
+    else {
+        panic!("passkey notification sent ({subjects:?})");
+    };
+    let Some(completed_notification) = after_finish
+        .iter()
+        .find(|e| e.subject == "Security notice: account recovery completed")
+    else {
+        panic!("completed notification sent ({subjects:?})");
+    };
+    assert!(passkey_notification.body_text.contains("backup device"));
     assert_ne!(
-        after_finish[0].subject.as_str(),
+        completed_notification.subject.as_str(),
         requested_notification.subject.as_str(),
     );
     assert_ne!(
-        after_finish[0].body_text.as_str(),
+        completed_notification.body_text.as_str(),
         requested_notification.body_text.as_str(),
     );
     assert!(
-        after_finish[0]
+        completed_notification
             .body_text
             .contains("Account recovery just completed")
     );
-    assert!(after_finish[0].body_text.contains("If this was not you"));
+    assert!(
+        completed_notification
+            .body_text
+            .contains("If this was not you")
+    );
 
     let events = kinds(&h.audit.events());
     assert!(events.iter().any(|k| matches!(

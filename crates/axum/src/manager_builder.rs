@@ -212,12 +212,15 @@ impl ManagerBuilder {
         if !self.silence_warnings {
             let mut warnings = self.inherited_warnings.clone();
             warnings.cookie_insecure_in_production = warnings::check_cookie(&cookie_config);
-            // The signup / recovery managers own the email transport; read
-            // their diagnostic to flag a dev-only sender rather than taking
+            // The passkey / signup / recovery managers own the email transport;
+            // read their diagnostics to flag a dev-only sender rather than taking
             // a redundant sender input that the host has to keep in sync.
             let is_dev_transport =
                 |kind| matches!(kind, EmailSenderKind::Terminal | EmailSenderKind::File);
-            if is_dev_transport(signup.email_kind()) || is_dev_transport(recovery.email_kind()) {
+            if is_dev_transport(passkey.notification_email_kind())
+                || is_dev_transport(signup.email_kind())
+                || is_dev_transport(recovery.email_kind())
+            {
                 warnings.dev_email_transport = true;
             }
             warnings.emit();

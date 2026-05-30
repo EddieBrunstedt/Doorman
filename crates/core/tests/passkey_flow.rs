@@ -24,6 +24,10 @@ async fn register_then_discoverable_authenticate_round_trip() {
     assert_eq!(credential.recovery_cooldown_until, None);
     assert_eq!(h.credentials.len(), 1);
     assert!(h.challenges.is_empty(), "challenge consumed");
+    let sent = h.email.sent();
+    assert_eq!(sent.len(), 1, "passkey registration notification sent");
+    assert_eq!(sent[0].subject, "Security notice: passkey registered");
+    assert!(sent[0].body_text.contains("Alice's Mac"));
 
     let (auth_challenge, rcr) = h
         .passkey

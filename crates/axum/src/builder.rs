@@ -22,8 +22,10 @@
 //! [`TerminalEmailSender`] (stdout) and [`FileEmailSender`] (`.eml`
 //! files on disk); both are intended for local development and trip
 //! a startup warning. Production hosts plug in their real transport
-//! (lettre, resend, SES, …) through the [`EmailSender`] trait. We keep
-//! build-time errors rather than typestate because the required inputs are
+//! (lettre, resend, SES, …) through the [`EmailSender`] trait. The same
+//! sender is also used for best-effort security notifications such as
+//! passkey-registration notices. We keep build-time errors rather than
+//! typestate because the required inputs are
 //! few and the simpler builder is easier to read.
 //!
 //! These defaults are fine for development but not for production.
@@ -164,8 +166,8 @@ impl BauthBuilder {
         self
     }
 
-    /// Wire the [`EmailSender`] used by the signup / recovery flows.
-    /// Required — [`build`](Self::build) returns
+    /// Wire the [`EmailSender`] used by signup / recovery link delivery and
+    /// best-effort security notifications. Required — [`build`](Self::build) returns
     /// [`BuilderError::MissingEmailSender`] when not set.
     ///
     /// [`EmailSender`]: bauth_core::email::EmailSender
@@ -305,6 +307,7 @@ impl BauthBuilder {
             session_manager.clone(),
             clock.clone(),
             audit.clone(),
+            email.clone(),
             passkey_config,
         )
         .map_err(BuilderError::Passkey)?;

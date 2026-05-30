@@ -4,7 +4,8 @@
 //! it with the user store, the passkey credential store, and a separate
 //! challenge store that holds the per-ceremony server-side state between
 //! the `start_*` and `finish_*` calls. Audit events are emitted at every
-//! meaningful step so the host can build a complete security timeline.
+//! meaningful step, and successful registrations send best-effort security
+//! notifications after the credential is stored.
 //!
 //! Account linking falls out of the design for free: register a passkey
 //! against any existing user id and that user now has a passkey credential.
@@ -23,6 +24,7 @@ use webauthn_rs_proto::ResidentKeyRequirement;
 
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
+use crate::email::{BauthEmails, EmailSender, SecurityEmailNotifier, default_emails};
 use crate::error::{Error, Result};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
@@ -31,7 +33,7 @@ use crate::storage::{
 };
 
 /// WebAuthn relying-party configuration for passkey flows.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PasskeyConfig {
     /// Relying party identifier, typically the registrable suffix of
     /// the site origin (e.g. `"example.com"` for `https://app.example.com`).
@@ -44,6 +46,22 @@ pub struct PasskeyConfig {
     /// How long an unfinished ceremony stays valid. Defaults to 5 minutes,
     /// matching the W3C recommended authenticator timeout.
     pub challenge_lifetime: Duration,
+    /// Renderer for passkey lifecycle security notifications. Defaults to
+    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails); hosts that
+    /// want branded copy can replace this with their own [`BauthEmails`]
+    /// implementation.
+    pub emails: Arc<dyn BauthEmails>,
+}
+
+impl std::fmt::Debug for PasskeyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PasskeyConfig")
+            .field("rp_id", &self.rp_id)
+            .field("rp_origin", &self.rp_origin)
+            .field("rp_name", &self.rp_name)
+            .field("challenge_lifetime", &self.challenge_lifetime)
+            .finish()
+    }
 }
 
 impl PasskeyConfig {
@@ -53,6 +71,7 @@ impl PasskeyConfig {
             rp_origin,
             rp_name: rp_name.into(),
             challenge_lifetime: Duration::from_secs(300),
+            emails: default_emails(),
         }
     }
 }
@@ -66,6 +85,7 @@ pub struct PasskeyManager {
     sessions: SessionManager,
     clock: Arc<dyn Clock>,
     audit: Arc<dyn AuditSink>,
+    notifier: SecurityEmailNotifier,
     webauthn: Arc<Webauthn>,
     config: PasskeyConfig,
 }
@@ -78,8 +98,10 @@ impl PasskeyManager {
         sessions: SessionManager,
         clock: Arc<dyn Clock>,
         audit: Arc<dyn AuditSink>,
+        email: Arc<dyn EmailSender>,
         config: PasskeyConfig,
     ) -> Result<Self> {
+        let notifier = SecurityEmailNotifier::new(email, config.emails.clone());
         let webauthn = WebauthnBuilder::new(&config.rp_id, &config.rp_origin)
             .map_err(|e| Error::InvalidRelyingParty(e.to_string()))?
             .rp_name(&config.rp_name)
@@ -93,9 +115,17 @@ impl PasskeyManager {
             sessions,
             clock,
             audit,
+            notifier,
             webauthn: Arc::new(webauthn),
             config,
         })
+    }
+
+    /// Diagnostic accessor used by the axum builder's startup warnings to
+    /// detect dev-only email transports.
+    #[doc(hidden)]
+    pub fn notification_email_kind(&self) -> crate::email::EmailSenderKind {
+        self.notifier.sender_kind()
     }
 
     /// Begin registering a new passkey for `user_id`. The returned
@@ -265,8 +295,29 @@ impl PasskeyManager {
                 kind: AuditEventKind::CredentialAdded { user_id },
             })
             .await;
+        self.notify_passkey_registered(user_id, credential.name.as_deref())
+            .await;
         tracing::info!(outcome = "registered", "passkey registered");
         Ok(credential)
+    }
+
+    async fn notify_passkey_registered(&self, user_id: UserId, passkey_name: Option<&str>) {
+        match self.users.find_user_by_id(user_id).await {
+            Ok(Some(user)) => self.notifier.passkey_registered(&user, passkey_name).await,
+            Ok(None) => {
+                tracing::warn!(
+                    %user_id,
+                    "passkey registered notification skipped because user was not found"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    %user_id,
+                    "passkey registered notification skipped because user lookup failed"
+                );
+            }
+        }
     }
 
     /// Begin a discoverable passkey authentication ceremony. Returns the

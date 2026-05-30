@@ -67,6 +67,7 @@ fn signup_manager() -> SignupManager {
         session_manager.clone(),
         clock.clone(),
         audit.clone(),
+        email.clone() as Arc<dyn EmailSender>,
         PasskeyConfig::new(
             "localhost",
             Url::parse("http://localhost:8080").expect("rp origin"),

@@ -126,6 +126,7 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
         .await
         .expect("consume");
 
+    let mail_before_finish = h.email.sent().len();
     let mut wa = authenticator();
     let attestation = wa.do_registration(consume.options);
     let outcome = h
@@ -143,6 +144,18 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
     assert!(outcome.user.email_verified_at.is_some());
     assert_eq!(h.sessions.len(), 1, "session issued");
     assert_eq!(h.credentials.len(), 1, "passkey registered");
+    let sent = h.email.sent();
+    let after_finish = &sent[mail_before_finish..];
+    assert_eq!(
+        after_finish.len(),
+        1,
+        "passkey registration notification sent",
+    );
+    assert_eq!(
+        after_finish[0].subject,
+        "Security notice: passkey registered",
+    );
+    assert!(after_finish[0].body_text.contains("alice device"));
     let events = kinds(&h.audit.events());
     assert!(
         events
@@ -153,6 +166,49 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
         events
             .iter()
             .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. }))
+    );
+}
+
+#[tokio::test]
+async fn notification_send_failure_does_not_undo_successful_finish() {
+    let h = Harness::fresh();
+    h.signup
+        .request_signup("notify-fails@example.com", SessionContext::default())
+        .await
+        .expect("request");
+    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
+    let consume = h
+        .signup
+        .consume_signup(&token, SessionContext::default())
+        .await
+        .expect("consume");
+
+    let mail_before_finish = h.email.sent().len();
+    h.email.fail_after_successful_sends(mail_before_finish);
+
+    let mut wa = authenticator();
+    let attestation = wa.do_registration(consume.options);
+    let outcome = h
+        .signup
+        .finish_signup(
+            consume.challenge_id,
+            &attestation,
+            Some("failing notifier device".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish still succeeds");
+
+    assert_eq!(
+        outcome.user.email.as_deref(),
+        Some("notify-fails@example.com")
+    );
+    assert_eq!(h.credentials.len(), 1, "passkey still stored");
+    assert_eq!(h.sessions.len(), 1, "session still issued");
+    assert_eq!(
+        h.email.sent().len(),
+        mail_before_finish,
+        "failed notification was not captured",
     );
 }
 

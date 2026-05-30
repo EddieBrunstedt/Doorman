@@ -10,8 +10,8 @@
 //! SES, …) through the [`EmailSender`] trait.
 //!
 //! The library uses email purely as a side channel for **signup links**,
-//! **recovery links**, and security notifications when recovery is
-//! requested or completed. The default copy describes a passkey-driven
+//! **recovery links**, and security notifications for recovery and
+//! passkey lifecycle events. The default copy describes a passkey-driven
 //! flow; hosts override [`BauthEmails`] to brand it.
 
 use std::path::PathBuf;
@@ -260,6 +260,42 @@ pub trait BauthEmails: Send + Sync {
             body_html: None,
         }
     }
+
+    /// Sent whenever a passkey is successfully registered for the account.
+    /// `passkey_name` is the optional user-supplied friendly label; raw
+    /// credential ids, attestation data, tokens, and other secrets are not
+    /// exposed to email templates.
+    fn passkey_registered_notification_email(
+        &self,
+        user: &User,
+        passkey_name: Option<&str>,
+    ) -> Email {
+        let detail = display_passkey_name(passkey_name)
+            .map(|name| format!("A new passkey named \"{name}\" was just registered."))
+            .unwrap_or_else(|| "A new passkey was just registered.".to_string());
+
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Security notice: passkey registered".to_string(),
+            body_text: format!(
+                "Hello,\n\n\
+                 {detail} If this was you, no action is needed.\n\n\
+                 If this was not you, sign in with one of your existing passkeys \
+                 immediately, review the passkeys and sessions on your account, and revoke \
+                 anything you do not recognise. Contact support if you cannot regain \
+                 access.\n"
+            ),
+            body_html: None,
+        }
+    }
+}
+
+fn display_passkey_name(passkey_name: Option<&str>) -> Option<String> {
+    let name = passkey_name?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.replace(['\r', '\n'], " "))
 }
 
 /// Stock [`BauthEmails`] impl. Produces neutral copy for the built-in
@@ -269,6 +305,49 @@ pub trait BauthEmails: Send + Sync {
 pub struct DefaultBauthEmails;
 
 impl BauthEmails for DefaultBauthEmails {}
+
+/// Best-effort sender for security notifications.
+///
+/// Managers call this only after the protected action has already
+/// succeeded. Send failures are logged and deliberately do not roll back
+/// the action. Link-delivery emails do not use this helper, so they remain
+/// hard failures at the call sites that issue signup / recovery links.
+#[derive(Clone)]
+pub struct SecurityEmailNotifier {
+    sender: Arc<dyn EmailSender>,
+    emails: Arc<dyn BauthEmails>,
+}
+
+impl SecurityEmailNotifier {
+    pub fn new(sender: Arc<dyn EmailSender>, emails: Arc<dyn BauthEmails>) -> Self {
+        Self { sender, emails }
+    }
+
+    pub fn sender_kind(&self) -> EmailSenderKind {
+        self.sender.diagnostic_kind()
+    }
+
+    pub async fn passkey_registered(&self, user: &User, passkey_name: Option<&str>) {
+        if user.email.is_none() {
+            tracing::debug!(
+                user_id = %user.id,
+                "passkey registered notification skipped because user has no email"
+            );
+            return;
+        }
+
+        let email = self
+            .emails
+            .passkey_registered_notification_email(user, passkey_name);
+        if let Err(err) = self.sender.send(email).await {
+            tracing::warn!(
+                error = %err,
+                user_id = %user.id,
+                "passkey registered notification failed"
+            );
+        }
+    }
+}
 
 /// Convenience for the default [`Arc<dyn BauthEmails>`] handed to configs
 /// that don't otherwise specify a renderer.

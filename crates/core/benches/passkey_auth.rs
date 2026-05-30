@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
+use bauth_core::email::EmailSender;
 use bauth_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore,
@@ -31,6 +32,7 @@ use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
 use bauth_core::storage::{
     PasskeyChallengeStore, PasskeyCredentialStore, SessionStore, User, UserId, UserStore,
 };
+use bauth_test_support::CapturingEmailSender;
 use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use tokio::runtime::Runtime;
@@ -59,6 +61,7 @@ async fn build_scaffold() -> Scaffold {
         Arc::new(InMemoryPasskeyCredentialStore::new());
     let challenges: Arc<InMemoryPasskeyChallengeStore> =
         Arc::new(InMemoryPasskeyChallengeStore::new());
+    let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
 
     let now = Utc::now();
     let user = User {
@@ -86,6 +89,7 @@ async fn build_scaffold() -> Scaffold {
         session_manager,
         clock,
         audit,
+        email as Arc<dyn EmailSender>,
         PasskeyConfig::new(
             "localhost",
             Url::parse("http://localhost:8080").expect("rp origin"),

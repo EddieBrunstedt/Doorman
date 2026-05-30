@@ -14,7 +14,8 @@ pub use crate::audit::{
 };
 pub use crate::clock::{Clock, SystemClock};
 pub use crate::email::{
-    BauthEmails, DefaultBauthEmails, Email, EmailSender, FileEmailSender, TerminalEmailSender,
+    BauthEmails, DefaultBauthEmails, Email, EmailSender, FileEmailSender, SecurityEmailNotifier,
+    TerminalEmailSender,
 };
 pub use crate::error::{Error, Result, StorageError, StorageResult};
 pub use crate::passkey::{PasskeyConfig, PasskeyManager};

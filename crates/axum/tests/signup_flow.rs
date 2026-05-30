@@ -26,9 +26,22 @@ async fn full_signup_round_trip_cookie_path() {
         .await;
 
     let sent = app.email.sent();
-    assert_eq!(sent.len(), 1, "one signup email queued");
-    assert_eq!(sent[0].to, "alice@example.com");
-    assert_eq!(sent[0].subject, "Finish setting up your account");
+    assert_eq!(sent.len(), 2, "signup link + passkey notification queued");
+    let subjects: Vec<&str> = sent.iter().map(|e| e.subject.as_str()).collect();
+    let signup_email = sent
+        .iter()
+        .find(|e| e.subject == "Finish setting up your account")
+        .expect("signup email queued");
+    let passkey_notification = sent
+        .iter()
+        .find(|e| e.subject == "Security notice: passkey registered")
+        .expect("passkey notification queued");
+    assert!(
+        subjects.contains(&"Finish setting up your account")
+            && subjects.contains(&"Security notice: passkey registered")
+    );
+    assert_eq!(signup_email.to, "alice@example.com");
+    assert!(passkey_notification.body_text.contains("test device"));
 
     assert_eq!(auth.user.email.as_deref(), Some("alice@example.com"));
     assert!(auth.user.email_verified);
@@ -211,10 +224,19 @@ async fn passkey_count_reflects_register_and_delete() {
 
     // A fresh SoftPasskey enrols a distinct credential against the same
     // authenticated session, so the count climbs to two.
+    let mail_before_backup = app.email.sent().len();
     let mut backup = SignupClient::new(&app);
     let backup_passkey = backup
         .register_additional_passkey(&client, &app, &auth.token)
         .await;
+    let sent = app.email.sent();
+    let backup_mail = &sent[mail_before_backup..];
+    assert_eq!(backup_mail.len(), 1, "backup passkey notification queued");
+    assert_eq!(
+        backup_mail[0].subject,
+        "Security notice: passkey registered"
+    );
+    assert!(backup_mail[0].body_text.contains("backup device"));
 
     let me_after_backup = client
         .get(app.url("/me"))

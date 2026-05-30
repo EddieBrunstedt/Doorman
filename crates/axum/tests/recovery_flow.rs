@@ -28,6 +28,7 @@ use webauthn_rs_proto::AllowCredentials;
 const RECOVERY_LINK_SUBJECT: &str = "Recover access to your account";
 const RECOVERY_REQUESTED_NOTIFICATION_SUBJECT: &str = "Security notice: account recovery requested";
 const RECOVERY_COMPLETED_NOTIFICATION_SUBJECT: &str = "Security notice: account recovery completed";
+const PASSKEY_REGISTERED_NOTIFICATION_SUBJECT: &str = "Security notice: passkey registered";
 
 #[derive(Clone)]
 struct ResidentCredential {
@@ -188,13 +189,22 @@ async fn full_recovery_round_trip() {
     assert_eq!(body.user.id, signed_up.user.id);
     assert!(!body.token.is_empty());
 
-    // Success notification email.
-    let after_finish = &app.email.sent()[mail_before_finish..];
+    // Success notification emails.
+    let sent = app.email.sent();
+    let after_finish = &sent[mail_before_finish..];
+    assert_eq!(
+        after_finish.len(),
+        2,
+        "passkey + completed notifications queued",
+    );
+    let subjects: Vec<&str> = after_finish.iter().map(|e| e.subject.as_str()).collect();
     assert!(
-        after_finish
-            .iter()
-            .any(|e| e.subject == RECOVERY_COMPLETED_NOTIFICATION_SUBJECT),
-        "completed notification queued",
+        subjects.contains(&PASSKEY_REGISTERED_NOTIFICATION_SUBJECT),
+        "passkey notification queued ({subjects:?})",
+    );
+    assert!(
+        subjects.contains(&RECOVERY_COMPLETED_NOTIFICATION_SUBJECT),
+        "completed notification queued ({subjects:?})",
     );
 
     // The Set-Cookie from /recovery/finish should let the cookie client

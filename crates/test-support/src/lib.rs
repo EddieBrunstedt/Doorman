@@ -24,7 +24,7 @@ use chrono::{DateTime, Duration, Utc};
 use bauth_core::audit::{AuditEvent, AuditSink};
 use bauth_core::clock::Clock;
 use bauth_core::email::{Email, EmailSender, EmailSenderKind};
-use bauth_core::error::EmailResult;
+use bauth_core::error::{EmailError, EmailResult};
 
 /// Mutable clock for deterministic tests.
 #[derive(Debug)]
@@ -96,6 +96,7 @@ impl AuditSink for InMemoryAuditSink {
 #[derive(Debug, Default)]
 pub struct CapturingEmailSender {
     sent: Mutex<Vec<Email>>,
+    fail_after_successful_sends: Mutex<Option<usize>>,
 }
 
 impl CapturingEmailSender {
@@ -109,15 +110,36 @@ impl CapturingEmailSender {
             .expect("email sender mutex poisoned")
             .clone()
     }
+
+    /// Cause future sends to fail once `sent().len()` has reached
+    /// `successful_sends`. Existing captured messages are left untouched.
+    pub fn fail_after_successful_sends(&self, successful_sends: usize) {
+        *self
+            .fail_after_successful_sends
+            .lock()
+            .expect("email sender failure mutex poisoned") = Some(successful_sends);
+    }
+
+    pub fn clear_send_failure(&self) {
+        *self
+            .fail_after_successful_sends
+            .lock()
+            .expect("email sender failure mutex poisoned") = None;
+    }
 }
 
 #[async_trait]
 impl EmailSender for CapturingEmailSender {
     async fn send(&self, email: Email) -> EmailResult<()> {
-        self.sent
+        let fail_after = *self
+            .fail_after_successful_sends
             .lock()
-            .expect("email sender mutex poisoned")
-            .push(email);
+            .expect("email sender failure mutex poisoned");
+        let mut sent = self.sent.lock().expect("email sender mutex poisoned");
+        if fail_after.is_some_and(|max| sent.len() >= max) {
+            return Err(EmailError::msg("capturing email sender configured to fail"));
+        }
+        sent.push(email);
         Ok(())
     }
 

@@ -14,9 +14,10 @@
 //!    passkey registration ceremony bound to the user. The browser hands
 //!    the returned challenge to `navigator.credentials.create`.
 //! 3. [`finish_recovery`](RecoveryManager::finish_recovery) — finalises
-//!    the passkey registration and issues a session. On success a
-//!    completed-recovery notification email goes out so the user sees
-//!    that the recovery completed and a new passkey was enrolled.
+//!    the passkey registration and issues a session. On success the user
+//!    gets the passkey-registered security notice plus a completed-recovery
+//!    notification so they see that recovery completed and a new passkey
+//!    was enrolled.
 //!
 //! No session is issued from the email click alone. A passkey is always
 //! interposed; an attacker who phishes the link still has to leave a
@@ -288,9 +289,9 @@ impl RecoveryManager {
     }
 
     /// Complete the recovery-time passkey registration ceremony and issue
-    /// a session. The session carries a post-recovery cool-down, and a
-    /// recovery-completed notification email goes out so the user sees
-    /// that the recovery completed and a new passkey was enrolled.
+    /// a session. The session carries a post-recovery cool-down, and the
+    /// user receives the passkey-registered security notice plus a
+    /// recovery-completed notification email.
     pub async fn finish_recovery(
         &self,
         challenge_id: PasskeyChallengeId,

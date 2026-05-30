@@ -16,7 +16,8 @@
 //!    returned challenge is what the browser hands to
 //!    `navigator.credentials.create`.
 //! 3. [`finish_signup`](SignupManager::finish_signup) — finalises the
-//!    passkey registration and issues a session.
+//!    passkey registration, sends the passkey-registered security notice,
+//!    and issues a session.
 //!
 //! No session is issued from the email click alone. A passkey is always
 //! interposed, so the steady-state login path stays phishing-resistant.
@@ -231,9 +232,10 @@ impl SignupManager {
         self.flow.consume(FlowKind::Signup, token, context).await
     }
 
-    /// Complete a signup-time passkey registration ceremony and issue a
-    /// session. The passkey is bound to the user identified by the
-    /// challenge state, so the wire shape does not need to carry a user id.
+    /// Complete a signup-time passkey registration ceremony, send the
+    /// passkey-registered security notice, and issue a session. The passkey
+    /// is bound to the user identified by the challenge state, so the wire
+    /// shape does not need to carry a user id.
     pub async fn finish_signup(
         &self,
         challenge_id: PasskeyChallengeId,

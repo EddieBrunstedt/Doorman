@@ -208,6 +208,7 @@ impl HarnessBuilder {
             session_manager.clone(),
             clock.clone() as Arc<dyn Clock>,
             audit.clone() as Arc<dyn AuditSink>,
+            email.clone() as Arc<dyn EmailSender>,
             PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
         )
         .expect("build passkey manager");
