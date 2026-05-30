@@ -26,7 +26,8 @@ use webauthn_rs::prelude::{
 use webauthn_rs_proto::AllowCredentials;
 
 const RECOVERY_LINK_SUBJECT: &str = "Recover access to your account";
-const RECOVERY_NOTIFICATION_SUBJECT: &str = "Security notice: account recovery activity";
+const RECOVERY_REQUESTED_NOTIFICATION_SUBJECT: &str = "Security notice: account recovery requested";
+const RECOVERY_COMPLETED_NOTIFICATION_SUBJECT: &str = "Security notice: account recovery completed";
 
 #[derive(Clone)]
 struct ResidentCredential {
@@ -137,8 +138,8 @@ async fn full_recovery_round_trip() {
     assert!(
         new_mail
             .iter()
-            .any(|e| e.subject == RECOVERY_NOTIFICATION_SUBJECT),
-        "notification queued",
+            .any(|e| e.subject == RECOVERY_REQUESTED_NOTIFICATION_SUBJECT),
+        "requested notification queued",
     );
     let token = token_from_email_with(&link_email.body_text, RECOVERY_URL);
 
@@ -192,8 +193,8 @@ async fn full_recovery_round_trip() {
     assert!(
         after_finish
             .iter()
-            .any(|e| e.subject == RECOVERY_NOTIFICATION_SUBJECT),
-        "success notification queued",
+            .any(|e| e.subject == RECOVERY_COMPLETED_NOTIFICATION_SUBJECT),
+        "completed notification queued",
     );
 
     // The Set-Cookie from /recovery/finish should let the cookie client
@@ -263,7 +264,7 @@ async fn recovery_request_for_registered_email_sends_link_and_notification() {
     assert_eq!(new_mail.len(), 2);
     let subjects: Vec<&str> = new_mail.iter().map(|e| e.subject.as_str()).collect();
     assert!(subjects.contains(&RECOVERY_LINK_SUBJECT));
-    assert!(subjects.contains(&RECOVERY_NOTIFICATION_SUBJECT));
+    assert!(subjects.contains(&RECOVERY_REQUESTED_NOTIFICATION_SUBJECT));
 
     app.shutdown().await;
 }

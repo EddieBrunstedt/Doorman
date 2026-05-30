@@ -34,13 +34,35 @@ async fn request_for_registered_email_sends_link_and_notification() {
     let new = &h.email.sent()[mail_before..];
     assert_eq!(new.len(), 2, "link + notification queued");
     let subjects: Vec<&str> = new.iter().map(|e| e.subject.as_str()).collect();
-    assert!(
-        subjects.contains(&"Recover access to your account"),
-        "recovery link sent ({subjects:?})",
+    let Some(link_email) = new
+        .iter()
+        .find(|e| e.subject == "Recover access to your account")
+    else {
+        panic!("recovery link sent ({subjects:?})");
+    };
+    let Some(requested_notification) = new
+        .iter()
+        .find(|e| e.subject == "Security notice: account recovery requested")
+    else {
+        panic!("requested notification sent ({subjects:?})");
+    };
+    assert_ne!(
+        link_email.subject.as_str(),
+        requested_notification.subject.as_str()
+    );
+    assert_ne!(
+        link_email.body_text.as_str(),
+        requested_notification.body_text.as_str(),
     );
     assert!(
-        subjects.contains(&"Security notice: account recovery activity"),
-        "notification sent ({subjects:?})",
+        requested_notification
+            .body_text
+            .contains("request to recover")
+    );
+    assert!(
+        requested_notification
+            .body_text
+            .contains("If this was not you")
     );
 
     let audit_kinds = kinds(&h.audit.events());
@@ -258,6 +280,13 @@ async fn successful_recovery_enrols_passkey_and_sends_success_notification() {
         .find(|e| e.subject == "Recover access to your account")
         .expect("link queued");
     let token = token_from_email(&link.body_text, RECOVERY_URL);
+    let requested_notification = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Security notice: account recovery requested")
+        .expect("requested notification queued");
 
     let consume = h
         .recovery
@@ -299,11 +328,25 @@ async fn successful_recovery_enrols_passkey_and_sends_success_notification() {
     assert!(!h.sessions.is_empty(), "session issued");
 
     let after_finish = &h.email.sent()[mail_before_finish..];
-    assert_eq!(after_finish.len(), 1, "success notification sent");
+    assert_eq!(after_finish.len(), 1, "completed notification sent");
     assert_eq!(
         after_finish[0].subject,
-        "Security notice: account recovery activity",
+        "Security notice: account recovery completed",
     );
+    assert_ne!(
+        after_finish[0].subject.as_str(),
+        requested_notification.subject.as_str(),
+    );
+    assert_ne!(
+        after_finish[0].body_text.as_str(),
+        requested_notification.body_text.as_str(),
+    );
+    assert!(
+        after_finish[0]
+            .body_text
+            .contains("Account recovery just completed")
+    );
+    assert!(after_finish[0].body_text.contains("If this was not you"));
 
     let events = kinds(&h.audit.events());
     assert!(events.iter().any(|k| matches!(
@@ -424,11 +467,20 @@ impl BauthEmails for BrandedEmails {
         }
     }
 
-    fn recovery_notification_email(&self, user: &User) -> Email {
+    fn recovery_requested_notification_email(&self, user: &User) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
-            subject: "Acme alert".to_string(),
-            body_text: "Recovery activity".to_string(),
+            subject: "Acme recovery requested".to_string(),
+            body_text: "Recovery requested".to_string(),
+            body_html: None,
+        }
+    }
+
+    fn recovery_completed_notification_email(&self, user: &User) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Acme recovery completed".to_string(),
+            body_text: "Recovery completed".to_string(),
             body_html: None,
         }
     }
@@ -734,5 +786,6 @@ async fn custom_emails_override_recovery_subjects_and_html() {
     assert_eq!(new.len(), 2);
     let subjects: Vec<&str> = new.iter().map(|e| e.subject.as_str()).collect();
     assert!(subjects.contains(&"Acme recovery"));
-    assert!(subjects.contains(&"Acme alert"));
+    assert!(subjects.contains(&"Acme recovery requested"));
+    assert!(!subjects.contains(&"Acme recovery completed"));
 }

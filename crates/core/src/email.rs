@@ -9,11 +9,10 @@
 //! `bauth-test-support`; hosts plug in real transports (lettre, resend,
 //! SES, …) through the [`EmailSender`] trait.
 //!
-//! The library uses email purely as a side channel for **signup links**
-//! and **recovery links** (plus the recovery-notification email a
-//! registered user receives whenever recovery is attempted against their
-//! address). The default copy describes a passkey-driven flow; hosts
-//! override [`BauthEmails`] to brand it.
+//! The library uses email purely as a side channel for **signup links**,
+//! **recovery links**, and security notifications when recovery is
+//! requested or completed. The default copy describes a passkey-driven
+//! flow; hosts override [`BauthEmails`] to brand it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -158,10 +157,9 @@ impl EmailSender for FileEmailSender {
 /// (brand name, language, HTML body, etc.) without rewriting the auth
 /// flows that send them.
 ///
-/// The default impl, [`DefaultBauthEmails`], ships with neutral copy that
-/// matches what the library sent before this trait existed. Each method
-/// has a default body so a host can override one method and inherit the
-/// rest:
+/// The default impl, [`DefaultBauthEmails`], ships with neutral copy for
+/// the built-in passkey-driven flows. Each method has a default body so a
+/// host can override one method and inherit the rest:
 ///
 /// ```ignore
 /// use bauth_core::email::{BauthEmails, Email};
@@ -224,32 +222,49 @@ pub trait BauthEmails: Send + Sync {
         }
     }
 
-    /// Sent to the registered user alongside the recovery link, and again
-    /// when a recovery completes successfully. The goal is to make every
-    /// recovery attempt visible to the legitimate inbox owner so they
-    /// notice an attacker enrolling a new passkey while the recovery
-    /// session is still in cool-down. Hosts override the copy to point at
-    /// their support / sign-out workflow.
-    fn recovery_notification_email(&self, user: &User) -> Email {
+    /// Sent to the registered user alongside the recovery link. The goal
+    /// is to make every recovery request visible to the legitimate inbox
+    /// owner before a new passkey can be enrolled.
+    fn recovery_requested_notification_email(&self, user: &User) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
-            subject: "Security notice: account recovery activity".to_string(),
+            subject: "Security notice: account recovery requested".to_string(),
             body_text: "Hello,\n\n\
-                 We're letting you know that account recovery activity was just initiated \
-                 or completed for your account. \
-                 If this was you, no action is needed.\n\n\
-                 If this was not you, sign in with one of your existing passkeys, \
-                 review the passkeys registered to your account, and revoke any you \
-                 do not recognise. Contact support if you cannot regain access.\n"
+                 We received a request to recover access to your account. \
+                 If this was you, use the recovery link we sent separately and continue by \
+                 registering a new passkey.\n\n\
+                 If this was not you, do not open or forward the recovery link. \
+                 Sign in with one of your existing passkeys, review the passkeys registered \
+                 to your account, and revoke any you do not recognise. Contact support if \
+                 you cannot regain access.\n"
+                .to_string(),
+            body_html: None,
+        }
+    }
+
+    /// Sent when a recovery completes successfully. The goal is to make the
+    /// newly-enrolled passkey visible while the recovery cool-down still
+    /// blocks destructive account changes.
+    fn recovery_completed_notification_email(&self, user: &User) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Security notice: account recovery completed".to_string(),
+            body_text: "Hello,\n\n\
+                 Account recovery just completed for your account, and a new passkey was \
+                 registered. If this was you, no action is needed.\n\n\
+                 If this was not you, sign in with one of your existing passkeys \
+                 immediately, review the passkeys and sessions on your account, and revoke \
+                 anything you do not recognise. Contact support if you cannot regain \
+                 access.\n"
                 .to_string(),
             body_html: None,
         }
     }
 }
 
-/// Stock [`BauthEmails`] impl. Produces the strings the library shipped
-/// before email content was customisable. Used as the default when a
-/// config does not specify its own.
+/// Stock [`BauthEmails`] impl. Produces neutral copy for the built-in
+/// passkey-driven flows. Used as the default when a config does not
+/// specify its own.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultBauthEmails;
 

@@ -7,16 +7,16 @@
 //!    submits an email. The response is identical whether or not the
 //!    email resolves to a registered account, so the endpoint cannot be
 //!    used to enumerate users. When the email **is** registered we send
-//!    the recovery link _and_ a separate notification so the legitimate
-//!    inbox owner sees that a recovery was just initiated.
+//!    the recovery link _and_ a separate requested-recovery notification
+//!    so the legitimate inbox owner sees that recovery was just initiated.
 //! 2. [`consume_recovery`](RecoveryManager::consume_recovery) — clicking
 //!    the link atomically redeems the single-use token and starts a
 //!    passkey registration ceremony bound to the user. The browser hands
 //!    the returned challenge to `navigator.credentials.create`.
 //! 3. [`finish_recovery`](RecoveryManager::finish_recovery) — finalises
 //!    the passkey registration and issues a session. On success a
-//!    second notification email goes out so the user sees that the
-//!    recovery completed and a new passkey was enrolled.
+//!    completed-recovery notification email goes out so the user sees
+//!    that the recovery completed and a new passkey was enrolled.
 //!
 //! No session is issued from the email click alone. A passkey is always
 //! interposed; an attacker who phishes the link still has to leave a
@@ -171,9 +171,9 @@ impl RecoveryManager {
     /// Issue a recovery link to `email`. Returns `Ok(())` regardless of
     /// whether the email resolves to a registered user, so the endpoint
     /// cannot be used to enumerate accounts. When the email **is**
-    /// registered we send the recovery link and the recovery-notification
-    /// email and audit the attempt; when it is **not**, we audit the
-    /// attempt and silently no-op.
+    /// registered we send the recovery link and the recovery-requested
+    /// notification email and audit the attempt; when it is **not**, we
+    /// audit the attempt and silently no-op.
     #[tracing::instrument(
         skip(self, email, context),
         fields(method = "recovery", user_id = tracing::field::Empty),
@@ -253,7 +253,10 @@ impl RecoveryManager {
         .await?;
         let link_email = self.config.emails.recovery_email(&user, &url);
         self.flow.email_sender().send(link_email).await?;
-        let notification = self.config.emails.recovery_notification_email(&user);
+        let notification = self
+            .config
+            .emails
+            .recovery_requested_notification_email(&user);
         self.flow.email_sender().send(notification).await?;
 
         self.flow
@@ -286,8 +289,8 @@ impl RecoveryManager {
 
     /// Complete the recovery-time passkey registration ceremony and issue
     /// a session. The session carries a post-recovery cool-down, and a
-    /// notification email goes out so the user sees that the recovery
-    /// completed and a new passkey was enrolled.
+    /// recovery-completed notification email goes out so the user sees
+    /// that the recovery completed and a new passkey was enrolled.
     pub async fn finish_recovery(
         &self,
         challenge_id: PasskeyChallengeId,
@@ -303,7 +306,11 @@ impl RecoveryManager {
                 name,
                 context,
                 Some(self.config.cooldown),
-                Some(&|user| self.config.emails.recovery_notification_email(user)),
+                Some(&|user| {
+                    self.config
+                        .emails
+                        .recovery_completed_notification_email(user)
+                }),
             )
             .await
     }
