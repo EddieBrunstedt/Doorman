@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use bauth_core::email::SecurityEmailNotifier;
 use bauth_core::session::SessionManager;
 use bauth_core::storage::UserStore;
 
@@ -25,6 +26,7 @@ pub struct BauthState {
     pub(crate) passkey: PasskeyManager,
     pub(crate) signup: SignupManager,
     pub(crate) recovery: RecoveryManager,
+    pub(crate) security_notifier: SecurityEmailNotifier,
 }
 
 impl BauthState {

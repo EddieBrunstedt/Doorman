@@ -256,6 +256,7 @@ impl ManagerBuilder {
             csrf: csrf_config,
         });
 
+        let security_notifier = passkey.security_email_notifier();
         let state = BauthState {
             session_manager,
             user_store,
@@ -263,6 +264,7 @@ impl ManagerBuilder {
             passkey,
             signup,
             recovery,
+            security_notifier,
         };
 
         Ok(BauthAxum {

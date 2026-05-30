@@ -128,6 +128,15 @@ impl PasskeyManager {
         self.notifier.sender_kind()
     }
 
+    /// Clone the security-notification helper used by this manager.
+    /// Axum uses it for session-management notifications so the same
+    /// configured sender and template renderer cover every bundled
+    /// security notice.
+    #[doc(hidden)]
+    pub fn security_email_notifier(&self) -> SecurityEmailNotifier {
+        self.notifier.clone()
+    }
+
     /// Begin registering a new passkey for `user_id`. The returned
     /// [`CreationChallengeResponse`] is the JSON payload to hand to
     /// `navigator.credentials.create` on the client; the

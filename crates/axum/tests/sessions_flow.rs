@@ -7,6 +7,9 @@ use axum::http::StatusCode;
 use bauth_axum::dto::{AuthResponse, SessionDto};
 use common::TestApp;
 
+const OTHER_SESSION_REVOKED_NOTIFICATION_SUBJECT: &str = "Security notice: session revoked";
+const OTHER_SESSIONS_REVOKED_NOTIFICATION_SUBJECT: &str = "Security notice: other sessions revoked";
+
 async fn login(client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
     common::login(client, app, email).await
 }
@@ -54,6 +57,7 @@ async fn delete_session_revokes_target_and_leaves_caller_authenticated() {
     let other = login(&client, &app, "dan@example.com").await;
 
     // Caller revokes the other session.
+    let mail_before = app.email.sent().len();
     let resp = client
         .delete(app.url(&format!("/auth/sessions/{}", other.session.id)))
         .bearer_auth(&caller.token)
@@ -61,6 +65,15 @@ async fn delete_session_revokes_target_and_leaves_caller_authenticated() {
         .await
         .expect("delete");
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let sent = app.email.sent();
+    let new_mail = &sent[mail_before..];
+    assert_eq!(new_mail.len(), 1, "revocation notification queued");
+    assert_eq!(
+        new_mail[0].subject,
+        OTHER_SESSION_REVOKED_NOTIFICATION_SUBJECT
+    );
+    assert_eq!(new_mail[0].to, "dan@example.com");
 
     // Caller's session still works.
     let mine = client
@@ -87,11 +100,127 @@ async fn delete_session_revokes_target_and_leaves_caller_authenticated() {
 }
 
 #[tokio::test]
+async fn delete_sessions_revokes_other_sessions_and_sends_notification() {
+    let app = TestApp::start(Router::new(), false).await;
+    let client = reqwest::Client::new();
+
+    let caller = login(&client, &app, "frank@example.com").await;
+    let other = login(&client, &app, "frank@example.com").await;
+    let third = login(&client, &app, "frank@example.com").await;
+
+    let mail_before = app.email.sent().len();
+    let resp = client
+        .delete(app.url("/auth/sessions"))
+        .bearer_auth(&caller.token)
+        .send()
+        .await
+        .expect("delete others");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let sent = app.email.sent();
+    let new_mail = &sent[mail_before..];
+    assert_eq!(new_mail.len(), 1, "bulk revocation notification queued");
+    assert_eq!(
+        new_mail[0].subject,
+        OTHER_SESSIONS_REVOKED_NOTIFICATION_SUBJECT
+    );
+    assert_eq!(new_mail[0].to, "frank@example.com");
+
+    let mine = client
+        .get(app.url("/auth/sessions"))
+        .bearer_auth(&caller.token)
+        .send()
+        .await
+        .expect("list");
+    assert_eq!(mine.status(), StatusCode::OK);
+    let after: Vec<SessionDto> = mine.json().await.expect("list body");
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].id, caller.session.id);
+
+    for stale_token in [&other.token, &third.token] {
+        let stale = client
+            .get(app.url("/me"))
+            .bearer_auth(stale_token)
+            .send()
+            .await
+            .expect("me stale");
+        assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn delete_current_session_does_not_send_notification() {
+    let app = TestApp::start(Router::new(), false).await;
+    let client = reqwest::Client::new();
+
+    let caller = login(&client, &app, "grace@example.com").await;
+    let mail_before = app.email.sent().len();
+
+    let resp = client
+        .delete(app.url(&format!("/auth/sessions/{}", caller.session.id)))
+        .bearer_auth(&caller.token)
+        .send()
+        .await
+        .expect("delete self");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        app.email.sent().len(),
+        mail_before,
+        "self-revoke sends no security notification"
+    );
+
+    let stale = client
+        .get(app.url("/me"))
+        .bearer_auth(&caller.token)
+        .send()
+        .await
+        .expect("me stale");
+    assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn session_revocation_notification_failure_does_not_undo_revocation() {
+    let app = TestApp::start(Router::new(), false).await;
+    let client = reqwest::Client::new();
+
+    let caller = login(&client, &app, "heidi@example.com").await;
+    let other = login(&client, &app, "heidi@example.com").await;
+    app.email.fail_after_successful_sends(0);
+
+    let resp = client
+        .delete(app.url(&format!("/auth/sessions/{}", other.session.id)))
+        .bearer_auth(&caller.token)
+        .send()
+        .await
+        .expect("delete other");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert!(
+        app.email.sent().is_empty(),
+        "configured send failure captured no mail"
+    );
+
+    let stale = client
+        .get(app.url("/me"))
+        .bearer_auth(&other.token)
+        .send()
+        .await
+        .expect("me stale");
+    assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
 async fn logout_revokes_current_session_and_clears_cookie() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
     let caller = login(&client, &app, "erin@example.com").await;
+    let mail_before = app.email.sent().len();
 
     let resp = client
         .post(app.url("/auth/logout"))
@@ -110,6 +239,11 @@ async fn logout_revokes_current_session_and_clears_cookie() {
         .expect("ascii cookie");
     assert!(set_cookie.contains("bauth_session="));
     assert!(set_cookie.contains("Max-Age=0"));
+    assert_eq!(
+        app.email.sent().len(),
+        mail_before,
+        "self-logout sends no security notification"
+    );
 
     // The revoked token no longer authenticates.
     let stale = client

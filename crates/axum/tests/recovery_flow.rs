@@ -564,6 +564,7 @@ async fn delete_other_session_during_cooldown_returns_409() {
     // there's something to try to revoke.
     let other = common::login(&cookie_client, &app, "alice@example.com").await;
 
+    let mail_before_revoke = app.email.sent().len();
     let resp = cookie_client
         .delete(app.url(&format!("/auth/sessions/{}", other.session.id)))
         .bearer_auth(&recovery_auth.token)
@@ -573,6 +574,11 @@ async fn delete_other_session_during_cooldown_returns_409() {
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json().await.expect("body");
     assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+    assert_eq!(
+        app.email.sent().len(),
+        mail_before_revoke,
+        "cooldown-blocked session revoke sent no mail"
+    );
 
     app.shutdown().await;
 }
@@ -588,6 +594,7 @@ async fn revoke_others_during_cooldown_returns_409() {
     let auth = provision_recovery_session(&app, &cookie_client, "alice@example.com").await;
     let _other = common::login(&cookie_client, &app, "alice@example.com").await;
 
+    let mail_before_revoke = app.email.sent().len();
     let resp = cookie_client
         .delete(app.url("/auth/sessions"))
         .bearer_auth(&auth.token)
@@ -597,6 +604,11 @@ async fn revoke_others_during_cooldown_returns_409() {
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json().await.expect("body");
     assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+    assert_eq!(
+        app.email.sent().len(),
+        mail_before_revoke,
+        "cooldown-blocked sign-out-everywhere sent no mail"
+    );
 
     app.shutdown().await;
 }

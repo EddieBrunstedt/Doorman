@@ -10,9 +10,9 @@
 //! SES, …) through the [`EmailSender`] trait.
 //!
 //! The library uses email purely as a side channel for **signup links**,
-//! **recovery links**, and security notifications for recovery and
-//! passkey lifecycle events. The default copy describes a passkey-driven
-//! flow; hosts override [`BauthEmails`] to brand it.
+//! **recovery links**, and security notifications for recovery, passkey
+//! lifecycle, and high-risk session revocation events. The default copy
+//! describes a passkey-driven flow; hosts override [`BauthEmails`] to brand it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -312,6 +312,40 @@ pub trait BauthEmails: Send + Sync {
             body_html: None,
         }
     }
+
+    /// Sent whenever a session other than the caller's current session is
+    /// successfully revoked from the account.
+    fn other_session_revoked_notification_email(&self, user: &User) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Security notice: session revoked".to_string(),
+            body_text: "Hello,\n\n\
+                 A session other than the one you are currently using was just signed out of \
+                 your account. If this was you, no action is needed.\n\n\
+                 If this was not you, sign in with one of your passkeys immediately, review the \
+                 passkeys and sessions on your account, and revoke anything you do not \
+                 recognise. Contact support if you cannot regain access.\n"
+                .to_string(),
+            body_html: None,
+        }
+    }
+
+    /// Sent whenever the caller uses the "sign out everywhere else" action.
+    fn other_sessions_revoked_notification_email(&self, user: &User) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Security notice: other sessions revoked".to_string(),
+            body_text: "Hello,\n\n\
+                 The \"sign out everywhere else\" action just ran for your account. Any other \
+                 active sessions were revoked while the session that requested it stayed signed \
+                 in. If this was you, no action is needed.\n\n\
+                 If this was not you, sign in with one of your passkeys immediately, review the \
+                 passkeys and sessions on your account, and revoke anything you do not \
+                 recognise. Contact support if you cannot regain access.\n"
+                .to_string(),
+            body_html: None,
+        }
+    }
 }
 
 fn display_passkey_name(passkey_name: Option<&str>) -> Option<String> {
@@ -332,10 +366,11 @@ impl BauthEmails for DefaultBauthEmails {}
 
 /// Best-effort sender for security notifications.
 ///
-/// Managers call this only after the protected action has already
-/// succeeded. Send failures are logged and deliberately do not roll back
-/// the action. Link-delivery emails do not use this helper, so they remain
-/// hard failures at the call sites that issue signup / recovery links.
+/// Managers and bundled HTTP handlers call this only after the protected
+/// action has already succeeded. Send failures are logged and deliberately
+/// do not roll back the action. Link-delivery emails do not use this helper,
+/// so they remain hard failures at the call sites that issue signup /
+/// recovery links.
 #[derive(Clone)]
 pub struct SecurityEmailNotifier {
     sender: Arc<dyn EmailSender>,
@@ -389,6 +424,46 @@ impl SecurityEmailNotifier {
                 error = %err,
                 user_id = %user.id,
                 "passkey removed notification failed"
+            );
+        }
+    }
+
+    /// Send the best-effort notification for revoking one other session.
+    pub async fn other_session_revoked(&self, user: &User) {
+        if user.email.is_none() {
+            tracing::debug!(
+                user_id = %user.id,
+                "other-session revoked notification skipped because user has no email"
+            );
+            return;
+        }
+
+        let email = self.emails.other_session_revoked_notification_email(user);
+        if let Err(err) = self.sender.send(email).await {
+            tracing::warn!(
+                error = %err,
+                user_id = %user.id,
+                "other-session revoked notification failed"
+            );
+        }
+    }
+
+    /// Send the best-effort notification for "sign out everywhere else".
+    pub async fn other_sessions_revoked(&self, user: &User) {
+        if user.email.is_none() {
+            tracing::debug!(
+                user_id = %user.id,
+                "other-sessions revoked notification skipped because user has no email"
+            );
+            return;
+        }
+
+        let email = self.emails.other_sessions_revoked_notification_email(user);
+        if let Err(err) = self.sender.send(email).await {
+            tracing::warn!(
+                error = %err,
+                user_id = %user.id,
+                "other-sessions revoked notification failed"
             );
         }
     }

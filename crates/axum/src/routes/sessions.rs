@@ -91,6 +91,12 @@ async fn remove(
     }
 
     state.session_manager.revoke_by_id(id).await?;
+    if id != auth.session.id {
+        state
+            .security_notifier
+            .other_session_revoked(&auth.user)
+            .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -108,5 +114,9 @@ async fn remove_others(
         .session_manager
         .revoke_others_for_user(auth.user.id, auth.session.id)
         .await?;
+    state
+        .security_notifier
+        .other_sessions_revoked(&auth.user)
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }
