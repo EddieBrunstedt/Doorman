@@ -15,7 +15,10 @@ use bauth_core::storage::{User, UserStore};
 use bauth_test_support::MockClock;
 use chrono::Duration as ChronoDuration;
 
-use common::{Harness, SIGNUP_URL, authenticator, kinds, signup_config, token_from_email, ts};
+use common::{
+    Harness, RECOVERY_URL, SIGNUP_URL, authenticator, kinds, provision_user, signup_config,
+    token_from_email, ts,
+};
 
 #[tokio::test]
 async fn request_provisions_user_for_new_email() {
@@ -231,6 +234,63 @@ async fn consume_rejects_replayed_token() {
         .await
         .expect_err("second consume");
     assert!(matches!(err, Error::InvalidVerificationToken));
+}
+
+#[tokio::test]
+async fn signup_token_cannot_be_consumed_by_recovery() {
+    // A token minted for signup must never redeem on the recovery flow:
+    // the purpose binds at consumption, not just at mint time.
+    let h = Harness::fresh();
+    h.signup
+        .request_signup("cross@example.com", SessionContext::default())
+        .await
+        .expect("request");
+    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
+
+    let err = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect_err("signup token rejected on recovery");
+    assert!(matches!(err, Error::InvalidVerificationToken));
+
+    // The signup token survives the failed cross-flow attempt and still
+    // redeems on its own flow.
+    assert_eq!(h.tokens.len(), 1, "token not consumed by wrong flow");
+    h.signup
+        .consume_signup(&token, SessionContext::default())
+        .await
+        .expect("signup token still valid on its own flow");
+}
+
+#[tokio::test]
+async fn recovery_token_cannot_be_consumed_by_signup() {
+    let h = Harness::fresh();
+    provision_user(&h, "cross@example.com").await;
+    let mail_before = h.email.sent().len();
+    h.recovery
+        .request_recovery("cross@example.com", SessionContext::default())
+        .await
+        .expect("recovery request");
+    let sent = h.email.sent();
+    let link = sent[mail_before..]
+        .iter()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("recovery link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+
+    let err = h
+        .signup
+        .consume_signup(&token, SessionContext::default())
+        .await
+        .expect_err("recovery token rejected on signup");
+    assert!(matches!(err, Error::InvalidVerificationToken));
+
+    assert_eq!(h.tokens.len(), 1, "token not consumed by wrong flow");
+    h.recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect("recovery token still valid on its own flow");
 }
 
 #[tokio::test]

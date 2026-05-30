@@ -8,21 +8,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
-use rand::RngCore;
-use rand::rngs::OsRng;
-use sha2::{Digest, Sha256};
 
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
-use crate::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
-
-/// Length of the random token in bytes. 256 bits of entropy. Shared by
-/// session tokens and verification tokens (see [`generate_token`]).
-const TOKEN_BYTES: usize = 32;
+use crate::storage::{Session, SessionId, SessionStore, UserId};
+use crate::token::generate_token;
+pub use crate::token::hash_token;
 
 /// A session that has just been issued, paired with the plaintext token to
 /// hand back to the client. The token is never persisted in plaintext.
@@ -332,48 +325,9 @@ impl SessionManager {
     }
 }
 
-pub fn hash_token(token: &str) -> TokenHash {
-    let digest = Sha256::digest(token.as_bytes());
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    TokenHash(out)
-}
-
-/// Generate a fresh random token and its at-rest hash. The cleartext token
-/// is handed to the client (session cookie or email link); only the hash is
-/// persisted. Shared by [`SessionManager`] and the verification flows.
-pub(crate) fn generate_token() -> (String, TokenHash) {
-    let mut bytes = [0u8; TOKEN_BYTES];
-    OsRng.fill_bytes(&mut bytes);
-    let token = URL_SAFE_NO_PAD.encode(bytes);
-    let hash = hash_token(&token);
-    (token, hash)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn generated_tokens_are_url_safe_and_unique() {
-        let (a, ha) = generate_token();
-        let (b, hb) = generate_token();
-        assert_ne!(a, b);
-        assert_ne!(ha, hb);
-        for ch in a.chars() {
-            assert!(
-                ch.is_ascii_alphanumeric() || ch == '-' || ch == '_',
-                "token contains non-url-safe char: {ch:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn hash_is_deterministic() {
-        let a = hash_token("hello");
-        let b = hash_token("hello");
-        assert_eq!(a, b);
-    }
 
     #[test]
     fn default_config_builds() {

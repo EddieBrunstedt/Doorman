@@ -28,11 +28,12 @@ use crate::email::{Email, EmailSender, EmailSenderKind};
 use crate::error::{Error, Result};
 use crate::passkey::PasskeyManager;
 use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
-use crate::session::{IssuedSession, SessionContext, SessionManager, generate_token, hash_token};
+use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
     PasskeyChallengeId, StoredPasskey, User, UserId, UserStore, VerificationPurpose,
     VerificationToken, VerificationTokenStore,
 };
+use crate::token::{generate_token, hash_token};
 
 /// Placeholder substituted with the generated token in URL templates. The
 /// literal substring `{token}` is replaced with the generated token at
@@ -314,6 +315,27 @@ impl EnrollmentFlow {
             tracing::warn!(outcome = "invalid_token", "{} consume failed", kind.label());
             return Err(Error::InvalidVerificationToken);
         };
+        // Defense in depth: the store is asked for a token scoped to this
+        // flow's purpose, but re-check the returned record so a store whose
+        // `consume_token` ignores the purpose filter can never let a signup
+        // link finish a recovery (or vice-versa). The purpose binding must
+        // hold at consumption, not just at mint time.
+        if record.purpose != kind.purpose() {
+            if kind.audits_consume_failures() {
+                self.audit_recovery_failed(
+                    Some(record.user_id),
+                    RecoveryFailureReason::InvalidToken,
+                    &context,
+                )
+                .await;
+            }
+            tracing::warn!(
+                outcome = "purpose_mismatch",
+                "{} consume failed",
+                kind.label()
+            );
+            return Err(Error::InvalidVerificationToken);
+        }
         if record.expires_at <= now {
             // Expired tokens are audited (recovery only) but the user is not
             // notified: an expired link grants nothing, and emailing on every

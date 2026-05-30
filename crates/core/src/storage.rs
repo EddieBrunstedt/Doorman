@@ -24,11 +24,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use subtle::ConstantTimeEq;
 use uuid::Uuid;
 use webauthn_rs::prelude::{DiscoverableAuthentication, Passkey, PasskeyRegistration};
 
 use crate::error::StorageResult;
+pub use crate::token::TokenHash;
 
 /// Composite handle to every storage trait the managers need.
 ///
@@ -92,35 +92,6 @@ impl Default for SessionId {
 impl fmt::Display for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
-    }
-}
-
-/// SHA-256 digest of a session token. Sessions are stored keyed by hash so
-/// that a database breach does not yield usable tokens. Equality is
-/// constant-time so that any in-process comparison (including HashMap
-/// bucket disambiguation) does not leak the matched prefix length via
-/// timing.
-/// `PartialEq` is constant-time but byte-equivalent to a derived impl, so the
-/// `Hash`/`Eq` contract (`a == b => hash(a) == hash(b)`) still holds.
-#[allow(clippy::derived_hash_with_manual_eq)]
-#[derive(Clone, Copy, Hash, Serialize, Deserialize)]
-pub struct TokenHash(pub [u8; 32]);
-
-impl PartialEq for TokenHash {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.ct_eq(&other.0).into()
-    }
-}
-
-impl Eq for TokenHash {}
-
-impl fmt::Debug for TokenHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TokenHash(")?;
-        for b in &self.0 {
-            write!(f, "{b:02x}")?;
-        }
-        write!(f, ")")
     }
 }
 

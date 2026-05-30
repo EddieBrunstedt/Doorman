@@ -18,6 +18,7 @@ pub mod recovery;
 pub mod session;
 pub mod signup;
 pub mod storage;
+pub mod token;
 pub mod verification;
 
 pub use error::*;
