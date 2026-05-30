@@ -13,6 +13,8 @@ use bauth_axum::dto::{
     AuthResponse, PasskeyChallenge, RecoveryConsumeRequest, RecoveryFinishRequest, RecoveryRequest,
     SignupRequest,
 };
+use bauth_core::storage::PasskeyCredentialStore;
+use chrono::Duration as ChronoDuration;
 use common::{RECOVERY_URL, SignupClient, TestApp, token_from_email, token_from_email_with};
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::prelude::Url as AuthUrl;
@@ -455,6 +457,40 @@ async fn authenticate_passkey(
     finish.json().await.expect("authenticate finish body")
 }
 
+async fn register_additional_passkey(
+    app: &TestApp,
+    client: &reqwest::Client,
+    bearer: &str,
+    authenticator: &mut ResidentHttpAuthenticator,
+) -> Vec<u8> {
+    let start = client
+        .post(app.url("/auth/passkey/register/start"))
+        .bearer_auth(bearer)
+        .send()
+        .await
+        .expect("register start");
+    assert_eq!(start.status(), StatusCode::OK);
+    let challenge: PasskeyChallenge<CreationChallengeResponse> =
+        start.json().await.expect("register start body");
+
+    let attestation = authenticator.do_registration(challenge.options);
+    let credential_id = attestation.raw_id.as_ref().to_vec();
+
+    let finish = client
+        .post(app.url("/auth/passkey/register/finish"))
+        .bearer_auth(bearer)
+        .json(&serde_json::json!({
+            "challenge_id": challenge.challenge_id,
+            "response": attestation,
+            "name": "backup device",
+        }))
+        .send()
+        .await
+        .expect("register finish");
+    assert_eq!(finish.status(), StatusCode::OK);
+    credential_id
+}
+
 #[tokio::test]
 async fn delete_passkey_during_cooldown_returns_409() {
     let app = TestApp::start(Router::new(), false).await;
@@ -618,6 +654,84 @@ async fn register_start_during_cooldown_is_allowed() {
         .await
         .expect("register start");
     assert_eq!(resp.status(), StatusCode::OK);
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn passkey_added_during_cooldown_inherits_cooldown() {
+    let app = TestApp::start(Router::new(), false).await;
+    let cookie_client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .expect("client");
+    let plain = reqwest::Client::new();
+
+    let auth = provision_recovery_session(&app, &cookie_client, "alice@example.com").await;
+    let recovery_session = app
+        .session_manager
+        .validate(&auth.token)
+        .await
+        .expect("validate recovery session");
+    let cooldown_until = recovery_session
+        .recovery_cooldown_until
+        .expect("recovery session restricted");
+
+    let mut backup_authenticator = ResidentHttpAuthenticator::new(&app);
+    let backup_credential_id =
+        register_additional_passkey(&app, &plain, &auth.token, &mut backup_authenticator).await;
+
+    let stored = app
+        .passkey_credentials
+        .find_passkey_by_credential_id(&backup_credential_id)
+        .await
+        .expect("find backup passkey")
+        .expect("backup passkey stored");
+    assert_eq!(stored.recovery_cooldown_until, Some(cooldown_until));
+
+    let backup_auth = authenticate_passkey(
+        &app,
+        &plain,
+        &mut backup_authenticator,
+        &backup_credential_id,
+    )
+    .await;
+    let restricted_session = app
+        .session_manager
+        .validate(&backup_auth.token)
+        .await
+        .expect("validate backup session");
+    assert_eq!(
+        restricted_session.recovery_cooldown_until,
+        Some(cooldown_until),
+    );
+
+    let mut stored_after_auth = app
+        .passkey_credentials
+        .find_passkey_by_credential_id(&backup_credential_id)
+        .await
+        .expect("find backup passkey after auth")
+        .expect("backup passkey stored after auth");
+    stored_after_auth.recovery_cooldown_until =
+        Some(chrono::Utc::now() - ChronoDuration::seconds(1));
+    app.passkey_credentials
+        .update_passkey(stored_after_auth)
+        .await
+        .expect("expire backup passkey cooldown");
+
+    let after_expiry_auth = authenticate_passkey(
+        &app,
+        &plain,
+        &mut backup_authenticator,
+        &backup_credential_id,
+    )
+    .await;
+    let unrestricted_session = app
+        .session_manager
+        .validate(&after_expiry_auth.token)
+        .await
+        .expect("validate unrestricted session");
+    assert_eq!(unrestricted_session.recovery_cooldown_until, None);
 
     app.shutdown().await;
 }

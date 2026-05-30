@@ -248,12 +248,18 @@ impl SessionManager {
         Ok(count)
     }
 
+    /// Return `session`'s active post-recovery cool-down deadline using
+    /// this manager's clock. Expired cool-downs are treated as inactive.
+    pub fn active_recovery_cooldown_until(&self, session: &Session) -> Option<DateTime<Utc>> {
+        session.active_recovery_cooldown_until(self.clock.now())
+    }
+
     /// Report whether `session` is currently inside its post-recovery
     /// cool-down window, using this manager's clock. Routes call this
     /// to decide whether to reject destructive actions with
     /// [`Error::RecoveryCooldownActive`].
     pub fn is_in_recovery_cooldown(&self, session: &Session) -> bool {
-        session.is_in_recovery_cooldown(self.clock.now())
+        self.active_recovery_cooldown_until(session).is_some()
     }
 
     /// Return every still-valid session belonging to `user_id`. Sessions

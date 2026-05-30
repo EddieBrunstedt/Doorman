@@ -38,9 +38,14 @@ fn manager(state: &BauthState) -> &PasskeyManager {
 
 async fn register_start(
     State(state): State<BauthState>,
-    AuthUser(user): AuthUser,
+    auth: AuthSession,
 ) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ErrorResponse> {
-    let (id, options) = manager(&state).start_registration(user.id).await?;
+    let recovery_cooldown_until = state
+        .session_manager
+        .active_recovery_cooldown_until(&auth.session);
+    let (id, options) = manager(&state)
+        .start_registration_with_recovery_cooldown(auth.user.id, recovery_cooldown_until)
+        .await?;
     Ok(Json(PasskeyChallenge {
         challenge_id: id.0.to_string(),
         options,
