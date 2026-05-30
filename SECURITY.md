@@ -173,16 +173,16 @@ registered addresses, or security mail for ordinary self-logout.
 
 ## Defaults
 
-| Knob | Default | Notes |
-| --- | --- | --- |
-| Session lifetime | 30 days | Server-side revocable |
-| Passkey challenge lifetime | 5 minutes | Applies to registration and authentication ceremonies |
-| Signup token lifetime | 15 minutes | Email link can only start first-passkey registration |
-| Signup request limits | 5/hour per IP, 3/hour per email | Enumeration-resistant response |
-| Recovery token lifetime | 15 minutes | Email link can only start recovery passkey registration |
-| Recovery request limits | 20/hour per IP, 5/hour per email, 10/day per email | Global ceiling off by default |
-| Recovery cool-down | 24 hours | Configurable, minimum 1 hour; bound to recovery-created/inherited passkeys and sessions until the deadline |
-| Cookie `secure` | `true` | Disable only for local plain-HTTP development |
+| Knob                       | Default                                            | Notes                                                                                                      |
+| -------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Session lifetime           | 30 days                                            | Server-side revocable                                                                                      |
+| Passkey challenge lifetime | 5 minutes                                          | Applies to registration and authentication ceremonies                                                      |
+| Signup token lifetime      | 15 minutes                                         | Email link can only start first-passkey registration                                                       |
+| Signup request limits      | 5/hour per IP, 3/hour per email                    | Enumeration-resistant response                                                                             |
+| Recovery token lifetime    | 15 minutes                                         | Email link can only start recovery passkey registration                                                    |
+| Recovery request limits    | 20/hour per IP, 5/hour per email, 10/day per email | Global ceiling off by default                                                                              |
+| Recovery cool-down         | 24 hours                                           | Configurable, minimum 1 hour; bound to recovery-created/inherited passkeys and sessions until the deadline |
+| Cookie `secure`            | `true`                                             | Disable only for local plain-HTTP development                                                              |
 
 ## Reporting vulnerabilities
 
