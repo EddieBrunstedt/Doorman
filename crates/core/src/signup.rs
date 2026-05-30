@@ -6,8 +6,9 @@
 //! 1. [`request_signup`](SignupManager::request_signup) — the user submits
 //!    an email. The manager issues a single-use, time-limited token, embeds
 //!    it in a URL via the configured template, and hands the rendered email
-//!    to the configured [`EmailSender`]. The response is identical whether
-//!    or not the email is already registered, so the endpoint is not an
+//!    to the configured [`EmailSender`](crate::email::EmailSender). The
+//!    response is identical whether or not the email is already registered,
+//!    so the endpoint is not an
 //!    enumeration oracle.
 //! 2. [`consume_signup`](SignupManager::consume_signup) — clicking the link
 //!    redeems the token atomically, marks the user's email verified, and

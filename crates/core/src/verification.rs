@@ -202,9 +202,10 @@ impl FlowKind {
 
 /// Shared dependencies and consume/finish skeleton behind the signup and
 /// recovery managers. Both managers hold one of these and delegate to it,
-/// passing a [`FlowKind`] plus the per-flow knobs (post-recovery cool-down,
-/// finish-time notification) that distinguish the two flows. This is what
-/// keeps the two managers from being near-identical copies.
+/// passing an internal flow-kind selector plus the per-flow knobs
+/// (post-recovery cool-down, finish-time notification) that distinguish the
+/// two flows. This is what keeps the two managers from being near-identical
+/// copies.
 #[derive(Clone)]
 pub struct EnrollmentFlow {
     users: Arc<dyn UserStore>,

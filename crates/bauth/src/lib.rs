@@ -3,10 +3,10 @@
 //! bauth is an opinionated, passkey-only authentication stack. The
 //! implementation is split across three crates:
 //!
-//! - [`bauth_core`](core) — framework-agnostic primitives: storage traits,
+//! - [`bauth_core`] — framework-agnostic primitives: storage traits,
 //!   managers, clock/email/audit/rate-limiter collaborators.
-//! - [`bauth_axum`](axum) — the supported HTTP integration for Axum.
-//! - [`bauth_sqlx`](sqlx) — SQLx storage adapters (SQLite and Postgres).
+//! - `bauth_axum` — the supported HTTP integration for Axum.
+//! - `bauth_sqlx` — SQLx storage adapters (SQLite and Postgres).
 //!
 //! This crate is the front door: depend on it once and pull the pieces you
 //! need in behind features instead of tracking three separate dependencies
@@ -19,9 +19,9 @@
 //!
 //! ## Features
 //!
-//! - `axum` — re-export `bauth-axum` at [`bauth::axum`](axum).
-//! - `sqlite` — re-export `bauth-sqlx` (SQLite adapter) at [`bauth::sqlx`](sqlx).
-//! - `postgres` — re-export `bauth-sqlx` (Postgres adapter) at [`bauth::sqlx`](sqlx).
+//! - `axum` — re-export `bauth-axum` at `bauth::axum`.
+//! - `sqlite` — re-export `bauth-sqlx` (SQLite adapter) at `bauth::sqlx`.
+//! - `postgres` — re-export `bauth-sqlx` (Postgres adapter) at `bauth::sqlx`.
 //!
 //! [`bauth::core`](core) is always available. The [`prelude`] re-exports the
 //! richest available prelude (axum's when the `axum` feature is on, core's
@@ -66,7 +66,7 @@ pub use bauth_sqlx as sqlx;
 
 /// One-line import for hosts wiring bauth into their app.
 ///
-/// Re-exports the most complete prelude available — [`bauth_axum::prelude`]
+/// Re-exports the most complete prelude available — `bauth_axum::prelude`
 /// when the `axum` feature is enabled (it already folds in the core
 /// prelude), or [`bauth_core::prelude`] otherwise — plus the SQLx storage
 /// adapters when a sqlx feature is on.
