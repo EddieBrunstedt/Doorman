@@ -1,16 +1,10 @@
 # bauth
 
-bauth is an opinionated passkey-only Axum auth library, with email magic
-links for recovery only.
+bauth is an opinionated passkey-only Axum auth library, with email magic links for recovery only.
 
-It gives an Axum app one steady-state login method — discoverable
-passkeys/WebAuthn — plus email-gated signup and recovery flows that force
-a passkey registration before any session is issued. There are no
-passwords, OAuth providers, TOTP codes, or general-purpose email login
-links.
+It gives an Axum app one steady-state login method — discoverable passkeys/WebAuthn — plus email-gated signup and recovery flows that force a passkey registration before any session is issued. There are no passwords, OAuth providers, TOTP codes, or general-purpose email login links.
 
-This crate is pre-1.0; breaking changes can still land before the public
-surface is declared stable.
+This crate is pre-1.0; breaking changes can still land before the public surface is declared stable.
 
 ## Quickstart
 
@@ -21,10 +15,7 @@ bauth = { version = "0.1", features = ["axum", "sqlite"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-`bauth` is the umbrella crate: one dependency, one version to bump. It
-re-exports `bauth-core`, `bauth-axum`, and `bauth-sqlx` behind features as
-`bauth::core`, `bauth::axum`, and `bauth::sqlx`. Hosts that want only a
-subset can still depend on the individual crates directly.
+`bauth` is the umbrella crate: one dependency, one version to bump. It re-exports `bauth-core`, `bauth-axum`, and `bauth-sqlx` behind features as `bauth::core`, `bauth::axum`, and `bauth::sqlx`. Hosts that want only a subset can still depend on the individual crates directly.
 
 ```rust
 use std::sync::Arc;
@@ -47,48 +38,19 @@ let auth = BauthAxum::builder(storage.storage())
 let app = Router::new().merge(auth.router()).route("/api/me", get(me)).layer(auth.session_layer());
 ```
 
-`auth.router()` mounts the passkey, signup, recovery, and session-management
-routes under `/auth`. `auth.session_layer()` resolves the session cookie or
-bearer token so your handlers can use `AuthUser`, `OptionalAuthUser`, and
-`AuthSession`.
+`auth.router()` mounts the passkey, signup, recovery, and session-management routes under `/auth`. `auth.session_layer()` resolves the session cookie or bearer token so your handlers can use `AuthUser`, `OptionalAuthUser`, and `AuthSession`.
 
-`TerminalEmailSender` is for local development. In production, implement
-`EmailSender` with your transactional email provider and keep
-`CookieConfig::secure = true`.
+`TerminalEmailSender` is for local development. In production, implement `EmailSender` with your transactional email provider and keep `CookieConfig::secure = true`.
 
 ## User flows
 
-- **Sign up:** `POST /auth/signup/request` sends an email link. Consuming
-  that link starts passkey registration; `/auth/signup/finish` registers
-  the first passkey, sends a passkey-registered security notification, and
-  only then issues the session.
-- **Sign in:** `POST /auth/passkey/authenticate/start` takes no email or
-  username. The browser shows the user's discoverable passkeys, and the
-  server identifies the user from the WebAuthn response.
-- **Recover:** `POST /auth/recovery/request` sends a recovery link and a
-  recovery-requested notification for a registered account; unknown
-  addresses still receive no email. The link only starts a new passkey
-  registration. `/auth/recovery/finish` registers that passkey, sends
-  passkey-registered and recovery-completed notifications, and issues a
-  session restricted by the default 24h post-recovery cool-down. The
-  recovery-created passkey carries the same cool-down deadline: signing in
-  with it before the deadline creates another restricted session, while
-  pre-existing passkeys stay unrestricted.
-- **Manage access:** authenticated users can list/add/delete passkeys and
-  list/revoke sessions. During an active recovery cool-down, destructive
-  lockout actions are blocked: deleting passkeys, revoking other sessions,
-  and "sign out everywhere else". Adding passkeys and revoking/logging out
-  of the current session remain allowed; passkeys added from a restricted
-  session inherit the active cool-down. Passkey add/remove and high-risk
-  session revocations send best-effort security notifications.
-- **Sign out:** `POST /auth/logout` revokes the caller's current session
-  and returns `204` with a `Set-Cookie` that clears the session cookie.
-  Signing out of your own session is allowed even during the post-recovery
-  cool-down.
+- **Sign up:** `POST /auth/signup/request` sends an email link. Consuming that link starts passkey registration; `/auth/signup/finish` registers the first passkey, sends a passkey-registered security notification, and only then issues the session.
+- **Sign in:** `POST /auth/passkey/authenticate/start` takes no email or username. The browser shows the user's discoverable passkeys, and the server identifies the user from the WebAuthn response.
+- **Recover:** `POST /auth/recovery/request` sends a recovery link and a recovery-requested notification for a registered account; unknown addresses still receive no email. The link only starts a new passkey registration. `/auth/recovery/finish` registers that passkey, sends passkey-registered and recovery-completed notifications, and issues a session restricted by the default 24h post-recovery cool-down. The recovery-created passkey carries the same cool-down deadline: signing in with it before the deadline creates another restricted session, while pre-existing passkeys stay unrestricted.
+- **Manage access:** authenticated users can list/add/delete passkeys and list/revoke sessions. During an active recovery cool-down, destructive lockout actions are blocked: deleting passkeys, revoking other sessions, and "sign out everywhere else". Adding passkeys and revoking/logging out of the current session remain allowed; passkeys added from a restricted session inherit the active cool-down. Passkey add/remove and high-risk session revocations send best-effort security notifications.
+- **Sign out:** `POST /auth/logout` revokes the caller's current session and returns `204` with a `Set-Cookie` that clears the session cookie. Signing out of your own session is allowed even during the post-recovery cool-down.
 
-Encourage every user to register at least two passkeys: for example a
-platform passkey plus a password-manager or hardware-key backup. The
-`UserDto.passkey_count` field exists so hosts can render that nudge.
+Encourage every user to register at least two passkeys: for example a platform passkey plus a password-manager or hardware-key backup. The `UserDto.passkey_count` field exists so hosts can render that nudge.
 
 ## Run the minimal app
 
@@ -96,20 +58,15 @@ platform passkey plus a password-manager or hardware-key backup. The
 cargo run -p bauth-minimal-app
 ```
 
-Open <http://localhost:3000>. Signup and recovery emails are printed to
-the terminal, so copy the link from stdout and complete the flow in the
-browser. The example uses SQLite, Axum, the bundled router, and a static
-HTML page with no frontend build step.
+Open <http://localhost:3000>. Signup and recovery emails are printed to the terminal, so copy the link from stdout and complete the flow in the browser. The example uses SQLite, Axum, the bundled router, and a static HTML page with no frontend build step.
 
 ## What ships
 
-- Passkey/WebAuthn registration and discoverable authentication via
-  [`webauthn-rs`](https://crates.io/crates/webauthn-rs).
+- Passkey/WebAuthn registration and discoverable authentication via [`webauthn-rs`](https://crates.io/crates/webauthn-rs).
 - Email-gated signup and recovery with single-use hashed tokens.
 - Server-side opaque sessions with instant revocation.
 - Passkey-bound post-recovery cool-down for destructive auth actions.
-- Security notification emails for recovery, passkey lifecycle, and
-  high-risk session revocation events.
+- Security notification emails for recovery, passkey lifecycle, and high-risk session revocation events.
 - Cookie and bearer-token session presentation.
 - CSRF origin checks for cookie-authenticated state-changing requests.
 - Audit and rate-limiter traits, with development defaults.
@@ -118,23 +75,15 @@ HTML page with no frontend build step.
 
 ## Production checklist
 
-Review the startup warnings emitted by `BauthAxum::builder().build()` or
-`BauthAxum::from_managers().build()` and make explicit choices before
-silencing them.
+Review the startup warnings emitted by `BauthAxum::builder().build()` or `BauthAxum::from_managers().build()` and make explicit choices before silencing them.
 
-- Replace `TerminalEmailSender` / `FileEmailSender` with a real
-  `EmailSender` for signup/recovery links and security notifications.
+- Replace `TerminalEmailSender` / `FileEmailSender` with a real `EmailSender` for signup/recovery links and security notifications.
 - Wire a durable `AuditSink`; `NoopAuditSink` discards security events.
-- Wire a shared production `RateLimiter`; `InMemoryRateLimiter` is
-  per-process.
-- Set `external_origin` to the exact public origin and keep the default
-  CSRF layer enabled for browser cookie flows.
-- Keep secure, HttpOnly, SameSite session cookies outside local HTTP
-  development.
-- Run storage migrations and periodically purge expired sessions,
-  verification tokens, and passkey challenges.
-- Monitor recovery requests/completions, passkey add/remove events,
-  high-risk session revocations, and failed WebAuthn ceremonies.
+- Wire a shared production `RateLimiter`; `InMemoryRateLimiter` is per-process.
+- Set `external_origin` to the exact public origin and keep the default CSRF layer enabled for browser cookie flows.
+- Keep secure, HttpOnly, SameSite session cookies outside local HTTP development.
+- Run storage migrations and periodically purge expired sessions, verification tokens, and passkey challenges.
+- Monitor recovery requests/completions, passkey add/remove events, high-risk session revocations, and failed WebAuthn ceremonies.
 - Prompt users with `passkey_count < 2` to add a backup passkey.
 
 ## Workspace layout
@@ -149,9 +98,7 @@ examples/web-client/   browser-side WebAuthn helper reference
 
 ## Benchmarks
 
-Criterion benches cover the hot auth paths at the manager, HTTP, and
-storage layers. See [`BENCHMARKS.md`](BENCHMARKS.md) for what is measured
-and how to read the numbers. Quick start:
+Criterion benches cover the hot auth paths at the manager, HTTP, and storage layers. See [`BENCHMARKS.md`](BENCHMARKS.md) for what is measured and how to read the numbers. Quick start:
 
 ```sh
 cargo bench -p bauth-core
@@ -161,19 +108,13 @@ cargo bench -p bauth-sqlx --features sqlite
 
 ## Custom storage or HTTP surface
 
-The quickest path is `bauth-sqlx` plus `BauthAxum::builder(...)`.
-Hosts on another database stack implement the `bauth-core` storage traits:
-`UserStore`, `SessionStore`, `VerificationTokenStore`,
-`PasskeyCredentialStore`, and `PasskeyChallengeStore`.
+The quickest path is `bauth-sqlx` plus `BauthAxum::builder(...)`. Hosts on another database stack implement the `bauth-core` storage traits: `UserStore`, `SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`, and `PasskeyChallengeStore`.
 
-If you want a custom HTTP API, call the core managers directly:
-`SessionManager`, `PasskeyManager`, `SignupManager`, and
-`RecoveryManager`.
+If you want a custom HTTP API, call the core managers directly: `SessionManager`, `PasskeyManager`, `SignupManager`, and `RecoveryManager`.
 
 ## Security
 
-See [`SECURITY.md`](SECURITY.md) for the threat model, recovery design,
-defaults, and host hardening requirements.
+See [`SECURITY.md`](SECURITY.md) for the threat model, recovery design, defaults, and host hardening requirements.
 
 ## License
 
