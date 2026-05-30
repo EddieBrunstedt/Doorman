@@ -12,6 +12,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
@@ -107,6 +108,31 @@ impl PasskeyManager {
         &self,
         user_id: UserId,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
+        self.start_registration_inner(user_id, None).await
+    }
+
+    /// Begin registering a new passkey and associate optional recovery
+    /// cool-down metadata with the in-progress ceremony. If the registration
+    /// later finishes through [`PasskeyManager::finish_registration`], the
+    /// stored credential receives the same timestamp. Callers deriving this
+    /// value from an authenticated session should pass
+    /// [`crate::storage::Session::active_recovery_cooldown_until`] rather
+    /// than the raw session field so expired cool-downs are not propagated.
+    #[tracing::instrument(skip(self), fields(method = "passkey", user_id = %user_id))]
+    pub async fn start_registration_with_recovery_cooldown(
+        &self,
+        user_id: UserId,
+        recovery_cooldown_until: Option<DateTime<Utc>>,
+    ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
+        self.start_registration_inner(user_id, recovery_cooldown_until)
+            .await
+    }
+
+    async fn start_registration_inner(
+        &self,
+        user_id: UserId,
+        recovery_cooldown_until: Option<DateTime<Utc>>,
+    ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let user = self
             .users
             .find_user_by_id(user_id)
@@ -141,7 +167,7 @@ impl PasskeyManager {
             state: reg_state,
             created_at: now,
             expires_at: now + challenge_lifetime(self.config.challenge_lifetime),
-            recovery_cooldown_until: None,
+            recovery_cooldown_until,
         };
         self.challenges.put_registration(stored).await?;
         tracing::info!(outcome = "started", "passkey registration started");
@@ -150,7 +176,9 @@ impl PasskeyManager {
 
     /// Complete a registration ceremony. On success the passkey is
     /// persisted and a [`CredentialAdded`](AuditEventKind::CredentialAdded)
-    /// event is emitted.
+    /// event is emitted. If the registration challenge was started with
+    /// recovery cool-down metadata, the stored passkey receives that same
+    /// timestamp.
     #[tracing::instrument(
         skip(self, response, name, context),
         fields(method = "passkey", user_id = tracing::field::Empty),
@@ -162,6 +190,43 @@ impl PasskeyManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<StoredPasskey> {
+        self.finish_registration_inner(challenge_id, response, name, context, None)
+            .await
+    }
+
+    /// Complete a registration ceremony while overriding any cool-down stored
+    /// on the challenge. Recovery flows use this to bind the exact deadline
+    /// they also apply to the newly issued session.
+    #[tracing::instrument(
+        skip(self, response, name, context),
+        fields(method = "passkey", user_id = tracing::field::Empty),
+    )]
+    pub async fn finish_registration_with_recovery_cooldown(
+        &self,
+        challenge_id: PasskeyChallengeId,
+        response: &RegisterPublicKeyCredential,
+        name: Option<String>,
+        context: SessionContext,
+        recovery_cooldown_until: DateTime<Utc>,
+    ) -> Result<StoredPasskey> {
+        self.finish_registration_inner(
+            challenge_id,
+            response,
+            name,
+            context,
+            Some(recovery_cooldown_until),
+        )
+        .await
+    }
+
+    async fn finish_registration_inner(
+        &self,
+        challenge_id: PasskeyChallengeId,
+        response: &RegisterPublicKeyCredential,
+        name: Option<String>,
+        context: SessionContext,
+        recovery_cooldown_override: Option<DateTime<Utc>>,
+    ) -> Result<StoredPasskey> {
         let now = self.clock.now();
         let Some(stored) = self.challenges.take_registration(challenge_id).await? else {
             tracing::warn!(outcome = "invalid_challenge", "passkey registration failed");
@@ -171,7 +236,9 @@ impl PasskeyManager {
             tracing::warn!(outcome = "expired_challenge", "passkey registration failed");
             return Err(Error::InvalidPasskeyChallenge);
         }
-        tracing::Span::current().record("user_id", tracing::field::display(stored.user_id));
+        let user_id = stored.user_id;
+        let challenge_recovery_cooldown_until = stored.recovery_cooldown_until;
+        tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
         let passkey = self
             .webauthn
@@ -180,12 +247,13 @@ impl PasskeyManager {
 
         let credential = StoredPasskey {
             credential_id: passkey.cred_id().to_vec(),
-            user_id: stored.user_id,
+            user_id,
             passkey,
             name,
             created_at: now,
             last_used_at: None,
-            recovery_cooldown_until: None,
+            recovery_cooldown_until: recovery_cooldown_override
+                .or(challenge_recovery_cooldown_until),
         };
         self.credentials.add_passkey(credential.clone()).await?;
 
@@ -194,9 +262,7 @@ impl PasskeyManager {
                 timestamp: now,
                 ip: context.ip,
                 user_agent: context.user_agent,
-                kind: AuditEventKind::CredentialAdded {
-                    user_id: stored.user_id,
-                },
+                kind: AuditEventKind::CredentialAdded { user_id },
             })
             .await;
         tracing::info!(outcome = "registered", "passkey registered");

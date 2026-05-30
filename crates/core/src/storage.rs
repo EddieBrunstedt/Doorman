@@ -153,12 +153,21 @@ pub struct Session {
 }
 
 impl Session {
+    /// Return the active recovery cool-down deadline, if any. The comparison
+    /// is `now < cool-down`; sessions whose cool-down has already elapsed are
+    /// treated as unrestricted and return `None`.
+    pub fn active_recovery_cooldown_until(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.recovery_cooldown_until
+            .as_ref()
+            .filter(|until| now < **until)
+            .cloned()
+    }
+
     /// Returns `true` if the session is currently restricted by a recovery
     /// cool-down. The comparison is `now < cool-down`; sessions whose
     /// cool-down has already elapsed are treated as unrestricted.
     pub fn is_in_recovery_cooldown(&self, now: DateTime<Utc>) -> bool {
-        self.recovery_cooldown_until
-            .is_some_and(|until| now < until)
+        self.active_recovery_cooldown_until(now).is_some()
     }
 }
 

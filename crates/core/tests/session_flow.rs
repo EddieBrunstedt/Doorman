@@ -39,6 +39,42 @@ fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
         .expect("valid timestamp")
 }
 
+#[test]
+fn session_active_recovery_cooldown_until_filters_expired_deadlines() {
+    let now = ts(2026, 1, 1);
+    let active_until = now + ChronoDuration::minutes(10);
+    let session = Session {
+        id: SessionId::new(),
+        user_id: UserId::new(),
+        token_hash: hash_token("cooldown"),
+        created_at: now,
+        expires_at: now + ChronoDuration::hours(1),
+        ip: None,
+        user_agent: None,
+        recovery_cooldown_until: Some(active_until),
+    };
+
+    assert_eq!(
+        session.active_recovery_cooldown_until(now),
+        Some(active_until)
+    );
+    assert!(session.is_in_recovery_cooldown(now));
+
+    let expired = Session {
+        recovery_cooldown_until: Some(now - ChronoDuration::seconds(1)),
+        ..session.clone()
+    };
+    assert_eq!(expired.active_recovery_cooldown_until(now), None);
+    assert!(!expired.is_in_recovery_cooldown(now));
+
+    let unrestricted = Session {
+        recovery_cooldown_until: None,
+        ..session
+    };
+    assert_eq!(unrestricted.active_recovery_cooldown_until(now), None);
+    assert!(!unrestricted.is_in_recovery_cooldown(now));
+}
+
 #[tokio::test]
 async fn create_then_validate_returns_same_session() {
     let (manager, sessions, audit) = fresh_manager();

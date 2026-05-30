@@ -71,6 +71,95 @@ async fn register_then_discoverable_authenticate_round_trip() {
 }
 
 #[tokio::test]
+async fn registration_with_none_recovery_cooldown_stores_unrestricted_passkey() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "none-cooldown@example.com").await;
+    let mut wa = authenticator();
+
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration_with_recovery_cooldown(user.id, None)
+        .await
+        .expect("start_registration_with_recovery_cooldown");
+    let response = wa.do_registration(ccr);
+    let credential = h
+        .passkey
+        .finish_registration(challenge_id, &response, None, SessionContext::default())
+        .await
+        .expect("finish_registration");
+
+    assert_eq!(credential.recovery_cooldown_until, None);
+    let stored = h
+        .credentials
+        .find_passkey_by_credential_id(&credential.credential_id)
+        .await
+        .expect("find credential")
+        .expect("credential persisted");
+    assert_eq!(stored.recovery_cooldown_until, None);
+}
+
+#[tokio::test]
+async fn registration_with_recovery_cooldown_stores_timestamp_on_passkey() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "cooldown@example.com").await;
+    let mut wa = authenticator();
+    let cooldown_until = h.clock.now() + ChronoDuration::hours(24);
+
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration_with_recovery_cooldown(user.id, Some(cooldown_until))
+        .await
+        .expect("start_registration_with_recovery_cooldown");
+    let response = wa.do_registration(ccr);
+    let credential = h
+        .passkey
+        .finish_registration(challenge_id, &response, None, SessionContext::default())
+        .await
+        .expect("finish_registration");
+
+    assert_eq!(credential.recovery_cooldown_until, Some(cooldown_until));
+    let stored = h
+        .credentials
+        .find_passkey_by_credential_id(&credential.credential_id)
+        .await
+        .expect("find credential")
+        .expect("credential persisted");
+    assert_eq!(stored.recovery_cooldown_until, Some(cooldown_until));
+}
+
+#[tokio::test]
+async fn finish_registration_recovery_cooldown_override_takes_precedence() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "override-cooldown@example.com").await;
+    let mut wa = authenticator();
+    let challenge_cooldown_until = h.clock.now() + ChronoDuration::hours(1);
+    let override_cooldown_until = h.clock.now() + ChronoDuration::hours(2);
+
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration_with_recovery_cooldown(user.id, Some(challenge_cooldown_until))
+        .await
+        .expect("start_registration_with_recovery_cooldown");
+    let response = wa.do_registration(ccr);
+    let credential = h
+        .passkey
+        .finish_registration_with_recovery_cooldown(
+            challenge_id,
+            &response,
+            None,
+            SessionContext::default(),
+            override_cooldown_until,
+        )
+        .await
+        .expect("finish_registration_with_recovery_cooldown");
+
+    assert_eq!(
+        credential.recovery_cooldown_until,
+        Some(override_cooldown_until)
+    );
+}
+
+#[tokio::test]
 async fn discoverable_authentication_identifies_two_users_from_response() {
     let h = Harness::fresh();
     let alice = make_user(&h, "alice@example.com").await;
