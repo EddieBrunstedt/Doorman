@@ -41,7 +41,8 @@ CREATE TABLE passkey_credentials (
     passkey TEXT NOT NULL,
     name TEXT,
     created_at TEXT NOT NULL,
-    last_used_at TEXT
+    last_used_at TEXT,
+    recovery_cooldown_until TEXT
 );
 CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
 
@@ -50,7 +51,8 @@ CREATE TABLE passkey_registrations (
     user_id BLOB NOT NULL,
     state TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL
+    expires_at TEXT NOT NULL,
+    recovery_cooldown_until TEXT
 );
 
 CREATE TABLE passkey_authentications (

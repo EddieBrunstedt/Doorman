@@ -25,6 +25,7 @@ webauthn-rs.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 tokio.workspace = true
+webauthn-authenticator-rs.workspace = true
 
 [[bench]]
 name = "storage"

@@ -40,7 +40,8 @@ CREATE TABLE passkey_credentials (
     passkey TEXT NOT NULL,
     name TEXT,
     created_at TIMESTAMPTZ NOT NULL,
-    last_used_at TIMESTAMPTZ
+    last_used_at TIMESTAMPTZ,
+    recovery_cooldown_until TIMESTAMPTZ
 );
 CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
 
@@ -49,7 +50,8 @@ CREATE TABLE passkey_registrations (
     user_id BYTEA NOT NULL,
     state TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
-    expires_at TIMESTAMPTZ NOT NULL
+    expires_at TIMESTAMPTZ NOT NULL,
+    recovery_cooldown_until TIMESTAMPTZ
 );
 
 CREATE TABLE passkey_authentications (

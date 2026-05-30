@@ -414,8 +414,8 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
         let serialized = serde_json::to_string(&credential.passkey).map_err(storage)?;
         sqlx::query(
             "INSERT INTO passkey_credentials
-             (credential_id, user_id, passkey, name, created_at, last_used_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             (credential_id, user_id, passkey, name, created_at, last_used_at, recovery_cooldown_until)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&credential.credential_id)
         .bind(uuid_to_bytes(credential.user_id.0))
@@ -423,6 +423,7 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
         .bind(&credential.name)
         .bind(credential.created_at)
         .bind(credential.last_used_at)
+        .bind(credential.recovery_cooldown_until)
         .execute(&self.pool)
         .await
         .map_err(storage)?;
@@ -433,7 +434,7 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
         let serialized = serde_json::to_string(&credential.passkey).map_err(storage)?;
         let result = sqlx::query(
             "UPDATE passkey_credentials
-             SET user_id = ?, passkey = ?, name = ?, created_at = ?, last_used_at = ?
+             SET user_id = ?, passkey = ?, name = ?, created_at = ?, last_used_at = ?, recovery_cooldown_until = ?
              WHERE credential_id = ?",
         )
         .bind(uuid_to_bytes(credential.user_id.0))
@@ -441,6 +442,7 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
         .bind(&credential.name)
         .bind(credential.created_at)
         .bind(credential.last_used_at)
+        .bind(credential.recovery_cooldown_until)
         .bind(&credential.credential_id)
         .execute(&self.pool)
         .await
@@ -453,7 +455,7 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
 
     async fn list_passkeys_for_user(&self, user_id: UserId) -> StorageResult<Vec<StoredPasskey>> {
         let rows = sqlx::query(
-            "SELECT credential_id, user_id, passkey, name, created_at, last_used_at
+            "SELECT credential_id, user_id, passkey, name, created_at, last_used_at, recovery_cooldown_until
              FROM passkey_credentials WHERE user_id = ?",
         )
         .bind(uuid_to_bytes(user_id.0))
@@ -468,7 +470,7 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
         credential_id: &[u8],
     ) -> StorageResult<Option<StoredPasskey>> {
         let row = sqlx::query(
-            "SELECT credential_id, user_id, passkey, name, created_at, last_used_at
+            "SELECT credential_id, user_id, passkey, name, created_at, last_used_at, recovery_cooldown_until
              FROM passkey_credentials WHERE credential_id = ?",
         )
         .bind(credential_id)
@@ -500,6 +502,7 @@ fn row_to_passkey(row: sqlx::sqlite::SqliteRow) -> StorageResult<StoredPasskey> 
         name: row.try_get("name").map_err(storage)?,
         created_at: row.try_get("created_at").map_err(storage)?,
         last_used_at: row.try_get("last_used_at").map_err(storage)?,
+        recovery_cooldown_until: row.try_get("recovery_cooldown_until").map_err(storage)?,
     })
 }
 
@@ -516,14 +519,15 @@ impl PasskeyChallengeStore for SqlitePasskeyChallengeStore {
     async fn put_registration(&self, value: StoredPasskeyRegistration) -> StorageResult<()> {
         let serialized = serde_json::to_string(&value.state).map_err(storage)?;
         sqlx::query(
-            "INSERT INTO passkey_registrations (id, user_id, state, created_at, expires_at)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO passkey_registrations (id, user_id, state, created_at, expires_at, recovery_cooldown_until)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(uuid_to_bytes(value.id.0))
         .bind(uuid_to_bytes(value.user_id.0))
         .bind(serialized)
         .bind(value.created_at)
         .bind(value.expires_at)
+        .bind(value.recovery_cooldown_until)
         .execute(&self.pool)
         .await
         .map_err(storage)?;
@@ -536,7 +540,7 @@ impl PasskeyChallengeStore for SqlitePasskeyChallengeStore {
     ) -> StorageResult<Option<StoredPasskeyRegistration>> {
         let row = sqlx::query(
             "DELETE FROM passkey_registrations WHERE id = ?
-             RETURNING id, user_id, state, created_at, expires_at",
+             RETURNING id, user_id, state, created_at, expires_at, recovery_cooldown_until",
         )
         .bind(uuid_to_bytes(id.0))
         .fetch_optional(&self.pool)
@@ -553,6 +557,7 @@ impl PasskeyChallengeStore for SqlitePasskeyChallengeStore {
             state,
             created_at: row.try_get("created_at").map_err(storage)?,
             expires_at: row.try_get("expires_at").map_err(storage)?,
+            recovery_cooldown_until: row.try_get("recovery_cooldown_until").map_err(storage)?,
         }))
     }
 

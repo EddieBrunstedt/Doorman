@@ -18,9 +18,13 @@
 
 use bauth_core::session::hash_token;
 use bauth_core::storage::{
-    Session, SessionId, Storage, User, UserId, VerificationPurpose, VerificationToken,
+    PasskeyChallengeId, Session, SessionId, Storage, StoredPasskey, StoredPasskeyRegistration,
+    User, UserId, VerificationPurpose, VerificationToken,
 };
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use webauthn_authenticator_rs::WebauthnAuthenticator;
+use webauthn_authenticator_rs::softpasskey::SoftPasskey;
+use webauthn_rs::prelude::{Passkey, PasskeyRegistration, Url, Webauthn, WebauthnBuilder};
 
 fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
@@ -45,6 +49,8 @@ pub async fn run(storage: &Storage) {
     verification_token_purge_and_delete(storage).await;
     sessions_crud_and_queries(storage).await;
     sessions_purge_expired(storage).await;
+    passkey_credentials_cooldown_round_trip(storage).await;
+    passkey_registration_cooldown_round_trip(storage).await;
 }
 
 async fn users_round_trip(storage: &Storage) {
@@ -426,4 +432,153 @@ async fn sessions_purge_expired(storage: &Storage) {
             .is_some(),
         "the live session survived the purge",
     );
+}
+
+async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
+    let now = ts(2026, 1, 1);
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "passkey-round-trip@example.com"))
+        .await
+        .expect("user");
+
+    let passkey = passkey_for(user_id, "passkey-round-trip@example.com");
+    let cooldown_until = now + Duration::hours(24);
+    let credential = StoredPasskey {
+        credential_id: passkey.cred_id().to_vec(),
+        user_id,
+        passkey,
+        name: Some("security key".into()),
+        created_at: now,
+        last_used_at: None,
+        recovery_cooldown_until: Some(cooldown_until),
+    };
+
+    let credentials = &storage.passkey_credentials;
+    credentials
+        .add_passkey(credential.clone())
+        .await
+        .expect("create passkey");
+
+    let by_id = credentials
+        .find_passkey_by_credential_id(&credential.credential_id)
+        .await
+        .expect("find by credential id")
+        .expect("passkey present");
+    assert_eq!(by_id.user_id, user_id);
+    assert_eq!(by_id.name.as_deref(), Some("security key"));
+    assert_eq!(by_id.passkey.cred_id(), credential.passkey.cred_id());
+    assert_eq!(by_id.recovery_cooldown_until, Some(cooldown_until));
+
+    let updated_cooldown_until = now + Duration::hours(48);
+    let updated = StoredPasskey {
+        name: Some("renamed security key".into()),
+        last_used_at: Some(now + Duration::minutes(5)),
+        recovery_cooldown_until: Some(updated_cooldown_until),
+        ..by_id
+    };
+    credentials
+        .update_passkey(updated.clone())
+        .await
+        .expect("update passkey");
+
+    let listed = credentials
+        .list_passkeys_for_user(user_id)
+        .await
+        .expect("list passkeys");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].credential_id, updated.credential_id);
+    assert_eq!(listed[0].name.as_deref(), Some("renamed security key"));
+    assert_eq!(listed[0].last_used_at, updated.last_used_at);
+    assert_eq!(
+        listed[0].recovery_cooldown_until,
+        Some(updated_cooldown_until),
+    );
+}
+
+async fn passkey_registration_cooldown_round_trip(storage: &Storage) {
+    let now = ts(2026, 1, 1);
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "registration-round-trip@example.com"))
+        .await
+        .expect("user");
+
+    let state = passkey_registration_for(user_id, "registration-round-trip@example.com");
+    let expected_state = serde_json::to_value(&state).expect("serialize registration state");
+    let cooldown_until = now + Duration::hours(24);
+    let challenge_id = PasskeyChallengeId::new();
+    storage
+        .passkey_challenges
+        .put_registration(StoredPasskeyRegistration {
+            id: challenge_id,
+            user_id,
+            state,
+            created_at: now,
+            expires_at: now + Duration::minutes(5),
+            recovery_cooldown_until: Some(cooldown_until),
+        })
+        .await
+        .expect("put registration");
+
+    let taken = storage
+        .passkey_challenges
+        .take_registration(challenge_id)
+        .await
+        .expect("take registration")
+        .expect("registration present");
+    assert_eq!(taken.id, challenge_id);
+    assert_eq!(taken.user_id, user_id);
+    assert_eq!(taken.created_at, now);
+    assert_eq!(taken.expires_at, now + Duration::minutes(5));
+    assert_eq!(taken.recovery_cooldown_until, Some(cooldown_until));
+    assert_eq!(
+        serde_json::to_value(&taken.state).expect("serialize taken registration state"),
+        expected_state,
+    );
+    assert!(
+        storage
+            .passkey_challenges
+            .take_registration(challenge_id)
+            .await
+            .expect("second take")
+            .is_none(),
+        "registration challenges are single-use",
+    );
+}
+
+fn webauthn() -> Webauthn {
+    let origin = Url::parse("http://localhost:8080").expect("valid origin");
+    WebauthnBuilder::new("localhost", &origin)
+        .expect("valid relying party")
+        .rp_name("bauth storage conformance")
+        .build()
+        .expect("build webauthn")
+}
+
+fn passkey_registration_for(user_id: UserId, user_name: &str) -> PasskeyRegistration {
+    let webauthn = webauthn();
+    let (_options, state) = webauthn
+        .start_passkey_registration(user_id.0, user_name, user_name, None)
+        .expect("start passkey registration");
+    state
+}
+
+fn passkey_for(user_id: UserId, user_name: &str) -> Passkey {
+    let webauthn = webauthn();
+    let (options, state) = webauthn
+        .start_passkey_registration(user_id.0, user_name, user_name, None)
+        .expect("start passkey registration");
+    let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
+    let response = authenticator
+        .do_registration(
+            Url::parse("http://localhost:8080").expect("valid auth origin"),
+            options,
+        )
+        .expect("authenticator registration");
+    webauthn
+        .finish_passkey_registration(&response, &state)
+        .expect("finish passkey registration")
 }

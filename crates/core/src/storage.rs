@@ -249,6 +249,10 @@ pub struct StoredPasskey {
     pub name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// When set, sessions created by authenticating with this passkey may
+    /// inherit the recovery cool-down restriction until this instant. `None`
+    /// means the credential is unrestricted.
+    pub recovery_cooldown_until: Option<DateTime<Utc>>,
 }
 
 /// In-progress passkey registration ceremony state. The `state` field is
@@ -261,6 +265,9 @@ pub struct StoredPasskeyRegistration {
     pub state: PasskeyRegistration,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    /// Optional recovery cool-down metadata associated with this in-progress
+    /// registration ceremony.
+    pub recovery_cooldown_until: Option<DateTime<Utc>>,
 }
 
 /// In-progress discoverable passkey authentication ceremony state.

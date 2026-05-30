@@ -141,6 +141,7 @@ impl PasskeyManager {
             state: reg_state,
             created_at: now,
             expires_at: now + challenge_lifetime(self.config.challenge_lifetime),
+            recovery_cooldown_until: None,
         };
         self.challenges.put_registration(stored).await?;
         tracing::info!(outcome = "started", "passkey registration started");
@@ -184,6 +185,7 @@ impl PasskeyManager {
             name,
             created_at: now,
             last_used_at: None,
+            recovery_cooldown_until: None,
         };
         self.credentials.add_passkey(credential.clone()).await?;
 

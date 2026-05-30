@@ -21,6 +21,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
     let credential = register_passkey(&h, user.id, &mut wa, Some("Alice's Mac")).await;
     assert_eq!(credential.user_id, user.id);
     assert_eq!(credential.name.as_deref(), Some("Alice's Mac"));
+    assert_eq!(credential.recovery_cooldown_until, None);
     assert_eq!(h.credentials.len(), 1);
     assert!(h.challenges.is_empty(), "challenge consumed");
 
@@ -54,6 +55,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
         .expect("find credential")
         .expect("credential persisted");
     assert!(stored.last_used_at.is_some(), "last_used_at advanced");
+    assert_eq!(stored.recovery_cooldown_until, None);
 
     let events = kinds(&h.audit.events());
     assert!(

@@ -303,6 +303,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "uuid",
+ "webauthn-authenticator-rs",
  "webauthn-rs",
 ]
 
