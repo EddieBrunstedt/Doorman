@@ -13,13 +13,17 @@ between the base64url strings returned by `webauthn-rs` JSON and the
 
 - `requestSignup(email)` → `POST /auth/signup/request`
 - `finishSignup(token, passkeyName?)` → consume signup token, register the
-  first passkey, receive `AuthResponse`
+  first passkey, receive `AuthResponse`; the server sends a best-effort
+  passkey-registered notification
 - `authenticatePasskey()` → discoverable passkey sign-in, receive
   `AuthResponse`
 - `requestRecovery(email)` → `POST /auth/recovery/request`
 - `finishRecovery(token, passkeyName?)` → consume recovery token, register a
-  new passkey, receive a recovery cool-down session
-- `registerPasskey(name?)` → add a passkey for the current session
+  new cool-down-bound passkey, receive a recovery cool-down session; the
+  server sends passkey-registered and recovery-completed notifications
+- `registerPasskey(name?)` → add a passkey for the current session. If the
+  current session is in recovery cool-down, the new passkey inherits that
+  deadline
 - `listPasskeys()` / `deletePasskey(id)`
 - `listSessions()` / `revokeSession(id)` / `revokeOtherSessions()`
 
@@ -42,6 +46,13 @@ between the base64url strings returned by `webauthn-rs` JSON and the
 | GET | `/auth/sessions` | authenticated | `SessionDto[]` |
 | DELETE | `/auth/sessions/{id}` | authenticated | `204` or `409 recovery_cooldown_active` for other sessions |
 | DELETE | `/auth/sessions` | authenticated | `204` or `409 recovery_cooldown_active` |
+
+Recovery links only start passkey registration; no session is issued until
+`/auth/recovery/finish` succeeds. During recovery cool-down, deleting
+passkeys, revoking other sessions, and `DELETE /auth/sessions` are blocked;
+adding passkeys and revoking/logging out of the current session remain
+allowed. Signing in with a recovery-created or inherited passkey before its
+cool-down deadline returns another restricted `AuthResponse`.
 
 `index.html` wires the helpers to a minimal page. The bundled
 `examples/minimal-app` contains a fuller no-build static client that shows

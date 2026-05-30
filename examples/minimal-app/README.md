@@ -6,8 +6,10 @@ It demonstrates:
 
 - email-first signup that finishes by registering the user's first passkey;
 - discoverable passkey sign-in with no email prompt;
-- recovery by email link followed by forced new-passkey registration;
-- the post-recovery cool-down UX (`409 recovery_cooldown_active` on blocked actions);
+- recovery by email link followed by forced new-passkey registration before
+  any session is issued;
+- the passkey-bound post-recovery cool-down UX (`409 recovery_cooldown_active`
+  on blocked actions);
 - passkey listing, adding, and deletion;
 - session listing, current-session logout, and "sign out everywhere else";
 - a `/api/me` host route that includes `passkey_count` and recovery cool-down state.
@@ -18,9 +20,10 @@ It demonstrates:
 cargo run -p bauth-minimal-app
 ```
 
-Open <http://localhost:3000>. The app uses `TerminalEmailSender`, so signup
-and recovery emails are printed to the process stdout. Copy the printed URL
-into the browser to consume the token and register a passkey.
+Open <http://localhost:3000>. The app uses `TerminalEmailSender`, so signup,
+recovery, and security-notification emails are printed to the process
+stdout. Copy the printed URL into the browser to consume the token and
+register a passkey.
 
 ## Environment
 
@@ -34,4 +37,5 @@ into the browser to consume the token and register a passkey.
 
 This is a development reference, not a production template. It silences
 startup warnings because it intentionally uses terminal email and the
-in-memory rate-limiter default.
+in-memory rate-limiter default. Production hosts need a real `EmailSender`
+for both link delivery and security notifications.

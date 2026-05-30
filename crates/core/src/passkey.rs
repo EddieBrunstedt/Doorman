@@ -376,6 +376,8 @@ impl PasskeyManager {
     }
 
     /// Complete an authentication ceremony, issuing a session on success.
+    /// If the authenticated passkey still carries an active recovery
+    /// cool-down deadline, the issued session inherits that restriction.
     #[tracing::instrument(
         skip(self, response, context),
         fields(method = "passkey", user_id = tracing::field::Empty),

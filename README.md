@@ -60,17 +60,27 @@ bearer token so your handlers can use `AuthUser`, `OptionalAuthUser`, and
 
 - **Sign up:** `POST /auth/signup/request` sends an email link. Consuming
   that link starts passkey registration; `/auth/signup/finish` registers
-  the first passkey and issues the session.
+  the first passkey, sends a passkey-registered security notification, and
+  only then issues the session.
 - **Sign in:** `POST /auth/passkey/authenticate/start` takes no email or
   username. The browser shows the user's discoverable passkeys, and the
   server identifies the user from the WebAuthn response.
-- **Recover:** `POST /auth/recovery/request` sends a recovery email for a
-  registered account. The link can only start a new passkey registration.
-  `/auth/recovery/finish` issues a session restricted by the default 24h
-  post-recovery cool-down.
+- **Recover:** `POST /auth/recovery/request` sends a recovery link and a
+  recovery-requested notification for a registered account; unknown
+  addresses still receive no email. The link only starts a new passkey
+  registration. `/auth/recovery/finish` registers that passkey, sends
+  passkey-registered and recovery-completed notifications, and issues a
+  session restricted by the default 24h post-recovery cool-down. The
+  recovery-created passkey carries the same cool-down deadline: signing in
+  with it before the deadline creates another restricted session, while
+  pre-existing passkeys stay unrestricted.
 - **Manage access:** authenticated users can list/add/delete passkeys and
-  list/revoke sessions. Cool-down sessions cannot delete passkeys or revoke
-  other sessions.
+  list/revoke sessions. During an active recovery cool-down, destructive
+  lockout actions are blocked: deleting passkeys, revoking other sessions,
+  and "sign out everywhere else". Adding passkeys and revoking/logging out
+  of the current session remain allowed; passkeys added from a restricted
+  session inherit the active cool-down. Passkey add/remove and high-risk
+  session revocations send best-effort security notifications.
 - **Sign out:** `POST /auth/logout` revokes the caller's current session
   and returns `204` with a `Set-Cookie` that clears the session cookie.
   Signing out of your own session is allowed even during the post-recovery
@@ -97,7 +107,9 @@ HTML page with no frontend build step.
   [`webauthn-rs`](https://crates.io/crates/webauthn-rs).
 - Email-gated signup and recovery with single-use hashed tokens.
 - Server-side opaque sessions with instant revocation.
-- Post-recovery session cool-down for destructive auth actions.
+- Passkey-bound post-recovery cool-down for destructive auth actions.
+- Security notification emails for recovery, passkey lifecycle, and
+  high-risk session revocation events.
 - Cookie and bearer-token session presentation.
 - CSRF origin checks for cookie-authenticated state-changing requests.
 - Audit and rate-limiter traits, with development defaults.
@@ -111,7 +123,7 @@ Review the startup warnings emitted by `BauthAxum::builder().build()` or
 silencing them.
 
 - Replace `TerminalEmailSender` / `FileEmailSender` with a real
-  `EmailSender`.
+  `EmailSender` for signup/recovery links and security notifications.
 - Wire a durable `AuditSink`; `NoopAuditSink` discards security events.
 - Wire a shared production `RateLimiter`; `InMemoryRateLimiter` is
   per-process.
@@ -121,7 +133,8 @@ silencing them.
   development.
 - Run storage migrations and periodically purge expired sessions,
   verification tokens, and passkey challenges.
-- Monitor recovery requests and failed WebAuthn ceremonies.
+- Monitor recovery requests/completions, passkey add/remove events,
+  high-risk session revocations, and failed WebAuthn ceremonies.
 - Prompt users with `passkey_count < 2` to add a backup passkey.
 
 ## Workspace layout

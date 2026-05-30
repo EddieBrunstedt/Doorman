@@ -22,8 +22,9 @@
 //! No session is issued from the email click alone. A passkey is always
 //! interposed; an attacker who phishes the link still has to leave a
 //! visible credential on the user's authenticator list. The resulting
-//! session carries a post-recovery cool-down (24h by default) that blocks
-//! destructive auth actions while the legitimate user has time to react.
+//! session and recovery-created passkey carry the same post-recovery
+//! cool-down (24h by default), and passkeys added from a restricted
+//! session inherit the active deadline.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -61,11 +62,13 @@ pub struct RecoveryConfig {
     /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails); hosts
     /// override this for branded copy.
     pub emails: Arc<dyn BauthEmails>,
-    /// Length of the post-recovery cool-down applied to the session
-    /// issued by `finish_recovery`. While the cool-down is active the
-    /// host's destructive surfaces (delete passkey, revoke other sessions
-    /// — see [`crate::error::Error::RecoveryCooldownActive`]) refuse to
-    /// run from that session. Floor of one hour enforced by
+    /// Length of the post-recovery cool-down applied to the session and
+    /// passkey created by `finish_recovery`. Sessions created from that
+    /// passkey, or from passkeys added by a restricted session, stay
+    /// restricted until this deadline; destructive surfaces (delete passkey,
+    /// revoke other sessions — see
+    /// [`crate::error::Error::RecoveryCooldownActive`]) refuse requests from
+    /// restricted sessions. Floor of one hour enforced by
     /// [`RecoveryManager::new`].
     pub cooldown: Duration,
 }
@@ -289,9 +292,9 @@ impl RecoveryManager {
     }
 
     /// Complete the recovery-time passkey registration ceremony and issue
-    /// a session. The session carries a post-recovery cool-down, and the
-    /// user receives the passkey-registered security notice plus a
-    /// recovery-completed notification email.
+    /// a session. The session and newly registered passkey carry the same
+    /// post-recovery cool-down, and the user receives the passkey-registered
+    /// security notice plus a recovery-completed notification email.
     pub async fn finish_recovery(
         &self,
         challenge_id: PasskeyChallengeId,

@@ -21,6 +21,8 @@ bauth is designed to defend against:
 - phishing of steady-state logins by relying on origin-bound WebAuthn
   signatures;
 - user enumeration in signup, recovery, and passkey authentication;
+- immediate account lockout after email recovery by binding the
+  post-recovery cool-down to recovery-created passkeys and sessions;
 - replay of session tokens, verification tokens, and passkey ceremony
   state from normal HTTP flows;
 - database reads yielding usable bearer tokens, because tokens are stored
@@ -31,7 +33,8 @@ bauth cannot defend against:
 
 - a compromised host process;
 - a database attacker with both read and write access;
-- a compromised user email inbox exercising the recovery flow;
+- a compromised user email inbox exercising the recovery flow (the
+  cool-down limits immediate lockout but cannot prove ownership);
 - social engineering that convinces a user to approve recovery;
 - users with no passkey-capable authenticator or no recoverable email
   address.
@@ -48,6 +51,12 @@ bauth cannot defend against:
   consume path.
 - WebAuthn verification is performed by `webauthn-rs`; signatures are
   bound to the configured relying-party ID and origin.
+- Passkeys registered by recovery, or from a session still in recovery
+  cool-down, store the active `recovery_cooldown_until` deadline.
+- Authenticating with a cool-down-bound passkey before that deadline issues
+  a restricted session; after the deadline, the same passkey is treated as
+  unrestricted without any cleanup job. Pre-existing passkeys remain
+  unrestricted.
 - Passkey credential IDs are checked against the authenticated user before
   deletion, so one account cannot remove another account's credential by
   guessing an ID.
@@ -69,22 +78,28 @@ Recovery exists for users who lost every passkey. It deliberately requires
 the visitor to enrol a new visible passkey before any session is issued.
 
 - `/auth/recovery/request` is enumeration-resistant. Registered addresses
-  receive a recovery link and a separate notification email. Unknown
-  addresses receive no email, because sending one would create an
-  enumeration side channel.
+  receive a recovery link and a separate recovery-requested notification
+  email. Unknown addresses receive no email, because sending one would
+  create an enumeration side channel.
 - Recovery request rate limits default to 5/hour and 10/day per email,
   20/hour per IP, and no global ceiling unless the host configures one.
 - Recovery tokens are single-use, short-lived, hashed at rest, and scoped
   only to starting a passkey registration ceremony.
 - Expired-token clicks are audited but do not send another notification.
-- `/auth/recovery/finish` registers the new passkey, sends a completion
-  notification, and issues a session with a default 24h cool-down.
+- `/auth/recovery/finish` registers the new passkey, sends
+  passkey-registered and recovery-completed notifications, and issues a
+  session with a default 24h cool-down.
+- The recovery-created passkey stores the same cool-down deadline as the
+  recovery-issued session. Authenticating with that passkey before the
+  deadline creates another restricted session. Passkeys added from a
+  restricted session inherit the active deadline. Pre-existing passkeys and
+  pre-existing sessions remain unrestricted.
 
 During the cool-down, bauth blocks actions that could lock out the
 legitimate user: deleting passkeys, revoking other sessions, and
 "sign out everywhere else". The session may still add another passkey and
-may revoke itself. A later normal passkey login creates an unrestricted
-session even if an older recovery session is still cooling down.
+may revoke or log out itself. Once the deadline has passed, checks treat
+that cool-down as inactive; no cleanup job is required.
 
 ## Sessions
 
@@ -127,10 +142,22 @@ deployments need a shared backend.
 ## Email transport
 
 `TerminalEmailSender` and `FileEmailSender` are development transports.
-They expose signup and recovery links locally and do not deliver mail to
-users. Production hosts must implement `EmailSender` using their email
-provider and operate SPF, DKIM, DMARC, bounce handling, and provider-side
-abuse controls.
+They expose signup/recovery links and security notices locally and do not
+deliver mail to users. Production hosts must implement `EmailSender` using
+their email provider and operate SPF, DKIM, DMARC, bounce handling, and
+provider-side abuse controls.
+
+Link-delivery emails are hard failures: if bauth cannot send a signup or
+recovery link for a valid request, the request fails. Security
+notifications are best-effort after the protected action has already
+succeeded; send failures are logged and do not roll back passkey or session
+changes.
+
+bauth sends security notifications for registered-user recovery requests,
+completed recoveries, every successful passkey registration, passkey
+removal, revoking another session, and "sign out everywhere else". It does
+not send recovery mail for unknown addresses, signup mail for already
+registered addresses, or security mail for ordinary self-logout.
 
 ## Operational hygiene
 
@@ -154,7 +181,7 @@ abuse controls.
 | Signup request limits | 5/hour per IP, 3/hour per email | Enumeration-resistant response |
 | Recovery token lifetime | 15 minutes | Email link can only start recovery passkey registration |
 | Recovery request limits | 20/hour per IP, 5/hour per email, 10/day per email | Global ceiling off by default |
-| Recovery cool-down | 24 hours | Configurable, minimum 1 hour |
+| Recovery cool-down | 24 hours | Configurable, minimum 1 hour; bound to recovery-created/inherited passkeys and sessions until the deadline |
 | Cookie `secure` | `true` | Disable only for local plain-HTTP development |
 
 ## Reporting vulnerabilities

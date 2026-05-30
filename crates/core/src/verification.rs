@@ -12,8 +12,9 @@
 //! The flows still differ where it matters, and those differences stay in
 //! the managers: signup provisions a new unverified user on an unknown
 //! email while recovery silently no-ops (enumeration resistance differs by
-//! design); recovery additionally sends a notification email, issues a
-//! cool-down session, and emits a richer audit trail.
+//! design); recovery additionally sends notification emails, binds a
+//! cool-down deadline to the new passkey and session, and emits a richer
+//! audit trail.
 
 use std::sync::Arc;
 
@@ -203,9 +204,9 @@ impl FlowKind {
 /// Shared dependencies and consume/finish skeleton behind the signup and
 /// recovery managers. Both managers hold one of these and delegate to it,
 /// passing an internal flow-kind selector plus the per-flow knobs
-/// (post-recovery cool-down, finish-time notification) that distinguish the
-/// two flows. This is what keeps the two managers from being near-identical
-/// copies.
+/// (post-recovery passkey/session cool-down, finish-time notification) that
+/// distinguish the two flows. This is what keeps the two managers from
+/// being near-identical copies.
 #[derive(Clone)]
 pub struct EnrollmentFlow {
     users: Arc<dyn UserStore>,
@@ -367,10 +368,10 @@ impl EnrollmentFlow {
     }
 
     /// Finish a passkey registration ceremony and issue a session. When
-    /// `cooldown` is set the session is restricted by a post-recovery
-    /// cool-down; when `notification` is set the rendered email is sent
-    /// best-effort once the new passkey is enrolled. Both flows audit
-    /// `LoginSucceeded`.
+    /// `cooldown` is set the new passkey and session share the same
+    /// post-recovery cool-down deadline; when `notification` is set the
+    /// rendered email is sent best-effort once the new passkey is enrolled.
+    /// Both flows audit `LoginSucceeded`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn finish(
         &self,
