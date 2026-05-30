@@ -16,8 +16,8 @@ use bauth_test_support::MockClock;
 use chrono::Duration as ChronoDuration;
 
 use common::{
-    Harness, RECOVERY_URL, ResidentTestAuthenticator, kinds, provision_user, recovery_config,
-    token_from_email,
+    Harness, RECOVERY_URL, ResidentTestAuthenticator, authenticator, kinds, make_user,
+    provision_user, recovery_config, register_passkey, token_from_email,
 };
 
 #[tokio::test]
@@ -435,7 +435,7 @@ impl BauthEmails for BrandedEmails {
 }
 
 #[tokio::test]
-async fn finish_recovery_issues_session_with_cooldown_until() {
+async fn finish_recovery_stores_same_cooldown_on_session_and_passkey() {
     let h = Harness::fresh();
     let _ = provision_user(&h, "alice@example.com").await;
 
@@ -476,12 +476,181 @@ async fn finish_recovery_issues_session_with_cooldown_until() {
         outcome.session.session.recovery_cooldown_until,
         Some(expected),
     );
+    assert_eq!(outcome.passkey.recovery_cooldown_until, Some(expected));
+
+    let stored = h
+        .credentials
+        .find_passkey_by_credential_id(&outcome.passkey.credential_id)
+        .await
+        .expect("find passkey")
+        .expect("passkey stored");
+    assert_eq!(stored.recovery_cooldown_until, Some(expected));
     assert!(
         outcome
             .session
             .session
             .is_in_recovery_cooldown(h.clock.now())
     );
+}
+
+#[tokio::test]
+async fn recovery_created_passkey_login_inherits_active_cooldown() {
+    let h = Harness::fresh();
+    let _ = provision_user(&h, "alice@example.com").await;
+
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+    let consume = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect("consume");
+    let mut wa = ResidentTestAuthenticator::new();
+    let attestation = wa.do_registration(consume.options);
+    let outcome = h
+        .recovery
+        .finish_recovery(
+            consume.challenge_id,
+            &attestation,
+            Some("recovery device".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish");
+
+    let (auth_id, options) = h.passkey.start_authentication().await.expect("start auth");
+    let assertion = wa.do_authentication(options, &outcome.passkey.credential_id);
+    let issued = h
+        .passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect("finish auth");
+
+    assert_eq!(
+        issued.session.recovery_cooldown_until,
+        outcome.session.session.recovery_cooldown_until,
+    );
+    assert!(issued.session.is_in_recovery_cooldown(h.clock.now()));
+}
+
+#[tokio::test]
+async fn pre_existing_passkey_login_stays_unrestricted_during_recovery_cooldown() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "alice@example.com").await;
+    let mut existing_wa = authenticator();
+    let existing = register_passkey(&h, user.id, &mut existing_wa, Some("primary")).await;
+
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+    let consume = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect("consume");
+    let mut recovery_wa = authenticator();
+    let attestation = recovery_wa.do_registration(consume.options);
+    let outcome = h
+        .recovery
+        .finish_recovery(
+            consume.challenge_id,
+            &attestation,
+            Some("recovery device".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish");
+    assert!(
+        outcome
+            .session
+            .session
+            .is_in_recovery_cooldown(h.clock.now())
+    );
+
+    let (auth_id, options) = h.passkey.start_authentication().await.expect("start auth");
+    let assertion = existing_wa.do_authentication(options, &existing.credential_id);
+    let issued = h
+        .passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect("finish auth");
+
+    assert_eq!(issued.session.recovery_cooldown_until, None);
+}
+
+#[tokio::test]
+async fn recovery_created_passkey_login_after_cooldown_is_unrestricted() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "alice@example.com").await;
+
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+    let consume = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect("consume");
+    let mut wa = authenticator();
+    let attestation = wa.do_registration(consume.options);
+    let outcome = h
+        .recovery
+        .finish_recovery(
+            consume.challenge_id,
+            &attestation,
+            Some("recovery device".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish");
+    assert_eq!(outcome.user.id, user.id);
+    assert!(
+        outcome
+            .session
+            .session
+            .is_in_recovery_cooldown(h.clock.now())
+    );
+
+    h.clock
+        .advance(ChronoDuration::hours(24) + ChronoDuration::seconds(1));
+
+    let (auth_id, options) = h.passkey.start_authentication().await.expect("start auth");
+    let assertion = wa.do_authentication(options, &outcome.passkey.credential_id);
+    let issued = h
+        .passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect("finish auth");
+
+    assert_eq!(issued.session.recovery_cooldown_until, None);
 }
 
 #[tokio::test]

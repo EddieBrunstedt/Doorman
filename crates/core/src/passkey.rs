@@ -341,6 +341,12 @@ impl PasskeyManager {
             .finish_discoverable_authentication(response, stored.state, &discoverable)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
 
+        let active_recovery_cooldown_until = credential
+            .recovery_cooldown_until
+            .as_ref()
+            .filter(|until| now < **until)
+            .cloned();
+
         // Counter / backup-state updates are advisory per webauthn-rs;
         // last_used_at always advances, so we persist on every success.
         credential.passkey.update_credential(&auth_result);
@@ -358,7 +364,14 @@ impl PasskeyManager {
             .await;
 
         tracing::info!(outcome = "succeeded", "passkey login succeeded");
-        self.sessions.create(user_id, context).await
+        match active_recovery_cooldown_until {
+            Some(cooldown_until) => {
+                self.sessions
+                    .create_restricted(user_id, context, cooldown_until)
+                    .await
+            }
+            None => self.sessions.create(user_id, context).await,
+        }
     }
 
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]

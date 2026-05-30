@@ -382,20 +382,36 @@ impl EnrollmentFlow {
         cooldown: Option<std::time::Duration>,
         notification: Option<&(dyn Fn(&User) -> Email + Send + Sync)>,
     ) -> Result<EnrollmentOutcome> {
-        let passkey = self
-            .passkey
-            .finish_registration(challenge_id, response, name, context.clone())
-            .await?;
+        let cooldown_until = cooldown.map(|cooldown| {
+            let cooldown = chrono::Duration::from_std(cooldown)
+                .expect("recovery cooldown overflows chrono::Duration; configure a smaller value");
+            self.clock.now() + cooldown
+        });
+
+        let passkey = match cooldown_until.as_ref().cloned() {
+            Some(cooldown_until) => {
+                self.passkey
+                    .finish_registration_with_recovery_cooldown(
+                        challenge_id,
+                        response,
+                        name,
+                        context.clone(),
+                        cooldown_until,
+                    )
+                    .await?
+            }
+            None => {
+                self.passkey
+                    .finish_registration(challenge_id, response, name, context.clone())
+                    .await?
+            }
+        };
         let Some(user) = self.users.find_user_by_id(passkey.user_id).await? else {
             return Err(Error::UserNotFound);
         };
 
-        let session = match cooldown {
-            Some(cooldown) => {
-                let cooldown = chrono::Duration::from_std(cooldown).expect(
-                    "recovery cooldown overflows chrono::Duration; configure a smaller value",
-                );
-                let cooldown_until = self.clock.now() + cooldown;
+        let session = match cooldown_until.as_ref().cloned() {
+            Some(cooldown_until) => {
                 self.sessions
                     .create_restricted(user.id, context.clone(), cooldown_until)
                     .await?

@@ -17,10 +17,87 @@ use common::{RECOVERY_URL, SignupClient, TestApp, token_from_email, token_from_e
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::prelude::Url as AuthUrl;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
-use webauthn_rs::prelude::CreationChallengeResponse;
+use webauthn_rs::prelude::{
+    CreationChallengeResponse, PublicKeyCredential, RegisterPublicKeyCredential,
+    RequestChallengeResponse,
+};
+use webauthn_rs_proto::AllowCredentials;
 
 const RECOVERY_LINK_SUBJECT: &str = "Recover access to your account";
 const RECOVERY_NOTIFICATION_SUBJECT: &str = "Security notice: account recovery activity";
+
+#[derive(Clone)]
+struct ResidentCredential {
+    credential_id: Vec<u8>,
+    user_handle: Vec<u8>,
+}
+
+struct ResidentHttpAuthenticator {
+    inner: WebauthnAuthenticator<SoftPasskey>,
+    rp_origin: AuthUrl,
+    resident_credentials: Vec<ResidentCredential>,
+}
+
+impl ResidentHttpAuthenticator {
+    fn new(app: &TestApp) -> Self {
+        Self {
+            inner: WebauthnAuthenticator::new(SoftPasskey::new(true)),
+            rp_origin: AuthUrl::parse(app.rp_origin.as_str()).expect("rp origin"),
+            resident_credentials: Vec::new(),
+        }
+    }
+
+    fn do_registration(
+        &mut self,
+        challenge: CreationChallengeResponse,
+    ) -> RegisterPublicKeyCredential {
+        let user_handle = challenge.public_key.user.id.as_ref().to_vec();
+        let mut compatible = challenge;
+        let selection = compatible
+            .public_key
+            .authenticator_selection
+            .as_mut()
+            .expect("authenticator selection present");
+        selection.require_resident_key = false;
+        selection.resident_key = None;
+
+        let response = self
+            .inner
+            .do_registration(self.rp_origin.clone(), compatible)
+            .expect("authenticator register");
+        self.resident_credentials.push(ResidentCredential {
+            credential_id: response.raw_id.as_ref().to_vec(),
+            user_handle,
+        });
+        response
+    }
+
+    fn do_authentication(
+        &mut self,
+        challenge: RequestChallengeResponse,
+        credential_id: &[u8],
+    ) -> PublicKeyCredential {
+        let resident = self
+            .resident_credentials
+            .iter()
+            .find(|credential| credential.credential_id == credential_id)
+            .cloned()
+            .expect("credential is resident on test authenticator");
+
+        let mut compatible = challenge;
+        compatible.public_key.allow_credentials = vec![AllowCredentials {
+            type_: "public-key".to_string(),
+            id: resident.credential_id.clone().into(),
+            transports: None,
+        }];
+        let mut assertion = self
+            .inner
+            .do_authentication(self.rp_origin.clone(), compatible)
+            .expect("authenticator auth");
+        assertion.response.user_handle = Some(resident.user_handle.into());
+        assertion
+    }
+}
 
 #[tokio::test]
 async fn full_recovery_round_trip() {
@@ -289,6 +366,18 @@ async fn provision_recovery_session(
     cookie_client: &reqwest::Client,
     email: &str,
 ) -> AuthResponse {
+    let mut authenticator = ResidentHttpAuthenticator::new(app);
+    provision_recovery_session_with_authenticator(app, cookie_client, email, &mut authenticator)
+        .await
+        .0
+}
+
+async fn provision_recovery_session_with_authenticator(
+    app: &TestApp,
+    cookie_client: &reqwest::Client,
+    email: &str,
+    authenticator: &mut ResidentHttpAuthenticator,
+) -> (AuthResponse, Vec<u8>) {
     let _signed_up: AuthResponse = SignupClient::new(app)
         .signup(cookie_client, app, email)
         .await;
@@ -320,19 +409,8 @@ async fn provision_recovery_session(
     let challenge: PasskeyChallenge<CreationChallengeResponse> =
         consume.json().await.expect("consume body");
 
-    let mut sp = WebauthnAuthenticator::new(SoftPasskey::new(true));
-    let auth_origin = AuthUrl::parse(app.rp_origin.as_str()).expect("rp origin");
-    let mut options = challenge.options;
-    let selection = options
-        .public_key
-        .authenticator_selection
-        .as_mut()
-        .expect("authenticator selection present");
-    selection.require_resident_key = false;
-    selection.resident_key = None;
-    let attestation = sp
-        .do_registration(auth_origin, options)
-        .expect("authenticator register");
+    let attestation = authenticator.do_registration(challenge.options);
+    let credential_id = attestation.raw_id.as_ref().to_vec();
 
     let finish = cookie_client
         .post(app.url("/auth/recovery/finish"))
@@ -345,7 +423,36 @@ async fn provision_recovery_session(
         .await
         .expect("recovery finish");
     assert_eq!(finish.status(), StatusCode::OK);
-    finish.json().await.expect("finish body")
+    (finish.json().await.expect("finish body"), credential_id)
+}
+
+async fn authenticate_passkey(
+    app: &TestApp,
+    client: &reqwest::Client,
+    authenticator: &mut ResidentHttpAuthenticator,
+    credential_id: &[u8],
+) -> AuthResponse {
+    let start = client
+        .post(app.url("/auth/passkey/authenticate/start"))
+        .send()
+        .await
+        .expect("authenticate start");
+    assert_eq!(start.status(), StatusCode::OK);
+    let challenge: PasskeyChallenge<RequestChallengeResponse> =
+        start.json().await.expect("authenticate start body");
+    let assertion = authenticator.do_authentication(challenge.options, credential_id);
+
+    let finish = client
+        .post(app.url("/auth/passkey/authenticate/finish"))
+        .json(&serde_json::json!({
+            "challenge_id": challenge.challenge_id,
+            "response": assertion,
+        }))
+        .send()
+        .await
+        .expect("authenticate finish");
+    assert_eq!(finish.status(), StatusCode::OK);
+    finish.json().await.expect("authenticate finish body")
 }
 
 #[tokio::test]
@@ -428,6 +535,66 @@ async fn revoke_others_during_cooldown_returns_409() {
         .expect("delete /auth/sessions");
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json().await.expect("body");
+    assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn recovery_passkey_login_during_cooldown_cannot_delete_passkeys_or_revoke_others() {
+    let app = TestApp::start(Router::new(), false).await;
+    let cookie_client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .expect("client");
+    let plain = reqwest::Client::new();
+    let mut recovery_authenticator = ResidentHttpAuthenticator::new(&app);
+
+    let (_recovery_session, recovery_credential_id) =
+        provision_recovery_session_with_authenticator(
+            &app,
+            &cookie_client,
+            "alice@example.com",
+            &mut recovery_authenticator,
+        )
+        .await;
+    let auth = authenticate_passkey(
+        &app,
+        &plain,
+        &mut recovery_authenticator,
+        &recovery_credential_id,
+    )
+    .await;
+
+    let list = plain
+        .get(app.url("/auth/passkey"))
+        .bearer_auth(&auth.token)
+        .send()
+        .await
+        .expect("list passkeys");
+    assert_eq!(list.status(), StatusCode::OK);
+    let passkeys: Vec<bauth_axum::dto::PasskeyDto> = list.json().await.expect("list body");
+    let first = passkeys.first().expect("at least one passkey").clone();
+
+    let delete_passkey = plain
+        .delete(app.url(&format!("/auth/passkey/{}", first.credential_id)))
+        .bearer_auth(&auth.token)
+        .send()
+        .await
+        .expect("delete passkey");
+    assert_eq!(delete_passkey.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = delete_passkey.json().await.expect("body");
+    assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+
+    let other = common::login(&plain, &app, "alice@example.com").await;
+    let revoke_other = plain
+        .delete(app.url(&format!("/auth/sessions/{}", other.session.id)))
+        .bearer_auth(&auth.token)
+        .send()
+        .await
+        .expect("delete other session");
+    assert_eq!(revoke_other.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = revoke_other.json().await.expect("body");
     assert_eq!(body["error"]["code"], "recovery_cooldown_active");
 
     app.shutdown().await;
