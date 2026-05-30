@@ -4,8 +4,9 @@
 //! - `create` — `SessionManager::create` against the in-memory store
 //!   (token gen + hash + store insert + audit emit).
 //! - `validate` — manager-level `validate` against the in-memory store
-//!   (the axum `session_validate` bench measures the layer + cache; this
-//!   measures the manager underneath them).
+//!   (the axum `session_cache` bench isolates the cache, and `request_path`
+//!   measures the full layer/router path; this measures the manager
+//!   underneath them).
 //! - `token_hash` — `hash_token` throughput. It runs on every
 //!   authenticated request, so it is worth a standalone baseline.
 //!

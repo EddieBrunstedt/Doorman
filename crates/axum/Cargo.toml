@@ -43,7 +43,7 @@ webauthn-authenticator-rs.workspace = true
 webauthn-rs-proto.workspace = true
 
 [[bench]]
-name = "session_validate"
+name = "session_cache"
 harness = false
 
 [[bench]]

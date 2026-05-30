@@ -20,6 +20,7 @@ cargo bench -p bauth-sqlx --features sqlite
 
 # A single bench target
 cargo bench -p bauth-core --bench passkey_auth
+cargo bench -p bauth-axum --bench session_cache
 
 # A single function within a target (substring filter)
 cargo bench -p bauth-core --bench session -- token_hash
@@ -39,7 +40,7 @@ under `target/criterion/`.
 | Bench (`--bench`) | Function | Path measured |
 | ----------------- | -------- | ------------- |
 | `session` | `session_create` | `SessionManager::create` against the in-memory store (token gen + hash + insert + audit emit). |
-| `session` | `session_validate` | Manager-level `validate` against the in-memory store (no cache in front — the axum bench measures the cache). |
+| `session` | `session_validate` | Manager-level `validate` against the in-memory store (no cache in front — `bauth-axum` measures cache behavior separately). |
 | `session` | `token_hash` | `hash_token` throughput. Runs on every authenticated request. |
 | `rate_limit` | `rate_limit_allowed` | `InMemoryRateLimiter::check` on a within-budget attempt. |
 | `rate_limit` | `rate_limit_limited` | `check` on a saturated bucket (the hot path under an active attack). |
@@ -50,9 +51,10 @@ under `target/criterion/`.
 
 | Bench | Function | Path measured |
 | ----- | -------- | ------------- |
-| `session_validate` | `uncached` / `cached` | The session-resolution layer's two regimes (store round-trip vs process-local cache hit). |
+| `session_cache` | `cache_hit` | Raw `SessionCache::get` hit with a precomputed token hash. This isolates the real process-local cache, not the full session layer. |
+| `session_cache` | `cache_miss_populate` | Cold-cache populate sequence after token extraction: hash token, observe cache miss, manager validate, user lookup, cache insert. Cache clearing happens in untimed setup. |
 | `request_path` | `me_cached` | `GET /me` with a valid bearer token, cache warm — the realistic per-request auth overhead added to every endpoint. |
-| `request_path` | `me_uncached` | The same request with the cache cleared each iteration (cold-cache store round-trip through the full router). |
+| `request_path` | `me_uncached` | The same request with the cache cleared in untimed setup each iteration (cold-cache store round-trip through the full router). |
 | `request_path` | `layer_no_auth` | An unauthenticated request through the layer — its fixed cost on traffic carrying no session. |
 
 ### `bauth-sqlx` — storage adapters (requires `--features sqlite`)
@@ -70,8 +72,9 @@ bench if a server is available.
 
 ## Reading the results
 
-- **Cached vs uncached** (`session_validate`, `request_path`) shows what
-  the session-resolution cache buys per request.
+- **Cached vs uncached** (`session_cache`, `request_path`) shows what
+  the session-resolution cache buys. Use `request_path` for full router /
+  middleware costs; `session_cache` is a lower-level cache/store microbench.
 - **Allowed vs limited** (`rate_limit`) shows the limiter's cost in both
   regimes.
 - **With vs without crypto**: `passkey_authenticate` dwarfs the other

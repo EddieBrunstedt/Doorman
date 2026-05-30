@@ -3,9 +3,9 @@
 //!
 //! - `me_cached` — `GET /me` with a valid bearer token, cache warm. The
 //!   realistic per-request auth overhead a host adds to every endpoint.
-//! - `me_uncached` — the same request with the session cache cleared each
-//!   iteration, forcing the full store round-trip the layer does on a cold
-//!   cache.
+//! - `me_uncached` — the same request with the session cache cleared in
+//!   untimed setup for each iteration, forcing the full store round-trip
+//!   the layer does on a cold cache.
 //! - `layer_no_auth` — an unauthenticated `GET` through the layer to a
 //!   public route, measuring the layer's fixed cost on traffic that carries
 //!   no session.
@@ -38,7 +38,7 @@ use bauth_core::passkey::PasskeyConfig;
 use bauth_core::session::{SessionContext, SessionManager};
 use bauth_core::storage::{PasskeyCredentialStore, Storage, User, UserId, UserStore};
 use bauth_test_support::CapturingEmailSender;
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use tokio::runtime::Runtime;
 use tower::ServiceExt;
 
@@ -168,16 +168,21 @@ fn request_path(c: &mut Criterion) {
     });
 
     c.bench_function("me_uncached", |b| {
-        b.to_async(&runtime).iter(|| async {
-            scaffold.cache.invalidate_user(scaffold.user_id);
-            let response = scaffold
-                .router
-                .clone()
-                .oneshot(me_request(&scaffold.token))
-                .await
-                .expect("request");
-            assert_eq!(response.status(), StatusCode::OK);
-        });
+        b.to_async(&runtime).iter_batched(
+            || {
+                scaffold.cache.invalidate_user(scaffold.user_id);
+            },
+            |_| async {
+                let response = scaffold
+                    .router
+                    .clone()
+                    .oneshot(me_request(&scaffold.token))
+                    .await
+                    .expect("request");
+                assert_eq!(response.status(), StatusCode::OK);
+            },
+            BatchSize::PerIteration,
+        );
     });
 
     c.bench_function("layer_no_auth", |b| {
