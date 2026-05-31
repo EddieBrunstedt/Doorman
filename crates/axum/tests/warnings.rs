@@ -10,17 +10,21 @@ use std::sync::{Arc, Mutex};
 
 use bauth_axum::config::CookieConfig;
 use bauth_axum::{BauthAxum, BuilderError};
-use bauth_core::audit::NoopAuditSink;
-use bauth_core::clock::SystemClock;
+use bauth_core::audit::{AuditSink, NoopAuditSink};
+use bauth_core::clock::{Clock, SystemClock};
+use bauth_core::context::CoreDeps;
 use bauth_core::email::{EmailSender, FileEmailSender, TerminalEmailSender};
 use bauth_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
 };
-use bauth_core::passkey::PasskeyConfig;
-use bauth_core::rate_limit::NoopRateLimiter;
-use bauth_core::session::{SessionConfig, SessionManager};
+use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
+use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
+use bauth_core::recovery::{RecoveryConfig, RecoveryManager};
+use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
+use bauth_core::signup::{SignupConfig, SignupManager};
 use bauth_core::storage::Storage;
+use bauth_core::verification::EnrollmentFlow;
 use bauth_test_support::CapturingEmailSender;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -251,6 +255,61 @@ fn low_level_builder_rejects_missing_passkey_manager() {
         Err(other) => panic!("expected MissingPasskeyManager, got: {other:?}"),
         Ok(_) => panic!("build should fail without passkey manager"),
     }
+}
+
+#[tokio::test]
+async fn low_level_from_managers_wires_managers_built_from_core_deps() {
+    // Build every core manager from one shared `CoreDeps` and hand them to
+    // the low-level `from_managers` builder. Asserts the path builds and,
+    // crucially, that the `EnrollmentFlow` reaches its email transport
+    // through the shared context (it no longer holds its own copy): a signup
+    // request must enqueue a link email on the sender that lives in `deps`.
+    let storage = fresh_storage();
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
+    let email = Arc::new(CapturingEmailSender::new());
+    let limiter: Arc<dyn RateLimiter> = Arc::new(NoopRateLimiter);
+
+    let session_manager = SessionManager::new(
+        storage.sessions.clone(),
+        clock.clone(),
+        audit.clone(),
+        SessionConfig::default(),
+    );
+
+    let deps = CoreDeps::new(
+        clock,
+        audit,
+        email.clone() as Arc<dyn EmailSender>,
+        limiter,
+        session_manager.clone(),
+        storage.clone(),
+    );
+
+    let passkey = PasskeyManager::new(&deps, passkey_config()).expect("passkey manager");
+    let flow = EnrollmentFlow::new(&deps, passkey.clone());
+    let signup = SignupManager::new(flow.clone(), SignupConfig::default());
+    let recovery = RecoveryManager::new(flow, RecoveryConfig::default());
+
+    let _auth = BauthAxum::from_managers()
+        .session_manager(session_manager)
+        .user_store(storage.users.clone())
+        .passkey_manager(passkey)
+        .signup_manager(signup.clone())
+        .recovery_manager(recovery)
+        .silence_warnings()
+        .build()
+        .expect("low-level build should succeed when every manager is supplied");
+
+    signup
+        .request_signup("wire@example.com", SessionContext::default())
+        .await
+        .expect("request signup");
+    assert_eq!(
+        email.sent().len(),
+        1,
+        "signup request should enqueue exactly one link email via the shared transport"
+    );
 }
 
 #[test]

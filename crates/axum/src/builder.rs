@@ -51,6 +51,7 @@ use std::sync::Arc;
 
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
+use bauth_core::context::CoreDeps;
 use bauth_core::email::EmailSender;
 use bauth_core::memory::InMemoryRateLimiter;
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
@@ -283,9 +284,21 @@ impl BauthBuilder {
         )
         .with_invalidation_hook(cache.invalidator());
 
+        // Bundle the shared collaborators once. Every manager below reads
+        // what it needs from this context instead of re-threading each
+        // store / clock / sink through its own positional constructor.
+        let deps = CoreDeps::new(
+            clock,
+            audit,
+            email,
+            limiter,
+            session_manager.clone(),
+            self.storage.clone(),
+        );
+
         let mut builder = ManagerBuilder::default()
-            .session_manager(session_manager.clone())
-            .user_store(self.storage.users.clone())
+            .session_manager(session_manager)
+            .user_store(deps.users.clone())
             .session_cache(cache);
         builder.inherited_warnings = warnings;
         if self.silence_warnings {
@@ -300,30 +313,12 @@ impl BauthBuilder {
             builder = builder.csrf(csrf_config);
         }
 
-        let passkey_manager = PasskeyManager::new(
-            self.storage.users.clone(),
-            self.storage.passkey_credentials.clone(),
-            self.storage.passkey_challenges.clone(),
-            session_manager.clone(),
-            clock.clone(),
-            audit.clone(),
-            email.clone(),
-            passkey_config,
-        )
-        .map_err(BuilderError::Passkey)?;
+        let passkey_manager =
+            PasskeyManager::new(&deps, passkey_config).map_err(BuilderError::Passkey)?;
 
         // Signup and recovery share the same dependencies and consume/finish
         // skeleton; build one EnrollmentFlow and hand a clone to each manager.
-        let enrollment_flow = EnrollmentFlow::new(
-            self.storage.users.clone(),
-            self.storage.verification_tokens.clone(),
-            passkey_manager.clone(),
-            session_manager.clone(),
-            email.clone(),
-            clock.clone(),
-            audit.clone(),
-            limiter.clone(),
-        );
+        let enrollment_flow = EnrollmentFlow::new(&deps, passkey_manager.clone());
 
         // Signup is part of the only login UX — wire it implicitly so the
         // host doesn't have to opt in. Hosts that need to tune the rate

@@ -22,16 +22,16 @@ use std::time::Duration;
 
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
+use bauth_core::context::CoreDeps;
 use bauth_core::email::EmailSender;
 use bauth_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
-    InMemoryUserStore,
+    InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
+use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
-use bauth_core::storage::{
-    PasskeyChallengeStore, PasskeyCredentialStore, SessionStore, User, UserId, UserStore,
-};
+use bauth_core::storage::{SessionStore, Storage, User, UserId, UserStore};
 use bauth_test_support::CapturingEmailSender;
 use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -75,21 +75,31 @@ async fn build_scaffold() -> Scaffold {
     users.create_user(user).await.expect("create user");
 
     let session_manager = SessionManager::new(
-        sessions as Arc<dyn SessionStore>,
+        sessions.clone() as Arc<dyn SessionStore>,
         clock.clone(),
         audit.clone(),
         SessionConfig {
             lifetime: Duration::from_secs(60 * 60),
         },
     );
-    let manager = PasskeyManager::new(
-        users as Arc<dyn UserStore>,
-        credentials as Arc<dyn PasskeyCredentialStore>,
-        challenges as Arc<dyn PasskeyChallengeStore>,
-        session_manager,
+
+    let storage = Storage {
+        users,
+        sessions,
+        verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
+        passkey_credentials: credentials,
+        passkey_challenges: challenges,
+    };
+    let deps = CoreDeps::new(
         clock,
         audit,
         email as Arc<dyn EmailSender>,
+        Arc::new(NoopRateLimiter) as Arc<dyn RateLimiter>,
+        session_manager,
+        storage,
+    );
+    let manager = PasskeyManager::new(
+        &deps,
         PasskeyConfig::new(
             "localhost",
             Url::parse("http://localhost:8080").expect("rp origin"),

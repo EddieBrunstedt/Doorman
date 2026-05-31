@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use bauth_core::audit::{AuditEvent, AuditEventKind, AuditSink};
 use bauth_core::clock::Clock;
+use bauth_core::context::CoreDeps;
 use bauth_core::email::EmailSender;
 use bauth_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
@@ -33,10 +34,7 @@ use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use bauth_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
 use bauth_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
-use bauth_core::storage::{
-    PasskeyChallengeStore, PasskeyCredentialStore, SessionStore, StoredPasskey, User, UserId,
-    UserStore, VerificationTokenStore,
-};
+use bauth_core::storage::{SessionStore, Storage, StoredPasskey, User, UserId, UserStore};
 use bauth_core::verification::EnrollmentFlow;
 use bauth_core::verification::TOKEN_PLACEHOLDER;
 use bauth_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
@@ -201,41 +199,40 @@ impl HarnessBuilder {
                 lifetime: self.session_lifetime,
             },
         );
-        let passkey = PasskeyManager::new(
-            users.clone() as Arc<dyn UserStore>,
-            credentials.clone() as Arc<dyn PasskeyCredentialStore>,
-            challenges.clone() as Arc<dyn PasskeyChallengeStore>,
-            session_manager.clone(),
+
+        let storage = Storage {
+            users: users.clone(),
+            sessions: sessions.clone(),
+            verification_tokens: tokens.clone(),
+            passkey_credentials: credentials.clone(),
+            passkey_challenges: challenges.clone(),
+        };
+
+        // Signup and recovery hold their own EnrollmentFlow. The two flows
+        // share every collaborator except the rate limiter, kept separate so
+        // a recovery rate-limit test can provision users through signup
+        // without spending the budget it is measuring — so we build one
+        // `CoreDeps` and override just that field for recovery.
+        let signup_deps = CoreDeps::new(
             clock.clone() as Arc<dyn Clock>,
             audit.clone() as Arc<dyn AuditSink>,
             email.clone() as Arc<dyn EmailSender>,
+            self.signup_limiter,
+            session_manager,
+            storage,
+        );
+        let recovery_deps = CoreDeps {
+            rate_limiter: self.recovery_limiter,
+            ..signup_deps.clone()
+        };
+
+        let passkey = PasskeyManager::new(
+            &signup_deps,
             PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
         )
         .expect("build passkey manager");
-        // Signup and recovery hold their own EnrollmentFlow. The two flows
-        // differ only in their rate limiter, kept separate so a recovery
-        // rate-limit test can provision users through signup without
-        // spending the budget it is measuring.
-        let signup_flow = EnrollmentFlow::new(
-            users.clone() as Arc<dyn UserStore>,
-            tokens.clone() as Arc<dyn VerificationTokenStore>,
-            passkey.clone(),
-            session_manager.clone(),
-            email.clone() as Arc<dyn EmailSender>,
-            clock.clone() as Arc<dyn Clock>,
-            audit.clone() as Arc<dyn AuditSink>,
-            self.signup_limiter,
-        );
-        let recovery_flow = EnrollmentFlow::new(
-            users.clone() as Arc<dyn UserStore>,
-            tokens.clone() as Arc<dyn VerificationTokenStore>,
-            passkey.clone(),
-            session_manager,
-            email.clone() as Arc<dyn EmailSender>,
-            clock.clone() as Arc<dyn Clock>,
-            audit.clone() as Arc<dyn AuditSink>,
-            self.recovery_limiter,
-        );
+        let signup_flow = EnrollmentFlow::new(&signup_deps, passkey.clone());
+        let recovery_flow = EnrollmentFlow::new(&recovery_deps, passkey.clone());
         let signup = SignupManager::new(signup_flow, self.signup);
         let recovery = RecoveryManager::new(recovery_flow, self.recovery);
 

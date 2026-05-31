@@ -22,13 +22,13 @@ use chrono::{DateTime, Utc};
 
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
-use crate::audit::{AuditEvent, AuditEventKind, AuditSink, RecoveryFailureReason};
-use crate::clock::Clock;
+use crate::audit::{AuditEvent, AuditEventKind, RecoveryFailureReason};
+use crate::context::CoreDeps;
 use crate::email::{Email, EmailSender, EmailSenderKind};
 use crate::error::{Error, Result};
 use crate::passkey::PasskeyManager;
 use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
-use crate::session::{IssuedSession, SessionContext, SessionManager};
+use crate::session::{IssuedSession, SessionContext};
 use crate::storage::{
     PasskeyChallengeId, StoredPasskey, User, UserId, UserStore, VerificationPurpose,
     VerificationToken, VerificationTokenStore,
@@ -210,42 +210,32 @@ impl FlowKind {
 /// being near-identical copies.
 #[derive(Clone)]
 pub struct EnrollmentFlow {
-    users: Arc<dyn UserStore>,
-    tokens: Arc<dyn VerificationTokenStore>,
     passkey: PasskeyManager,
-    sessions: SessionManager,
+    tokens: Arc<dyn VerificationTokenStore>,
     email: Arc<dyn EmailSender>,
-    clock: Arc<dyn Clock>,
-    audit: Arc<dyn AuditSink>,
     rate_limiter: Arc<dyn RateLimiter>,
 }
 
 impl EnrollmentFlow {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        users: Arc<dyn UserStore>,
-        tokens: Arc<dyn VerificationTokenStore>,
-        passkey: PasskeyManager,
-        sessions: SessionManager,
-        email: Arc<dyn EmailSender>,
-        clock: Arc<dyn Clock>,
-        audit: Arc<dyn AuditSink>,
-        rate_limiter: Arc<dyn RateLimiter>,
-    ) -> Self {
+    /// Build the shared enrollment flow from the [`CoreDeps`] context and
+    /// the [`PasskeyManager`] the signup / recovery flows enrol credentials
+    /// through. The user store, session manager, clock, and audit sink are
+    /// not held directly — the flow reaches them through its owned
+    /// `PasskeyManager`, which already carries the same collaborators, so
+    /// they live in one place. Only the verification-token store, email
+    /// transport, and rate limiter (the parts the passkey manager does not
+    /// hold) are taken from `deps`.
+    pub fn new(deps: &CoreDeps, passkey: PasskeyManager) -> Self {
         Self {
-            users,
-            tokens,
             passkey,
-            sessions,
-            email,
-            clock,
-            audit,
-            rate_limiter,
+            tokens: deps.verification_tokens.clone(),
+            email: deps.email.clone(),
+            rate_limiter: deps.rate_limiter.clone(),
         }
     }
 
     pub(crate) fn users(&self) -> &Arc<dyn UserStore> {
-        &self.users
+        self.passkey.users()
     }
 
     pub(crate) fn tokens(&self) -> &Arc<dyn VerificationTokenStore> {
@@ -261,7 +251,7 @@ impl EnrollmentFlow {
     }
 
     pub(crate) fn now(&self) -> DateTime<Utc> {
-        self.clock.now()
+        self.passkey.clock().now()
     }
 
     /// Diagnostic accessor used by the axum builder's startup warnings to
@@ -273,9 +263,10 @@ impl EnrollmentFlow {
     /// Emit one audit event stamped with the current clock and the request
     /// context's IP / user-agent.
     pub(crate) async fn emit(&self, context: &SessionContext, kind: AuditEventKind) {
-        self.audit
+        self.passkey
+            .audit()
             .emit(AuditEvent {
-                timestamp: self.clock.now(),
+                timestamp: self.passkey.clock().now(),
                 ip: context.ip.clone(),
                 user_agent: context.user_agent.clone(),
                 kind,
@@ -306,7 +297,7 @@ impl EnrollmentFlow {
         context: SessionContext,
     ) -> Result<VerificationConsumeOutcome> {
         let hash = hash_token(token);
-        let now = self.clock.now();
+        let now = self.passkey.clock().now();
         let Some(record) = self.tokens.consume_token(&hash, kind.purpose()).await? else {
             if kind.audits_consume_failures() {
                 self.audit_recovery_failed(None, RecoveryFailureReason::InvalidToken, &context)
@@ -351,7 +342,7 @@ impl EnrollmentFlow {
             tracing::warn!(outcome = "expired_token", "{} consume failed", kind.label());
             return Err(Error::InvalidVerificationToken);
         }
-        let Some(mut user) = self.users.find_user_by_id(record.user_id).await? else {
+        let Some(mut user) = self.users().find_user_by_id(record.user_id).await? else {
             // The user vanished between request and consume. Treat the token
             // as invalid to keep the response consistent with the "no such
             // user" path.
@@ -376,7 +367,7 @@ impl EnrollmentFlow {
             // Clicking a link sent to the address proves ownership.
             user.email_verified_at = Some(now);
             user.updated_at = now;
-            self.users.update_user(user.clone()).await?;
+            self.users().update_user(user.clone()).await?;
         }
 
         let (challenge_id, options) = self.passkey.start_registration(user.id).await?;
@@ -408,7 +399,7 @@ impl EnrollmentFlow {
         let cooldown_until = cooldown.map(|cooldown| {
             let cooldown = chrono::Duration::from_std(cooldown)
                 .expect("recovery cooldown overflows chrono::Duration; configure a smaller value");
-            self.clock.now() + cooldown
+            self.passkey.clock().now() + cooldown
         });
 
         let passkey = match cooldown_until.as_ref().cloned() {
@@ -429,17 +420,23 @@ impl EnrollmentFlow {
                     .await?
             }
         };
-        let Some(user) = self.users.find_user_by_id(passkey.user_id).await? else {
+        let Some(user) = self.users().find_user_by_id(passkey.user_id).await? else {
             return Err(Error::UserNotFound);
         };
 
         let session = match cooldown_until.as_ref().cloned() {
             Some(cooldown_until) => {
-                self.sessions
+                self.passkey
+                    .sessions()
                     .create_restricted(user.id, context.clone(), cooldown_until)
                     .await?
             }
-            None => self.sessions.create(user.id, context.clone()).await?,
+            None => {
+                self.passkey
+                    .sessions()
+                    .create(user.id, context.clone())
+                    .await?
+            }
         };
 
         if let Some(render) = notification {

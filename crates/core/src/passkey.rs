@@ -25,7 +25,8 @@ use webauthn_rs_proto::ResidentKeyRequirement;
 
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
-use crate::email::{BauthEmails, EmailSender, SecurityEmailNotifier, default_emails};
+use crate::context::CoreDeps;
+use crate::email::{BauthEmails, SecurityEmailNotifier, default_emails};
 use crate::error::{Error, Result};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
@@ -92,17 +93,13 @@ pub struct PasskeyManager {
 }
 
 impl PasskeyManager {
-    pub fn new(
-        users: Arc<dyn UserStore>,
-        credentials: Arc<dyn PasskeyCredentialStore>,
-        challenges: Arc<dyn PasskeyChallengeStore>,
-        sessions: SessionManager,
-        clock: Arc<dyn Clock>,
-        audit: Arc<dyn AuditSink>,
-        email: Arc<dyn EmailSender>,
-        config: PasskeyConfig,
-    ) -> Result<Self> {
-        let notifier = SecurityEmailNotifier::new(email, config.emails.clone());
+    /// Construct a passkey manager from the shared [`CoreDeps`] context and
+    /// the relying-party [`PasskeyConfig`]. The collaborators (clock, audit,
+    /// email, session manager, and the user / credential / challenge stores)
+    /// are read from `deps` so they are named once at the composition root
+    /// rather than threaded through a long positional argument list.
+    pub fn new(deps: &CoreDeps, config: PasskeyConfig) -> Result<Self> {
+        let notifier = SecurityEmailNotifier::new(deps.email.clone(), config.emails.clone());
         let webauthn = WebauthnBuilder::new(&config.rp_id, &config.rp_origin)
             .map_err(|e| Error::InvalidRelyingParty(e.to_string()))?
             .rp_name(&config.rp_name)
@@ -110,16 +107,41 @@ impl PasskeyManager {
             .map_err(|e| Error::InvalidRelyingParty(e.to_string()))?;
 
         Ok(Self {
-            users,
-            credentials,
-            challenges,
-            sessions,
-            clock,
-            audit,
+            users: deps.users.clone(),
+            credentials: deps.passkey_credentials.clone(),
+            challenges: deps.passkey_challenges.clone(),
+            sessions: deps.sessions.clone(),
+            clock: deps.clock.clone(),
+            audit: deps.audit.clone(),
             notifier,
             webauthn: Arc::new(webauthn),
             config,
         })
+    }
+
+    /// Borrow the user store this manager was built with. Lets the
+    /// [`EnrollmentFlow`](crate::verification::EnrollmentFlow) reach the same
+    /// store the passkey manager already holds rather than re-holding its
+    /// own copy.
+    pub(crate) fn users(&self) -> &Arc<dyn UserStore> {
+        &self.users
+    }
+
+    /// Borrow the session manager this passkey manager mints sessions
+    /// through, so the enrollment flow issues sessions against the same one.
+    pub(crate) fn sessions(&self) -> &SessionManager {
+        &self.sessions
+    }
+
+    /// Borrow the clock, so the enrollment flow reads time through the same
+    /// source.
+    pub(crate) fn clock(&self) -> &Arc<dyn Clock> {
+        &self.clock
+    }
+
+    /// Borrow the audit sink, so the enrollment flow emits to the same one.
+    pub(crate) fn audit(&self) -> &Arc<dyn AuditSink> {
+        &self.audit
     }
 
     /// Diagnostic accessor used by the axum builder's startup warnings to
