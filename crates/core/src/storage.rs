@@ -25,7 +25,6 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use webauthn_rs::prelude::{DiscoverableAuthentication, Passkey, PasskeyRegistration};
 
 use crate::error::StorageResult;
 pub use crate::token::TokenHash;
@@ -212,18 +211,21 @@ impl fmt::Display for PasskeyChallengeId {
     }
 }
 
-/// A passkey credential bound to a user. The `passkey` field carries the
-/// serialisable `webauthn-rs` representation; a host adapter that
-/// persists this to a database is expected to (de)serialise it as JSON or
-/// CBOR.
+/// A passkey credential bound to a user. The `passkey` field is the
+/// serialised `webauthn-rs` credential as opaque bytes: `bauth-core`
+/// (de)serialises it on the way in and out, and the store persists it
+/// verbatim. A host's store therefore needs no `webauthn-rs` dependency
+/// and must not attempt to interpret the blob.
 #[derive(Debug, Clone)]
 pub struct StoredPasskey {
-    /// Raw credential id, as a byte string. Duplicates `passkey.cred_id()`
-    /// but kept top-level so storage backends can index on it without
-    /// having to deserialise the passkey blob.
+    /// Raw credential id, as a byte string. Kept top-level so storage
+    /// backends can index on it without having to inspect the opaque
+    /// `passkey` blob.
     pub credential_id: Vec<u8>,
     pub user_id: UserId,
-    pub passkey: Passkey,
+    /// Opaque serialised credential blob. Persist and return it verbatim;
+    /// only `bauth-core` parses it.
+    pub passkey: Vec<u8>,
     /// Optional friendly device name set by the user at registration time
     /// ("Eddie's iPhone", "Yubikey 5"). The library does not interpret it.
     pub name: Option<String>,
@@ -269,13 +271,14 @@ impl From<StoredPasskey> for PasskeySummary {
 }
 
 /// In-progress passkey registration ceremony state. The `state` field is
-/// a `webauthn-rs` opaque value that must be preserved verbatim between
-/// start and finish.
+/// the serialised `webauthn-rs` ceremony state as opaque bytes, preserved
+/// verbatim between start and finish; only `bauth-core` parses it.
 #[derive(Debug, Clone)]
 pub struct StoredPasskeyRegistration {
     pub id: PasskeyChallengeId,
     pub user_id: UserId,
-    pub state: PasskeyRegistration,
+    /// Opaque serialised ceremony state. Persist and return it verbatim.
+    pub state: Vec<u8>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     /// Optional recovery cool-down metadata associated with this in-progress
@@ -283,11 +286,15 @@ pub struct StoredPasskeyRegistration {
     pub recovery_cooldown_until: Option<DateTime<Utc>>,
 }
 
-/// In-progress discoverable passkey authentication ceremony state.
+/// In-progress discoverable passkey authentication ceremony state. The
+/// `state` field is the serialised `webauthn-rs` ceremony state as opaque
+/// bytes, preserved verbatim between start and finish; only `bauth-core`
+/// parses it.
 #[derive(Debug, Clone)]
 pub struct StoredPasskeyAuthentication {
     pub id: PasskeyChallengeId,
-    pub state: DiscoverableAuthentication,
+    /// Opaque serialised ceremony state. Persist and return it verbatim.
+    pub state: Vec<u8>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }

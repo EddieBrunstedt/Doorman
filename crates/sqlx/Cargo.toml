@@ -17,15 +17,12 @@ postgres = ["sqlx/postgres"]
 async-trait.workspace = true
 bauth-core = { path = "../core", version = "0.1.0" }
 chrono.workspace = true
-serde_json.workspace = true
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "chrono", "uuid", "macros", "migrate"] }
 uuid.workspace = true
-webauthn-rs.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
 tokio.workspace = true
-webauthn-authenticator-rs.workspace = true
 
 [[bench]]
 name = "storage"

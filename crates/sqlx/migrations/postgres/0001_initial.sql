@@ -37,7 +37,7 @@ CREATE INDEX idx_verification_tokens_user_id ON verification_tokens(user_id);
 CREATE TABLE passkey_credentials (
     credential_id BYTEA PRIMARY KEY,
     user_id BYTEA NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    passkey TEXT NOT NULL,
+    passkey BYTEA NOT NULL,
     name TEXT,
     created_at TIMESTAMPTZ NOT NULL,
     last_used_at TIMESTAMPTZ,
@@ -48,7 +48,7 @@ CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
 CREATE TABLE passkey_registrations (
     id BYTEA PRIMARY KEY,
     user_id BYTEA NOT NULL,
-    state TEXT NOT NULL,
+    state BYTEA NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
     recovery_cooldown_until TIMESTAMPTZ
@@ -56,7 +56,7 @@ CREATE TABLE passkey_registrations (
 
 CREATE TABLE passkey_authentications (
     id BYTEA PRIMARY KEY,
-    state TEXT NOT NULL,
+    state BYTEA NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL
 );

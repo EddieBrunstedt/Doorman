@@ -22,9 +22,6 @@ use bauth_core::storage::{
     StoredPasskeyRegistration, User, UserId, VerificationPurpose, VerificationToken,
 };
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use webauthn_authenticator_rs::WebauthnAuthenticator;
-use webauthn_authenticator_rs::softpasskey::SoftPasskey;
-use webauthn_rs::prelude::{Passkey, PasskeyRegistration, Url, Webauthn, WebauthnBuilder};
 
 fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
@@ -443,12 +440,16 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
         .await
         .expect("user");
 
-    let passkey = passkey_for(user_id, "passkey-round-trip@example.com");
+    // The store treats both the credential id and the credential blob as
+    // opaque bytes: it persists whatever bauth-core hands it and returns it
+    // verbatim, with no webauthn-rs knowledge of its own.
+    let credential_id = b"conformance-credential-id".to_vec();
+    let passkey_blob = b"opaque-serialised-passkey-blob".to_vec();
     let cooldown_until = now + Duration::hours(24);
     let credential = StoredPasskey {
-        credential_id: passkey.cred_id().to_vec(),
+        credential_id: credential_id.clone(),
         user_id,
-        passkey,
+        passkey: passkey_blob.clone(),
         name: Some("security key".into()),
         created_at: now,
         last_used_at: None,
@@ -468,11 +469,13 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
         .expect("passkey present");
     assert_eq!(by_id.user_id, user_id);
     assert_eq!(by_id.name.as_deref(), Some("security key"));
-    assert_eq!(by_id.passkey.cred_id(), credential.passkey.cred_id());
+    assert_eq!(by_id.passkey, passkey_blob, "blob round-trips verbatim");
     assert_eq!(by_id.recovery_cooldown_until, Some(cooldown_until));
 
     let updated_cooldown_until = now + Duration::hours(48);
+    let updated_blob = b"opaque-serialised-passkey-blob-v2".to_vec();
     let updated = StoredPasskey {
+        passkey: updated_blob.clone(),
         name: Some("renamed security key".into()),
         last_used_at: Some(now + Duration::minutes(5)),
         recovery_cooldown_until: Some(updated_cooldown_until),
@@ -489,6 +492,7 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
         .expect("list passkeys");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].credential_id, updated.credential_id);
+    assert_eq!(listed[0].passkey, updated_blob, "updated blob round-trips");
     assert_eq!(listed[0].name.as_deref(), Some("renamed security key"));
     assert_eq!(listed[0].last_used_at, updated.last_used_at);
     assert_eq!(
@@ -526,8 +530,9 @@ async fn passkey_registration_cooldown_round_trip(storage: &Storage) {
         .await
         .expect("user");
 
-    let state = passkey_registration_for(user_id, "registration-round-trip@example.com");
-    let expected_state = serde_json::to_value(&state).expect("serialize registration state");
+    // The ceremony state is opaque to the store: an arbitrary byte blob must
+    // survive the round-trip through `put`/`take` unchanged.
+    let state_blob = b"opaque-serialised-registration-state".to_vec();
     let cooldown_until = now + Duration::hours(24);
     let challenge_id = PasskeyChallengeId::new();
     storage
@@ -535,7 +540,7 @@ async fn passkey_registration_cooldown_round_trip(storage: &Storage) {
         .put_registration(StoredPasskeyRegistration {
             id: challenge_id,
             user_id,
-            state,
+            state: state_blob.clone(),
             created_at: now,
             expires_at: now + Duration::minutes(5),
             recovery_cooldown_until: Some(cooldown_until),
@@ -555,8 +560,8 @@ async fn passkey_registration_cooldown_round_trip(storage: &Storage) {
     assert_eq!(taken.expires_at, now + Duration::minutes(5));
     assert_eq!(taken.recovery_cooldown_until, Some(cooldown_until));
     assert_eq!(
-        serde_json::to_value(&taken.state).expect("serialize taken registration state"),
-        expected_state,
+        taken.state, state_blob,
+        "ceremony blob round-trips verbatim"
     );
     assert!(
         storage
@@ -567,38 +572,4 @@ async fn passkey_registration_cooldown_round_trip(storage: &Storage) {
             .is_none(),
         "registration challenges are single-use",
     );
-}
-
-fn webauthn() -> Webauthn {
-    let origin = Url::parse("http://localhost:8080").expect("valid origin");
-    WebauthnBuilder::new("localhost", &origin)
-        .expect("valid relying party")
-        .rp_name("bauth storage conformance")
-        .build()
-        .expect("build webauthn")
-}
-
-fn passkey_registration_for(user_id: UserId, user_name: &str) -> PasskeyRegistration {
-    let webauthn = webauthn();
-    let (_options, state) = webauthn
-        .start_passkey_registration(user_id.0, user_name, user_name, None)
-        .expect("start passkey registration");
-    state
-}
-
-fn passkey_for(user_id: UserId, user_name: &str) -> Passkey {
-    let webauthn = webauthn();
-    let (options, state) = webauthn
-        .start_passkey_registration(user_id.0, user_name, user_name, None)
-        .expect("start passkey registration");
-    let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
-    let response = authenticator
-        .do_registration(
-            Url::parse("http://localhost:8080").expect("valid auth origin"),
-            options,
-        )
-        .expect("authenticator registration");
-    webauthn
-        .finish_passkey_registration(&response, &state)
-        .expect("finish passkey registration")
 }

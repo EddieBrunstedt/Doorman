@@ -299,12 +299,9 @@ dependencies = [
  "bauth-core",
  "chrono",
  "criterion",
- "serde_json",
  "sqlx",
  "tokio",
  "uuid",
- "webauthn-authenticator-rs",
- "webauthn-rs",
 ]
 
 [[package]]

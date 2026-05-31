@@ -38,7 +38,7 @@ CREATE INDEX idx_verification_tokens_user_id ON verification_tokens(user_id);
 CREATE TABLE passkey_credentials (
     credential_id BLOB PRIMARY KEY,
     user_id BLOB NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    passkey TEXT NOT NULL,
+    passkey BLOB NOT NULL,
     name TEXT,
     created_at TEXT NOT NULL,
     last_used_at TEXT,
@@ -49,7 +49,7 @@ CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
 CREATE TABLE passkey_registrations (
     id BLOB PRIMARY KEY,
     user_id BLOB NOT NULL,
-    state TEXT NOT NULL,
+    state BLOB NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     recovery_cooldown_until TEXT
@@ -57,7 +57,7 @@ CREATE TABLE passkey_registrations (
 
 CREATE TABLE passkey_authentications (
     id BLOB PRIMARY KEY,
-    state TEXT NOT NULL,
+    state BLOB NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );

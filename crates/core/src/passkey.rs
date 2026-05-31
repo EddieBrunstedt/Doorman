@@ -17,7 +17,8 @@ use chrono::{DateTime, Utc};
 use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
-    CreationChallengeResponse, DiscoverableKey, PublicKeyCredential, RegisterPublicKeyCredential,
+    CreationChallengeResponse, CredentialID, DiscoverableAuthentication, DiscoverableKey, Passkey,
+    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
     RequestChallengeResponse, Webauthn, WebauthnBuilder,
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
@@ -184,10 +185,12 @@ impl PasskeyManager {
         let exclude = if existing.is_empty() {
             None
         } else {
+            // The top-level credential id is enough to exclude already-registered
+            // authenticators; no need to deserialise each opaque passkey blob.
             Some(
                 existing
                     .iter()
-                    .map(|c| c.passkey.cred_id().clone())
+                    .map(|c| CredentialID::from(c.credential_id.clone()))
                     .collect(),
             )
         };
@@ -203,7 +206,7 @@ impl PasskeyManager {
         let stored = StoredPasskeyRegistration {
             id,
             user_id,
-            state: reg_state,
+            state: encode_registration_state(&reg_state)?,
             created_at: now,
             expires_at: now + challenge_lifetime(self.config.challenge_lifetime),
             recovery_cooldown_until,
@@ -279,15 +282,16 @@ impl PasskeyManager {
         let challenge_recovery_cooldown_until = stored.recovery_cooldown_until;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
+        let reg_state = decode_registration_state(&stored.state)?;
         let passkey = self
             .webauthn
-            .finish_passkey_registration(response, &stored.state)
+            .finish_passkey_registration(response, &reg_state)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
 
         let credential = StoredPasskey {
             credential_id: passkey.cred_id().to_vec(),
             user_id,
-            passkey,
+            passkey: encode_credential(&passkey)?,
             name,
             created_at: now,
             last_used_at: None,
@@ -366,7 +370,7 @@ impl PasskeyManager {
         let id = PasskeyChallengeId::new();
         let stored = StoredPasskeyAuthentication {
             id,
-            state: auth_state,
+            state: encode_authentication_state(&auth_state)?,
             created_at: now,
             expires_at: now + challenge_lifetime(self.config.challenge_lifetime),
         };
@@ -416,10 +420,12 @@ impl PasskeyManager {
         }
         tracing::Span::current().record("user_id", tracing::field::display(credential.user_id));
 
-        let discoverable = [DiscoverableKey::from(&credential.passkey)];
+        let mut passkey = decode_credential(&credential.passkey)?;
+        let discoverable = [DiscoverableKey::from(&passkey)];
+        let auth_state = decode_authentication_state(&stored.state)?;
         let auth_result = self
             .webauthn
-            .finish_discoverable_authentication(response, stored.state, &discoverable)
+            .finish_discoverable_authentication(response, auth_state, &discoverable)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
 
         let user_id = credential.user_id;
@@ -430,10 +436,12 @@ impl PasskeyManager {
             .cloned();
 
         // Counter / backup-state updates are advisory per webauthn-rs;
-        // last_used_at always advances, so we persist on every success.
-        // `credential` is moved into the store rather than cloned — nothing
-        // below reads it, only the `user_id` captured above.
-        credential.passkey.update_credential(&auth_result);
+        // last_used_at always advances, so we persist on every success. The
+        // mutated passkey is re-serialised into the opaque blob; `credential`
+        // is then moved into the store rather than cloned — nothing below
+        // reads it, only the `user_id` captured above.
+        passkey.update_credential(&auth_result);
+        credential.passkey = encode_credential(&passkey)?;
         credential.last_used_at = Some(now);
         self.credentials.update_passkey(credential).await?;
 
@@ -538,6 +546,39 @@ fn user_id_from_handle(response: &PublicKeyCredential) -> Result<Option<UserId>>
                 .map_err(|_| Error::PasskeyNotFound)
         })
         .transpose()
+}
+
+// Opaque-blob (de)serialisation. The storage traits deal in `Vec<u8>` so a
+// host's store needs no `webauthn-rs` dependency; `bauth-core` is the only
+// layer that knows the blob is JSON-serialised `webauthn-rs` state.
+
+fn encode_credential(passkey: &Passkey) -> Result<Vec<u8>> {
+    serde_json::to_vec(passkey).map_err(|e| Error::Webauthn(format!("serialise credential: {e}")))
+}
+
+fn decode_credential(bytes: &[u8]) -> Result<Passkey> {
+    serde_json::from_slice(bytes)
+        .map_err(|e| Error::Webauthn(format!("deserialise credential: {e}")))
+}
+
+fn encode_registration_state(state: &PasskeyRegistration) -> Result<Vec<u8>> {
+    serde_json::to_vec(state)
+        .map_err(|e| Error::Webauthn(format!("serialise registration state: {e}")))
+}
+
+fn decode_registration_state(bytes: &[u8]) -> Result<PasskeyRegistration> {
+    serde_json::from_slice(bytes)
+        .map_err(|e| Error::Webauthn(format!("deserialise registration state: {e}")))
+}
+
+fn encode_authentication_state(state: &DiscoverableAuthentication) -> Result<Vec<u8>> {
+    serde_json::to_vec(state)
+        .map_err(|e| Error::Webauthn(format!("serialise authentication state: {e}")))
+}
+
+fn decode_authentication_state(bytes: &[u8]) -> Result<DiscoverableAuthentication> {
+    serde_json::from_slice(bytes)
+        .map_err(|e| Error::Webauthn(format!("deserialise authentication state: {e}")))
 }
 
 fn challenge_lifetime(d: Duration) -> chrono::Duration {

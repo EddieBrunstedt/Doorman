@@ -18,7 +18,6 @@ use bauth_core::storage::{
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
-use webauthn_rs::prelude::{DiscoverableAuthentication, Passkey, PasskeyRegistration};
 
 use crate::common::{
     purpose_from_str, purpose_to_str, storage, token_hash_bytes, token_hash_from_bytes,
@@ -411,7 +410,6 @@ struct SqlitePasskeyCredentialStore {
 #[async_trait]
 impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
     async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
-        let serialized = serde_json::to_string(&credential.passkey).map_err(storage)?;
         sqlx::query(
             "INSERT INTO passkey_credentials
              (credential_id, user_id, passkey, name, created_at, last_used_at, recovery_cooldown_until)
@@ -419,7 +417,7 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
         )
         .bind(&credential.credential_id)
         .bind(uuid_to_bytes(credential.user_id.0))
-        .bind(serialized)
+        .bind(&credential.passkey)
         .bind(&credential.name)
         .bind(credential.created_at)
         .bind(credential.last_used_at)
@@ -431,14 +429,13 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
     }
 
     async fn update_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
-        let serialized = serde_json::to_string(&credential.passkey).map_err(storage)?;
         let result = sqlx::query(
             "UPDATE passkey_credentials
              SET user_id = ?, passkey = ?, name = ?, created_at = ?, last_used_at = ?, recovery_cooldown_until = ?
              WHERE credential_id = ?",
         )
         .bind(uuid_to_bytes(credential.user_id.0))
-        .bind(serialized)
+        .bind(&credential.passkey)
         .bind(&credential.name)
         .bind(credential.created_at)
         .bind(credential.last_used_at)
@@ -510,8 +507,7 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
 fn row_to_passkey(row: sqlx::sqlite::SqliteRow) -> StorageResult<StoredPasskey> {
     let credential_id: Vec<u8> = row.try_get("credential_id").map_err(storage)?;
     let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err(storage)?;
-    let passkey_json: String = row.try_get("passkey").map_err(storage)?;
-    let passkey: Passkey = serde_json::from_str(&passkey_json).map_err(storage)?;
+    let passkey: Vec<u8> = row.try_get("passkey").map_err(storage)?;
     Ok(StoredPasskey {
         credential_id,
         user_id: UserId(uuid_from_row(user_id_bytes)?),
@@ -547,14 +543,13 @@ struct SqlitePasskeyChallengeStore {
 #[async_trait]
 impl PasskeyChallengeStore for SqlitePasskeyChallengeStore {
     async fn put_registration(&self, value: StoredPasskeyRegistration) -> StorageResult<()> {
-        let serialized = serde_json::to_string(&value.state).map_err(storage)?;
         sqlx::query(
             "INSERT INTO passkey_registrations (id, user_id, state, created_at, expires_at, recovery_cooldown_until)
              VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(uuid_to_bytes(value.id.0))
         .bind(uuid_to_bytes(value.user_id.0))
-        .bind(serialized)
+        .bind(&value.state)
         .bind(value.created_at)
         .bind(value.expires_at)
         .bind(value.recovery_cooldown_until)
@@ -579,8 +574,7 @@ impl PasskeyChallengeStore for SqlitePasskeyChallengeStore {
         let Some(row) = row else { return Ok(None) };
         let id_bytes: Vec<u8> = row.try_get("id").map_err(storage)?;
         let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err(storage)?;
-        let state_json: String = row.try_get("state").map_err(storage)?;
-        let state: PasskeyRegistration = serde_json::from_str(&state_json).map_err(storage)?;
+        let state: Vec<u8> = row.try_get("state").map_err(storage)?;
         Ok(Some(StoredPasskeyRegistration {
             id: PasskeyChallengeId(uuid_from_row(id_bytes)?),
             user_id: UserId(uuid_from_row(user_id_bytes)?),
@@ -592,13 +586,12 @@ impl PasskeyChallengeStore for SqlitePasskeyChallengeStore {
     }
 
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
-        let serialized = serde_json::to_string(&value.state).map_err(storage)?;
         sqlx::query(
             "INSERT INTO passkey_authentications (id, state, created_at, expires_at)
              VALUES (?, ?, ?, ?)",
         )
         .bind(uuid_to_bytes(value.id.0))
-        .bind(serialized)
+        .bind(&value.state)
         .bind(value.created_at)
         .bind(value.expires_at)
         .execute(&self.pool)
@@ -621,9 +614,7 @@ impl PasskeyChallengeStore for SqlitePasskeyChallengeStore {
         .map_err(storage)?;
         let Some(row) = row else { return Ok(None) };
         let id_bytes: Vec<u8> = row.try_get("id").map_err(storage)?;
-        let state_json: String = row.try_get("state").map_err(storage)?;
-        let state: DiscoverableAuthentication =
-            serde_json::from_str(&state_json).map_err(storage)?;
+        let state: Vec<u8> = row.try_get("state").map_err(storage)?;
         Ok(Some(StoredPasskeyAuthentication {
             id: PasskeyChallengeId(uuid_from_row(id_bytes)?),
             state,
