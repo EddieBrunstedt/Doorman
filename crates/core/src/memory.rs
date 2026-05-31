@@ -17,10 +17,30 @@ use crate::clock::Clock;
 use crate::error::{StorageError, StorageResult};
 use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter, RateLimiterKind};
 use crate::storage::{
-    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionId,
-    SessionStore, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash,
-    User, UserId, UserStore, VerificationPurpose, VerificationToken, VerificationTokenStore,
+    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,
+    SessionId, SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, TokenHash, User, UserId, UserStore, VerificationPurpose,
+    VerificationToken, VerificationTokenStore,
 };
+
+impl Storage {
+    /// Build a [`Storage`] composite backed entirely by the in-memory
+    /// reference stores, each `Arc`-wrapped. Mirrors the SQLx adapters'
+    /// `storage()` so framework-agnostic hosts, quickstarts, and benches get
+    /// a one-call composite instead of hand-assembling the five fields.
+    ///
+    /// In-memory storage is process-local and lost on restart; use it for
+    /// tests and local experiments, not production.
+    pub fn in_memory() -> Self {
+        Self {
+            users: Arc::new(InMemoryUserStore::new()),
+            sessions: Arc::new(InMemorySessionStore::new()),
+            verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
+            passkey_credentials: Arc::new(InMemoryPasskeyCredentialStore::new()),
+            passkey_challenges: Arc::new(InMemoryPasskeyChallengeStore::new()),
+        }
+    }
+}
 
 /// In-memory [`UserStore`] backed by mutex-protected hash maps.
 #[derive(Debug, Default)]
@@ -370,6 +390,27 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
             .collect())
     }
 
+    async fn list_passkey_summaries_for_user(
+        &self,
+        user_id: UserId,
+    ) -> StorageResult<Vec<PasskeySummary>> {
+        // Project to metadata only, so the (otherwise large) credential blob
+        // is never cloned on the listing path.
+        Ok(self
+            .lock()
+            .iter()
+            .filter(|c| c.user_id == user_id)
+            .map(|c| PasskeySummary {
+                credential_id: c.credential_id.clone(),
+                user_id: c.user_id,
+                name: c.name.clone(),
+                created_at: c.created_at,
+                last_used_at: c.last_used_at,
+                recovery_cooldown_until: c.recovery_cooldown_until,
+            })
+            .collect())
+    }
+
     async fn find_passkey_by_credential_id(
         &self,
         credential_id: &[u8],
@@ -540,11 +581,74 @@ impl RateLimiter for InMemoryRateLimiter {
 mod tests {
     use super::*;
     use crate::clock::SystemClock;
+    use crate::storage::Storage;
 
     #[test]
     fn in_memory_limiter_reports_in_memory_kind() {
         let limiter: Arc<dyn RateLimiter> =
             Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock)));
         assert_eq!(limiter.diagnostic_kind(), RateLimiterKind::InMemory);
+    }
+
+    #[tokio::test]
+    async fn in_memory_composite_wires_every_store() {
+        // The composite must hand back working, independent stores; exercise
+        // one method per store to prove each field is populated and live.
+        let storage = Storage::in_memory();
+        let now = chrono::Utc::now();
+
+        let user = User {
+            id: UserId::new(),
+            email: Some("composite@example.com".into()),
+            email_verified_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        storage
+            .users
+            .create_user(user.clone())
+            .await
+            .expect("user store wired");
+        assert_eq!(
+            storage
+                .users
+                .find_user_by_id(user.id)
+                .await
+                .expect("find user"),
+            Some(user.clone()),
+        );
+
+        assert!(
+            storage
+                .sessions
+                .list_for_user(user.id)
+                .await
+                .expect("session store wired")
+                .is_empty()
+        );
+        assert!(
+            storage
+                .verification_tokens
+                .consume_token(&TokenHash([0u8; 32]), VerificationPurpose::Signup)
+                .await
+                .expect("verification token store wired")
+                .is_none()
+        );
+        assert!(
+            storage
+                .passkey_credentials
+                .list_passkey_summaries_for_user(user.id)
+                .await
+                .expect("passkey credential store wired")
+                .is_empty()
+        );
+        assert!(
+            storage
+                .passkey_challenges
+                .take_registration(PasskeyChallengeId::new())
+                .await
+                .expect("passkey challenge store wired")
+                .is_none()
+        );
     }
 }

@@ -18,8 +18,8 @@
 
 use bauth_core::session::hash_token;
 use bauth_core::storage::{
-    PasskeyChallengeId, Session, SessionId, Storage, StoredPasskey, StoredPasskeyRegistration,
-    User, UserId, VerificationPurpose, VerificationToken,
+    PasskeyChallengeId, PasskeySummary, Session, SessionId, Storage, StoredPasskey,
+    StoredPasskeyRegistration, User, UserId, VerificationPurpose, VerificationToken,
 };
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use webauthn_authenticator_rs::WebauthnAuthenticator;
@@ -495,6 +495,26 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
         listed[0].recovery_cooldown_until,
         Some(updated_cooldown_until),
     );
+
+    // The metadata-only projection carries the same fields as the full
+    // record, derived without deserialising the credential blob.
+    let summaries = credentials
+        .list_passkey_summaries_for_user(user_id)
+        .await
+        .expect("list passkey summaries");
+    assert_eq!(summaries.len(), 1);
+    let summary = &summaries[0];
+    assert_eq!(summary.credential_id, updated.credential_id);
+    assert_eq!(summary.user_id, user_id);
+    assert_eq!(summary.name.as_deref(), Some("renamed security key"));
+    assert_eq!(summary.created_at, updated.created_at);
+    assert_eq!(summary.last_used_at, updated.last_used_at);
+    assert_eq!(
+        summary.recovery_cooldown_until,
+        Some(updated_cooldown_until)
+    );
+    // The same record viewed as a summary is byte-for-byte the projection.
+    assert_eq!(*summary, PasskeySummary::from(listed[0].clone()));
 }
 
 async fn passkey_registration_cooldown_round_trip(storage: &Storage) {

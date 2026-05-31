@@ -10,10 +10,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bauth_core::error::{StorageError, StorageResult};
 use bauth_core::storage::{
-    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionId,
-    SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
-    TokenHash, User, UserId, UserStore, VerificationPurpose, VerificationToken,
-    VerificationTokenStore,
+    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,
+    SessionId, SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, TokenHash, User, UserId, UserStore, VerificationPurpose,
+    VerificationToken, VerificationTokenStore,
 };
 use chrono::{DateTime, Utc};
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -461,6 +461,23 @@ impl PasskeyCredentialStore for PgPasskeyCredentialStore {
         rows.into_iter().map(row_to_passkey).collect()
     }
 
+    async fn list_passkey_summaries_for_user(
+        &self,
+        user_id: UserId,
+    ) -> StorageResult<Vec<PasskeySummary>> {
+        // Deliberately omits the `passkey` blob column: the listing path
+        // never deserialises it.
+        let rows = sqlx::query(
+            "SELECT credential_id, user_id, name, created_at, last_used_at, recovery_cooldown_until
+             FROM passkey_credentials WHERE user_id = $1",
+        )
+        .bind(uuid_to_bytes(user_id.0))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        rows.into_iter().map(row_to_passkey_summary).collect()
+    }
+
     async fn find_passkey_by_credential_id(
         &self,
         credential_id: &[u8],
@@ -495,6 +512,19 @@ fn row_to_passkey(row: PgRow) -> StorageResult<StoredPasskey> {
         credential_id,
         user_id: UserId(uuid_from_row(user_id_bytes)?),
         passkey,
+        name: row.try_get("name").map_err(storage)?,
+        created_at: row.try_get("created_at").map_err(storage)?,
+        last_used_at: row.try_get("last_used_at").map_err(storage)?,
+        recovery_cooldown_until: row.try_get("recovery_cooldown_until").map_err(storage)?,
+    })
+}
+
+fn row_to_passkey_summary(row: PgRow) -> StorageResult<PasskeySummary> {
+    let credential_id: Vec<u8> = row.try_get("credential_id").map_err(storage)?;
+    let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err(storage)?;
+    Ok(PasskeySummary {
+        credential_id,
+        user_id: UserId(uuid_from_row(user_id_bytes)?),
         name: row.try_get("name").map_err(storage)?,
         created_at: row.try_get("created_at").map_err(storage)?,
         last_used_at: row.try_get("last_used_at").map_err(storage)?,

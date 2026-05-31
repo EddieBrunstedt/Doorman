@@ -89,7 +89,7 @@ async fn authenticate_finish(
         .await
         .map_err(bauth_core::Error::from)?
         .ok_or(ErrorResponse(bauth_core::Error::UserNotFound))?;
-    let passkey_count = manager(&state).list_passkeys(user.id).await?.len();
+    let passkey_count = manager(&state).list_passkey_summaries(user.id).await?.len();
     Ok(auth_success(
         StatusCode::OK,
         state.cookie_config(),
@@ -101,7 +101,7 @@ async fn list(
     State(state): State<BauthState>,
     AuthUser(user): AuthUser,
 ) -> Result<Json<Vec<PasskeyDto>>, ErrorResponse> {
-    let creds = manager(&state).list_passkeys(user.id).await?;
+    let creds = manager(&state).list_passkey_summaries(user.id).await?;
     Ok(Json(creds.into_iter().map(PasskeyDto::from).collect()))
 }
 

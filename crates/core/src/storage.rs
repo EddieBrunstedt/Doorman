@@ -235,6 +235,39 @@ pub struct StoredPasskey {
     pub recovery_cooldown_until: Option<DateTime<Utc>>,
 }
 
+/// Metadata-only view of a registered passkey.
+///
+/// Carries every field a management UI needs to list a user's credentials
+/// (id, friendly name, timestamps, cool-down) *without* the `webauthn-rs`
+/// [`Passkey`] credential blob. The listing path
+/// ([`PasskeyCredentialStore::list_passkey_summaries_for_user`]) returns
+/// this so an adapter never has to deserialise the blob just to render the
+/// "your passkeys" view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasskeySummary {
+    /// Raw credential id, matching [`StoredPasskey::credential_id`].
+    pub credential_id: Vec<u8>,
+    pub user_id: UserId,
+    /// Friendly device name set at registration, if any.
+    pub name: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub recovery_cooldown_until: Option<DateTime<Utc>>,
+}
+
+impl From<StoredPasskey> for PasskeySummary {
+    fn from(value: StoredPasskey) -> Self {
+        Self {
+            credential_id: value.credential_id,
+            user_id: value.user_id,
+            name: value.name,
+            created_at: value.created_at,
+            last_used_at: value.last_used_at,
+            recovery_cooldown_until: value.recovery_cooldown_until,
+        }
+    }
+}
+
 /// In-progress passkey registration ceremony state. The `state` field is
 /// a `webauthn-rs` opaque value that must be preserved verbatim between
 /// start and finish.
@@ -269,6 +302,15 @@ pub trait PasskeyCredentialStore: Send + Sync {
     async fn update_passkey(&self, credential: StoredPasskey) -> StorageResult<()>;
 
     async fn list_passkeys_for_user(&self, user_id: UserId) -> StorageResult<Vec<StoredPasskey>>;
+
+    /// List the user's credentials as metadata-only [`PasskeySummary`]
+    /// values. Adapters MUST satisfy this without deserialising the
+    /// credential blob; it backs the "your passkeys" listing/count paths
+    /// where the blob is never read.
+    async fn list_passkey_summaries_for_user(
+        &self,
+        user_id: UserId,
+    ) -> StorageResult<Vec<PasskeySummary>>;
 
     async fn find_passkey_by_credential_id(
         &self,

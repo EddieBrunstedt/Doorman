@@ -16,7 +16,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bauth_core::session::IssuedSession;
-use bauth_core::storage::{Session, SessionId, StoredPasskey, User, UserId};
+use bauth_core::storage::{PasskeySummary, Session, SessionId, StoredPasskey, User, UserId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -115,6 +115,17 @@ pub struct PasskeyDto {
 
 impl From<StoredPasskey> for PasskeyDto {
     fn from(value: StoredPasskey) -> Self {
+        Self {
+            credential_id: URL_SAFE_NO_PAD.encode(&value.credential_id),
+            name: value.name,
+            created_at: value.created_at,
+            last_used_at: value.last_used_at,
+        }
+    }
+}
+
+impl From<PasskeySummary> for PasskeyDto {
+    fn from(value: PasskeySummary) -> Self {
         Self {
             credential_id: URL_SAFE_NO_PAD.encode(&value.credential_id),
             name: value.name,

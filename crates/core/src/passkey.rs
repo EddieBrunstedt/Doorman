@@ -28,8 +28,8 @@ use crate::email::{BauthEmails, EmailSender, SecurityEmailNotifier, default_emai
 use crate::error::{Error, Result};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
-    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, StoredPasskey,
-    StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, UserStore,
+    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary,
+    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, UserStore,
 };
 
 /// WebAuthn relying-party configuration for passkey flows.
@@ -422,6 +422,7 @@ impl PasskeyManager {
             .finish_discoverable_authentication(response, stored.state, &discoverable)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
 
+        let user_id = credential.user_id;
         let active_recovery_cooldown_until = credential
             .recovery_cooldown_until
             .as_ref()
@@ -430,11 +431,12 @@ impl PasskeyManager {
 
         // Counter / backup-state updates are advisory per webauthn-rs;
         // last_used_at always advances, so we persist on every success.
+        // `credential` is moved into the store rather than cloned — nothing
+        // below reads it, only the `user_id` captured above.
         credential.passkey.update_credential(&auth_result);
         credential.last_used_at = Some(now);
-        self.credentials.update_passkey(credential.clone()).await?;
+        self.credentials.update_passkey(credential).await?;
 
-        let user_id = credential.user_id;
         self.audit
             .emit(AuditEvent {
                 timestamp: now,
@@ -458,6 +460,17 @@ impl PasskeyManager {
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn list_passkeys(&self, user_id: UserId) -> Result<Vec<StoredPasskey>> {
         Ok(self.credentials.list_passkeys_for_user(user_id).await?)
+    }
+
+    /// List the user's passkeys as metadata-only [`PasskeySummary`] values.
+    /// Backs the management listing and count paths without deserialising
+    /// the credential blob.
+    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
+    pub async fn list_passkey_summaries(&self, user_id: UserId) -> Result<Vec<PasskeySummary>> {
+        Ok(self
+            .credentials
+            .list_passkey_summaries_for_user(user_id)
+            .await?)
     }
 
     /// Remove a passkey. The `user_id` argument is enforced server-side
