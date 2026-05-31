@@ -26,6 +26,15 @@
 //!   path the hook doesn't cover (e.g. someone calling
 //!   `SessionStore::delete_session` directly) still expires in bounded time.
 //!
+//! ## Sharding
+//!
+//! The cache is split into [`SHARD_COUNT`] independent `Mutex<LruCache>`
+//! shards, selected by the top byte of the (uniformly distributed) token
+//! hash. Lookups on distinct tokens almost always land in different shards,
+//! so they take different locks and do not serialize against one another —
+//! only collisions within a single shard contend. The configured capacity
+//! is divided evenly across the shards.
+//!
 //! [`SessionManager::revoke`]: bauth_core::session::SessionManager::revoke
 //! [`revoke_by_id`]: bauth_core::session::SessionManager::revoke_by_id
 //! [`SessionManager::revoke_all_for_user`]: bauth_core::session::SessionManager::revoke_all_for_user
@@ -39,6 +48,11 @@ use async_trait::async_trait;
 use bauth_core::session::SessionInvalidationHook;
 use bauth_core::storage::{Session, SessionId, TokenHash, User, UserId};
 use lru::LruCache;
+
+/// Number of independent lock-striped shards the cache is split across.
+/// A power of two so the shard index is a cheap mask of the token-hash
+/// prefix byte.
+pub const SHARD_COUNT: usize = 16;
 
 /// Default number of entries the cache will keep before LRU-evicting.
 pub const DEFAULT_CACHE_CAPACITY: usize = 1024;
@@ -65,42 +79,71 @@ impl Default for SessionCacheConfig {
     }
 }
 
-/// Pair returned from a [`SessionCache`] lookup.
-#[derive(Clone)]
+/// Resolved authentication pair returned from a [`SessionCache`] lookup.
+///
+/// The [`Session`] and [`User`] are each held behind an [`Arc`] so a cache
+/// hit hands back a refcount bump rather than a deep clone — the whole
+/// `CachedAuth` is itself shared as an `Arc` and threaded straight into the
+/// per-request `AuthContext`.
 pub struct CachedAuth {
-    pub session: Session,
-    pub user: User,
+    pub session: Arc<Session>,
+    pub user: Arc<User>,
 }
 
 struct Entry {
-    cached: CachedAuth,
+    cached: Arc<CachedAuth>,
     inserted_at: Instant,
+}
+
+/// One lock-striped shard of the cache.
+struct Shard {
+    inner: Mutex<LruCache<TokenHash, Entry>>,
 }
 
 /// Process-local session-resolution cache. Exposed so advanced hosts and
 /// benches can poke at it directly; the canonical wiring is via the
 /// builder, which constructs one and installs an invalidator on the
 /// `SessionManager`. Cheaply cloneable because all state lives behind
-/// `Arc<Mutex<_>>`.
+/// `Arc`.
 #[derive(Clone)]
 pub struct SessionCache {
-    inner: Arc<Mutex<LruCache<TokenHash, Entry>>>,
+    shards: Arc<[Shard; SHARD_COUNT]>,
     ttl: Duration,
 }
 
 impl SessionCache {
     pub fn new(config: SessionCacheConfig) -> Self {
+        // Divide the configured capacity across the shards, keeping at least
+        // one slot per shard so a tiny configured capacity still functions.
+        let per_shard = NonZeroUsize::new(config.capacity.get().div_ceil(SHARD_COUNT))
+            .unwrap_or(NonZeroUsize::MIN);
+        let shards = std::array::from_fn(|_| Shard {
+            inner: Mutex::new(LruCache::new(per_shard)),
+        });
         Self {
-            inner: Arc::new(Mutex::new(LruCache::new(config.capacity))),
+            shards: Arc::new(shards),
             ttl: config.ttl,
         }
     }
 
-    /// Look up a token. Returns the cached `(Session, User)` pair if one
-    /// exists and is still within the TTL; otherwise returns `None` and
-    /// drops any stale entry on the way out.
-    pub fn get(&self, token_hash: &TokenHash) -> Option<CachedAuth> {
-        let mut guard = self.inner.lock().expect("session cache lock poisoned");
+    /// Pick the shard a token hash belongs to from its leading byte. The
+    /// hash is a SHA-256 digest, so the prefix is uniformly distributed and
+    /// spreads keys evenly across shards.
+    fn shard(&self, token_hash: &TokenHash) -> &Shard {
+        let idx = (token_hash.0[0] as usize) & (SHARD_COUNT - 1);
+        &self.shards[idx]
+    }
+
+    /// Look up a token. Returns the cached pair if one exists and is still
+    /// within the TTL; otherwise returns `None` and drops any stale entry on
+    /// the way out. The returned `Arc<CachedAuth>` is a refcount bump, not a
+    /// deep copy of the session/user.
+    pub fn get(&self, token_hash: &TokenHash) -> Option<Arc<CachedAuth>> {
+        let mut guard = self
+            .shard(token_hash)
+            .inner
+            .lock()
+            .expect("session cache lock poisoned");
         match guard.get(token_hash) {
             Some(entry) if entry.inserted_at.elapsed() <= self.ttl => Some(entry.cached.clone()),
             Some(_) => {
@@ -111,71 +154,84 @@ impl SessionCache {
         }
     }
 
-    pub fn insert(&self, token_hash: TokenHash, session: Session, user: User) {
+    pub fn insert(&self, token_hash: TokenHash, session: Arc<Session>, user: Arc<User>) {
         let entry = Entry {
-            cached: CachedAuth { session, user },
+            cached: Arc::new(CachedAuth { session, user }),
             inserted_at: Instant::now(),
         };
-        self.inner
+        self.shard(&token_hash)
+            .inner
             .lock()
             .expect("session cache lock poisoned")
             .put(token_hash, entry);
     }
 
-    /// Drop the single entry that maps to `session_id`, if any. Linear in
-    /// the cache size; at capacity ~1k this is comfortably faster than the
-    /// storage round-trip the cache is replacing.
+    /// Drop the single entry that maps to `session_id`, if any. Scans every
+    /// shard since the lookup is by session id, not token hash; linear in
+    /// the cache size, which at the default capacity is comfortably faster
+    /// than the storage round-trip the cache is replacing.
     pub fn invalidate_session(&self, session_id: SessionId) {
-        let mut guard = self.inner.lock().expect("session cache lock poisoned");
-        let victim = guard
-            .iter()
-            .find(|(_, entry)| entry.cached.session.id == session_id)
-            .map(|(k, _)| *k);
-        if let Some(k) = victim {
-            guard.pop(&k);
+        for shard in self.shards.iter() {
+            let mut guard = shard.inner.lock().expect("session cache lock poisoned");
+            let victim = guard
+                .iter()
+                .find(|(_, entry)| entry.cached.session.id == session_id)
+                .map(|(k, _)| *k);
+            if let Some(k) = victim {
+                guard.pop(&k);
+                return;
+            }
         }
     }
 
     /// Drop every entry belonging to `user_id`. Used when a user is logged
-    /// out everywhere.
+    /// out everywhere. Scans every shard.
     pub fn invalidate_user(&self, user_id: UserId) {
-        let mut guard = self.inner.lock().expect("session cache lock poisoned");
-        let victims: Vec<TokenHash> = guard
-            .iter()
-            .filter(|(_, entry)| entry.cached.session.user_id == user_id)
-            .map(|(k, _)| *k)
-            .collect();
-        for k in victims {
-            guard.pop(&k);
+        for shard in self.shards.iter() {
+            let mut guard = shard.inner.lock().expect("session cache lock poisoned");
+            let victims: Vec<TokenHash> = guard
+                .iter()
+                .filter(|(_, entry)| entry.cached.session.user_id == user_id)
+                .map(|(k, _)| *k)
+                .collect();
+            for k in victims {
+                guard.pop(&k);
+            }
         }
     }
 
     /// `SessionInvalidationHook` handle that flushes matching entries from
-    /// this cache. Wire it onto the [`SessionManager`] via
-    /// [`SessionManager::with_invalidation_hook`] _before_ constructing the
-    /// dependent managers (passkey / signup) so every clone of the session
-    /// manager evicts the cache when it invalidates a session.
+    /// this cache. Install it on the [`SessionManager`] via
+    /// [`SessionManager::with_invalidation_hook`] /
+    /// [`set_invalidation_hook`]; because the manager shares its hook across
+    /// every clone, the order of installation relative to constructing the
+    /// dependent managers (passkey / signup) does not matter — every clone
+    /// evicts the cache when it invalidates a session.
     ///
     /// [`SessionManager`]: bauth_core::session::SessionManager
     /// [`SessionManager::with_invalidation_hook`]: bauth_core::session::SessionManager::with_invalidation_hook
+    /// [`set_invalidation_hook`]: bauth_core::session::SessionManager::set_invalidation_hook
     pub fn invalidator(&self) -> Arc<dyn SessionInvalidationHook> {
         Arc::new(CacheInvalidator::new(self.clone()))
     }
 
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.inner
-            .lock()
-            .expect("session cache lock poisoned")
-            .len()
+        self.shards
+            .iter()
+            .map(|shard| {
+                shard
+                    .inner
+                    .lock()
+                    .expect("session cache lock poisoned")
+                    .len()
+            })
+            .sum()
     }
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.inner
-            .lock()
-            .expect("session cache lock poisoned")
-            .is_empty()
+        self.len() == 0
     }
 }
 
@@ -213,6 +269,16 @@ mod tests {
         TokenHash([byte; 32])
     }
 
+    /// Build a token hash whose shard is fixed by `shard_byte` (the leading
+    /// byte) but is otherwise distinct via `salt`. Lets a test place several
+    /// keys in the *same* shard to exercise per-shard LRU eviction.
+    fn keyed(shard_byte: u8, salt: u8) -> TokenHash {
+        let mut bytes = [0u8; 32];
+        bytes[0] = shard_byte;
+        bytes[1] = salt;
+        TokenHash(bytes)
+    }
+
     fn make_session(user_id: UserId) -> Session {
         Session {
             id: SessionId::new(),
@@ -243,10 +309,10 @@ mod tests {
         let session = make_session(uid);
         let user = make_user(uid);
         let key = token_hash(1);
-        cache.insert(key, session.clone(), user.clone());
+        cache.insert(key, Arc::new(session.clone()), Arc::new(user.clone()));
         let hit = cache.get(&key).expect("cache hit");
-        assert_eq!(hit.session, session);
-        assert_eq!(hit.user, user);
+        assert_eq!(*hit.session, session);
+        assert_eq!(*hit.user, user);
     }
 
     #[test]
@@ -263,7 +329,7 @@ mod tests {
         });
         let uid = UserId::new();
         let key = token_hash(2);
-        cache.insert(key, make_session(uid), make_user(uid));
+        cache.insert(key, Arc::new(make_session(uid)), Arc::new(make_user(uid)));
         // Spin for at least one nanosecond.
         std::thread::sleep(Duration::from_millis(1));
         assert!(cache.get(&key).is_none(), "ttl expired");
@@ -276,8 +342,16 @@ mod tests {
         let uid = UserId::new();
         let s1 = make_session(uid);
         let s2 = make_session(uid);
-        cache.insert(token_hash(3), s1.clone(), make_user(uid));
-        cache.insert(token_hash(4), s2.clone(), make_user(uid));
+        cache.insert(
+            token_hash(3),
+            Arc::new(s1.clone()),
+            Arc::new(make_user(uid)),
+        );
+        cache.insert(
+            token_hash(4),
+            Arc::new(s2.clone()),
+            Arc::new(make_user(uid)),
+        );
         cache.invalidate_session(s1.id);
         assert!(cache.get(&token_hash(3)).is_none());
         assert!(cache.get(&token_hash(4)).is_some());
@@ -288,9 +362,21 @@ mod tests {
         let cache = SessionCache::new(SessionCacheConfig::default());
         let alice = UserId::new();
         let bob = UserId::new();
-        cache.insert(token_hash(5), make_session(alice), make_user(alice));
-        cache.insert(token_hash(6), make_session(alice), make_user(alice));
-        cache.insert(token_hash(7), make_session(bob), make_user(bob));
+        cache.insert(
+            token_hash(5),
+            Arc::new(make_session(alice)),
+            Arc::new(make_user(alice)),
+        );
+        cache.insert(
+            token_hash(6),
+            Arc::new(make_session(alice)),
+            Arc::new(make_user(alice)),
+        );
+        cache.insert(
+            token_hash(7),
+            Arc::new(make_session(bob)),
+            Arc::new(make_user(bob)),
+        );
         cache.invalidate_user(alice);
         assert!(cache.get(&token_hash(5)).is_none());
         assert!(cache.get(&token_hash(6)).is_none());
@@ -299,18 +385,38 @@ mod tests {
 
     #[test]
     fn lru_eviction_under_capacity_pressure() {
+        // capacity 32 over SHARD_COUNT (16) shards => 2 slots per shard. All
+        // three keys share shard 0 (same leading byte) so they contend for
+        // the same two slots and exercise per-shard LRU eviction.
         let cache = SessionCache::new(SessionCacheConfig {
-            capacity: NonZeroUsize::new(2).unwrap(),
+            capacity: NonZeroUsize::new(SHARD_COUNT * 2).unwrap(),
             ttl: DEFAULT_CACHE_TTL,
         });
         let uid = UserId::new();
-        cache.insert(token_hash(10), make_session(uid), make_user(uid));
-        cache.insert(token_hash(11), make_session(uid), make_user(uid));
-        // Touch 10 so it becomes MRU; inserting a third entry should evict 11.
-        let _ = cache.get(&token_hash(10));
-        cache.insert(token_hash(12), make_session(uid), make_user(uid));
-        assert!(cache.get(&token_hash(10)).is_some());
-        assert!(cache.get(&token_hash(11)).is_none());
-        assert!(cache.get(&token_hash(12)).is_some());
+        let (a, b, c) = (keyed(0, 1), keyed(0, 2), keyed(0, 3));
+        cache.insert(a, Arc::new(make_session(uid)), Arc::new(make_user(uid)));
+        cache.insert(b, Arc::new(make_session(uid)), Arc::new(make_user(uid)));
+        // Touch `a` so it becomes MRU; inserting a third entry should evict `b`.
+        let _ = cache.get(&a);
+        cache.insert(c, Arc::new(make_session(uid)), Arc::new(make_user(uid)));
+        assert!(cache.get(&a).is_some());
+        assert!(cache.get(&b).is_none());
+        assert!(cache.get(&c).is_some());
+    }
+
+    #[test]
+    fn keys_spread_across_shards_do_not_share_capacity() {
+        // Two keys in different shards both survive even when the per-shard
+        // capacity is 1 — independent shards mean no cross-shard eviction.
+        let cache = SessionCache::new(SessionCacheConfig {
+            capacity: NonZeroUsize::new(SHARD_COUNT).unwrap(),
+            ttl: DEFAULT_CACHE_TTL,
+        });
+        let uid = UserId::new();
+        let (k0, k1) = (keyed(0, 0), keyed(1, 0));
+        cache.insert(k0, Arc::new(make_session(uid)), Arc::new(make_user(uid)));
+        cache.insert(k1, Arc::new(make_session(uid)), Arc::new(make_user(uid)));
+        assert!(cache.get(&k0).is_some());
+        assert!(cache.get(&k1).is_some());
     }
 }

@@ -127,7 +127,7 @@ async fn me_handler(
         .unwrap_or(0);
     (
         StatusCode::OK,
-        Json(UserDto::from_user(auth.user, passkey_count)),
+        Json(UserDto::from_user(&auth.user, passkey_count)),
     )
         .into_response()
 }

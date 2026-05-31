@@ -4,7 +4,7 @@
 //! hashes, validates incoming tokens, and revokes sessions immediately via
 //! the configured [`SessionStore`].
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
-use crate::storage::{Session, SessionId, SessionStore, UserId};
+use crate::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 use crate::token::generate_token;
 pub use crate::token::hash_token;
 
@@ -77,13 +77,12 @@ pub struct SessionManager {
     sessions: Arc<dyn SessionStore>,
     clock: Arc<dyn Clock>,
     audit: Arc<dyn AuditSink>,
-    /// The hook is captured at construction (or rebuild) time and shared
-    /// by every subsequent `clone()`. Hosts that need a framework cache
-    /// (e.g. `bauth-axum`'s session-resolution cache) build the hook
-    /// first and call [`SessionManager::with_invalidation_hook`] _before_
-    /// handing clones to dependent managers, so every clone sees the same
-    /// observer.
-    invalidation_hook: Arc<dyn SessionInvalidationHook>,
+    /// The invalidation observer, held behind a shared, mutable cell that
+    /// every `clone()` aliases. Installing a hook through any handle (see
+    /// [`SessionManager::set_invalidation_hook`]) is therefore visible to
+    /// every other clone regardless of when it was taken — install order
+    /// cannot leave a manager wired to a stale observer.
+    invalidation_hook: Arc<RwLock<Arc<dyn SessionInvalidationHook>>>,
     config: SessionConfig,
 }
 
@@ -98,23 +97,40 @@ impl SessionManager {
             sessions,
             clock,
             audit,
-            invalidation_hook: Arc::new(NoopSessionInvalidationHook),
+            invalidation_hook: Arc::new(RwLock::new(Arc::new(NoopSessionInvalidationHook))),
             config,
         }
     }
 
-    /// Return a new `SessionManager` with `hook` installed as the
-    /// invalidation observer.
+    /// Install `hook` as the invalidation observer and return `self`.
     ///
-    /// The hook is captured by value: existing clones of the original
-    /// manager (including any held by `PasskeyManager` or `SignupManager`
-    /// constructed earlier) keep their previous hook. Hosts that need every
-    /// dependent manager to observe invalidations should call this _before_
-    /// constructing the dependent managers and pass the resulting
-    /// `SessionManager` to them.
-    pub fn with_invalidation_hook(mut self, hook: Arc<dyn SessionInvalidationHook>) -> Self {
-        self.invalidation_hook = hook;
+    /// The hook lives in a cell shared by every clone of this manager, so
+    /// the install is visible to clones taken _before_ this call as well as
+    /// after. Construction order between the manager and its dependents
+    /// (`PasskeyManager`, `SignupManager`, …) therefore does not matter.
+    pub fn with_invalidation_hook(self, hook: Arc<dyn SessionInvalidationHook>) -> Self {
+        self.set_invalidation_hook(hook);
         self
+    }
+
+    /// Install `hook` as the invalidation observer, in place. Because the
+    /// observer is held behind a cell shared by every clone, this is visible
+    /// to all existing and future clones of the manager — there is no "too
+    /// late" ordering hazard.
+    pub fn set_invalidation_hook(&self, hook: Arc<dyn SessionInvalidationHook>) {
+        *self
+            .invalidation_hook
+            .write()
+            .expect("invalidation hook lock poisoned") = hook;
+    }
+
+    /// Snapshot the currently installed invalidation observer. Cloned out so
+    /// the lock guard is never held across an `.await`.
+    fn invalidation_hook(&self) -> Arc<dyn SessionInvalidationHook> {
+        self.invalidation_hook
+            .read()
+            .expect("invalidation hook lock poisoned")
+            .clone()
     }
 
     #[tracing::instrument(skip(self, context), fields(user_id = %user_id))]
@@ -181,10 +197,16 @@ impl SessionManager {
         Ok(IssuedSession { session, token })
     }
 
-    #[tracing::instrument(skip(self, token), fields(user_id = tracing::field::Empty, session_id = tracing::field::Empty))]
     pub async fn validate(&self, token: &str) -> Result<Session> {
-        let hash = hash_token(token);
-        let Some(session) = self.sessions.find_session_by_token_hash(&hash).await? else {
+        self.validate_by_hash(&hash_token(token)).await
+    }
+
+    /// Validate a session directly from its token hash. Callers that have
+    /// already hashed the token (e.g. a framework cache keyed by
+    /// [`TokenHash`]) use this to avoid hashing twice per request.
+    #[tracing::instrument(skip(self, hash), fields(user_id = tracing::field::Empty, session_id = tracing::field::Empty))]
+    pub async fn validate_by_hash(&self, hash: &TokenHash) -> Result<Session> {
+        let Some(session) = self.sessions.find_session_by_token_hash(hash).await? else {
             tracing::warn!(outcome = "not_found", "session validate failed");
             return Err(Error::SessionNotFound);
         };
@@ -234,7 +256,7 @@ impl SessionManager {
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn revoke_all_for_user(&self, user_id: UserId) -> Result<u64> {
         let count = self.sessions.delete_sessions_for_user(user_id).await?;
-        self.invalidation_hook
+        self.invalidation_hook()
             .on_user_sessions_invalidated(user_id)
             .await;
         tracing::info!(count, outcome = "revoked_all", "user sessions revoked");
@@ -279,7 +301,7 @@ impl SessionManager {
             .delete_other_sessions_for_user(user_id, except)
             .await?;
         if count > 0 {
-            self.invalidation_hook
+            self.invalidation_hook()
                 .on_user_sessions_invalidated(user_id)
                 .await;
         }
@@ -301,7 +323,7 @@ impl SessionManager {
 
     async fn revoke_session(&self, session: Session) -> Result<()> {
         self.sessions.delete_session(session.id).await?;
-        self.invalidation_hook
+        self.invalidation_hook()
             .on_session_invalidated(session.id)
             .await;
         self.audit

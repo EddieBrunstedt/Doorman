@@ -39,8 +39,12 @@ use crate::csrf::{self, CsrfConfig};
 /// [`AuthSession`](crate::extractors::AuthSession).
 #[derive(Clone)]
 pub struct AuthContext {
-    pub user: User,
-    pub session: Session,
+    /// Shared with the session cache: on a cache hit this is the very
+    /// `Arc<User>` the cache holds, so populating the context is a refcount
+    /// bump rather than a deep clone.
+    pub user: Arc<User>,
+    /// Shared with the session cache; see [`AuthContext::user`].
+    pub session: Arc<Session>,
     /// The raw bearer token, as it appeared in the request. Kept so
     /// `logout` (and any other "revoke this session" path) can call
     /// [`SessionManager::revoke`] without re-deriving it.
@@ -125,6 +129,8 @@ where
                 }
 
                 if let Some(token) = extract_token(req.headers(), &state.cookie_name) {
+                    // Hash the token exactly once per request; both the cache
+                    // lookup and the on-miss validate path are keyed by hash.
                     let token_hash = hash_token(&token);
                     // Cache hit short-circuits both the session lookup and the
                     // user-store fetch. On miss, fall through to the canonical
@@ -134,17 +140,20 @@ where
                         span.record("session_id", tracing::field::display(cached.session.id));
                         span.record("user_id", tracing::field::display(cached.user.id));
                         req.extensions_mut().insert(AuthContext {
-                            user: cached.user,
-                            session: cached.session,
+                            user: cached.user.clone(),
+                            session: cached.session.clone(),
                             token,
                         });
-                    } else if let Ok(session) = state.session_manager.validate(&token).await
+                    } else if let Ok(session) =
+                        state.session_manager.validate_by_hash(&token_hash).await
                         && let Ok(Some(user)) =
                             state.user_store.find_user_by_id(session.user_id).await
                     {
                         let span = tracing::Span::current();
                         span.record("session_id", tracing::field::display(session.id));
                         span.record("user_id", tracing::field::display(user.id));
+                        let session = Arc::new(session);
+                        let user = Arc::new(user);
                         state
                             .cache
                             .insert(token_hash, session.clone(), user.clone());

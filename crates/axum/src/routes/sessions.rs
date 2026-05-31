@@ -54,7 +54,7 @@ async fn list(
         .into_iter()
         .map(|s| {
             let is_current = s.id == current_id;
-            SessionDto::from_session(s, is_current)
+            SessionDto::from_session(&s, is_current)
         })
         .collect();
     Ok(Json(dtos))

@@ -36,10 +36,10 @@ pub struct UserDto {
 }
 
 impl UserDto {
-    pub fn from_user(user: User, passkey_count: usize) -> Self {
+    pub fn from_user(user: &User, passkey_count: usize) -> Self {
         Self {
             id: user.id,
-            email: user.email,
+            email: user.email.clone(),
             email_verified: user.email_verified_at.is_some(),
             created_at: user.created_at,
             passkey_count,
@@ -65,13 +65,13 @@ pub struct SessionDto {
 }
 
 impl SessionDto {
-    pub fn from_session(value: Session, is_current: bool) -> Self {
+    pub fn from_session(value: &Session, is_current: bool) -> Self {
         Self {
             id: value.id,
             created_at: value.created_at,
             expires_at: value.expires_at,
-            ip: value.ip,
-            user_agent: value.user_agent,
+            ip: value.ip.clone(),
+            user_agent: value.user_agent.clone(),
             is_current,
         }
     }
@@ -94,8 +94,8 @@ pub struct AuthResponse {
 impl AuthResponse {
     pub fn from_issued(user: User, issued: IssuedSession, passkey_count: usize) -> Self {
         Self {
-            user: UserDto::from_user(user, passkey_count),
-            session: SessionDto::from_session(issued.session, true),
+            user: UserDto::from_user(&user, passkey_count),
+            session: SessionDto::from_session(&issued.session, true),
             token: issued.token,
         }
     }

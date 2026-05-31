@@ -8,7 +8,7 @@
 //! live in `bauth-test-support` so they never compile into a production build.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -42,10 +42,12 @@ impl Storage {
     }
 }
 
-/// In-memory [`UserStore`] backed by mutex-protected hash maps.
+/// In-memory [`UserStore`] backed by `RwLock`-protected hash maps. The lock
+/// is a read-write lock rather than a `Mutex` so the read-heavy resolution
+/// path (`find_user_by_id`) does not serialize concurrent lookups.
 #[derive(Debug, Default)]
 pub struct InMemoryUserStore {
-    inner: Mutex<UserStoreState>,
+    inner: RwLock<UserStoreState>,
 }
 
 #[derive(Debug, Default)]
@@ -59,15 +61,19 @@ impl InMemoryUserStore {
         Self::default()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, UserStoreState> {
-        self.inner.lock().expect("user store mutex poisoned")
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, UserStoreState> {
+        self.inner.read().expect("user store rwlock poisoned")
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, UserStoreState> {
+        self.inner.write().expect("user store rwlock poisoned")
     }
 }
 
 #[async_trait]
 impl UserStore for InMemoryUserStore {
     async fn create_user(&self, user: User) -> StorageResult<()> {
-        let mut state = self.lock();
+        let mut state = self.write();
         if state.by_id.contains_key(&user.id) {
             return Err(StorageError::msg("user with that id already exists"));
         }
@@ -84,11 +90,11 @@ impl UserStore for InMemoryUserStore {
     }
 
     async fn find_user_by_id(&self, id: UserId) -> StorageResult<Option<User>> {
-        Ok(self.lock().by_id.get(&id).cloned())
+        Ok(self.read().by_id.get(&id).cloned())
     }
 
     async fn find_user_by_email(&self, email: &str) -> StorageResult<Option<User>> {
-        let state = self.lock();
+        let state = self.read();
         Ok(state
             .email_to_id
             .get(email)
@@ -96,7 +102,7 @@ impl UserStore for InMemoryUserStore {
     }
 
     async fn update_user(&self, user: User) -> StorageResult<()> {
-        let mut state = self.lock();
+        let mut state = self.write();
         let Some(existing) = state.by_id.get(&user.id).cloned() else {
             return Err(StorageError::msg("user not found"));
         };
@@ -118,7 +124,7 @@ impl UserStore for InMemoryUserStore {
     }
 
     async fn delete_user(&self, id: UserId) -> StorageResult<()> {
-        let mut state = self.lock();
+        let mut state = self.write();
         if let Some(user) = state.by_id.remove(&id)
             && let Some(email) = user.email
         {
@@ -128,10 +134,13 @@ impl UserStore for InMemoryUserStore {
     }
 }
 
-/// In-memory [`SessionStore`] backed by mutex-protected hash maps.
+/// In-memory [`SessionStore`] backed by `RwLock`-protected hash maps. As with
+/// [`InMemoryUserStore`] the lock is a read-write lock so concurrent
+/// `find_session_by_token_hash` lookups on the resolution path proceed in
+/// parallel.
 #[derive(Debug, Default)]
 pub struct InMemorySessionStore {
-    inner: Mutex<SessionStoreState>,
+    inner: RwLock<SessionStoreState>,
 }
 
 #[derive(Debug, Default)]
@@ -145,12 +154,16 @@ impl InMemorySessionStore {
         Self::default()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, SessionStoreState> {
-        self.inner.lock().expect("session store mutex poisoned")
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, SessionStoreState> {
+        self.inner.read().expect("session store rwlock poisoned")
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, SessionStoreState> {
+        self.inner.write().expect("session store rwlock poisoned")
     }
 
     pub fn len(&self) -> usize {
-        self.lock().by_id.len()
+        self.read().by_id.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -161,7 +174,7 @@ impl InMemorySessionStore {
 #[async_trait]
 impl SessionStore for InMemorySessionStore {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
-        let mut state = self.lock();
+        let mut state = self.write();
         if state.by_id.contains_key(&session.id) {
             return Err(StorageError::msg("session id collision"));
         }
@@ -174,7 +187,7 @@ impl SessionStore for InMemorySessionStore {
     }
 
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
-        let state = self.lock();
+        let state = self.read();
         Ok(state
             .hash_to_id
             .get(hash)
@@ -182,12 +195,12 @@ impl SessionStore for InMemorySessionStore {
     }
 
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>> {
-        Ok(self.lock().by_id.get(&id).cloned())
+        Ok(self.read().by_id.get(&id).cloned())
     }
 
     async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
         Ok(self
-            .lock()
+            .read()
             .by_id
             .values()
             .filter(|s| s.user_id == user_id)
@@ -196,7 +209,7 @@ impl SessionStore for InMemorySessionStore {
     }
 
     async fn delete_session(&self, id: SessionId) -> StorageResult<()> {
-        let mut state = self.lock();
+        let mut state = self.write();
         if let Some(session) = state.by_id.remove(&id) {
             state.hash_to_id.remove(&session.token_hash);
         }
@@ -204,7 +217,7 @@ impl SessionStore for InMemorySessionStore {
     }
 
     async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let mut state = self.lock();
+        let mut state = self.write();
         let ids: Vec<SessionId> = state
             .by_id
             .iter()
@@ -224,7 +237,7 @@ impl SessionStore for InMemorySessionStore {
         user_id: UserId,
         except: SessionId,
     ) -> StorageResult<u64> {
-        let mut state = self.lock();
+        let mut state = self.write();
         let ids: Vec<SessionId> = state
             .by_id
             .iter()
@@ -240,7 +253,7 @@ impl SessionStore for InMemorySessionStore {
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
-        let mut state = self.lock();
+        let mut state = self.write();
         let ids: Vec<SessionId> = state
             .by_id
             .iter()

@@ -137,16 +137,15 @@ impl ManagerBuilder {
     }
 
     /// Hand the builder a pre-constructed [`SessionCache`]. Use this when
-    /// the host needs to wire the cache invalidator onto the
-    /// [`SessionManager`] (via [`SessionManager::with_invalidation_hook`])
-    /// _before_ constructing the dependent managers — passing the same
-    /// cache here ensures the layer reads from the cache the host has
-    /// hooked into.
+    /// the host wires the cache invalidator onto the [`SessionManager`] (via
+    /// [`SessionManager::with_invalidation_hook`]): passing the same cache
+    /// here ensures the layer reads from the cache the host has hooked into.
+    /// Because the manager shares its hook across every clone, the order of
+    /// installing the invalidator relative to constructing the dependent
+    /// managers does not matter.
     ///
     /// If the host neither supplies a cache nor wires an invalidator,
-    /// revocations made through cloned `SessionManager`s held by the
-    /// passkey / signup managers will not evict cached entries; they
-    /// will only be cleared by the cache TTL. The
+    /// revocations will only be cleared by the cache TTL. The
     /// [`BauthAxum::builder`](crate::BauthAxum::builder) entry point handles
     /// all of this automatically.
     ///

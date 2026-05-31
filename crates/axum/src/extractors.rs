@@ -4,6 +4,8 @@
 //! by [`SessionLayer`](crate::session::SessionLayer)) and the request
 //! headers; they never reach back into storage themselves.
 
+use std::sync::Arc;
+
 use axum::extract::FromRequestParts;
 use axum::http::HeaderMap;
 use axum::http::header::USER_AGENT;
@@ -21,8 +23,11 @@ use crate::session::AuthContext;
 /// ```ignore
 /// async fn me(AuthUser(user): AuthUser) -> Json<UserDto> { ... }
 /// ```
+///
+/// The wrapped [`User`] is an [`Arc`] shared with the session cache, so
+/// extracting it is a refcount bump, not a deep clone.
 #[derive(Debug, Clone)]
-pub struct AuthUser(pub User);
+pub struct AuthUser(pub Arc<User>);
 
 impl<S: Send + Sync> FromRequestParts<S> for AuthUser {
     type Rejection = ErrorResponse;
@@ -38,7 +43,7 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthUser {
 /// Extractor that surfaces the user when present and `None` when not.
 /// Never rejects.
 #[derive(Debug, Clone)]
-pub struct OptionalAuthUser(pub Option<User>);
+pub struct OptionalAuthUser(pub Option<Arc<User>>);
 
 impl<S: Send + Sync> FromRequestParts<S> for OptionalAuthUser {
     type Rejection = std::convert::Infallible;
@@ -58,8 +63,8 @@ impl<S: Send + Sync> FromRequestParts<S> for OptionalAuthUser {
 /// the *current* session (e.g. logout).
 #[derive(Debug, Clone)]
 pub struct AuthSession {
-    pub user: User,
-    pub session: Session,
+    pub user: Arc<User>,
+    pub session: Arc<Session>,
     pub token: String,
 }
 

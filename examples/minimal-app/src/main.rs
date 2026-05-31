@@ -91,8 +91,8 @@ async fn me(
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?
         .len();
     Ok(Json(serde_json::json!({
-        "user": UserDto::from_user(auth.user, passkey_count),
-        "session": SessionDto::from_session(auth.session, true),
+        "user": UserDto::from_user(&auth.user, passkey_count),
+        "session": SessionDto::from_session(&auth.session, true),
         "recovery_cooldown_active": cooldown,
     })))
 }

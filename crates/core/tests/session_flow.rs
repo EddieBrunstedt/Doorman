@@ -603,56 +603,47 @@ async fn revoke_all_for_user_notifies_user_hook() {
 }
 
 #[tokio::test]
-async fn clones_taken_before_with_invalidation_hook_keep_old_hook() {
-    // The hook is captured at construction (or rebuild) time. Cloning the
-    // manager copies the current hook into the clone; calling
-    // `with_invalidation_hook` on the original returns a new manager and
-    // does not retroactively affect older clones. Hosts that need every
-    // dependent manager to see invalidations must attach the hook
-    // _before_ creating those clones.
+async fn invalidation_hook_install_order_does_not_matter() {
+    // The hook lives in a cell shared by every clone, so installing it is
+    // visible to clones taken *before* the install as well as after. A
+    // framework cache wired in after the dependent managers were cloned must
+    // still be evicted on revoke — install order cannot break invalidation.
     let (manager, _, _) = fresh_manager();
-    let unhooked_clone = manager.clone();
+    let early_clone = manager.clone();
 
     let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
-    let hooked = manager.with_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
+    // Install on the original *after* the clone was taken.
+    manager.set_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
 
-    let issued = unhooked_clone
+    // Revoking through the clone taken before the install still fires the hook.
+    let issued = early_clone
         .create(UserId::new(), SessionContext::default())
         .await
         .expect("create");
-    unhooked_clone
+    early_clone
         .revoke(&issued.token)
         .await
-        .expect("revoke via clone");
-    assert!(
-        hook.sessions.lock().expect("read").is_empty(),
-        "clone taken before with_invalidation_hook still uses the noop hook"
-    );
-
-    let issued = hooked
-        .create(UserId::new(), SessionContext::default())
-        .await
-        .expect("create");
-    hooked.revoke(&issued.token).await.expect("revoke");
+        .expect("revoke via early clone");
     assert_eq!(
         *hook.sessions.lock().expect("read"),
         vec![issued.session.id],
-        "the rebuilt manager fires the hook"
+        "clone taken before the hook was installed still observes invalidation"
     );
 
-    let hooked_clone = hooked.clone();
-    let issued = hooked_clone
+    // And a clone taken after the install shares the same hook.
+    let late_clone = manager.clone();
+    let issued = late_clone
         .create(UserId::new(), SessionContext::default())
         .await
         .expect("create");
-    hooked_clone
+    late_clone
         .revoke(&issued.token)
         .await
-        .expect("revoke via hooked clone");
+        .expect("revoke via late clone");
     assert_eq!(
         hook.sessions.lock().expect("read").len(),
         2,
-        "clones taken after with_invalidation_hook share the hook"
+        "clones taken after the install share the hook too"
     );
 }
 

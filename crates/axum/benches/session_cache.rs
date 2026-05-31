@@ -108,7 +108,9 @@ fn session_cache(c: &mut Criterion) {
             .await
             .expect("seed user lookup")
             .expect("user exists");
-        scaffold.cache.insert(token_hash, session, user);
+        scaffold
+            .cache
+            .insert(token_hash, Arc::new(session), Arc::new(user));
     });
     group.bench_function("cache_hit", |b| {
         b.iter(|| {
@@ -142,7 +144,9 @@ fn session_cache(c: &mut Criterion) {
                     .await
                     .expect("user lookup")
                     .expect("user exists");
-                scaffold.cache.insert(token_hash, session, user);
+                scaffold
+                    .cache
+                    .insert(token_hash, Arc::new(session), Arc::new(user));
             },
             BatchSize::PerIteration,
         );

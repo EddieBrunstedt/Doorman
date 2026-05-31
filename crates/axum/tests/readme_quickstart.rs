@@ -12,7 +12,10 @@ use url::Url;
 async fn readme_quickstart_snippet_compiles() -> std::result::Result<(), Box<dyn std::error::Error>>
 {
     async fn me(auth: AuthSession) -> String {
-        auth.user.email.unwrap_or_else(|| "unknown".to_owned())
+        auth.user
+            .email
+            .clone()
+            .unwrap_or_else(|| "unknown".to_owned())
     }
 
     let storage = SqliteStorage::connect("sqlite::memory:").await?;
