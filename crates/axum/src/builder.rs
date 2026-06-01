@@ -209,7 +209,7 @@ impl BauthBuilder {
     }
 
     /// Override the default [`SessionConfig`] (30-day lifetime).
-    pub fn session_config(mut self, config: SessionConfig) -> Self {
+    pub fn session(mut self, config: SessionConfig) -> Self {
         self.session_config = Some(config);
         self
     }
@@ -221,7 +221,7 @@ impl BauthBuilder {
     }
 
     /// Override the session-resolution cache parameters.
-    pub fn cache_config(mut self, config: SessionCacheConfig) -> Self {
+    pub fn cache(mut self, config: SessionCacheConfig) -> Self {
         self.cache_config = Some(config);
         self
     }
@@ -348,14 +348,14 @@ impl BauthBuilder {
         let mut builder = ManagerBuilder::default()
             .session_manager(session_manager)
             .user_store(deps.users.clone())
-            .session_cache(cache);
-        builder.inherited_warnings = warnings;
+            .session_cache(cache)
+            .inherited_warnings(warnings);
         if self.silence_warnings {
-            builder.silence_warnings = true;
+            builder = builder.silence_warnings();
         }
 
         if let Some(cookie_config) = self.cookie_config {
-            builder = builder.cookie_config(cookie_config);
+            builder = builder.cookie(cookie_config);
         }
 
         if let Some(csrf_config) = self.csrf_config {

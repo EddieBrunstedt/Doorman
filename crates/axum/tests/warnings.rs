@@ -25,7 +25,7 @@ use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use bauth_core::recovery::{RecoveryConfig, RecoveryManager};
 use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
 use bauth_core::signup::{SignupConfig, SignupManager};
-use bauth_core::storage::Storage;
+use bauth_core::storage::{Storage, UserId};
 use bauth_core::verification::EnrollmentFlow;
 use bauth_test_support::CapturingEmailSender;
 use tracing_subscriber::fmt::MakeWriter;
@@ -299,17 +299,22 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
     let signup = SignupManager::new(flow.clone(), SignupConfig::default());
     let recovery = RecoveryManager::new(flow, RecoveryConfig::default());
 
-    let _auth = BauthAxum::from_managers()
+    let auth = BauthAxum::from_managers()
         .session_manager(session_manager)
         .user_store(storage.users.clone())
         .passkey_manager(passkey)
-        .signup_manager(signup.clone())
+        .signup_manager(signup)
         .recovery_manager(recovery)
         .silence_warnings()
         .build()
         .expect("low-level build should succeed when every manager is supplied");
 
-    signup
+    // The `BauthState` flow accessors must reach the very managers the
+    // routes drive. Driving signup through `state().signup()` (rather than a
+    // separately held handle) proves the accessor returns the wired manager:
+    // the request must enqueue a link email on the shared transport.
+    auth.state()
+        .signup()
         .request_signup("wire@example.com", SessionContext::default())
         .await
         .expect("request signup");
@@ -318,6 +323,17 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         1,
         "signup request should enqueue exactly one link email via the shared transport"
     );
+
+    // The passkey and recovery accessors reach usable managers too: a fresh
+    // user has no credentials, and recovery cool-down config is readable.
+    let summaries = auth
+        .state()
+        .passkey()
+        .list_passkey_summaries(UserId::new())
+        .await
+        .expect("list summaries");
+    assert!(summaries.is_empty());
+    let _ = auth.state().recovery();
 }
 
 #[test]

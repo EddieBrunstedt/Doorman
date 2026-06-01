@@ -3,15 +3,14 @@
 use std::{env, net::SocketAddr, sync::Arc};
 
 use axum::{Json, Router, extract::State, response::Html, routing::get};
-use bauth_axum::dto::{SessionDto, UserDto};
 use bauth_axum::prelude::*;
-use bauth_core::{storage::PasskeyCredentialStore, verification::TOKEN_PLACEHOLDER};
+use bauth_core::verification::TOKEN_PLACEHOLDER;
 use bauth_sqlx::SqliteStorage;
 use url::Url;
 
 #[derive(Clone)]
 struct AppState {
-    passkeys: Arc<dyn PasskeyCredentialStore>,
+    auth: BauthState,
 }
 
 #[tokio::main]
@@ -29,17 +28,16 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let storage = SqliteStorage::connect(&database_url).await?;
     storage.migrate().await?;
-    let app_state = AppState {
-        passkeys: storage.passkey_credential_store(),
-    };
 
-    let rp_id = env::var("PASSKEY_RP_ID")
-        .unwrap_or_else(|_| external_origin.host_str().unwrap_or("localhost").to_owned());
-    let passkey_config = PasskeyConfig::new(
-        rp_id,
-        external_origin.clone(),
-        env::var("PASSKEY_RP_NAME").unwrap_or_else(|_| "bauth minimal app".to_owned()),
-    );
+    let rp_name = env::var("PASSKEY_RP_NAME").unwrap_or_else(|_| "bauth minimal app".to_owned());
+    // The common single-origin case derives `rp_id` from the origin host via
+    // `from_origin`. Hosts that need a broader registrable suffix (so one
+    // credential works across subdomains) set `PASSKEY_RP_ID` and we keep the
+    // explicit `new` path for that.
+    let passkey_config = match env::var("PASSKEY_RP_ID") {
+        Ok(rp_id) => PasskeyConfig::new(rp_id, external_origin.clone(), rp_name),
+        Err(_) => PasskeyConfig::from_origin(external_origin.clone(), rp_name)?,
+    };
     let cookie_config = CookieConfig {
         secure: external_origin.scheme() == "https",
         ..CookieConfig::default()
@@ -61,6 +59,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .cookie(cookie_config)
         .silence_warnings()
         .build()?;
+
+    let app_state = AppState {
+        auth: auth.state().clone(),
+    };
 
     let app = Router::new()
         .route("/", get(index))
@@ -85,8 +87,9 @@ async fn me(
 ) -> std::result::Result<Json<serde_json::Value>, axum::http::StatusCode> {
     let cooldown = auth.is_in_recovery_cooldown();
     let passkey_count = state
-        .passkeys
-        .list_passkeys_for_user(auth.user.id)
+        .auth
+        .passkey()
+        .list_passkey_summaries(auth.user.id)
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?
         .len();

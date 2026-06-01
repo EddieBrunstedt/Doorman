@@ -70,6 +70,24 @@ impl PasskeyConfig {
             challenge_lifetime: Duration::from_secs(300),
         }
     }
+
+    /// Derive the configuration from the site origin, using the origin's
+    /// host as the relying-party id. This is the common case: a single
+    /// origin (`https://app.example.com`) whose `rp_id` is just its host
+    /// (`app.example.com`). Use [`new`](Self::new) directly when the
+    /// `rp_id` must be a broader registrable suffix than the host (e.g.
+    /// `example.com` so credentials work across `app.` and `id.`
+    /// subdomains).
+    ///
+    /// Returns [`Error::InvalidRelyingParty`] when the origin has no host
+    /// component (e.g. a `data:` or path-only URL), since WebAuthn requires
+    /// a host-based relying-party id.
+    pub fn from_origin(rp_origin: Url, rp_name: impl Into<String>) -> Result<Self> {
+        let rp_id = rp_origin.host_str().ok_or_else(|| {
+            Error::InvalidRelyingParty(format!("origin {rp_origin} has no host to use as rp_id"))
+        })?;
+        Ok(Self::new(rp_id.to_owned(), rp_origin.clone(), rp_name))
+    }
 }
 
 /// Manager for passkey registration, authentication, listing, and removal.
@@ -605,5 +623,27 @@ mod tests {
         assert_eq!(c.challenge_lifetime, Duration::from_secs(300));
         assert_eq!(c.rp_id, "example.com");
         assert_eq!(c.rp_name, "Example");
+    }
+
+    #[test]
+    fn from_origin_derives_rp_id_from_host() {
+        let c = PasskeyConfig::from_origin(
+            Url::parse("https://app.example.com:8443/auth").expect("valid url"),
+            "Example",
+        )
+        .expect("origin has a host");
+        assert_eq!(c.rp_id, "app.example.com");
+        assert_eq!(c.rp_name, "Example");
+        assert_eq!(c.challenge_lifetime, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn from_origin_rejects_hostless_origin() {
+        let err = PasskeyConfig::from_origin(
+            Url::parse("data:text/plain,hi").expect("valid url"),
+            "Example",
+        )
+        .expect_err("hostless origin must be rejected");
+        assert!(matches!(err, Error::InvalidRelyingParty(_)));
     }
 }

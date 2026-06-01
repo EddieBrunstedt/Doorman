@@ -43,4 +43,22 @@ impl BauthState {
     pub fn user_store(&self) -> &Arc<dyn UserStore> {
         &self.user_store
     }
+
+    /// Borrow the passkey manager the bundled routes drive, so host code
+    /// can run the same registration / authentication / listing logic
+    /// (e.g. a custom `/api/me` that lists credentials) against the
+    /// managers the router already uses.
+    pub fn passkey(&self) -> &PasskeyManager {
+        &self.passkey
+    }
+
+    /// Borrow the signup manager the bundled signup routes drive.
+    pub fn signup(&self) -> &SignupManager {
+        &self.signup
+    }
+
+    /// Borrow the recovery manager the bundled recovery routes drive.
+    pub fn recovery(&self) -> &RecoveryManager {
+        &self.recovery
+    }
 }

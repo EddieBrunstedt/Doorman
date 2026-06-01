@@ -96,9 +96,11 @@ pub struct ManagerBuilder {
     /// high-level [`BauthBuilder`](crate::BauthBuilder) entry point) that
     /// already inspected audit / rate-limiter / linking state the low-level
     /// builder does not see. Merged with the builder's own cookie-config
-    /// check at [`Self::build`] time.
-    pub(crate) inherited_warnings: Warnings,
-    pub(crate) silence_warnings: bool,
+    /// check at [`Self::build`] time. Set through
+    /// [`inherited_warnings`](Self::inherited_warnings) rather than poked
+    /// directly so the high-level builder doesn't reach into private state.
+    inherited_warnings: Warnings,
+    silence_warnings: bool,
     external_origin: Option<Url>,
     csrf_config: Option<CsrfConfig>,
 
@@ -118,7 +120,7 @@ impl ManagerBuilder {
         self
     }
 
-    pub fn cookie_config(mut self, config: CookieConfig) -> Self {
+    pub fn cookie(mut self, config: CookieConfig) -> Self {
         self.cookie_config = Some(config);
         self
     }
@@ -130,7 +132,7 @@ impl ManagerBuilder {
     /// on every request.
     ///
     /// Ignored if [`session_cache`](Self::session_cache) is supplied.
-    pub fn cache_config(mut self, config: SessionCacheConfig) -> Self {
+    pub fn cache(mut self, config: SessionCacheConfig) -> Self {
         self.cache_config = Some(config);
         self
     }
@@ -194,6 +196,15 @@ impl ManagerBuilder {
     /// single-process deployment.
     pub fn silence_warnings(mut self) -> Self {
         self.silence_warnings = true;
+        self
+    }
+
+    /// Seed the warning conditions a parent builder has already computed
+    /// (audit / rate-limiter / email-transport / partial-branding state the
+    /// low-level builder cannot see). Crate-internal: only the high-level
+    /// [`BauthBuilder`](crate::BauthBuilder) supplies these.
+    pub(crate) fn inherited_warnings(mut self, warnings: Warnings) -> Self {
+        self.inherited_warnings = warnings;
         self
     }
 
