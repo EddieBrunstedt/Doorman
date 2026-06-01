@@ -26,6 +26,11 @@ pub struct IssuedSession {
     pub token: String,
 }
 
+/// Default session lifetime (30 days). The single source for the figure:
+/// the cookie `Max-Age` default in `bauth-axum` derives from this so the
+/// two cannot drift apart.
+pub const DEFAULT_SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
+
 /// Configuration for session issuance.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -35,8 +40,7 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            // 30 days
-            lifetime: Duration::from_secs(60 * 60 * 24 * 30),
+            lifetime: DEFAULT_SESSION_LIFETIME,
         }
     }
 }

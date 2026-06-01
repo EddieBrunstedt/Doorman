@@ -9,7 +9,9 @@ use bauth_core::email::{BauthEmails, Email};
 use bauth_core::error::Error;
 use bauth_core::memory::InMemoryRateLimiter;
 use bauth_core::rate_limit::{RateLimitPolicy, RateLimiter};
-use bauth_core::recovery::{RecoveryConfig, RecoveryRateLimits};
+use bauth_core::recovery::{
+    MIN_COOLDOWN, RecoveryConfig, RecoveryConfigError, RecoveryManager, RecoveryRateLimits,
+};
 use bauth_core::session::SessionContext;
 use bauth_core::storage::{PasskeyCredentialStore, User};
 use bauth_test_support::MockClock;
@@ -775,14 +777,37 @@ async fn recovery_cooldown_expires_after_window() {
 }
 
 #[test]
-#[should_panic(expected = "below the documented floor")]
-fn recovery_config_with_subhour_cooldown_panics() {
-    let _ = Harness::builder()
-        .recovery_config(RecoveryConfig {
+fn recovery_config_with_subhour_cooldown_is_rejected() {
+    let h = Harness::fresh();
+    let result = RecoveryManager::new(
+        h.recovery_flow.clone(),
+        RecoveryConfig {
             cooldown: Duration::from_secs(60 * 30),
             ..recovery_config()
-        })
-        .build();
+        },
+    );
+    assert!(matches!(
+        result.err(),
+        Some(RecoveryConfigError::CooldownTooShort {
+            configured,
+            minimum,
+        }) if configured == Duration::from_secs(60 * 30) && minimum == MIN_COOLDOWN
+    ));
+}
+
+#[test]
+fn recovery_config_at_floor_is_accepted() {
+    let h = Harness::fresh();
+    assert!(
+        RecoveryManager::new(
+            h.recovery_flow.clone(),
+            RecoveryConfig {
+                cooldown: MIN_COOLDOWN,
+                ..recovery_config()
+            },
+        )
+        .is_ok()
+    );
 }
 
 #[tokio::test]

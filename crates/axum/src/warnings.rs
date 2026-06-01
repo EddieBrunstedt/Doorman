@@ -97,6 +97,11 @@ pub struct Warnings {
     /// flow and the security notices still send the stock copy. Branding is
     /// partial; use `.emails(..)` for one consistent renderer.
     pub partial_email_branding: bool,
+    /// A signup or recovery `url_template` is still the stock
+    /// `example.invalid` placeholder. The link carries a valid token but
+    /// points at a domain the host does not own, so the email is
+    /// effectively dead. Set a real template via `.signup(..)` / `.recovery(..)`.
+    pub placeholder_url_template: bool,
 }
 
 impl Warnings {
@@ -148,6 +153,13 @@ impl Warnings {
                  you have made an informed choice.",
             );
         }
+        if self.placeholder_url_template {
+            out.push(
+                "A signup or recovery url_template is still the stock example.invalid \
+                 placeholder. The emailed link points at a domain you do not own, so signup / \
+                 recovery links are dead. Set a real template via .signup(..) / .recovery(..).",
+            );
+        }
         out
     }
 
@@ -159,6 +171,7 @@ impl Warnings {
             && !self.in_memory_rate_limiter
             && !self.dev_email_transport
             && !self.partial_email_branding
+            && !self.placeholder_url_template
     }
 
     /// Emit the warnings to the configured sink — `tracing::warn!` when a
@@ -236,15 +249,17 @@ mod tests {
             in_memory_rate_limiter: true,
             dev_email_transport: true,
             partial_email_branding: true,
+            placeholder_url_template: true,
         };
         let lines = w.messages();
-        assert_eq!(lines.len(), 6);
+        assert_eq!(lines.len(), 7);
         assert!(lines[0].contains("cookie.secure"));
         assert!(lines[1].contains("AuditSink"));
         assert!(lines[2].contains("Rate limiting is disabled"));
         assert!(lines[3].contains("InMemoryRateLimiter"));
         assert!(lines[4].contains("dev-only sender"));
         assert!(lines[5].contains("custom email renderer"));
+        assert!(lines[6].contains("example.invalid"));
     }
 
     #[test]

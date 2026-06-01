@@ -68,6 +68,49 @@ pub enum BuilderError {
     /// [`PasskeyManager`]: bauth_core::passkey::PasskeyManager
     #[error("passkey manager construction failed: {0}")]
     Passkey(bauth_core::error::Error),
+    /// A flow's `url_template` does not contain the
+    /// [`TOKEN_PLACEHOLDER`](bauth_core::verification::TOKEN_PLACEHOLDER)
+    /// substring, so the rendered link would not carry the verification
+    /// token. The build fails closed rather than emailing a dead link.
+    #[error(
+        "{flow} url_template must contain the `{placeholder}` placeholder so the link carries the token"
+    )]
+    InvalidUrlTemplate {
+        flow: &'static str,
+        placeholder: &'static str,
+    },
+    /// The recovery cool-down is below the documented floor. Surfaced from
+    /// [`RecoveryManager::new`](bauth_core::recovery::RecoveryManager::new).
+    #[error("recovery cooldown is misconfigured: {0}")]
+    RecoveryCooldownTooShort(#[from] bauth_core::recovery::RecoveryConfigError),
+    /// The session cookie name carries a `__Host-` or `__Secure-` prefix but
+    /// the cookie attributes do not satisfy what that prefix requires (per
+    /// the cookie-prefix spec). A browser would silently reject the cookie,
+    /// so the build fails closed instead.
+    #[error("cookie name `{name}` carries a {prefix} prefix but {requirement}")]
+    InvalidCookiePrefix {
+        name: String,
+        prefix: &'static str,
+        requirement: &'static str,
+    },
+    /// A configured lifetime (session, signup token, or recovery token) is
+    /// zero or implausibly large. Rejected at build time rather than
+    /// panicking later when converted to a `chrono::Duration`.
+    #[error("{field} ({value:?}) must be greater than zero and at most {max:?}")]
+    InvalidLifetime {
+        field: &'static str,
+        value: std::time::Duration,
+        max: std::time::Duration,
+    },
+    /// The session cookie `Max-Age` outlives the session lifetime, so the
+    /// browser would keep sending a cookie whose session is already dead.
+    #[error(
+        "cookie Max-Age ({cookie_max_age:?}) exceeds the session lifetime ({session_lifetime:?})"
+    )]
+    CookieMaxAgeExceedsSessionLifetime {
+        cookie_max_age: std::time::Duration,
+        session_lifetime: std::time::Duration,
+    },
 }
 
 /// Low-level builder for hosts that construct the core managers
@@ -216,7 +259,9 @@ impl ManagerBuilder {
         let passkey = self.passkey.ok_or(BuilderError::MissingPasskeyManager)?;
         let signup = self.signup.ok_or(BuilderError::MissingSignupManager)?;
         let recovery = self.recovery.ok_or(BuilderError::MissingRecoveryManager)?;
-        let cookie_config = Arc::new(self.cookie_config.unwrap_or_default());
+        let cookie_config = self.cookie_config.unwrap_or_default();
+        validate_cookie_prefix(&cookie_config)?;
+        let cookie_config = Arc::new(cookie_config);
 
         if !self.silence_warnings {
             let mut warnings = self.inherited_warnings.clone();
@@ -274,4 +319,33 @@ impl ManagerBuilder {
             cache,
         })
     }
+}
+
+/// Enforce the cookie-prefix rules from the cookie-name spec so a
+/// misconfigured cookie fails the build instead of being silently dropped
+/// by the browser at runtime.
+///
+/// - `__Host-` requires `Secure`, `Path=/`, and **no** `Domain` attribute.
+/// - `__Secure-` requires `Secure`.
+pub(crate) fn validate_cookie_prefix(config: &CookieConfig) -> Result<(), BuilderError> {
+    let name = config.session_cookie_name.as_str();
+    let invalid = |prefix, requirement| BuilderError::InvalidCookiePrefix {
+        name: name.to_string(),
+        prefix,
+        requirement,
+    };
+    if name.starts_with("__Host-") {
+        if !config.secure {
+            return Err(invalid("__Host-", "requires secure = true"));
+        }
+        if config.path != "/" {
+            return Err(invalid("__Host-", "requires path = \"/\""));
+        }
+        if config.domain.is_some() {
+            return Err(invalid("__Host-", "must not set a Domain attribute"));
+        }
+    } else if name.starts_with("__Secure-") && !config.secure {
+        return Err(invalid("__Secure-", "requires secure = true"));
+    }
+    Ok(())
 }

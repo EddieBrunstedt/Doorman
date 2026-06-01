@@ -7,6 +7,7 @@
 
 use std::io;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use bauth_axum::config::CookieConfig;
 use bauth_axum::{BauthAxum, BuilderError};
@@ -83,6 +84,26 @@ fn passkey_config() -> PasskeyConfig {
         "http://localhost:8080".parse().expect("rp origin"),
         "bauth tests",
     )
+}
+
+const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
+const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
+
+/// A signup config with a real (non-placeholder) URL template, so the
+/// build does not trip the URL warning/error while a different validation
+/// is under test.
+fn real_signup() -> SignupConfig {
+    SignupConfig {
+        url_template: SIGNUP_URL.to_string(),
+        ..SignupConfig::default()
+    }
+}
+
+fn real_recovery() -> RecoveryConfig {
+    RecoveryConfig {
+        url_template: RECOVERY_URL.to_string(),
+        ..RecoveryConfig::default()
+    }
 }
 
 fn capture<F>(f: F) -> String
@@ -297,7 +318,8 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
     let passkey = PasskeyManager::new(&deps, passkey_config()).expect("passkey manager");
     let flow = EnrollmentFlow::new(&deps, passkey.clone());
     let signup = SignupManager::new(flow.clone(), SignupConfig::default());
-    let recovery = RecoveryManager::new(flow, RecoveryConfig::default());
+    let recovery =
+        RecoveryManager::new(flow, RecoveryConfig::default()).expect("recovery cooldown valid");
 
     let auth = BauthAxum::from_managers()
         .session_manager(session_manager)
@@ -410,4 +432,288 @@ fn file_email_transport_emits_dev_email_warning() {
         "expected dev-email-transport warning for FileEmailSender; got: {output}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- Build-time validation (fail closed on misconfiguration) ---
+
+#[test]
+fn signup_url_template_without_token_is_rejected() {
+    let err = BauthAxum::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .signup(SignupConfig {
+            url_template: "https://app.test/signup".to_string(),
+            ..SignupConfig::default()
+        })
+        .recovery(real_recovery())
+        .silence_warnings()
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::InvalidUrlTemplate { flow: "signup", .. })
+        ),
+        "expected InvalidUrlTemplate for signup, got: {err:?}"
+    );
+}
+
+#[test]
+fn recovery_url_template_without_token_is_rejected() {
+    let err = BauthAxum::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .signup(real_signup())
+        .recovery(RecoveryConfig {
+            url_template: "https://app.test/recovery".to_string(),
+            ..RecoveryConfig::default()
+        })
+        .silence_warnings()
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::InvalidUrlTemplate {
+                flow: "recovery",
+                ..
+            })
+        ),
+        "expected InvalidUrlTemplate for recovery, got: {err:?}"
+    );
+}
+
+#[test]
+fn default_example_invalid_url_template_warns() {
+    let output = capture(|| {
+        let _ = BauthAxum::builder(fresh_storage())
+            .email(capturing_email())
+            .passkey(passkey_config())
+            .build()
+            .expect("build");
+    });
+    assert!(
+        output.contains("example.invalid"),
+        "expected placeholder-url-template warning when the template is left at the default; \
+         got: {output}"
+    );
+}
+
+#[test]
+fn real_url_templates_do_not_warn_about_placeholder() {
+    let output = capture(|| {
+        let _ = BauthAxum::builder(fresh_storage())
+            .email(capturing_email())
+            .passkey(passkey_config())
+            .signup(real_signup())
+            .recovery(real_recovery())
+            .build()
+            .expect("build");
+    });
+    assert!(
+        !output.contains("example.invalid"),
+        "real templates should not trip the placeholder warning; got: {output}"
+    );
+}
+
+#[test]
+fn subfloor_recovery_cooldown_is_rejected() {
+    let err = BauthAxum::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .signup(real_signup())
+        .recovery(RecoveryConfig {
+            cooldown: Duration::from_secs(60),
+            url_template: RECOVERY_URL.to_string(),
+            ..RecoveryConfig::default()
+        })
+        .silence_warnings()
+        .build()
+        .err();
+    assert!(
+        matches!(err, Some(BuilderError::RecoveryCooldownTooShort(_))),
+        "expected RecoveryCooldownTooShort, got: {err:?}"
+    );
+}
+
+#[test]
+fn host_prefixed_cookie_without_secure_is_rejected() {
+    let err = BauthAxum::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .cookie(CookieConfig {
+            session_cookie_name: "__Host-bauth".to_string(),
+            secure: false,
+            ..CookieConfig::default()
+        })
+        .silence_warnings()
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::InvalidCookiePrefix {
+                prefix: "__Host-",
+                ..
+            })
+        ),
+        "expected InvalidCookiePrefix for __Host- without Secure, got: {err:?}"
+    );
+}
+
+#[test]
+fn host_prefixed_cookie_with_domain_is_rejected() {
+    let err = BauthAxum::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .cookie(CookieConfig {
+            session_cookie_name: "__Host-bauth".to_string(),
+            secure: true,
+            domain: Some("app.test".to_string()),
+            ..CookieConfig::default()
+        })
+        .silence_warnings()
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::InvalidCookiePrefix {
+                prefix: "__Host-",
+                ..
+            })
+        ),
+        "expected InvalidCookiePrefix for __Host- with a Domain attribute, got: {err:?}"
+    );
+}
+
+#[test]
+fn secure_prefixed_cookie_without_secure_is_rejected() {
+    let err = BauthAxum::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .cookie(CookieConfig {
+            session_cookie_name: "__Secure-bauth".to_string(),
+            secure: false,
+            ..CookieConfig::default()
+        })
+        .silence_warnings()
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::InvalidCookiePrefix {
+                prefix: "__Secure-",
+                ..
+            })
+        ),
+        "expected InvalidCookiePrefix for __Secure- without Secure, got: {err:?}"
+    );
+}
+
+#[test]
+fn host_prefixed_cookie_with_correct_attributes_builds() {
+    let err = BauthAxum::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .cookie(CookieConfig {
+            session_cookie_name: "__Host-bauth".to_string(),
+            secure: true,
+            domain: None,
+            path: "/".to_string(),
+            ..CookieConfig::default()
+        })
+        .silence_warnings()
+        .build()
+        .err();
+    assert!(
+        err.is_none(),
+        "a __Host- cookie with Secure, Path=/, and no Domain should build; got: {err:?}"
+    );
+}
+
+#[test]
+fn zero_session_lifetime_is_rejected() {
+    let err = BauthAxum::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .session(SessionConfig {
+            lifetime: Duration::ZERO,
+        })
+        .silence_warnings()
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::InvalidLifetime {
+                field: "session lifetime",
+                ..
+            })
+        ),
+        "expected InvalidLifetime for a zero session lifetime, got: {err:?}"
+    );
+}
+
+#[test]
+fn zero_signup_token_lifetime_is_rejected() {
+    let err = BauthAxum::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .signup(SignupConfig {
+            url_template: SIGNUP_URL.to_string(),
+            token_lifetime: Duration::ZERO,
+            ..SignupConfig::default()
+        })
+        .recovery(real_recovery())
+        .silence_warnings()
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::InvalidLifetime {
+                field: "signup token_lifetime",
+                ..
+            })
+        ),
+        "expected InvalidLifetime for a zero signup token lifetime, got: {err:?}"
+    );
+}
+
+#[test]
+fn cookie_max_age_exceeding_session_lifetime_is_rejected() {
+    let err = BauthAxum::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .session(SessionConfig {
+            lifetime: Duration::from_secs(60 * 60),
+        })
+        .cookie(CookieConfig {
+            session_max_age: Duration::from_secs(60 * 60 * 2),
+            ..CookieConfig::default()
+        })
+        .silence_warnings()
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::CookieMaxAgeExceedsSessionLifetime { .. })
+        ),
+        "expected CookieMaxAgeExceedsSessionLifetime, got: {err:?}"
+    );
 }

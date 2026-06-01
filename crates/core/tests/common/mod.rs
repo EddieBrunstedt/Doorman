@@ -114,6 +114,11 @@ pub struct Harness {
     pub passkey: PasskeyManager,
     pub signup: SignupManager,
     pub recovery: RecoveryManager,
+    /// The recovery flow the harness built `recovery` from, kept so tests
+    /// can construct another `RecoveryManager` (e.g. to exercise
+    /// `RecoveryManager::new`'s cool-down validation) without re-wiring the
+    /// stores.
+    pub recovery_flow: EnrollmentFlow,
     pub users: Arc<InMemoryUserStore>,
     pub sessions: Arc<InMemorySessionStore>,
     pub tokens: Arc<InMemoryVerificationTokenStore>,
@@ -240,12 +245,14 @@ impl HarnessBuilder {
         let signup_flow = EnrollmentFlow::new(&signup_deps, passkey.clone());
         let recovery_flow = EnrollmentFlow::new(&recovery_deps, passkey.clone());
         let signup = SignupManager::new(signup_flow, self.signup);
-        let recovery = RecoveryManager::new(recovery_flow, self.recovery);
+        let recovery = RecoveryManager::new(recovery_flow.clone(), self.recovery)
+            .expect("recovery cooldown is at or above the floor");
 
         Harness {
             passkey,
             signup,
             recovery,
+            recovery_flow,
             users,
             sessions,
             tokens,

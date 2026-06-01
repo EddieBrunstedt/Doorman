@@ -83,6 +83,24 @@ pub struct RecoveryConfig {
 /// disable the property.
 pub const MIN_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 
+/// Rejection returned by [`RecoveryManager::new`] when the supplied
+/// [`RecoveryConfig`] is invalid. Construction is fallible rather than a
+/// panic so the misconfiguration is threaded back to the host through the
+/// builder (the axum builder maps this onto its `BuilderError`).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RecoveryConfigError {
+    /// `cooldown` is below the documented [`MIN_COOLDOWN`] floor. The
+    /// cool-down is the only thing protecting a freshly-recovered account
+    /// from an attacker who phished the link before the legitimate owner
+    /// reacted, so a sub-floor value is rejected rather than silently
+    /// weakening the property.
+    #[error("recovery cooldown ({configured:?}) is below the floor of {minimum:?}")]
+    CooldownTooShort {
+        configured: Duration,
+        minimum: Duration,
+    },
+}
+
 /// Rate-limit policies for the recovery request endpoint. The consume
 /// endpoint is gated by single-use token possession and is
 /// self-limiting, so it does not appear here.
@@ -156,24 +174,28 @@ pub struct RecoveryManager {
 impl RecoveryManager {
     /// Construct a `RecoveryManager`.
     ///
-    /// Panics if `config.cooldown` is below [`MIN_COOLDOWN`] (one hour).
-    /// The floor exists because the cool-down is the only thing protecting
-    /// a freshly-recovered account from an attacker who phished the link
-    /// before the legitimate owner reacted; setting it shorter than that
-    /// would defeat the post-recovery cool-down protection.
-    pub fn new(flow: EnrollmentFlow, config: RecoveryConfig) -> Self {
-        assert!(
-            config.cooldown >= MIN_COOLDOWN,
-            "RecoveryConfig.cooldown ({:?}) is below the documented floor of {:?}",
-            config.cooldown,
-            MIN_COOLDOWN,
-        );
+    /// Returns [`RecoveryConfigError::CooldownTooShort`] if `config.cooldown`
+    /// is below [`MIN_COOLDOWN`] (one hour). The floor exists because the
+    /// cool-down is the only thing protecting a freshly-recovered account
+    /// from an attacker who phished the link before the legitimate owner
+    /// reacted; setting it shorter than that would defeat the post-recovery
+    /// cool-down protection.
+    pub fn new(
+        flow: EnrollmentFlow,
+        config: RecoveryConfig,
+    ) -> std::result::Result<Self, RecoveryConfigError> {
+        if config.cooldown < MIN_COOLDOWN {
+            return Err(RecoveryConfigError::CooldownTooShort {
+                configured: config.cooldown,
+                minimum: MIN_COOLDOWN,
+            });
+        }
         let emails = config.emails.clone().unwrap_or_else(default_emails);
-        Self {
+        Ok(Self {
             flow,
             config,
             emails,
-        }
+        })
     }
 
     /// Issue a recovery link to `email`. Returns `Ok(())` regardless of

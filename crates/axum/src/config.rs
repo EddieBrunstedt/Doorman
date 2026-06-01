@@ -30,7 +30,11 @@ pub struct CookieConfig {
     pub same_site: SameSite,
     /// `Max-Age` for the session cookie. Should typically match the
     /// configured [`SessionConfig::lifetime`](bauth_core::session::SessionConfig).
-    /// Defaults to 30 days.
+    /// Defaults to the
+    /// [`SessionConfig`](bauth_core::session::SessionConfig) default lifetime
+    /// (30 days) — the figure is named once in
+    /// [`DEFAULT_SESSION_LIFETIME`](bauth_core::session::DEFAULT_SESSION_LIFETIME)
+    /// and derived here so the cookie and session defaults cannot drift apart.
     pub session_max_age: Duration,
 }
 
@@ -42,7 +46,7 @@ impl Default for CookieConfig {
             path: "/".to_string(),
             secure: true,
             same_site: SameSite::Lax,
-            session_max_age: Duration::from_secs(60 * 60 * 24 * 30),
+            session_max_age: bauth_core::session::DEFAULT_SESSION_LIFETIME,
         }
     }
 }

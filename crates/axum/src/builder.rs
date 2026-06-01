@@ -48,6 +48,7 @@
 //! [`audit`]: BauthBuilder::audit
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
@@ -60,9 +61,46 @@ use bauth_core::recovery::{RecoveryConfig, RecoveryManager};
 use bauth_core::session::{SessionConfig, SessionManager};
 use bauth_core::signup::{SignupConfig, SignupManager};
 use bauth_core::storage::Storage;
-use bauth_core::verification::EnrollmentFlow;
+use bauth_core::verification::{EnrollmentFlow, TOKEN_PLACEHOLDER};
 
 use url::Url;
+
+/// Upper bound on any host-supplied lifetime (session / token). Ten years —
+/// well below the point where converting to a `chrono::Duration` overflows,
+/// and far past any sane session or verification-link validity. A value
+/// above this is almost certainly a units mistake, so the build rejects it.
+const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 10);
+
+/// Host (DNS suffix) reserved for documentation/examples. A `url_template`
+/// still pointing here is the stock default the host never replaced.
+const PLACEHOLDER_URL_HOST: &str = "example.invalid";
+
+/// Reject a zero or implausibly large lifetime before it reaches a manager
+/// (where converting to a `chrono::Duration` would otherwise panic).
+fn validate_lifetime(field: &'static str, value: Duration) -> Result<(), BuilderError> {
+    if value.is_zero() || value > MAX_LIFETIME {
+        return Err(BuilderError::InvalidLifetime {
+            field,
+            value,
+            max: MAX_LIFETIME,
+        });
+    }
+    Ok(())
+}
+
+/// Reject a `url_template` that would render a link without the verification
+/// token. The link is the entire signup / recovery flow, so a template
+/// missing the placeholder is a hard error rather than a warning.
+fn validate_url_template(flow: &'static str, template: &str) -> Result<(), BuilderError> {
+    if template.contains(TOKEN_PLACEHOLDER) {
+        Ok(())
+    } else {
+        Err(BuilderError::InvalidUrlTemplate {
+            flow,
+            placeholder: TOKEN_PLACEHOLDER,
+        })
+    }
+}
 
 use crate::BauthAxum;
 use crate::cache::{SessionCache, SessionCacheConfig};
@@ -305,6 +343,32 @@ impl BauthBuilder {
         {
             warnings.partial_email_branding = true;
         }
+
+        // Fail closed on every misconfigured value before constructing any
+        // manager: a template that drops the token, a zero/absurd lifetime
+        // (which would otherwise panic when converted to chrono), or a
+        // cookie that outlives its session. A template left at the stock
+        // example.invalid host is a loud warning rather than an error — the
+        // link is structurally valid, it just points at a domain the host
+        // does not own.
+        validate_url_template("signup", &signup_config.url_template)?;
+        validate_url_template("recovery", &recovery_config.url_template)?;
+        validate_lifetime("session lifetime", session_config.lifetime)?;
+        validate_lifetime("signup token_lifetime", signup_config.token_lifetime)?;
+        validate_lifetime("recovery token_lifetime", recovery_config.token_lifetime)?;
+        if signup_config.url_template.contains(PLACEHOLDER_URL_HOST)
+            || recovery_config.url_template.contains(PLACEHOLDER_URL_HOST)
+        {
+            warnings.placeholder_url_template = true;
+        }
+
+        let cookie_config = self.cookie_config.unwrap_or_default();
+        if cookie_config.session_max_age > session_config.lifetime {
+            return Err(BuilderError::CookieMaxAgeExceedsSessionLifetime {
+                cookie_max_age: cookie_config.session_max_age,
+                session_lifetime: session_config.lifetime,
+            });
+        }
         if let Some(shared) = &self.emails {
             signup_config.emails.get_or_insert_with(|| shared.clone());
             recovery_config.emails.get_or_insert_with(|| shared.clone());
@@ -354,9 +418,7 @@ impl BauthBuilder {
             builder = builder.silence_warnings();
         }
 
-        if let Some(cookie_config) = self.cookie_config {
-            builder = builder.cookie(cookie_config);
-        }
+        builder = builder.cookie(cookie_config);
 
         if let Some(csrf_config) = self.csrf_config {
             builder = builder.csrf(csrf_config);
@@ -377,7 +439,7 @@ impl BauthBuilder {
         // Recovery rides on the same primitives as signup and is similarly
         // always-on. Hosts override the defaults via `.recovery(...)` to
         // tune the aggressive rate limits.
-        let recovery_manager = RecoveryManager::new(enrollment_flow, recovery_config);
+        let recovery_manager = RecoveryManager::new(enrollment_flow, recovery_config)?;
 
         builder = builder
             .passkey_manager(passkey_manager)
