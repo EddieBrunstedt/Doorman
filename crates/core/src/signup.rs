@@ -206,8 +206,12 @@ impl SignupManager {
             now,
         )
         .await?;
+        // Best-effort: a transport failure here must not become an error
+        // response. The already-registered branch above returns `Ok(())` with
+        // no send, so propagating a send error from this new-user branch would
+        // make a bounce distinguish a fresh address from a registered one.
         let email = self.emails.signup_email(&user, &url);
-        self.flow.email_sender().send(email).await?;
+        self.flow.send_best_effort(email, "signup link").await;
 
         self.flow
             .emit(

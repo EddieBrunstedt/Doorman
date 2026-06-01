@@ -411,6 +411,50 @@ async fn rate_limit_per_identifier_blocks_across_ips() {
     assert!(matches!(err, Error::RateLimited { .. }));
 }
 
+#[tokio::test]
+async fn request_response_shape_is_identical_known_unknown_and_on_send_failure() {
+    // Enumeration resistance: the request endpoint must return the same shape
+    // (`Ok`) for a brand-new address and an already-registered one, and a
+    // transport failure must not change that — otherwise a forced bounce on the
+    // new-user branch (which sends a link) would distinguish it from the
+    // registered branch (which sends nothing).
+    let h = Harness::fresh();
+
+    // Unknown address, transport healthy -> Ok (provisions + sends link).
+    h.signup
+        .request_signup("fresh@example.com", SessionContext::default())
+        .await
+        .expect("unknown address Ok");
+    // Same address again, now registered, transport healthy -> Ok (silent).
+    h.signup
+        .request_signup("fresh@example.com", SessionContext::default())
+        .await
+        .expect("known address Ok");
+
+    // Fail every subsequent send. A new (unknown) address still provisions a
+    // user and returns Ok even though the link send bounces, identical to the
+    // registered address that sends nothing.
+    h.email.fail_after_successful_sends(h.email.sent().len());
+    h.signup
+        .request_signup("another@example.com", SessionContext::default())
+        .await
+        .expect("unknown address Ok despite send failure");
+    h.signup
+        .request_signup("fresh@example.com", SessionContext::default())
+        .await
+        .expect("known address Ok despite send failure");
+
+    // The send failed but the work still happened: the new user was provisioned
+    // and a token issued; only delivery was lost.
+    let provisioned = h
+        .users
+        .find_user_by_email("another@example.com")
+        .await
+        .expect("find user")
+        .expect("user provisioned despite send failure");
+    assert!(provisioned.email_verified_at.is_none());
+}
+
 struct BrandedEmails;
 
 impl BauthEmails for BrandedEmails {

@@ -281,10 +281,20 @@ impl RecoveryManager {
             now,
         )
         .await?;
+        // Best-effort: an unknown address sends nothing and returns `Ok(())`,
+        // so a transport failure on either of these sends must not surface as a
+        // distinct error response — that would let an attacker who can force
+        // bounces (or simply measure two synchronous sends vs none) tell a
+        // registered address from an unknown one, defeating the property this
+        // endpoint exists to protect.
         let link_email = self.emails.recovery_email(&user, &url);
-        self.flow.email_sender().send(link_email).await?;
+        self.flow
+            .send_best_effort(link_email, "recovery link")
+            .await;
         let notification = self.emails.recovery_requested_notification_email(&user);
-        self.flow.email_sender().send(notification).await?;
+        self.flow
+            .send_best_effort(notification, "recovery requested notification")
+            .await;
 
         self.flow
             .emit(

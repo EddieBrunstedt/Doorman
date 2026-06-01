@@ -476,6 +476,48 @@ async fn recovery_request_invalidates_prior_recovery_token() {
     assert!(matches!(err, Error::InvalidVerificationToken));
 }
 
+#[tokio::test]
+async fn request_response_shape_is_identical_known_unknown_and_on_send_failure() {
+    // Enumeration resistance: a registered address sends a link plus a
+    // requested-recovery notification while an unknown address sends nothing,
+    // yet both must return the same shape (`Ok`). A transport failure on either
+    // of the registered-path sends must not turn into an error response, or a
+    // forced bounce would distinguish a registered address from an unknown one.
+    let h = Harness::fresh();
+    let _ = provision_user(&h, "known@example.com").await;
+
+    // Unknown address -> Ok (silent), known address -> Ok (two sends).
+    h.recovery
+        .request_recovery("ghost@example.com", SessionContext::default())
+        .await
+        .expect("unknown Ok");
+    h.recovery
+        .request_recovery("known@example.com", SessionContext::default())
+        .await
+        .expect("known Ok");
+
+    // Fail every subsequent send. The known path attempts two sends, both of
+    // which now bounce — the response must still be Ok, identical to the
+    // unknown path.
+    h.email.fail_after_successful_sends(h.email.sent().len());
+    h.recovery
+        .request_recovery("known@example.com", SessionContext::default())
+        .await
+        .expect("known Ok despite send failures");
+    h.recovery
+        .request_recovery("ghost@example.com", SessionContext::default())
+        .await
+        .expect("unknown Ok despite send failures");
+
+    // Delivery is decoupled from token issuance: the failed sends did not stop
+    // the fresh single-use token from being persisted for the known user.
+    assert_eq!(
+        h.tokens.len(),
+        1,
+        "recovery token issued despite send failure"
+    );
+}
+
 struct BrandedEmails;
 
 impl BauthEmails for BrandedEmails {

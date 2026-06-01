@@ -242,8 +242,19 @@ impl EnrollmentFlow {
         &self.tokens
     }
 
-    pub(crate) fn email_sender(&self) -> &Arc<dyn EmailSender> {
-        &self.email
+    /// Send an email on a best-effort basis: a transport failure is logged
+    /// server-side but never propagated to the caller. Both request endpoints
+    /// route every send through here so that a bounce or transport error on a
+    /// *registered* address cannot surface as a distinct (error) response —
+    /// which would re-introduce the enumeration oracle the silent-on-unknown
+    /// design exists to close. The caller's response shape is identical whether
+    /// the address resolved and whether delivery succeeded, so the only
+    /// residual signal is raw send latency (which a host decouples at its
+    /// transport layer if it wants to close that too).
+    pub(crate) async fn send_best_effort(&self, email: Email, description: &str) {
+        if let Err(err) = self.email.send(email).await {
+            tracing::warn!(error = %err, description, "email send failed (best-effort)");
+        }
     }
 
     pub(crate) fn rate_limiter(&self) -> &Arc<dyn RateLimiter> {
@@ -454,9 +465,7 @@ impl EnrollmentFlow {
         if let Some(render) = notification {
             // Best-effort — a notification-send failure is logged but does
             // not roll back the enrollment (the passkey is already stored).
-            if let Err(err) = self.email.send(render(&user)).await {
-                tracing::warn!(error = %err, "{} success notification failed", kind.label());
-            }
+            self.send_best_effort(render(&user), kind.label()).await;
         }
 
         self.emit(
