@@ -72,6 +72,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::InvalidPasskeyChallenge => (StatusCode::BAD_REQUEST, "invalid_passkey_challenge"),
         Error::PasskeyNotFound => (StatusCode::NOT_FOUND, "passkey_not_found"),
         Error::PasskeyOwnershipMismatch => (StatusCode::FORBIDDEN, "passkey_ownership_mismatch"),
+        Error::PasskeyPossibleCompromise => (StatusCode::FORBIDDEN, "passkey_possible_compromise"),
         Error::Webauthn(_) => (StatusCode::BAD_REQUEST, "webauthn_error"),
         Error::InvalidRelyingParty(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "invalid_relying_party")

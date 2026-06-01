@@ -40,6 +40,18 @@ pub enum AuditEventKind {
     LoginSucceeded {
         user_id: UserId,
     },
+    /// Emitted on any passkey authentication failure — unknown or expired
+    /// challenge, unknown credential, an unverifiable user-handle binding, a
+    /// signature-counter regression (possible cloned authenticator), or a bad
+    /// assertion. `user_id` is `Some` once the credential has been resolved
+    /// and `None` for the pre-resolution failures (bad/expired challenge).
+    /// The [`AuthFailureReason`] lets a host alert on the security-significant
+    /// modes (counter regression, user-handle mismatch) without leaking which
+    /// credential or secret was involved.
+    AuthenticationFailed {
+        user_id: Option<UserId>,
+        reason: AuthFailureReason,
+    },
     CredentialAdded {
         user_id: UserId,
     },
@@ -72,6 +84,33 @@ pub enum AuditEventKind {
         user_id: Option<UserId>,
         reason: RecoveryFailureReason,
     },
+}
+
+/// Why a passkey authentication attempt did not succeed. Pairs with
+/// [`AuditEventKind::AuthenticationFailed`] for after-the-fact triage and
+/// alerting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthFailureReason {
+    /// The presented challenge id did not resolve to an outstanding
+    /// authentication ceremony (unknown or already consumed).
+    InvalidChallenge,
+    /// The authentication ceremony had expired before it was finished.
+    ExpiredChallenge,
+    /// The asserted credential id is not registered.
+    UnknownCredential,
+    /// The authenticator did not assert a user handle, or asserted one that
+    /// does not map to the credential's stored owner. Either way the
+    /// credential-to-user binding could not be confirmed, so no session is
+    /// minted.
+    UserHandleMismatch,
+    /// The asserted signature counter did not advance past the stored value,
+    /// which `webauthn-rs` flags as a possible cloned authenticator. The
+    /// login is rejected and this event is emitted so the host can alert.
+    CounterRegression,
+    /// The assertion failed `webauthn-rs` verification for any other reason
+    /// (bad signature, origin mismatch, malformed response, etc.).
+    BadAssertion,
 }
 
 /// Why a recovery attempt did not succeed.

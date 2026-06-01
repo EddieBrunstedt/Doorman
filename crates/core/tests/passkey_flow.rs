@@ -1,6 +1,6 @@
 mod common;
 
-use bauth_core::audit::AuditEventKind;
+use bauth_core::audit::{AuditEventKind, AuthFailureReason};
 use bauth_core::clock::Clock;
 use bauth_core::error::Error;
 use bauth_core::session::SessionContext;
@@ -194,7 +194,11 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
 }
 
 #[tokio::test]
-async fn authentication_without_user_handle_falls_back_to_credential_id() {
+async fn authentication_without_user_handle_is_rejected() {
+    // Discoverable auth must assert a user handle that maps to the
+    // credential owner. An authenticator that omits it leaves the
+    // credential-to-user binding unverified, so the login is refused even
+    // though the credential id resolves.
     let h = Harness::fresh();
     let user = make_user(&h, "fallback@example.com").await;
     let mut wa = authenticator();
@@ -203,12 +207,25 @@ async fn authentication_without_user_handle_falls_back_to_credential_id() {
     let (auth_id, options) = h.passkey.start_authentication().await.expect("start auth");
     let assertion = wa.do_authentication_without_user_handle(options, &credential.credential_id);
 
-    let issued = h
+    let err = h
         .passkey
         .finish_authentication(auth_id, &assertion, SessionContext::default())
         .await
-        .expect("finish via credential id fallback");
-    assert_eq!(issued.session.user_id, user.id);
+        .expect_err("missing user handle must be rejected");
+    assert!(matches!(err, Error::PasskeyOwnershipMismatch));
+    assert_eq!(h.sessions.len(), 0, "no session minted");
+
+    let events = kinds(&h.audit.events());
+    assert!(
+        events.iter().any(|k| matches!(
+            k,
+            AuditEventKind::AuthenticationFailed {
+                user_id: Some(uid),
+                reason: AuthFailureReason::UserHandleMismatch,
+            } if *uid == user.id
+        )),
+        "missing handle audited as a user-handle mismatch"
+    );
 }
 
 #[tokio::test]
@@ -324,6 +341,180 @@ async fn finish_authentication_rejects_mismatched_user_handle() {
         .await
         .expect_err("ownership mismatch");
     assert!(matches!(err, Error::PasskeyOwnershipMismatch));
+    assert_eq!(h.sessions.len(), 0, "no session minted on mismatch");
+
+    let events = kinds(&h.audit.events());
+    assert!(
+        events.iter().any(|k| matches!(
+            k,
+            AuditEventKind::AuthenticationFailed {
+                user_id: Some(uid),
+                reason: AuthFailureReason::UserHandleMismatch,
+            } if *uid == alice.id
+        )),
+        "mismatch audited against the credential owner"
+    );
+}
+
+#[tokio::test]
+async fn finish_authentication_rejects_counter_regression_and_audits_it() {
+    // A non-advancing signature counter is webauthn-rs's clone/rollback
+    // signal. We simulate a credential whose recorded counter is already
+    // ahead of what the authenticator will next assert by bumping the stored
+    // blob's counter; the next assertion then presents a lower value.
+    let h = Harness::fresh();
+    let user = make_user(&h, "cloned@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+
+    let mut stored = h
+        .credentials
+        .find_passkey_by_credential_id(&cred.credential_id)
+        .await
+        .expect("find credential")
+        .expect("credential persisted");
+    let mut blob: serde_json::Value =
+        serde_json::from_slice(&stored.passkey).expect("blob is json");
+    blob["cred"]["counter"] = serde_json::json!(1_000_000u32);
+    stored.passkey = serde_json::to_vec(&blob).expect("reserialise blob");
+    h.credentials
+        .update_passkey(stored)
+        .await
+        .expect("persist bumped counter");
+
+    let (auth_id, rcr) = h.passkey.start_authentication().await.expect("start auth");
+    let assertion = wa.do_authentication(rcr, &cred.credential_id);
+
+    let err = h
+        .passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect_err("counter regression must be rejected");
+    assert!(matches!(err, Error::PasskeyPossibleCompromise));
+    assert_eq!(h.sessions.len(), 0, "no session minted on regression");
+
+    let events = kinds(&h.audit.events());
+    assert!(
+        events.iter().any(|k| matches!(
+            k,
+            AuditEventKind::AuthenticationFailed {
+                user_id: Some(uid),
+                reason: AuthFailureReason::CounterRegression,
+            } if *uid == user.id
+        )),
+        "counter regression emits a security audit event"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. })),
+        "no login-succeeded event on regression"
+    );
+}
+
+#[tokio::test]
+async fn finish_authentication_audits_unknown_credential_failure() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "gone@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+
+    let (auth_id, rcr) = h.passkey.start_authentication().await.expect("start auth");
+    let assertion = wa.do_authentication(rcr, &cred.credential_id);
+    h.credentials
+        .delete_passkey(&cred.credential_id)
+        .await
+        .expect("delete credential");
+
+    let err = h
+        .passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect_err("missing credential");
+    assert!(matches!(err, Error::PasskeyNotFound));
+
+    let events = kinds(&h.audit.events());
+    assert!(events.iter().any(|k| matches!(
+        k,
+        AuditEventKind::AuthenticationFailed {
+            user_id: None,
+            reason: AuthFailureReason::UnknownCredential,
+        }
+    )));
+}
+
+#[tokio::test]
+async fn finish_authentication_audits_expired_challenge_failure() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "stale@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+
+    let (auth_id, rcr) = h.passkey.start_authentication().await.expect("start auth");
+    let assertion = wa.do_authentication(rcr, &cred.credential_id);
+    h.clock.advance(ChronoDuration::seconds(301));
+
+    let err = h
+        .passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect_err("expired challenge");
+    assert!(matches!(err, Error::InvalidPasskeyChallenge));
+
+    let events = kinds(&h.audit.events());
+    assert!(events.iter().any(|k| matches!(
+        k,
+        AuditEventKind::AuthenticationFailed {
+            user_id: None,
+            reason: AuthFailureReason::ExpiredChallenge,
+        }
+    )));
+}
+
+#[tokio::test]
+async fn finish_authentication_audits_unknown_challenge_failure() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "noghost@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+
+    let (auth_id, rcr) = h.passkey.start_authentication().await.expect("start auth");
+    let assertion = wa.do_authentication(rcr, &cred.credential_id);
+    // Consume the challenge once, then replay against the now-empty store.
+    h.passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect("first finish");
+    let audit_before = h.audit.events().len();
+
+    let (auth_id2, rcr2) = h
+        .passkey
+        .start_authentication()
+        .await
+        .expect("start auth 2");
+    let assertion2 = wa.do_authentication(rcr2, &cred.credential_id);
+    // Drop the second challenge out from under the finish call.
+    h.challenges
+        .take_authentication(auth_id2)
+        .await
+        .expect("take challenge")
+        .expect("challenge present");
+
+    let err = h
+        .passkey
+        .finish_authentication(auth_id2, &assertion2, SessionContext::default())
+        .await
+        .expect_err("unknown challenge");
+    assert!(matches!(err, Error::InvalidPasskeyChallenge));
+
+    let events = kinds(&h.audit.events()[audit_before..]);
+    assert!(events.iter().any(|k| matches!(
+        k,
+        AuditEventKind::AuthenticationFailed {
+            user_id: None,
+            reason: AuthFailureReason::InvalidChallenge,
+        }
+    )));
 }
 
 #[tokio::test]

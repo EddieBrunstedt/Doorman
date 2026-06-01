@@ -47,6 +47,11 @@ pub enum Error {
     #[error("passkey credential does not belong to the expected user")]
     PasskeyOwnershipMismatch,
 
+    #[error(
+        "passkey authentication rejected: signature counter regressed, indicating a possible cloned authenticator"
+    )]
+    PasskeyPossibleCompromise,
+
     #[error("webauthn ceremony failed: {0}")]
     Webauthn(String),
 

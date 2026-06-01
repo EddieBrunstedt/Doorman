@@ -19,11 +19,11 @@ use uuid::Uuid;
 use webauthn_rs::prelude::{
     CreationChallengeResponse, CredentialID, DiscoverableAuthentication, DiscoverableKey, Passkey,
     PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
-    RequestChallengeResponse, Webauthn, WebauthnBuilder,
+    RequestChallengeResponse, Webauthn, WebauthnBuilder, WebauthnError,
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
 
-use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
+use crate::audit::{AuditEvent, AuditEventKind, AuditSink, AuthFailureReason};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
@@ -374,6 +374,29 @@ impl PasskeyManager {
         }
     }
 
+    /// Emit an [`AuthenticationFailed`](AuditEventKind::AuthenticationFailed)
+    /// audit event for a failed login attempt. Centralised so every
+    /// `finish_authentication` rejection path records the same shape; the
+    /// caller supplies the resolved `user_id` (or `None` when the failure
+    /// happened before a credential was identified) and the
+    /// [`AuthFailureReason`].
+    async fn emit_auth_failure(
+        &self,
+        now: DateTime<Utc>,
+        context: &SessionContext,
+        user_id: Option<UserId>,
+        reason: AuthFailureReason,
+    ) {
+        self.audit
+            .emit(AuditEvent {
+                timestamp: now,
+                ip: context.ip.clone(),
+                user_agent: context.user_agent.clone(),
+                kind: AuditEventKind::AuthenticationFailed { user_id, reason },
+            })
+            .await;
+    }
+
     /// Begin a discoverable passkey authentication ceremony. Returns the
     /// [`RequestChallengeResponse`] for `navigator.credentials.get` and a
     /// [`PasskeyChallengeId`] the client must echo back. No user input is
@@ -416,10 +439,14 @@ impl PasskeyManager {
     ) -> Result<IssuedSession> {
         let now = self.clock.now();
         let Some(stored) = self.challenges.take_authentication(challenge_id).await? else {
+            self.emit_auth_failure(now, &context, None, AuthFailureReason::InvalidChallenge)
+                .await;
             tracing::warn!(outcome = "invalid_challenge", "passkey login failed");
             return Err(Error::InvalidPasskeyChallenge);
         };
         if stored.expires_at <= now {
+            self.emit_auth_failure(now, &context, None, AuthFailureReason::ExpiredChallenge)
+                .await;
             tracing::warn!(outcome = "expired_challenge", "passkey login failed");
             return Err(Error::InvalidPasskeyChallenge);
         }
@@ -430,27 +457,73 @@ impl PasskeyManager {
             .find_passkey_by_credential_id(cred_id_bytes)
             .await?
         else {
+            self.emit_auth_failure(now, &context, None, AuthFailureReason::UnknownCredential)
+                .await;
             tracing::warn!(outcome = "credential_not_found", "passkey login failed");
             return Err(Error::PasskeyNotFound);
         };
 
-        if let Some(asserted_user) = user_id_from_handle(response)?
-            && asserted_user != credential.user_id
-        {
-            tracing::warn!(outcome = "ownership_mismatch", "passkey login failed");
-            return Err(Error::PasskeyOwnershipMismatch);
+        let user_id = credential.user_id;
+
+        // Discoverable-credential auth must assert a user handle that maps to
+        // the credential's stored owner. A missing or malformed handle, or one
+        // that names a different user, means the credential-to-user binding
+        // cannot be confirmed — reject rather than mint a session for the owner
+        // the credential lookup happened to return.
+        match user_id_from_handle(response) {
+            Ok(Some(asserted_user)) if asserted_user == user_id => {}
+            _ => {
+                self.emit_auth_failure(
+                    now,
+                    &context,
+                    Some(user_id),
+                    AuthFailureReason::UserHandleMismatch,
+                )
+                .await;
+                tracing::warn!(outcome = "user_handle_unverified", "passkey login failed");
+                return Err(Error::PasskeyOwnershipMismatch);
+            }
         }
-        tracing::Span::current().record("user_id", tracing::field::display(credential.user_id));
+        tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
         let mut passkey = decode_credential(&credential.passkey)?;
         let discoverable = [DiscoverableKey::from(&passkey)];
         let auth_state = decode_authentication_state(&stored.state)?;
-        let auth_result = self
-            .webauthn
-            .finish_discoverable_authentication(response, auth_state, &discoverable)
-            .map_err(|e| Error::Webauthn(e.to_string()))?;
+        let auth_result = match self.webauthn.finish_discoverable_authentication(
+            response,
+            auth_state,
+            &discoverable,
+        ) {
+            Ok(result) => result,
+            // `webauthn-rs` enforces the signature-counter regression check
+            // inside the credential blob and flags a non-advancing counter as a
+            // possible cloned authenticator. Surface it as a distinct security
+            // event and reject the login. Authenticators that always report 0
+            // never trip this — the check is skipped when both counters are 0.
+            Err(WebauthnError::CredentialPossibleCompromise) => {
+                self.emit_auth_failure(
+                    now,
+                    &context,
+                    Some(user_id),
+                    AuthFailureReason::CounterRegression,
+                )
+                .await;
+                tracing::warn!(outcome = "counter_regression", "passkey login failed");
+                return Err(Error::PasskeyPossibleCompromise);
+            }
+            Err(e) => {
+                self.emit_auth_failure(
+                    now,
+                    &context,
+                    Some(user_id),
+                    AuthFailureReason::BadAssertion,
+                )
+                .await;
+                tracing::warn!(outcome = "bad_assertion", "passkey login failed");
+                return Err(Error::Webauthn(e.to_string()));
+            }
+        };
 
-        let user_id = credential.user_id;
         let active_recovery_cooldown_until = credential.active_recovery_cooldown_until(now);
 
         // Counter / backup-state updates are advisory per webauthn-rs;
