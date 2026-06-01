@@ -1,3 +1,4 @@
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +31,7 @@ fn fresh_manager() -> (
         audit.clone() as Arc<dyn AuditSink>,
         SessionConfig {
             lifetime: Duration::from_secs(60 * 60),
+            ..SessionConfig::default()
         },
     );
     (manager, sessions, audit)
@@ -189,6 +191,86 @@ async fn revoke_deletes_session_and_emits_audit() {
 }
 
 #[tokio::test]
+async fn session_cap_evicts_oldest_active_session_for_that_user() {
+    // Cap of two: a third login evicts the user's oldest session so the new
+    // one always succeeds, per-user growth is bounded, and another user is
+    // untouched.
+    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
+    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
+    let clock = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let manager = SessionManager::new(
+        sessions.clone() as Arc<dyn SessionStore>,
+        clock.clone() as Arc<dyn Clock>,
+        audit.clone() as Arc<dyn AuditSink>,
+        SessionConfig {
+            lifetime: Duration::from_secs(60 * 60),
+            max_sessions_per_user: NonZeroU32::new(2),
+        },
+    );
+
+    let alice = UserId::new();
+    let bob = UserId::new();
+
+    let first = manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice 1");
+    clock.advance(ChronoDuration::seconds(1));
+    let bob_session = manager
+        .create(bob, SessionContext::default())
+        .await
+        .expect("bob");
+    clock.advance(ChronoDuration::seconds(1));
+    let second = manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice 2");
+    clock.advance(ChronoDuration::seconds(1));
+    let third = manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("alice 3 evicts oldest");
+
+    // Alice keeps exactly her two newest sessions; the oldest was evicted.
+    let mut alice_ids: Vec<SessionId> = manager
+        .list_for_user(alice)
+        .await
+        .expect("list alice")
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    alice_ids.sort_by_key(|id| id.0);
+    let mut expected = vec![second.session.id, third.session.id];
+    expected.sort_by_key(|id| id.0);
+    assert_eq!(alice_ids, expected, "cap keeps the two newest sessions");
+
+    // The evicted session's token no longer validates.
+    let err = manager
+        .validate(&first.token)
+        .await
+        .expect_err("evicted session is gone");
+    assert!(matches!(err, Error::SessionNotFound));
+
+    // The eviction recorded a revocation audit event.
+    assert!(
+        audit.events().iter().any(
+            |e| matches!(e.kind, AuditEventKind::SessionRevoked { session_id, .. }
+                if session_id == first.session.id)
+        ),
+        "evicting a capped-out session emits SessionRevoked",
+    );
+
+    // Bob's session is untouched — the cap is per user.
+    assert!(
+        sessions
+            .find_session_by_id(bob_session.session.id)
+            .await
+            .expect("find bob")
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn revoke_unknown_token_errors() {
     let (manager, _, _) = fresh_manager();
     let err = manager
@@ -219,6 +301,7 @@ async fn expired_session_fails_validation_and_logs() {
         audit.clone() as Arc<dyn AuditSink>,
         SessionConfig {
             lifetime: Duration::from_secs(60),
+            ..SessionConfig::default()
         },
     );
 
@@ -304,6 +387,7 @@ async fn list_for_user_returns_only_active_sessions_for_that_user() {
         audit.clone() as Arc<dyn AuditSink>,
         SessionConfig {
             lifetime: Duration::from_secs(60),
+            ..SessionConfig::default()
         },
     );
 
@@ -438,6 +522,7 @@ async fn revoke_others_for_user_sends_notice_in_core() {
         audit as Arc<dyn AuditSink>,
         SessionConfig {
             lifetime: Duration::from_secs(60 * 60),
+            ..SessionConfig::default()
         },
     )
     .with_security_notifier(notifier);
@@ -478,6 +563,7 @@ async fn revoke_owned_session_notifies_only_for_other_sessions() {
         audit as Arc<dyn AuditSink>,
         SessionConfig {
             lifetime: Duration::from_secs(60 * 60),
+            ..SessionConfig::default()
         },
     )
     .with_security_notifier(notifier);
@@ -553,6 +639,7 @@ async fn purge_expired_deletes_only_expired() {
         audit.clone() as Arc<dyn AuditSink>,
         SessionConfig {
             lifetime: Duration::from_secs(60),
+            ..SessionConfig::default()
         },
     );
 

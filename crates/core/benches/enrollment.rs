@@ -57,6 +57,7 @@ fn signup_manager() -> SignupManager {
         audit.clone(),
         SessionConfig {
             lifetime: Duration::from_secs(60 * 60),
+            ..SessionConfig::default()
         },
     );
 

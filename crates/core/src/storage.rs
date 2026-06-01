@@ -366,6 +366,15 @@ pub trait PasskeyChallengeStore: Send + Sync {
     /// credential outside the post-recovery cool-down.
     async fn delete_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64>;
 
+    /// Count the outstanding registration challenges for `user_id`. Backs the
+    /// per-user "outstanding challenges" cap enforced by
+    /// [`PasskeyManager::start_registration`](crate::passkey::PasskeyManager::start_registration):
+    /// a count at or above the cap rejects a fresh ceremony so an attacker with
+    /// a foothold cannot grow the table without bound. Implementations MAY
+    /// include challenges that have technically expired (the cap is a coarse
+    /// resource bound, not an exact live count).
+    async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64>;
+
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()>;
 
     /// Atomically look up and remove an authentication challenge.

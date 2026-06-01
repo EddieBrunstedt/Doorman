@@ -149,12 +149,14 @@ impl SignupManager {
             &[
                 (
                     self.config.rate_limits.request_per_ip,
-                    "signup/request/ip",
+                    "signup/request",
+                    "ip",
                     context.ip.as_deref(),
                 ),
                 (
                     self.config.rate_limits.request_per_identifier,
-                    "signup/request/email",
+                    "signup/request",
+                    "email",
                     Some(email_normalized.as_str()),
                 ),
             ],

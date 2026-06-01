@@ -4,6 +4,7 @@
 //! hashes, validates incoming tokens, and revokes sessions immediately via
 //! the configured [`SessionStore`].
 
+use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -35,12 +36,20 @@ pub const DEFAULT_SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     pub lifetime: Duration,
+    /// Cap on concurrent active sessions per user. When issuing a session
+    /// would exceed it, the user's oldest active session(s) are revoked first
+    /// (evict-oldest) so the new login always succeeds and per-user growth is
+    /// bounded. `None` (the default) disables the cap; a host concerned about
+    /// unbounded per-user session rows sets a value such as 100. Enforcing it
+    /// costs one `list_for_user` read per login, hence opt-in.
+    pub max_sessions_per_user: Option<NonZeroU32>,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             lifetime: DEFAULT_SESSION_LIFETIME,
+            max_sessions_per_user: None,
         }
     }
 }
@@ -192,6 +201,10 @@ impl SessionManager {
         context: SessionContext,
         cooldown_until: Option<DateTime<Utc>>,
     ) -> Result<IssuedSession> {
+        if let Some(max) = self.config.max_sessions_per_user {
+            self.enforce_session_cap(user_id, max.get()).await?;
+        }
+
         let (token, token_hash) = generate_token();
         let now = self.clock.now();
         let expires_at = now
@@ -225,6 +238,28 @@ impl SessionManager {
 
         tracing::info!(session_id = %session.id, outcome = "created", "session created");
         Ok(IssuedSession { session, token })
+    }
+
+    /// Evict the user's oldest active sessions so that issuing one more keeps
+    /// the active count at or below `max`. Revoking goes through
+    /// [`revoke_session`](Self::revoke_session) so each eviction notifies the
+    /// invalidation hook (cache eviction) and records a `SessionRevoked`
+    /// audit event like any other revocation.
+    async fn enforce_session_cap(&self, user_id: UserId, max: u32) -> Result<()> {
+        let mut active = self.list_for_user(user_id).await?;
+        // Room must remain for the session about to be created, so we need
+        // strictly fewer than `max` active sessions before issuing.
+        let max = max as usize;
+        if active.len() < max {
+            return Ok(());
+        }
+        let evict = active.len() + 1 - max;
+        // Oldest first, so the longest-idle sessions are the ones dropped.
+        active.sort_by_key(|s| s.created_at);
+        for session in active.into_iter().take(evict) {
+            self.revoke_session(session).await?;
+        }
+        Ok(())
     }
 
     pub async fn validate(&self, token: &str) -> Result<Session> {

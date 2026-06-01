@@ -80,6 +80,7 @@ async fn build_scaffold() -> Scaffold {
         audit.clone(),
         SessionConfig {
             lifetime: Duration::from_secs(60 * 60),
+            ..SessionConfig::default()
         },
     );
 
@@ -167,7 +168,7 @@ fn passkey_auth(c: &mut Criterion) {
             async move {
                 let (auth_id, rcr) = scaffold
                     .manager
-                    .start_authentication()
+                    .start_authentication(SessionContext::default())
                     .await
                     .expect("start authentication");
 

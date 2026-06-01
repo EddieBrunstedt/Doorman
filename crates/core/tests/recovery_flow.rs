@@ -643,7 +643,11 @@ async fn recovery_created_passkey_login_inherits_active_cooldown() {
         .await
         .expect("finish");
 
-    let (auth_id, options) = h.passkey.start_authentication().await.expect("start auth");
+    let (auth_id, options) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
     let assertion = wa.do_authentication(options, &outcome.passkey.credential_id);
     let issued = h
         .passkey
@@ -701,7 +705,11 @@ async fn pre_existing_passkey_login_stays_unrestricted_during_recovery_cooldown(
             .is_in_recovery_cooldown(h.clock.now())
     );
 
-    let (auth_id, options) = h.passkey.start_authentication().await.expect("start auth");
+    let (auth_id, options) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
     let assertion = existing_wa.do_authentication(options, &existing.credential_id);
     let issued = h
         .passkey
@@ -757,7 +765,11 @@ async fn recovery_created_passkey_login_after_cooldown_is_unrestricted() {
     h.clock
         .advance(ChronoDuration::hours(24) + ChronoDuration::seconds(1));
 
-    let (auth_id, options) = h.passkey.start_authentication().await.expect("start auth");
+    let (auth_id, options) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
     let assertion = wa.do_authentication(options, &outcome.passkey.credential_id);
     let issued = h
         .passkey

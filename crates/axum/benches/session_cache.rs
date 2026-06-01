@@ -55,6 +55,7 @@ async fn build_scaffold() -> Scaffold {
         audit,
         SessionConfig {
             lifetime: Duration::from_secs(60 * 60),
+            ..SessionConfig::default()
         },
     );
 

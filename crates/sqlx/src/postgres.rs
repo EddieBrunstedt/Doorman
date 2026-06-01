@@ -590,6 +590,16 @@ impl PasskeyChallengeStore for PgPasskeyChallengeStore {
         Ok(res.rows_affected())
     }
 
+    async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM passkey_registrations WHERE user_id = $1")
+                .bind(uuid_to_bytes(user_id.0))
+                .fetch_one(&self.pool)
+                .await
+                .map_err(storage)?;
+        Ok(count.max(0) as u64)
+    }
+
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
         sqlx::query(
             "INSERT INTO passkey_authentications (id, state, created_at, expires_at)

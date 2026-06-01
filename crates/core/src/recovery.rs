@@ -218,23 +218,27 @@ impl RecoveryManager {
             &[
                 (
                     rate_limits.request_per_ip,
-                    "recovery/request/ip",
+                    "recovery/request",
+                    "ip",
                     context.ip.as_deref(),
                 ),
                 (
                     rate_limits.request_per_identifier,
-                    "recovery/request/email",
+                    "recovery/request",
+                    "email",
                     Some(email_normalized.as_str()),
                 ),
                 (
                     rate_limits.request_per_identifier_daily,
-                    "recovery/request/email/daily",
+                    "recovery/request",
+                    "email_daily",
                     Some(email_normalized.as_str()),
                 ),
                 (
                     rate_limits.request_global,
-                    "recovery/request/global",
-                    Some("global"),
+                    "recovery/request",
+                    "global",
+                    Some("all"),
                 ),
             ],
             || async {

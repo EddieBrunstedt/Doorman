@@ -27,7 +27,7 @@ use crate::context::CoreDeps;
 use crate::email::{Email, EmailSender};
 use crate::error::{Error, Result};
 use crate::passkey::PasskeyManager;
-use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
+use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::session::{IssuedSession, SessionContext};
 use crate::storage::{
     PasskeyChallengeId, StoredPasskey, User, UserId, UserStore, VerificationPurpose,
@@ -79,19 +79,23 @@ pub(crate) fn build_url(template: &str, token: &str) -> String {
     template.replace(TOKEN_PLACEHOLDER, token)
 }
 
-/// Enforce one rate-limit policy for a `prefix:scope` key. A `None` policy
-/// or `None` scope is a no-op (the policy is disabled or there is no value
-/// to key on).
+/// Enforce one rate-limit policy for an `operation` scoped to a single
+/// `(dimension, value)` axis. A `None` policy or a `None` value is a no-op
+/// (the policy is disabled or there is no value to key on — e.g. an absent
+/// client IP). The structured [`RateLimitKey`] names the dimension rather
+/// than concatenating it into the operation string, so a backend can layer
+/// independent counters per axis.
 pub(crate) async fn enforce_rate_limit(
     rate_limiter: &dyn RateLimiter,
     policy: Option<RateLimitPolicy>,
-    prefix: &str,
-    scope: Option<&str>,
+    operation: &'static str,
+    dimension: &'static str,
+    value: Option<&str>,
 ) -> Result<()> {
-    let (Some(policy), Some(scope)) = (policy, scope) else {
+    let (Some(policy), Some(value)) = (policy, value) else {
         return Ok(());
     };
-    let key = format!("{prefix}:{scope}");
+    let key = RateLimitKey::new(operation).with(dimension, value);
     match rate_limiter.check(&key, policy).await? {
         RateLimitDecision::Allowed => Ok(()),
         RateLimitDecision::Limited { retry_after } => Err(Error::RateLimited { retry_after }),
@@ -99,21 +103,28 @@ pub(crate) async fn enforce_rate_limit(
 }
 
 /// Enforce a list of rate-limit policies in order, short-circuiting on the
-/// first rejection. Each entry is `(policy, prefix, scope)` with the same
-/// semantics as [`enforce_rate_limit`]. `on_reject` runs once, just before
-/// the rejecting error is returned — recovery uses it to emit a
+/// first rejection. Each entry is `(policy, operation, dimension, value)`
+/// with the same semantics as [`enforce_rate_limit`]. `on_reject` runs once,
+/// just before the rejecting error is returned — recovery uses it to emit a
 /// `RateLimited` audit event; signup passes a no-op.
 pub(crate) async fn enforce_all<F, Fut>(
     rate_limiter: &dyn RateLimiter,
-    policies: &[(Option<RateLimitPolicy>, &str, Option<&str>)],
+    policies: &[(
+        Option<RateLimitPolicy>,
+        &'static str,
+        &'static str,
+        Option<&str>,
+    )],
     on_reject: F,
 ) -> Result<()>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    for &(policy, prefix, scope) in policies {
-        if let Err(err) = enforce_rate_limit(rate_limiter, policy, prefix, scope).await {
+    for &(policy, operation, dimension, value) in policies {
+        if let Err(err) =
+            enforce_rate_limit(rate_limiter, policy, operation, dimension, value).await
+        {
             on_reject().await;
             return Err(err);
         }

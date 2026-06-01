@@ -19,7 +19,9 @@ pub use crate::email::{
 };
 pub use crate::error::{Error, Result, StorageError, StorageResult};
 pub use crate::passkey::{PasskeyConfig, PasskeyManager};
-pub use crate::rate_limit::{NoopRateLimiter, RateLimitDecision, RateLimitPolicy, RateLimiter};
+pub use crate::rate_limit::{
+    NoopRateLimiter, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter,
+};
 pub use crate::recovery::{MIN_COOLDOWN, RecoveryConfig, RecoveryManager, RecoveryRateLimits};
 pub use crate::session::{
     IssuedSession, SessionConfig, SessionContext, SessionInvalidationHook, SessionManager,

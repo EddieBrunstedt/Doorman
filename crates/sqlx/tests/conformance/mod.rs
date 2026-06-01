@@ -616,6 +616,26 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
     let _target_b = put(target).await;
     let bystander_challenge = put(bystander).await;
 
+    // The per-user count backs the pending-registration cap and must scope to
+    // the user it is asked about.
+    assert_eq!(
+        storage
+            .passkey_challenges
+            .count_registrations_for_user(target)
+            .await
+            .expect("count target"),
+        2,
+        "target has two pending registrations",
+    );
+    assert_eq!(
+        storage
+            .passkey_challenges
+            .count_registrations_for_user(bystander)
+            .await
+            .expect("count bystander"),
+        1,
+    );
+
     let dropped = storage
         .passkey_challenges
         .delete_registrations_for_user(target)
@@ -626,7 +646,26 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
         "both of the target's pending challenges removed"
     );
 
+    assert_eq!(
+        storage
+            .passkey_challenges
+            .count_registrations_for_user(target)
+            .await
+            .expect("count target after delete"),
+        0,
+        "count drops to zero after the user's challenges are deleted",
+    );
+
     // The bystander's challenge survives.
+    assert_eq!(
+        storage
+            .passkey_challenges
+            .count_registrations_for_user(bystander)
+            .await
+            .expect("count bystander after delete"),
+        1,
+        "another user's pending registration must be untouched",
+    );
     assert!(
         storage
             .passkey_challenges

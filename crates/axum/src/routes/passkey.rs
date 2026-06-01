@@ -66,8 +66,9 @@ async fn register_finish(
 
 async fn authenticate_start(
     State(state): State<BauthState>,
+    RequestContext(context): RequestContext,
 ) -> Result<Json<PasskeyChallenge<RequestChallengeResponse>>, ErrorResponse> {
-    let (id, options) = manager(&state).start_authentication().await?;
+    let (id, options) = manager(&state).start_authentication(context).await?;
     Ok(Json(PasskeyChallenge {
         challenge_id: id.0.to_string(),
         options,

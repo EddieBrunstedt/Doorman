@@ -65,6 +65,15 @@ pub enum Error {
         "the action is blocked because the session is within the post-recovery cool-down window"
     )]
     RecoveryCooldownActive,
+
+    #[error("per-user limit for {resource} reached ({limit})")]
+    ResourceLimitExceeded {
+        /// Which capped resource was exhausted (e.g. `"credentials"`,
+        /// `"pending registrations"`).
+        resource: &'static str,
+        /// The configured cap that was hit.
+        limit: u32,
+    },
 }
 
 /// Opaque storage-backend failure.

@@ -10,9 +10,12 @@
 //! Account linking falls out of the design for free: register a passkey
 //! against any existing user id and that user now has a passkey credential.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use url::Url;
 use uuid::Uuid;
@@ -28,11 +31,64 @@ use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
+use crate::rate_limit::{RateLimitPolicy, RateLimiter};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary,
     StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, UserStore,
 };
+use crate::verification::enforce_rate_limit;
+
+/// Rate-limit policies for the passkey authentication ceremony endpoints.
+///
+/// These throttle the discoverable-login `start` / `finish` calls so a
+/// single source (or a single targeted credential) cannot hammer the
+/// ceremony. They are enforced against the same [`RateLimiter`] the signup /
+/// recovery request endpoints use. A `None` policy disables that axis; a
+/// `None` IP on
+/// the request (no client address available) skips the per-IP axes. The
+/// per-credential axis always applies on finish, since the credential id is
+/// carried in the assertion.
+///
+/// Registration ceremonies are gated by an authenticated session and a
+/// per-user pending-challenge cap
+/// ([`PasskeyConfig::max_pending_registrations_per_user`]) rather than by
+/// these limits.
+#[derive(Debug, Clone, Copy)]
+pub struct PasskeyRateLimits {
+    /// Per source IP on `start_authentication`. Default 60 / minute.
+    pub authenticate_start_per_ip: Option<RateLimitPolicy>,
+    /// Per source IP on `finish_authentication`. Default 60 / minute.
+    pub authenticate_finish_per_ip: Option<RateLimitPolicy>,
+    /// Per asserted credential id on `finish_authentication`. Default
+    /// 30 / minute. Bounds repeated assertions against one credential
+    /// independent of source IP.
+    pub authenticate_finish_per_credential: Option<RateLimitPolicy>,
+}
+
+impl PasskeyRateLimits {
+    /// Turn off every passkey-ceremony policy.
+    pub const fn disabled() -> Self {
+        Self {
+            authenticate_start_per_ip: None,
+            authenticate_finish_per_ip: None,
+            authenticate_finish_per_credential: None,
+        }
+    }
+}
+
+impl Default for PasskeyRateLimits {
+    fn default() -> Self {
+        Self {
+            authenticate_start_per_ip: Some(RateLimitPolicy::new(60, Duration::from_secs(60))),
+            authenticate_finish_per_ip: Some(RateLimitPolicy::new(60, Duration::from_secs(60))),
+            authenticate_finish_per_credential: Some(RateLimitPolicy::new(
+                30,
+                Duration::from_secs(60),
+            )),
+        }
+    }
+}
 
 /// WebAuthn relying-party configuration for passkey flows.
 #[derive(Clone)]
@@ -48,6 +104,20 @@ pub struct PasskeyConfig {
     /// How long an unfinished ceremony stays valid. Defaults to 5 minutes,
     /// matching the W3C recommended authenticator timeout.
     pub challenge_lifetime: Duration,
+    /// Rate-limit policies for the authentication ceremony endpoints.
+    /// Defaults to [`PasskeyRateLimits::default`].
+    pub rate_limits: PasskeyRateLimits,
+    /// Cap on registered credentials per user. When set, a registration that
+    /// would exceed it is rejected with [`Error::ResourceLimitExceeded`]
+    /// rather than silently evicting an existing passkey (losing a credential
+    /// must be a deliberate user action). `None` (the default) is unbounded.
+    pub max_credentials_per_user: Option<NonZeroU32>,
+    /// Cap on outstanding (unfinished) registration ceremonies per user. When
+    /// set, starting another beyond the cap is rejected with
+    /// [`Error::ResourceLimitExceeded`], bounding how much challenge state an
+    /// authenticated foothold can accumulate. `None` (the default) is
+    /// unbounded.
+    pub max_pending_registrations_per_user: Option<NonZeroU32>,
 }
 
 impl std::fmt::Debug for PasskeyConfig {
@@ -57,6 +127,12 @@ impl std::fmt::Debug for PasskeyConfig {
             .field("rp_origin", &self.rp_origin)
             .field("rp_name", &self.rp_name)
             .field("challenge_lifetime", &self.challenge_lifetime)
+            .field("rate_limits", &self.rate_limits)
+            .field("max_credentials_per_user", &self.max_credentials_per_user)
+            .field(
+                "max_pending_registrations_per_user",
+                &self.max_pending_registrations_per_user,
+            )
             .finish()
     }
 }
@@ -68,6 +144,9 @@ impl PasskeyConfig {
             rp_origin,
             rp_name: rp_name.into(),
             challenge_lifetime: Duration::from_secs(300),
+            rate_limits: PasskeyRateLimits::default(),
+            max_credentials_per_user: None,
+            max_pending_registrations_per_user: None,
         }
     }
 
@@ -100,6 +179,7 @@ pub struct PasskeyManager {
     clock: Arc<dyn Clock>,
     audit: Arc<dyn AuditSink>,
     notifier: SecurityEmailNotifier,
+    rate_limiter: Arc<dyn RateLimiter>,
     webauthn: Arc<Webauthn>,
     config: PasskeyConfig,
 }
@@ -130,6 +210,7 @@ impl PasskeyManager {
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             notifier: deps.notifier.clone(),
+            rate_limiter: deps.rate_limiter.clone(),
             webauthn: Arc::new(webauthn),
             config,
         })
@@ -200,6 +281,23 @@ impl PasskeyManager {
             .find_user_by_id(user_id)
             .await?
             .ok_or(Error::UserNotFound)?;
+
+        // Bound how much challenge state one user can accumulate: an
+        // authenticated foothold could otherwise call `start` repeatedly and
+        // grow the registration table without ever finishing a ceremony.
+        if let Some(max) = self.config.max_pending_registrations_per_user {
+            let pending = self
+                .challenges
+                .count_registrations_for_user(user_id)
+                .await?;
+            if pending >= u64::from(max.get()) {
+                tracing::warn!(%user_id, max = max.get(), "passkey registration rejected: too many pending challenges");
+                return Err(Error::ResourceLimitExceeded {
+                    resource: "pending registrations",
+                    limit: max.get(),
+                });
+            }
+        }
 
         let (user_name, user_display_name) = display_names_for(&user);
 
@@ -304,6 +402,25 @@ impl PasskeyManager {
         let challenge_recovery_cooldown_until = stored.recovery_cooldown_until;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
+        // Reject (never evict) once the per-user credential cap is reached:
+        // silently dropping an existing passkey would remove an authenticator
+        // the user still relies on. The summary projection avoids deserialising
+        // any credential blob just to count.
+        if let Some(max) = self.config.max_credentials_per_user {
+            let count = self
+                .credentials
+                .list_passkey_summaries_for_user(user_id)
+                .await?
+                .len();
+            if count >= max.get() as usize {
+                tracing::warn!(%user_id, max = max.get(), "passkey registration rejected: credential cap reached");
+                return Err(Error::ResourceLimitExceeded {
+                    resource: "credentials",
+                    limit: max.get(),
+                });
+            }
+        }
+
         let reg_state = decode_registration_state(&stored.state)?;
         let passkey = self
             .webauthn
@@ -402,10 +519,24 @@ impl PasskeyManager {
     /// [`PasskeyChallengeId`] the client must echo back. No user input is
     /// accepted, so every caller receives the same challenge shape and the
     /// user is identified only at finish-time from the authenticator response.
-    #[tracing::instrument(skip(self), fields(method = "passkey"))]
+    ///
+    /// The request `context`'s IP, when present, is charged against the
+    /// per-IP start policy ([`PasskeyRateLimits::authenticate_start_per_ip`])
+    /// before any challenge state is minted.
+    #[tracing::instrument(skip(self, context), fields(method = "passkey"))]
     pub async fn start_authentication(
         &self,
+        context: SessionContext,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
+        enforce_rate_limit(
+            self.rate_limiter.as_ref(),
+            self.config.rate_limits.authenticate_start_per_ip,
+            "passkey/authenticate/start",
+            "ip",
+            context.ip.as_deref(),
+        )
+        .await?;
+
         let (rcr, auth_state) = self
             .webauthn
             .start_discoverable_authentication()
@@ -437,6 +568,29 @@ impl PasskeyManager {
         response: &PublicKeyCredential,
         context: SessionContext,
     ) -> Result<IssuedSession> {
+        // Throttle before consuming the single-use challenge, keyed both by
+        // source IP and by the asserted credential id, so a flood cannot burn
+        // challenges or pound one credential. The credential id is the raw
+        // assertion id (present before we resolve the credential), encoded for
+        // a stable, log-safe dimension value.
+        let credential_dim = URL_SAFE_NO_PAD.encode(response.raw_id.as_ref());
+        enforce_rate_limit(
+            self.rate_limiter.as_ref(),
+            self.config.rate_limits.authenticate_finish_per_ip,
+            "passkey/authenticate/finish",
+            "ip",
+            context.ip.as_deref(),
+        )
+        .await?;
+        enforce_rate_limit(
+            self.rate_limiter.as_ref(),
+            self.config.rate_limits.authenticate_finish_per_credential,
+            "passkey/authenticate/finish",
+            "credential",
+            Some(credential_dim.as_str()),
+        )
+        .await?;
+
         let now = self.clock.now();
         let Some(stored) = self.challenges.take_authentication(challenge_id).await? else {
             self.emit_auth_failure(now, &context, None, AuthFailureReason::InvalidChallenge)

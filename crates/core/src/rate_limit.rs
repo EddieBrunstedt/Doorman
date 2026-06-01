@@ -10,11 +10,84 @@
 //! configured budget is exhausted.
 
 use std::any::Any;
+use std::borrow::Cow;
+use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
 use crate::error::StorageResult;
+
+/// A structured, multi-dimensional rate-limit key.
+///
+/// Replaces the opaque `&str` the trait used to take, so layered limits —
+/// per-IP, per-account, per-credential — name their dimensions rather than
+/// smuggling them into a flat string a backend cannot decompose. The
+/// `operation` names the limited action (e.g.
+/// `"passkey/authenticate/finish"`); each appended dimension is a
+/// `(name, value)` pair such as `("ip", "1.2.3.4")` or
+/// `("credential", "<id>")`.
+///
+/// A backend that keys on a single string (the bundled
+/// [`InMemoryRateLimiter`](crate::memory::InMemoryRateLimiter)) calls
+/// [`canonical`](Self::canonical); a smarter backend (per-dimension Redis
+/// counters, a sharded store) can read [`operation`](Self::operation) and
+/// [`dimensions`](Self::dimensions) directly.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RateLimitKey {
+    operation: Cow<'static, str>,
+    dimensions: Vec<(Cow<'static, str>, String)>,
+}
+
+impl RateLimitKey {
+    /// Start a key for `operation`. Add the axes the limit is scoped to with
+    /// [`with`](Self::with).
+    pub fn new(operation: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            operation: operation.into(),
+            dimensions: Vec::new(),
+        }
+    }
+
+    /// Append a `(name, value)` dimension, consuming and returning `self` so
+    /// calls chain: `RateLimitKey::new("op").with("ip", ip).with("account", id)`.
+    pub fn with(mut self, name: impl Into<Cow<'static, str>>, value: impl Into<String>) -> Self {
+        self.dimensions.push((name.into(), value.into()));
+        self
+    }
+
+    /// The limited action this key scopes.
+    pub fn operation(&self) -> &str {
+        &self.operation
+    }
+
+    /// The ordered `(name, value)` dimensions the limit is keyed on.
+    pub fn dimensions(&self) -> &[(Cow<'static, str>, String)] {
+        &self.dimensions
+    }
+
+    /// Stable single-string rendering for backends that key on one string:
+    /// the operation followed by each `|name=value` in order. Two keys render
+    /// equal iff they share the same operation and the same ordered
+    /// dimensions, so distinct axes never collide into one bucket.
+    pub fn canonical(&self) -> String {
+        let mut out = String::with_capacity(self.operation.len() + self.dimensions.len() * 16);
+        out.push_str(&self.operation);
+        for (name, value) in &self.dimensions {
+            out.push('|');
+            out.push_str(name);
+            out.push('=');
+            out.push_str(value);
+        }
+        out
+    }
+}
+
+impl fmt::Display for RateLimitKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.canonical())
+    }
+}
 
 /// What a [`RateLimiter::check`] call decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +136,15 @@ pub trait RateLimiter: Send + Sync + Any {
     /// be violated. A limiter that errors here is treated as a storage
     /// failure by the calling manager; transient errors should be
     /// retried internally rather than bubbled up.
-    async fn check(&self, key: &str, policy: RateLimitPolicy) -> StorageResult<RateLimitDecision>;
+    ///
+    /// The [`RateLimitKey`] is structured (operation + named dimensions); a
+    /// single-string backend flattens it with
+    /// [`RateLimitKey::canonical`].
+    async fn check(
+        &self,
+        key: &RateLimitKey,
+        policy: RateLimitPolicy,
+    ) -> StorageResult<RateLimitDecision>;
 }
 
 /// A limiter that never rejects. Useful as a default when rate limiting
@@ -75,7 +156,7 @@ pub struct NoopRateLimiter;
 impl RateLimiter for NoopRateLimiter {
     async fn check(
         &self,
-        _key: &str,
+        _key: &RateLimitKey,
         _policy: RateLimitPolicy,
     ) -> StorageResult<RateLimitDecision> {
         Ok(RateLimitDecision::Allowed)
@@ -95,13 +176,34 @@ mod tests {
     }
 
     #[test]
+    fn key_canonical_renders_operation_and_dimensions_in_order() {
+        let key = RateLimitKey::new("passkey/authenticate/finish")
+            .with("ip", "1.2.3.4")
+            .with("credential", "abc");
+        assert_eq!(
+            key.canonical(),
+            "passkey/authenticate/finish|ip=1.2.3.4|credential=abc"
+        );
+        assert_eq!(key.operation(), "passkey/authenticate/finish");
+        assert_eq!(key.dimensions().len(), 2);
+    }
+
+    #[test]
+    fn distinct_dimensions_do_not_collide() {
+        let ip = RateLimitKey::new("op").with("ip", "v");
+        let account = RateLimitKey::new("op").with("account", "v");
+        assert_ne!(ip.canonical(), account.canonical());
+        assert_ne!(ip, account);
+    }
+
+    #[test]
     fn custom_limiter_does_not_masquerade_as_noop() {
         struct MyLimiter;
         #[async_trait]
         impl RateLimiter for MyLimiter {
             async fn check(
                 &self,
-                _key: &str,
+                _key: &RateLimitKey,
                 _policy: RateLimitPolicy,
             ) -> StorageResult<RateLimitDecision> {
                 Ok(RateLimitDecision::Allowed)

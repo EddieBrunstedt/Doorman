@@ -144,10 +144,17 @@ impl Harness {
 pub struct HarnessBuilder {
     signup: SignupConfig,
     recovery: RecoveryConfig,
-    session_lifetime: Duration,
-    /// Rate limiter for the signup manager. Kept separate from the
-    /// recovery limiter so a recovery rate-limit test can provision users
-    /// through signup without spending the budget it is measuring.
+    session_config: SessionConfig,
+    /// Passkey config the [`PasskeyManager`] is built with. Defaults to the
+    /// fixed test relying party; cap / rate-limit tests override it. The
+    /// passkey manager reads the limiter from the signup [`CoreDeps`], so a
+    /// passkey-ceremony rate-limit test pairs an override here with
+    /// [`signup_limiter`](Self::signup_limiter).
+    passkey: PasskeyConfig,
+    /// Rate limiter for the signup manager (and, via the shared `CoreDeps`,
+    /// the passkey manager). Kept separate from the recovery limiter so a
+    /// recovery rate-limit test can provision users through signup without
+    /// spending the budget it is measuring.
     signup_limiter: Arc<dyn RateLimiter>,
     recovery_limiter: Arc<dyn RateLimiter>,
 }
@@ -157,7 +164,11 @@ impl HarnessBuilder {
         Self {
             signup: signup_config(),
             recovery: recovery_config(),
-            session_lifetime: Duration::from_secs(60 * 60),
+            session_config: SessionConfig {
+                lifetime: Duration::from_secs(60 * 60),
+                ..SessionConfig::default()
+            },
+            passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
             signup_limiter: Arc::new(NoopRateLimiter),
             recovery_limiter: Arc::new(NoopRateLimiter),
         }
@@ -183,6 +194,16 @@ impl HarnessBuilder {
         self
     }
 
+    pub fn session_config(mut self, config: SessionConfig) -> Self {
+        self.session_config = config;
+        self
+    }
+
+    pub fn passkey_config(mut self, config: PasskeyConfig) -> Self {
+        self.passkey = config;
+        self
+    }
+
     pub fn build(self) -> Harness {
         let users: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
         let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
@@ -204,9 +225,7 @@ impl HarnessBuilder {
             sessions.clone() as Arc<dyn SessionStore>,
             clock.clone() as Arc<dyn Clock>,
             audit.clone() as Arc<dyn AuditSink>,
-            SessionConfig {
-                lifetime: self.session_lifetime,
-            },
+            self.session_config,
         )
         .with_security_notifier(notifier.clone());
 
@@ -237,11 +256,8 @@ impl HarnessBuilder {
             ..signup_deps.clone()
         };
 
-        let passkey = PasskeyManager::new(
-            &signup_deps,
-            PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
-        )
-        .expect("build passkey manager");
+        let passkey =
+            PasskeyManager::new(&signup_deps, self.passkey).expect("build passkey manager");
         let signup_flow = EnrollmentFlow::new(&signup_deps, passkey.clone());
         let recovery_flow = EnrollmentFlow::new(&recovery_deps, passkey.clone());
         let signup = SignupManager::new(signup_flow, self.signup);

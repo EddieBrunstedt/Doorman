@@ -650,6 +650,7 @@ fn zero_session_lifetime_is_rejected() {
         .recovery(real_recovery())
         .session(SessionConfig {
             lifetime: Duration::ZERO,
+            ..SessionConfig::default()
         })
         .silence_warnings()
         .build()
@@ -701,6 +702,7 @@ fn cookie_max_age_exceeding_session_lifetime_is_rejected() {
         .recovery(real_recovery())
         .session(SessionConfig {
             lifetime: Duration::from_secs(60 * 60),
+            ..SessionConfig::default()
         })
         .cookie(CookieConfig {
             session_max_age: Duration::from_secs(60 * 60 * 2),

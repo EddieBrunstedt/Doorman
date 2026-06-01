@@ -1,16 +1,35 @@
 mod common;
 
+use std::num::NonZeroU32;
+use std::sync::Arc;
+use std::time::Duration;
+
 use bauth_core::audit::{AuditEventKind, AuthFailureReason};
 use bauth_core::clock::Clock;
 use bauth_core::error::Error;
+use bauth_core::memory::InMemoryRateLimiter;
+use bauth_core::passkey::{PasskeyConfig, PasskeyRateLimits};
+use bauth_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use bauth_core::session::SessionContext;
 use bauth_core::storage::{PasskeyChallengeStore, PasskeyCredentialStore, UserId};
+use bauth_test_support::MockClock;
 use chrono::Duration as ChronoDuration;
 
 use common::{
-    Harness, assert_discoverable_request_options, assert_resident_registration_options,
-    authenticator, kinds, make_user, register_passkey,
+    Harness, RP_ID, RP_NAME, assert_discoverable_request_options,
+    assert_resident_registration_options, authenticator, kinds, make_user, register_passkey,
+    rp_origin, ts,
 };
+
+/// A [`PasskeyConfig`] matching the harness relying party but with the
+/// authentication-ceremony rate limits off, so a cap / rate-limit test only
+/// exercises the one knob it sets.
+fn base_passkey_config() -> PasskeyConfig {
+    PasskeyConfig {
+        rate_limits: PasskeyRateLimits::disabled(),
+        ..PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
+    }
+}
 
 #[tokio::test]
 async fn register_then_discoverable_authenticate_round_trip() {
@@ -31,7 +50,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
 
     let (auth_challenge, rcr) = h
         .passkey
-        .start_authentication()
+        .start_authentication(SessionContext::default())
         .await
         .expect("start_authentication");
     assert_discoverable_request_options(&rcr);
@@ -173,7 +192,11 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
     let alice_credential = register_passkey(&h, alice.id, &mut wa, Some("alice device")).await;
     let bob_credential = register_passkey(&h, bob.id, &mut wa, Some("bob device")).await;
 
-    let (bob_challenge, bob_options) = h.passkey.start_authentication().await.expect("start bob");
+    let (bob_challenge, bob_options) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start bob");
     let bob_assertion = wa.do_authentication(bob_options, &bob_credential.credential_id);
     let bob_issued = h
         .passkey
@@ -182,8 +205,11 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
         .expect("finish bob");
     assert_eq!(bob_issued.session.user_id, bob.id);
 
-    let (alice_challenge, alice_options) =
-        h.passkey.start_authentication().await.expect("start alice");
+    let (alice_challenge, alice_options) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start alice");
     let alice_assertion = wa.do_authentication(alice_options, &alice_credential.credential_id);
     let alice_issued = h
         .passkey
@@ -204,7 +230,11 @@ async fn authentication_without_user_handle_is_rejected() {
     let mut wa = authenticator();
     let credential = register_passkey(&h, user.id, &mut wa, None).await;
 
-    let (auth_id, options) = h.passkey.start_authentication().await.expect("start auth");
+    let (auth_id, options) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
     let assertion = wa.do_authentication_without_user_handle(options, &credential.credential_id);
 
     let err = h
@@ -307,7 +337,11 @@ async fn finish_authentication_rejects_unknown_credential() {
     let mut wa = authenticator();
     let cred = register_passkey(&h, user.id, &mut wa, None).await;
 
-    let (auth_id, rcr) = h.passkey.start_authentication().await.expect("start auth");
+    let (auth_id, rcr) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
     let assertion = wa.do_authentication(rcr, &cred.credential_id);
 
     h.credentials
@@ -331,7 +365,11 @@ async fn finish_authentication_rejects_mismatched_user_handle() {
     let mut wa = authenticator();
     let alice_credential = register_passkey(&h, alice.id, &mut wa, None).await;
 
-    let (auth_id, rcr) = h.passkey.start_authentication().await.expect("start auth");
+    let (auth_id, rcr) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
     let mut assertion = wa.do_authentication(rcr, &alice_credential.credential_id);
     assertion.response.user_handle = Some(bob.id.0.as_bytes().as_slice().into());
 
@@ -382,7 +420,11 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
         .await
         .expect("persist bumped counter");
 
-    let (auth_id, rcr) = h.passkey.start_authentication().await.expect("start auth");
+    let (auth_id, rcr) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
     let assertion = wa.do_authentication(rcr, &cred.credential_id);
 
     let err = h
@@ -419,7 +461,11 @@ async fn finish_authentication_audits_unknown_credential_failure() {
     let mut wa = authenticator();
     let cred = register_passkey(&h, user.id, &mut wa, None).await;
 
-    let (auth_id, rcr) = h.passkey.start_authentication().await.expect("start auth");
+    let (auth_id, rcr) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
     let assertion = wa.do_authentication(rcr, &cred.credential_id);
     h.credentials
         .delete_passkey(&cred.credential_id)
@@ -450,7 +496,11 @@ async fn finish_authentication_audits_expired_challenge_failure() {
     let mut wa = authenticator();
     let cred = register_passkey(&h, user.id, &mut wa, None).await;
 
-    let (auth_id, rcr) = h.passkey.start_authentication().await.expect("start auth");
+    let (auth_id, rcr) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
     let assertion = wa.do_authentication(rcr, &cred.credential_id);
     h.clock.advance(ChronoDuration::seconds(301));
 
@@ -478,7 +528,11 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
     let mut wa = authenticator();
     let cred = register_passkey(&h, user.id, &mut wa, None).await;
 
-    let (auth_id, rcr) = h.passkey.start_authentication().await.expect("start auth");
+    let (auth_id, rcr) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
     let assertion = wa.do_authentication(rcr, &cred.credential_id);
     // Consume the challenge once, then replay against the now-empty store.
     h.passkey
@@ -489,7 +543,7 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
 
     let (auth_id2, rcr2) = h
         .passkey
-        .start_authentication()
+        .start_authentication(SessionContext::default())
         .await
         .expect("start auth 2");
     let assertion2 = wa.do_authentication(rcr2, &cred.credential_id);
@@ -522,7 +576,7 @@ async fn start_authentication_is_usernameless_and_does_not_look_up_email() {
     let h = Harness::fresh();
     let (_id, rcr) = h
         .passkey
-        .start_authentication()
+        .start_authentication(SessionContext::default())
         .await
         .expect("should succeed without an email");
     assert_discoverable_request_options(&rcr);
@@ -535,7 +589,11 @@ async fn finish_authentication_rejects_expired_challenge() {
     let mut wa = authenticator();
     let cred = register_passkey(&h, user.id, &mut wa, None).await;
 
-    let (auth_id, rcr) = h.passkey.start_authentication().await.expect("start auth");
+    let (auth_id, rcr) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
     let assertion = wa.do_authentication(rcr, &cred.credential_id);
     h.clock.advance(ChronoDuration::seconds(301));
 
@@ -657,7 +715,7 @@ async fn challenge_store_purges_expired_entries() {
         .await
         .expect("start registration");
     h.passkey
-        .start_authentication()
+        .start_authentication(SessionContext::default())
         .await
         .expect("start authentication");
     assert_eq!(h.challenges.len(), 2);
@@ -670,4 +728,182 @@ async fn challenge_store_purges_expired_entries() {
         .expect("purge expired");
     assert_eq!(removed, 2);
     assert!(h.challenges.is_empty());
+}
+
+#[tokio::test]
+async fn registration_is_rejected_once_credential_cap_is_reached() {
+    // Cap of one credential: the first registration succeeds, the second is
+    // rejected rather than silently dropping the existing passkey.
+    let h = Harness::builder()
+        .passkey_config(PasskeyConfig {
+            max_credentials_per_user: NonZeroU32::new(1),
+            ..base_passkey_config()
+        })
+        .build();
+    let user = make_user(&h, "cap@example.com").await;
+    let mut wa = authenticator();
+
+    register_passkey(&h, user.id, &mut wa, Some("first")).await;
+    assert_eq!(h.credentials.len(), 1);
+
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration(user.id)
+        .await
+        .expect("second start allowed");
+    let response = wa.do_registration(ccr);
+    let err = h
+        .passkey
+        .finish_registration(
+            challenge_id,
+            &response,
+            Some("second".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("credential cap rejects the second registration");
+    assert!(matches!(
+        err,
+        Error::ResourceLimitExceeded {
+            resource: "credentials",
+            limit: 1
+        }
+    ));
+    assert_eq!(h.credentials.len(), 1, "no credential was stored");
+}
+
+#[tokio::test]
+async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() {
+    // Cap of two outstanding registration ceremonies: a foothold cannot grow
+    // the challenge table without bound by repeatedly calling start.
+    let h = Harness::builder()
+        .passkey_config(PasskeyConfig {
+            max_pending_registrations_per_user: NonZeroU32::new(2),
+            ..base_passkey_config()
+        })
+        .build();
+    let user = make_user(&h, "pending@example.com").await;
+
+    h.passkey
+        .start_registration(user.id)
+        .await
+        .expect("first pending allowed");
+    h.passkey
+        .start_registration(user.id)
+        .await
+        .expect("second pending allowed");
+    let err = h
+        .passkey
+        .start_registration(user.id)
+        .await
+        .expect_err("third start rejected at the cap");
+    assert!(matches!(
+        err,
+        Error::ResourceLimitExceeded {
+            resource: "pending registrations",
+            limit: 2
+        }
+    ));
+    assert_eq!(h.challenges.len(), 2, "no extra challenge was minted");
+
+    // The cap is per user: a different user is unaffected.
+    let other = make_user(&h, "pending-other@example.com").await;
+    h.passkey
+        .start_registration(other.id)
+        .await
+        .expect("a different user has its own budget");
+}
+
+#[tokio::test]
+async fn authenticate_start_is_rate_limited_per_ip() {
+    let limiter = Arc::new(InMemoryRateLimiter::new(
+        Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
+    )) as Arc<dyn RateLimiter>;
+    let h = Harness::builder()
+        .signup_limiter(limiter)
+        .passkey_config(PasskeyConfig {
+            rate_limits: PasskeyRateLimits {
+                authenticate_start_per_ip: Some(RateLimitPolicy::new(
+                    1,
+                    Duration::from_secs(60 * 60),
+                )),
+                ..PasskeyRateLimits::disabled()
+            },
+            ..PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
+        })
+        .build();
+
+    let from = |ip: &str| SessionContext {
+        ip: Some(ip.to_string()),
+        user_agent: None,
+    };
+
+    h.passkey
+        .start_authentication(from("1.2.3.4"))
+        .await
+        .expect("first attempt within budget");
+    let err = h
+        .passkey
+        .start_authentication(from("1.2.3.4"))
+        .await
+        .expect_err("second attempt from same ip is limited");
+    assert!(matches!(err, Error::RateLimited { .. }));
+
+    // A different source IP has its own budget.
+    h.passkey
+        .start_authentication(from("5.6.7.8"))
+        .await
+        .expect("different ip is unaffected");
+}
+
+#[tokio::test]
+async fn authenticate_finish_is_rate_limited_per_credential() {
+    // The per-credential finish limit applies even without a client IP: a
+    // flood pounding one credential is throttled by the credential dimension.
+    let limiter = Arc::new(InMemoryRateLimiter::new(
+        Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
+    )) as Arc<dyn RateLimiter>;
+    let h = Harness::builder()
+        .signup_limiter(limiter)
+        .passkey_config(PasskeyConfig {
+            rate_limits: PasskeyRateLimits {
+                authenticate_finish_per_credential: Some(RateLimitPolicy::new(
+                    1,
+                    Duration::from_secs(60 * 60),
+                )),
+                ..PasskeyRateLimits::disabled()
+            },
+            ..PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
+        })
+        .build();
+    let user = make_user(&h, "finish-rl@example.com").await;
+    let mut wa = authenticator();
+    let credential = register_passkey(&h, user.id, &mut wa, Some("device")).await;
+
+    // First full ceremony: the finish charges the credential once and succeeds.
+    let (id, rcr) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start one");
+    let assertion = wa.do_authentication(rcr, &credential.credential_id);
+    h.passkey
+        .finish_authentication(id, &assertion, SessionContext::default())
+        .await
+        .expect("first finish within budget");
+
+    // Second ceremony: the per-credential budget is now exhausted, so the
+    // finish is rejected before the single-use challenge is even consumed.
+    let (id2, rcr2) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start two");
+    let assertion2 = wa.do_authentication(rcr2, &credential.credential_id);
+    let err = h
+        .passkey
+        .finish_authentication(id2, &assertion2, SessionContext::default())
+        .await
+        .expect_err("second finish for the same credential is limited");
+    assert!(matches!(err, Error::RateLimited { .. }));
 }

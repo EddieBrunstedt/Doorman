@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 
 use crate::clock::Clock;
 use crate::error::{StorageError, StorageResult};
-use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
+use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,
     SessionId, SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication,
@@ -502,6 +502,15 @@ impl PasskeyChallengeStore for InMemoryPasskeyChallengeStore {
         Ok((before - state.registrations.len()) as u64)
     }
 
+    async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        Ok(self
+            .lock()
+            .registrations
+            .values()
+            .filter(|v| v.user_id == user_id)
+            .count() as u64)
+    }
+
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
         let mut state = self.lock();
         if state.authentications.contains_key(&value.id) {
@@ -567,13 +576,17 @@ impl InMemoryRateLimiter {
 
 #[async_trait]
 impl RateLimiter for InMemoryRateLimiter {
-    async fn check(&self, key: &str, policy: RateLimitPolicy) -> StorageResult<RateLimitDecision> {
+    async fn check(
+        &self,
+        key: &RateLimitKey,
+        policy: RateLimitPolicy,
+    ) -> StorageResult<RateLimitDecision> {
         let now = self.clock.now();
         let window = chrono::Duration::from_std(policy.window)
             .map_err(|_| StorageError::msg("rate limit window overflows chrono::Duration"))?;
         let cutoff = now - window;
         let bucket = BucketKey {
-            key: key.to_owned(),
+            key: key.canonical(),
             window_ms: policy.window.as_millis(),
         };
 
