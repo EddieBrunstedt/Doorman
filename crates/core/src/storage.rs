@@ -237,6 +237,26 @@ pub struct StoredPasskey {
     pub recovery_cooldown_until: Option<DateTime<Utc>>,
 }
 
+impl StoredPasskey {
+    /// Return the active recovery cool-down deadline, if any. Mirrors
+    /// [`Session::active_recovery_cooldown_until`] so the "still live?"
+    /// predicate has one shape per type: the comparison is `now < cool-down`,
+    /// and a credential whose cool-down has already elapsed is treated as
+    /// unrestricted and returns `None`.
+    pub fn active_recovery_cooldown_until(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.recovery_cooldown_until
+            .as_ref()
+            .filter(|until| now < **until)
+            .cloned()
+    }
+
+    /// Returns `true` if the credential still carries an active recovery
+    /// cool-down. Mirrors [`Session::is_in_recovery_cooldown`].
+    pub fn is_in_recovery_cooldown(&self, now: DateTime<Utc>) -> bool {
+        self.active_recovery_cooldown_until(now).is_some()
+    }
+}
+
 /// Metadata-only view of a registered passkey.
 ///
 /// Carries every field a management UI needs to list a user's credentials
@@ -338,6 +358,13 @@ pub trait PasskeyChallengeStore: Send + Sync {
         &self,
         id: PasskeyChallengeId,
     ) -> StorageResult<Option<StoredPasskeyRegistration>>;
+
+    /// Delete every outstanding registration challenge for `user_id`,
+    /// returning the number removed. Recovery completion calls this to
+    /// invalidate any registration ceremony that began *before* the recovery,
+    /// so a pre-recovery challenge cannot be finished afterwards to attach a
+    /// credential outside the post-recovery cool-down.
+    async fn delete_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64>;
 
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()>;
 

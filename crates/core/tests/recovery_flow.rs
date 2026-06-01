@@ -776,6 +776,128 @@ async fn recovery_cooldown_expires_after_window() {
     );
 }
 
+#[tokio::test]
+async fn pre_recovery_registration_challenge_cannot_finish_after_recovery() {
+    // A registration ceremony begun before recovery completes is minted
+    // without the cool-down stamp. Finishing it after recovery would attach a
+    // credential outside the cool-down — the bypass this test guards against.
+    let h = Harness::fresh();
+    let user = make_user(&h, "alice@example.com").await;
+
+    // Pre-recovery: start (but do not finish) a registration ceremony.
+    let (pre_challenge_id, pre_ccr) = h
+        .passkey
+        .start_registration(user.id)
+        .await
+        .expect("start pre-recovery registration");
+    let mut pre_wa = authenticator();
+    let pre_attestation = pre_wa.do_registration(pre_ccr);
+
+    // Drive the recovery flow to completion on a separate authenticator.
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+    let consume = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect("consume");
+    let mut recovery_wa = authenticator();
+    let attestation = recovery_wa.do_registration(consume.options);
+    let outcome = h
+        .recovery
+        .finish_recovery(
+            consume.challenge_id,
+            &attestation,
+            Some("recovery device".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish");
+    assert!(
+        outcome
+            .session
+            .session
+            .is_in_recovery_cooldown(h.clock.now())
+    );
+
+    // The pre-recovery challenge must have been invalidated by recovery
+    // completion, so finishing it now fails rather than attaching an
+    // unrestricted credential.
+    let err = h
+        .passkey
+        .finish_registration(
+            pre_challenge_id,
+            &pre_attestation,
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("pre-recovery challenge must be invalidated");
+    assert!(matches!(err, Error::InvalidPasskeyChallenge));
+
+    // Only the recovery-created credential exists; the pre-recovery one never
+    // landed.
+    let creds = h
+        .credentials
+        .list_passkeys_for_user(user.id)
+        .await
+        .expect("list");
+    assert_eq!(creds.len(), 1);
+    assert_eq!(
+        creds[0].recovery_cooldown_until,
+        outcome.passkey.recovery_cooldown_until
+    );
+}
+
+#[tokio::test]
+async fn signup_does_not_invalidate_other_pending_registrations() {
+    // The bypass closure is recovery-specific: a signup finish must not sweep
+    // a user's other in-flight registration ceremonies.
+    let h = Harness::fresh();
+    let user = provision_user(&h, "alice@example.com").await;
+
+    // Start a second registration ceremony for the same user and leave it
+    // pending.
+    let (pending_id, pending_ccr) = h
+        .passkey
+        .start_registration(user.id)
+        .await
+        .expect("start pending registration");
+    let mut wa = authenticator();
+    let pending_attestation = wa.do_registration(pending_ccr);
+
+    // Run another full signup for the same address. It silently no-ops on the
+    // known email, but exercising a signup finish is what matters: provision a
+    // fresh user and finish a signup so the shared `finish` path runs with
+    // `FlowKind::Signup`.
+    let other = provision_user(&h, "bob@example.com").await;
+    assert_ne!(other.id, user.id);
+
+    // alice's pending challenge is still finishable — signup did not sweep it.
+    let stored = h
+        .passkey
+        .finish_registration(
+            pending_id,
+            &pending_attestation,
+            Some("second device".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("pending registration still valid");
+    assert_eq!(stored.user_id, user.id);
+    assert_eq!(stored.recovery_cooldown_until, None);
+}
+
 #[test]
 fn recovery_config_with_subhour_cooldown_is_rejected() {
     let h = Harness::fresh();

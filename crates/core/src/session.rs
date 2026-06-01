@@ -145,6 +145,15 @@ impl SessionManager {
             .expect("invalidation hook lock poisoned") = hook;
     }
 
+    /// Borrow the clock this manager reads time through. Framework layers
+    /// that need to answer a clock-dependent question consistently with the
+    /// manager (e.g. the axum `AuthSession` recovery-cool-down helper) take
+    /// the clock from here rather than reading `chrono::Utc::now()` directly,
+    /// so a host that injected a custom or mock clock is honoured everywhere.
+    pub fn clock(&self) -> &Arc<dyn Clock> {
+        &self.clock
+    }
+
     /// Snapshot the currently installed invalidation observer. Cloned out so
     /// the lock guard is never held across an `.await`.
     fn invalidation_hook(&self) -> Arc<dyn SessionInvalidationHook> {

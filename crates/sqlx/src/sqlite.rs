@@ -585,6 +585,15 @@ impl PasskeyChallengeStore for SqlitePasskeyChallengeStore {
         }))
     }
 
+    async fn delete_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        let res = sqlx::query("DELETE FROM passkey_registrations WHERE user_id = ?")
+            .bind(uuid_to_bytes(user_id.0))
+            .execute(&self.pool)
+            .await
+            .map_err(storage)?;
+        Ok(res.rows_affected())
+    }
+
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
         sqlx::query(
             "INSERT INTO passkey_authentications (id, state, created_at, expires_at)

@@ -11,6 +11,7 @@ use axum::http::HeaderMap;
 use axum::http::header::USER_AGENT;
 use axum::http::request::Parts;
 use bauth_core::Error;
+use bauth_core::clock::Clock;
 use bauth_core::session::SessionContext;
 use bauth_core::storage::{Session, User};
 
@@ -61,20 +62,35 @@ impl<S: Send + Sync> FromRequestParts<S> for OptionalAuthUser {
 /// Like [`AuthUser`] but also yields the underlying [`Session`] and the
 /// raw bearer token. Useful for endpoints that need to revoke or rotate
 /// the *current* session (e.g. logout).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AuthSession {
     pub user: Arc<User>,
     pub session: Arc<Session>,
     pub token: String,
+    /// The clock the session layer resolved this request through; the
+    /// recovery-cool-down helper answers through it so a host's custom or
+    /// mock clock is honoured rather than reading wall-clock time directly.
+    clock: Arc<dyn Clock>,
+}
+
+impl std::fmt::Debug for AuthSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `Clock` is not `Debug`; omit it rather than require the bound.
+        f.debug_struct("AuthSession")
+            .field("user", &self.user)
+            .field("session", &self.session)
+            .field("token", &self.token)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AuthSession {
     /// `true` if the underlying session is still within the post-recovery
-    /// cool-down window relative to the current wall clock. Handlers gate
-    /// destructive actions on this and return
-    /// [`bauth_core::Error::RecoveryCooldownActive`] when it holds.
+    /// cool-down window, judged by the same clock the session layer resolved
+    /// the request through. Handlers gate destructive actions on this and
+    /// return [`bauth_core::Error::RecoveryCooldownActive`] when it holds.
     pub fn is_in_recovery_cooldown(&self) -> bool {
-        self.session.is_in_recovery_cooldown(chrono::Utc::now())
+        self.session.is_in_recovery_cooldown(self.clock.now())
     }
 }
 
@@ -87,6 +103,7 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthSession {
                 user: ctx.user.clone(),
                 session: ctx.session.clone(),
                 token: ctx.token.clone(),
+                clock: ctx.clock.clone(),
             }),
             None => Err(ErrorResponse(Error::SessionNotFound)),
         }
@@ -167,5 +184,51 @@ mod tests {
         let ctx = session_context_from_headers(&HeaderMap::new());
         assert!(ctx.ip.is_none());
         assert!(ctx.user_agent.is_none());
+    }
+
+    #[test]
+    fn auth_session_cooldown_answers_through_injected_clock() {
+        use bauth_core::storage::{Session, SessionId, UserId};
+        use bauth_core::token::hash_token;
+        use bauth_test_support::MockClock;
+        use chrono::{Duration, TimeZone, Utc};
+
+        let start = Utc
+            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+            .single()
+            .expect("valid timestamp");
+        let clock = Arc::new(MockClock::new(start));
+        let cooldown_until = start + Duration::hours(24);
+
+        let user = User {
+            id: UserId::new(),
+            email: Some("alice@example.com".into()),
+            email_verified_at: Some(start),
+            created_at: start,
+            updated_at: start,
+        };
+        let session = Session {
+            id: SessionId::new(),
+            user_id: user.id,
+            token_hash: hash_token("cooldown-token"),
+            created_at: start,
+            expires_at: start + Duration::days(30),
+            ip: None,
+            user_agent: None,
+            recovery_cooldown_until: Some(cooldown_until),
+        };
+        let auth = AuthSession {
+            user: Arc::new(user),
+            session: Arc::new(session),
+            token: "cooldown-token".into(),
+            clock: clock.clone(),
+        };
+
+        // Active while the mock clock is before the deadline...
+        assert!(auth.is_in_recovery_cooldown());
+        // ...and the helper tracks the injected clock, not wall time: advance
+        // past the deadline and it reports inactive.
+        clock.advance(Duration::hours(24) + Duration::seconds(1));
+        assert!(!auth.is_in_recovery_cooldown());
     }
 }

@@ -390,6 +390,11 @@ impl EnrollmentFlow {
         cooldown: Option<std::time::Duration>,
         notification: Option<&(dyn Fn(&User) -> Email + Send + Sync)>,
     ) -> Result<EnrollmentOutcome> {
+        // The deadline is bound explicitly to the recovery-completion instant
+        // (`now + cooldown`) and is the single value applied to both the new
+        // passkey and the new session, so the two never disagree and the
+        // deadline is never re-derived from a credential/session `created_at`
+        // later on.
         let cooldown_until = cooldown.map(|cooldown| {
             let cooldown = chrono::Duration::from_std(cooldown)
                 .expect("recovery cooldown overflows chrono::Duration; configure a smaller value");
@@ -432,6 +437,19 @@ impl EnrollmentFlow {
                     .await?
             }
         };
+
+        if kind == FlowKind::Recovery {
+            // Close the pre-recovery-challenge bypass: any registration
+            // ceremony begun before this recovery completed was minted without
+            // the cool-down stamp, so finishing it now would attach a
+            // credential outside the cool-down. Drop those pending challenges
+            // (the recovery's own challenge was already consumed by
+            // `finish_registration*` above, so this only sweeps the dangerous
+            // pre-recovery ones).
+            self.passkey
+                .invalidate_pending_registrations(user.id)
+                .await?;
+        }
 
         if let Some(render) = notification {
             // Best-effort — a notification-send failure is logged but does

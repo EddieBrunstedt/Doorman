@@ -48,6 +48,7 @@ pub async fn run(storage: &Storage) {
     sessions_purge_expired(storage).await;
     passkey_credentials_cooldown_round_trip(storage).await;
     passkey_registration_cooldown_round_trip(storage).await;
+    passkey_registration_delete_for_user(storage).await;
 }
 
 async fn users_round_trip(storage: &Storage) {
@@ -572,4 +573,75 @@ async fn passkey_registration_cooldown_round_trip(storage: &Storage) {
             .is_none(),
         "registration challenges are single-use",
     );
+}
+
+/// `delete_registrations_for_user` drops every pending registration for the
+/// target user and leaves other users' challenges untouched. Recovery
+/// completion relies on this to close the pre-recovery-challenge bypass.
+async fn passkey_registration_delete_for_user(storage: &Storage) {
+    let now = ts(2026, 1, 1);
+    let target = UserId::new();
+    let bystander = UserId::new();
+    storage
+        .users
+        .create_user(user(target, "delete-regs-target@example.com"))
+        .await
+        .expect("target user");
+    storage
+        .users
+        .create_user(user(bystander, "delete-regs-bystander@example.com"))
+        .await
+        .expect("bystander user");
+
+    let put = |user_id: UserId| {
+        let challenge_id = PasskeyChallengeId::new();
+        async move {
+            storage
+                .passkey_challenges
+                .put_registration(StoredPasskeyRegistration {
+                    id: challenge_id,
+                    user_id,
+                    state: b"opaque-state".to_vec(),
+                    created_at: now,
+                    expires_at: now + Duration::minutes(5),
+                    recovery_cooldown_until: None,
+                })
+                .await
+                .expect("put registration");
+            challenge_id
+        }
+    };
+
+    let _target_a = put(target).await;
+    let _target_b = put(target).await;
+    let bystander_challenge = put(bystander).await;
+
+    let dropped = storage
+        .passkey_challenges
+        .delete_registrations_for_user(target)
+        .await
+        .expect("delete registrations");
+    assert_eq!(
+        dropped, 2,
+        "both of the target's pending challenges removed"
+    );
+
+    // The bystander's challenge survives.
+    assert!(
+        storage
+            .passkey_challenges
+            .take_registration(bystander_challenge)
+            .await
+            .expect("take bystander")
+            .is_some(),
+        "another user's pending registration must be untouched",
+    );
+
+    // A second delete is a no-op.
+    let dropped_again = storage
+        .passkey_challenges
+        .delete_registrations_for_user(target)
+        .await
+        .expect("second delete");
+    assert_eq!(dropped_again, 0);
 }

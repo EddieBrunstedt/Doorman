@@ -495,6 +495,13 @@ impl PasskeyChallengeStore for InMemoryPasskeyChallengeStore {
         Ok(self.lock().registrations.remove(&id))
     }
 
+    async fn delete_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        let mut state = self.lock();
+        let before = state.registrations.len();
+        state.registrations.retain(|_, v| v.user_id != user_id);
+        Ok((before - state.registrations.len()) as u64)
+    }
+
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
         let mut state = self.lock();
         if state.authentications.contains_key(&value.id) {

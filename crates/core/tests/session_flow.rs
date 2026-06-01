@@ -10,7 +10,9 @@ use bauth_core::memory::{InMemorySessionStore, InMemoryUserStore};
 use bauth_core::session::{
     SessionConfig, SessionContext, SessionInvalidationHook, SessionManager, hash_token,
 };
-use bauth_core::storage::{Session, SessionId, SessionStore, User, UserId, UserStore};
+use bauth_core::storage::{
+    Session, SessionId, SessionStore, StoredPasskey, User, UserId, UserStore,
+};
 use bauth_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
 use std::sync::Mutex;
@@ -83,6 +85,45 @@ fn session_active_recovery_cooldown_until_filters_expired_deadlines() {
     let unrestricted = Session {
         recovery_cooldown_until: None,
         ..session
+    };
+    assert_eq!(unrestricted.active_recovery_cooldown_until(now), None);
+    assert!(!unrestricted.is_in_recovery_cooldown(now));
+}
+
+#[test]
+fn stored_passkey_cooldown_predicate_mirrors_session() {
+    // The credential-side predicate must agree with `Session`'s under the
+    // same clock: active before the deadline, inactive on/after it, and
+    // `None` when unset. One shape per type, one answer.
+    let now = ts(2026, 1, 1);
+    let active_until = now + ChronoDuration::hours(24);
+    let credential = StoredPasskey {
+        credential_id: vec![1, 2, 3],
+        user_id: UserId::new(),
+        passkey: b"opaque-blob".to_vec(),
+        name: None,
+        created_at: now,
+        last_used_at: None,
+        recovery_cooldown_until: Some(active_until),
+    };
+
+    assert_eq!(
+        credential.active_recovery_cooldown_until(now),
+        Some(active_until)
+    );
+    assert!(credential.is_in_recovery_cooldown(now));
+
+    // Exactly at the deadline the cool-down is over (comparison is `now <
+    // until`).
+    assert_eq!(
+        credential.active_recovery_cooldown_until(active_until),
+        None
+    );
+    assert!(!credential.is_in_recovery_cooldown(active_until));
+
+    let unrestricted = StoredPasskey {
+        recovery_cooldown_until: None,
+        ..credential
     };
     assert_eq!(unrestricted.active_recovery_cooldown_until(now), None);
     assert!(!unrestricted.is_in_recovery_cooldown(now));

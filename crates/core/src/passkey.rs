@@ -451,11 +451,7 @@ impl PasskeyManager {
             .map_err(|e| Error::Webauthn(e.to_string()))?;
 
         let user_id = credential.user_id;
-        let active_recovery_cooldown_until = credential
-            .recovery_cooldown_until
-            .as_ref()
-            .filter(|until| now < **until)
-            .cloned();
+        let active_recovery_cooldown_until = credential.active_recovery_cooldown_until(now);
 
         // Counter / backup-state updates are advisory per webauthn-rs;
         // last_used_at always advances, so we persist on every success. The
@@ -501,6 +497,26 @@ impl PasskeyManager {
             .credentials
             .list_passkey_summaries_for_user(user_id)
             .await?)
+    }
+
+    /// Invalidate every outstanding passkey registration challenge for
+    /// `user_id`, returning the number dropped.
+    ///
+    /// Recovery completion calls this so a registration ceremony begun before
+    /// the recovery cannot be finished afterwards: such a challenge was minted
+    /// without the post-recovery cool-down stamp, so finishing it post-recovery
+    /// would attach a credential outside the cool-down window. Dropping the
+    /// pending challenges forces a fresh ceremony, which — when started from the
+    /// restricted recovery session — inherits the active deadline.
+    pub(crate) async fn invalidate_pending_registrations(&self, user_id: UserId) -> Result<u64> {
+        let dropped = self
+            .challenges
+            .delete_registrations_for_user(user_id)
+            .await?;
+        if dropped > 0 {
+            tracing::info!(%user_id, dropped, "pending passkey registrations invalidated");
+        }
+        Ok(dropped)
     }
 
     /// Remove a passkey. The `user_id` argument is enforced server-side

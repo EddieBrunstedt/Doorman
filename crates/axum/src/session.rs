@@ -20,6 +20,7 @@ use std::task::{Context, Poll};
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, header};
 use axum::response::Response;
+use bauth_core::clock::Clock;
 use bauth_core::session::SessionManager;
 use bauth_core::storage::{Session, User, UserStore};
 use bauth_core::token::hash_token;
@@ -49,6 +50,11 @@ pub struct AuthContext {
     /// `logout` (and any other "revoke this session" path) can call
     /// [`SessionManager::revoke`] without re-deriving it.
     pub token: String,
+    /// The clock the session manager reads time through, threaded so the
+    /// [`AuthSession`](crate::extractors::AuthSession) recovery-cool-down
+    /// helper answers through the configured clock rather than reading
+    /// `chrono::Utc::now()` directly.
+    pub(crate) clock: Arc<dyn Clock>,
 }
 
 /// Internal shared state for [`SessionLayer`] services.
@@ -143,6 +149,7 @@ where
                             user: cached.user.clone(),
                             session: cached.session.clone(),
                             token,
+                            clock: state.session_manager.clock().clone(),
                         });
                     } else if let Ok(session) =
                         state.session_manager.validate_by_hash(&token_hash).await
@@ -161,6 +168,7 @@ where
                             user,
                             session,
                             token,
+                            clock: state.session_manager.clock().clone(),
                         });
                     }
                 }
