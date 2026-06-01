@@ -58,10 +58,14 @@ pub struct RecoveryConfig {
     /// non-`None` policy is enforced. Aggressive defaults are applied; see
     /// [`RecoveryRateLimits::default`].
     pub rate_limits: RecoveryRateLimits,
-    /// Renderer for the recovery emails. Defaults to
-    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails); hosts
-    /// override this for branded copy.
-    pub emails: Arc<dyn BauthEmails>,
+    /// Renderer for the recovery emails. `None` falls back to the renderer
+    /// the composition root threads in (see [`BauthBuilder::emails`]), and to
+    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails) if none was
+    /// set. Set `Some(..)` to brand this flow specifically, overriding the
+    /// shared renderer.
+    ///
+    /// [`BauthBuilder::emails`]: https://docs.rs/bauth-axum
+    pub emails: Option<Arc<dyn BauthEmails>>,
     /// Length of the post-recovery cool-down applied to the session and
     /// passkey created by `finish_recovery`. Sessions created from that
     /// passkey, or from passkeys added by a restricted session, stay
@@ -127,7 +131,7 @@ impl Default for RecoveryConfig {
             token_lifetime: Duration::from_secs(60 * 15),
             url_template: format!("https://example.invalid/recovery?token={TOKEN_PLACEHOLDER}"),
             rate_limits: RecoveryRateLimits::default(),
-            emails: default_emails(),
+            emails: None,
             cooldown: Duration::from_secs(60 * 60 * 24),
         }
     }
@@ -144,6 +148,9 @@ impl Default for RecoveryConfig {
 pub struct RecoveryManager {
     flow: EnrollmentFlow,
     config: RecoveryConfig,
+    /// Renderer resolved from [`RecoveryConfig::emails`], falling back to
+    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails) when unset.
+    emails: Arc<dyn BauthEmails>,
 }
 
 impl RecoveryManager {
@@ -161,15 +168,12 @@ impl RecoveryManager {
             config.cooldown,
             MIN_COOLDOWN,
         );
-        Self { flow, config }
-    }
-
-    /// Diagnostic accessor used by the axum builder's startup warnings
-    /// to detect dev-only email transports without exposing the
-    /// underlying `Arc<dyn EmailSender>`.
-    #[doc(hidden)]
-    pub fn email_kind(&self) -> crate::email::EmailSenderKind {
-        self.flow.email_kind()
+        let emails = config.emails.clone().unwrap_or_else(default_emails);
+        Self {
+            flow,
+            config,
+            emails,
+        }
     }
 
     /// Issue a recovery link to `email`. Returns `Ok(())` regardless of
@@ -255,12 +259,9 @@ impl RecoveryManager {
             now,
         )
         .await?;
-        let link_email = self.config.emails.recovery_email(&user, &url);
+        let link_email = self.emails.recovery_email(&user, &url);
         self.flow.email_sender().send(link_email).await?;
-        let notification = self
-            .config
-            .emails
-            .recovery_requested_notification_email(&user);
+        let notification = self.emails.recovery_requested_notification_email(&user);
         self.flow.email_sender().send(notification).await?;
 
         self.flow
@@ -310,11 +311,7 @@ impl RecoveryManager {
                 name,
                 context,
                 Some(self.config.cooldown),
-                Some(&|user| {
-                    self.config
-                        .emails
-                        .recovery_completed_notification_email(user)
-                }),
+                Some(&|user| self.emails.recovery_completed_notification_email(user)),
             )
             .await
     }

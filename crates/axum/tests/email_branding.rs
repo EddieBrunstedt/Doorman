@@ -1,0 +1,123 @@
+//! `BauthBuilder::emails` threads one renderer into every transactional
+//! email the app sends — the signup link, the recovery link, and the
+//! best-effort security notices — without the host having to brand each
+//! flow's config individually.
+
+mod common;
+
+use std::sync::Arc;
+
+use axum::Router;
+use bauth_core::email::{BauthEmails, Email};
+use bauth_core::storage::User;
+use common::TestApp;
+
+const SIGNUP_SUBJECT: &str = "Acme: finish signing up";
+const RECOVERY_SUBJECT: &str = "Acme: recover your account";
+const SESSION_REVOKED_SUBJECT: &str = "Acme: a session was signed out";
+
+/// One renderer that brands the three reachable surfaces with distinctive
+/// subjects so the test can tell branded copy from the stock default.
+struct AcmeEmails;
+
+impl BauthEmails for AcmeEmails {
+    fn signup_email(&self, user: &User, url: &str) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: SIGNUP_SUBJECT.to_string(),
+            body_text: format!("Open {url}"),
+            body_html: None,
+        }
+    }
+
+    fn recovery_email(&self, user: &User, url: &str) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: RECOVERY_SUBJECT.to_string(),
+            body_text: format!("Open {url}"),
+            body_html: None,
+        }
+    }
+
+    fn other_session_revoked_notification_email(&self, user: &User) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: SESSION_REVOKED_SUBJECT.to_string(),
+            body_text: "A session was signed out.".to_string(),
+            body_html: None,
+        }
+    }
+}
+
+#[tokio::test]
+async fn emails_brands_signup_recovery_and_security_notices() {
+    let app = TestApp::start_with(Router::new(), false, |b| b.emails(Arc::new(AcmeEmails))).await;
+    let client = reqwest::Client::new();
+
+    // Signup link uses the branded renderer.
+    let resp = client
+        .post(app.url("/auth/signup/request"))
+        .json(&serde_json::json!({ "email": "newcomer@example.com" }))
+        .send()
+        .await
+        .expect("signup request");
+    assert!(
+        resp.status().is_success(),
+        "signup request: {}",
+        resp.status()
+    );
+    let signup_mail = app
+        .email
+        .sent()
+        .into_iter()
+        .next_back()
+        .expect("signup email queued");
+    assert_eq!(signup_mail.subject, SIGNUP_SUBJECT);
+
+    // Provision a user with sessions, then drive the recovery + revocation
+    // surfaces, which both read the shared renderer too.
+    let caller = common::login(&client, &app, "member@example.com").await;
+    let other = common::login(&client, &app, "member@example.com").await;
+
+    // Recovery link uses the branded renderer.
+    let before = app.email.sent().len();
+    let resp = client
+        .post(app.url("/auth/recovery/request"))
+        .json(&serde_json::json!({ "email": "member@example.com" }))
+        .send()
+        .await
+        .expect("recovery request");
+    assert!(
+        resp.status().is_success(),
+        "recovery request: {}",
+        resp.status()
+    );
+    let recovery_mail = app.email.sent()[before..]
+        .iter()
+        .find(|m| m.subject == RECOVERY_SUBJECT)
+        .cloned();
+    assert!(
+        recovery_mail.is_some(),
+        "recovery email should use the branded subject"
+    );
+
+    // The session-revocation security notice — which originates in core's
+    // SessionManager — uses the same shared renderer.
+    let before = app.email.sent().len();
+    let resp = client
+        .delete(app.url(&format!("/auth/sessions/{}", other.session.id)))
+        .bearer_auth(&caller.token)
+        .send()
+        .await
+        .expect("delete other session");
+    assert!(
+        resp.status().is_success(),
+        "delete session: {}",
+        resp.status()
+    );
+    let revoke_mail = &app.email.sent()[before..];
+    assert_eq!(revoke_mail.len(), 1, "one revocation notice queued");
+    assert_eq!(revoke_mail[0].subject, SESSION_REVOKED_SUBJECT);
+
+    app.shutdown().await;
+}

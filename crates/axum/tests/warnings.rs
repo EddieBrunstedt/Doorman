@@ -13,7 +13,9 @@ use bauth_axum::{BauthAxum, BuilderError};
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::context::CoreDeps;
-use bauth_core::email::{EmailSender, FileEmailSender, TerminalEmailSender};
+use bauth_core::email::{
+    DefaultBauthEmails, EmailSender, FileEmailSender, SecurityEmailNotifier, TerminalEmailSender,
+};
 use bauth_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
@@ -270,17 +272,23 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
     let email = Arc::new(CapturingEmailSender::new());
     let limiter: Arc<dyn RateLimiter> = Arc::new(NoopRateLimiter);
 
+    let notifier = SecurityEmailNotifier::new(
+        email.clone() as Arc<dyn EmailSender>,
+        Arc::new(DefaultBauthEmails),
+    );
     let session_manager = SessionManager::new(
         storage.sessions.clone(),
         clock.clone(),
         audit.clone(),
         SessionConfig::default(),
-    );
+    )
+    .with_security_notifier(notifier.clone());
 
     let deps = CoreDeps::new(
         clock,
         audit,
         email.clone() as Arc<dyn EmailSender>,
+        notifier,
         limiter,
         session_manager.clone(),
         storage.clone(),
@@ -309,6 +317,47 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         email.sent().len(),
         1,
         "signup request should enqueue exactly one link email via the shared transport"
+    );
+}
+
+#[test]
+fn branding_one_flow_without_shared_renderer_warns() {
+    let output = capture(|| {
+        let _ = BauthAxum::builder(fresh_storage())
+            .email(capturing_email())
+            .passkey(passkey_config())
+            .signup(SignupConfig {
+                emails: Some(Arc::new(DefaultBauthEmails)),
+                ..SignupConfig::default()
+            })
+            .build()
+            .expect("build");
+    });
+
+    assert!(
+        output.contains("custom email renderer"),
+        "expected partial-branding warning when only one flow is branded; got: {output}"
+    );
+}
+
+#[test]
+fn shared_emails_renderer_does_not_warn_about_partial_branding() {
+    let output = capture(|| {
+        let _ = BauthAxum::builder(fresh_storage())
+            .email(capturing_email())
+            .passkey(passkey_config())
+            .emails(Arc::new(DefaultBauthEmails))
+            .signup(SignupConfig {
+                emails: Some(Arc::new(DefaultBauthEmails)),
+                ..SignupConfig::default()
+            })
+            .build()
+            .expect("build");
+    });
+
+    assert!(
+        !output.contains("custom email renderer"),
+        "shared renderer should not trip the partial-branding warning; got: {output}"
     );
 }
 

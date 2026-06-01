@@ -22,7 +22,7 @@ use std::time::Duration;
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::context::CoreDeps;
-use bauth_core::email::EmailSender;
+use bauth_core::email::{DefaultBauthEmails, EmailSender, SecurityEmailNotifier};
 use bauth_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
@@ -67,10 +67,13 @@ fn signup_manager() -> SignupManager {
         passkey_credentials: credentials,
         passkey_challenges: challenges,
     };
+    let email = email as Arc<dyn EmailSender>;
+    let notifier = SecurityEmailNotifier::new(email.clone(), Arc::new(DefaultBauthEmails));
     let deps = CoreDeps::new(
         clock,
         audit,
-        email as Arc<dyn EmailSender>,
+        email,
+        notifier,
         Arc::new(NoopRateLimiter) as Arc<dyn RateLimiter>,
         session_manager,
         storage,

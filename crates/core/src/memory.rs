@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 
 use crate::clock::Clock;
 use crate::error::{StorageError, StorageResult};
-use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter, RateLimiterKind};
+use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
 use crate::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,
     SessionId, SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication,
@@ -560,10 +560,6 @@ impl InMemoryRateLimiter {
 
 #[async_trait]
 impl RateLimiter for InMemoryRateLimiter {
-    fn diagnostic_kind(&self) -> RateLimiterKind {
-        RateLimiterKind::InMemory
-    }
-
     async fn check(&self, key: &str, policy: RateLimitPolicy) -> StorageResult<RateLimitDecision> {
         let now = self.clock.now();
         let window = chrono::Duration::from_std(policy.window)
@@ -593,15 +589,7 @@ impl RateLimiter for InMemoryRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::SystemClock;
     use crate::storage::Storage;
-
-    #[test]
-    fn in_memory_limiter_reports_in_memory_kind() {
-        let limiter: Arc<dyn RateLimiter> =
-            Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock)));
-        assert_eq!(limiter.diagnostic_kind(), RateLimiterKind::InMemory);
-    }
 
     #[tokio::test]
     async fn in_memory_composite_wires_every_store() {

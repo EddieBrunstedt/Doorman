@@ -57,10 +57,14 @@ pub struct SignupConfig {
     /// per-IP and per-identifier policies are checked; both must clear
     /// for the request to proceed.
     pub rate_limits: SignupRateLimits,
-    /// Renderer for the signup email. Defaults to
-    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails); hosts that
-    /// want branded copy override this with an [`Arc<dyn BauthEmails>`].
-    pub emails: Arc<dyn BauthEmails>,
+    /// Renderer for the signup email. `None` falls back to the renderer the
+    /// composition root threads in (see [`BauthBuilder::emails`]), and to
+    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails) if none was
+    /// set. Set `Some(..)` to brand this flow specifically, overriding the
+    /// shared renderer.
+    ///
+    /// [`BauthBuilder::emails`]: https://docs.rs/bauth-axum
+    pub emails: Option<Arc<dyn BauthEmails>>,
 }
 
 /// Rate-limit policies for the signup request endpoint.
@@ -97,7 +101,7 @@ impl Default for SignupConfig {
             token_lifetime: Duration::from_secs(60 * 15),
             url_template: format!("https://example.invalid/signup?token={TOKEN_PLACEHOLDER}"),
             rate_limits: SignupRateLimits::default(),
-            emails: default_emails(),
+            emails: None,
         }
     }
 }
@@ -112,19 +116,19 @@ impl Default for SignupConfig {
 pub struct SignupManager {
     flow: EnrollmentFlow,
     config: SignupConfig,
+    /// Renderer resolved from [`SignupConfig::emails`], falling back to
+    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails) when unset.
+    emails: Arc<dyn BauthEmails>,
 }
 
 impl SignupManager {
     pub fn new(flow: EnrollmentFlow, config: SignupConfig) -> Self {
-        Self { flow, config }
-    }
-
-    /// Diagnostic accessor used by the axum builder's startup warnings
-    /// to detect dev-only email transports without exposing the
-    /// underlying `Arc<dyn EmailSender>`.
-    #[doc(hidden)]
-    pub fn email_kind(&self) -> crate::email::EmailSenderKind {
-        self.flow.email_kind()
+        let emails = config.emails.clone().unwrap_or_else(default_emails);
+        Self {
+            flow,
+            config,
+            emails,
+        }
     }
 
     /// Issue a signup link to `email`. Returns `Ok(())` regardless of
@@ -202,7 +206,7 @@ impl SignupManager {
             now,
         )
         .await?;
-        let email = self.config.emails.signup_email(&user, &url);
+        let email = self.emails.signup_email(&user, &url);
         self.flow.email_sender().send(email).await?;
 
         self.flow

@@ -77,26 +77,15 @@ async fn remove(
         return Err(ErrorResponse(bauth_core::Error::RecoveryCooldownActive));
     }
 
-    // Ownership check: a user can only revoke their own sessions, and a
-    // missing session reads as "not yours" rather than leaking the
-    // existence of someone else's id.
-    let owned = state
+    // Ownership, revocation, and the best-effort "other session revoked"
+    // notice all live in the manager: it reads the target once, treats a
+    // missing or not-owned session as "not yours" (rather than leaking the
+    // existence of someone else's id), and notifies only when the revoked
+    // session is not the caller's own.
+    state
         .session_manager
-        .list_for_user(auth.user.id)
-        .await?
-        .into_iter()
-        .any(|s| s.id == id);
-    if !owned {
-        return Err(ErrorResponse(bauth_core::Error::SessionNotFound));
-    }
-
-    state.session_manager.revoke_by_id(id).await?;
-    if id != auth.session.id {
-        state
-            .security_notifier
-            .other_session_revoked(&auth.user)
-            .await;
-    }
+        .revoke_owned_session(&auth.user, id, auth.session.id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -110,13 +99,11 @@ async fn remove_others(
     if state.session_manager.is_in_recovery_cooldown(&auth.session) {
         return Err(ErrorResponse(bauth_core::Error::RecoveryCooldownActive));
     }
+    // The manager fires the "other sessions revoked" notice itself when it
+    // revokes anything, so the route only drives it.
     state
         .session_manager
-        .revoke_others_for_user(auth.user.id, auth.session.id)
+        .revoke_others_for_user(&auth.user, auth.session.id)
         .await?;
-    state
-        .security_notifier
-        .other_sessions_revoked(&auth.user)
-        .await;
     Ok(StatusCode::NO_CONTENT)
 }

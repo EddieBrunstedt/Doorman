@@ -13,7 +13,6 @@
 
 use std::sync::Arc;
 
-use bauth_core::email::EmailSenderKind;
 use bauth_core::session::SessionManager;
 use bauth_core::storage::UserStore;
 use url::Url;
@@ -78,10 +77,10 @@ pub enum BuilderError {
 /// [`SignupManager`], and [`RecoveryManager`] yourself (wiring your own
 /// clock, audit sink, rate limiter, email transport, etc.) and just need
 /// the HTTP presentation layer bolted on. Each manager already owns its
-/// [`EmailSender`](bauth_core::email::EmailSender); the builder reads the
-/// signup / recovery managers' [`email_kind`](SignupManager::email_kind)
-/// diagnostic to emit the dev-transport startup warning, so it does not
-/// take a separate sender.
+/// [`EmailSender`](bauth_core::email::EmailSender), so this builder does not
+/// take a separate sender. The dev-transport startup warning is emitted only
+/// on the high-level [`BauthBuilder`](crate::BauthBuilder) path, which holds
+/// the raw transport and can inspect it.
 ///
 /// If you would rather hand over a [`Storage`](bauth_core::storage::Storage)
 /// plus passkey / email config and let the managers be constructed for you,
@@ -211,17 +210,11 @@ impl ManagerBuilder {
         if !self.silence_warnings {
             let mut warnings = self.inherited_warnings.clone();
             warnings.cookie_insecure_in_production = warnings::check_cookie(&cookie_config);
-            // The passkey / signup / recovery managers own the email transport;
-            // read their diagnostics to flag a dev-only sender rather than taking
-            // a redundant sender input that the host has to keep in sync.
-            let is_dev_transport =
-                |kind| matches!(kind, EmailSenderKind::Terminal | EmailSenderKind::File);
-            if is_dev_transport(passkey.notification_email_kind())
-                || is_dev_transport(signup.email_kind())
-                || is_dev_transport(recovery.email_kind())
-            {
-                warnings.dev_email_transport = true;
-            }
+            // Email-transport and audit/limiter diagnostics are decided by the
+            // high-level `BauthBuilder` (which holds the raw collaborators) and
+            // arrive via `inherited_warnings`. The low-level path takes pre-built
+            // managers that already own their transport, so it adds only the
+            // cookie check here.
             warnings.emit();
         }
 
@@ -255,7 +248,6 @@ impl ManagerBuilder {
             csrf: csrf_config,
         });
 
-        let security_notifier = passkey.security_email_notifier();
         let state = BauthState {
             session_manager,
             user_store,
@@ -263,7 +255,6 @@ impl ManagerBuilder {
             passkey,
             signup,
             recovery,
-            security_notifier,
         };
 
         Ok(BauthAxum {

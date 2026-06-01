@@ -789,7 +789,7 @@ fn recovery_config_with_subhour_cooldown_panics() {
 async fn custom_emails_override_recovery_subjects_and_html() {
     let h = Harness::builder()
         .recovery_config(RecoveryConfig {
-            emails: Arc::new(BrandedEmails),
+            emails: Some(Arc::new(BrandedEmails)),
             ..recovery_config()
         })
         .build();

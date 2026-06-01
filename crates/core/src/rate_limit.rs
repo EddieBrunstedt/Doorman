@@ -9,6 +9,7 @@
 //! [`Error::RateLimited`](crate::error::Error::RateLimited) when the
 //! configured budget is exhausted.
 
+use std::any::Any;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -47,27 +48,14 @@ impl RateLimitPolicy {
     }
 }
 
-/// Diagnostic tag returned by [`RateLimiter::diagnostic_kind`]. Used by the
-/// axum builder's startup sanity checks to surface limiters that are not
-/// safe in production (`Noop` discards all enforcement; `InMemory` is
-/// per-process and underestimates effective rate in multi-replica
-/// deployments).
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RateLimiterKind {
-    /// A host-supplied limiter. The default assumed for any third-party
-    /// implementation; no warning is emitted at build time.
-    Custom,
-    /// [`NoopRateLimiter`] — enforcement disabled.
-    Noop,
-    /// [`InMemoryRateLimiter`](crate::memory::InMemoryRateLimiter) — fine
-    /// for a single-process deployment, not for multi-replica.
-    InMemory,
-}
-
 /// Backend interface for charging and enforcing rate-limit policies.
+///
+/// The [`Any`] supertrait lets a composition layer (e.g. the axum builder's
+/// startup sanity checks) downcast a boxed limiter to recognise the bundled
+/// [`NoopRateLimiter`] / [`InMemoryRateLimiter`](crate::memory::InMemoryRateLimiter)
+/// defaults; host implementations get the blanket `Any` impl for free.
 #[async_trait]
-pub trait RateLimiter: Send + Sync {
+pub trait RateLimiter: Send + Sync + Any {
     /// Charge a single attempt against `key` under `policy`.
     ///
     /// The implementation is responsible for tracking attempts per key
@@ -76,14 +64,6 @@ pub trait RateLimiter: Send + Sync {
     /// failure by the calling manager; transient errors should be
     /// retried internally rather than bubbled up.
     async fn check(&self, key: &str, policy: RateLimitPolicy) -> StorageResult<RateLimitDecision>;
-
-    /// Used by the axum builder's startup sanity checks to detect noop /
-    /// per-process limiters. Third-party implementations should leave the
-    /// default in place.
-    #[doc(hidden)]
-    fn diagnostic_kind(&self) -> RateLimiterKind {
-        RateLimiterKind::Custom
-    }
 }
 
 /// A limiter that never rejects. Useful as a default when rate limiting
@@ -100,25 +80,22 @@ impl RateLimiter for NoopRateLimiter {
     ) -> StorageResult<RateLimitDecision> {
         Ok(RateLimitDecision::Allowed)
     }
-
-    fn diagnostic_kind(&self) -> RateLimiterKind {
-        RateLimiterKind::Noop
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::Any;
     use std::sync::Arc;
 
     #[test]
-    fn noop_limiter_reports_noop_kind() {
+    fn noop_limiter_downcasts_to_its_concrete_type() {
         let limiter: Arc<dyn RateLimiter> = Arc::new(NoopRateLimiter);
-        assert_eq!(limiter.diagnostic_kind(), RateLimiterKind::Noop);
+        assert!((limiter.as_ref() as &dyn Any).is::<NoopRateLimiter>());
     }
 
     #[test]
-    fn custom_limiter_default_reports_custom_kind() {
+    fn custom_limiter_does_not_masquerade_as_noop() {
         struct MyLimiter;
         #[async_trait]
         impl RateLimiter for MyLimiter {
@@ -132,6 +109,6 @@ mod tests {
         }
 
         let limiter: Arc<dyn RateLimiter> = Arc::new(MyLimiter);
-        assert_eq!(limiter.diagnostic_kind(), RateLimiterKind::Custom);
+        assert!(!(limiter.as_ref() as &dyn Any).is::<NoopRateLimiter>());
     }
 }

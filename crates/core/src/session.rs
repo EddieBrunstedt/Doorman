@@ -12,8 +12,9 @@ use chrono::{DateTime, Utc};
 
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
+use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
-use crate::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
+use crate::storage::{Session, SessionId, SessionStore, TokenHash, User, UserId};
 use crate::token::generate_token;
 pub use crate::token::hash_token;
 
@@ -83,6 +84,12 @@ pub struct SessionManager {
     /// every other clone regardless of when it was taken — install order
     /// cannot leave a manager wired to a stale observer.
     invalidation_hook: Arc<RwLock<Arc<dyn SessionInvalidationHook>>>,
+    /// Best-effort notifier for session-revocation security notices. Wired
+    /// at the composition root via [`SessionManager::with_security_notifier`];
+    /// when absent the revoke paths still run, they just send no email. Held
+    /// so the notices originate in core — every host driving the manager gets
+    /// them, not only the bundled axum routes.
+    notifier: Option<SecurityEmailNotifier>,
     config: SessionConfig,
 }
 
@@ -98,8 +105,18 @@ impl SessionManager {
             clock,
             audit,
             invalidation_hook: Arc::new(RwLock::new(Arc::new(NoopSessionInvalidationHook))),
+            notifier: None,
             config,
         }
+    }
+
+    /// Install the best-effort security [`SecurityEmailNotifier`] used for
+    /// session-revocation notices and return `self`. Set this at the
+    /// composition root *before* the manager is cloned into the other
+    /// managers so every clone carries it.
+    pub fn with_security_notifier(mut self, notifier: SecurityEmailNotifier) -> Self {
+        self.notifier = Some(notifier);
+        self
     }
 
     /// Install `hook` as the invalidation observer and return `self`.
@@ -290,20 +307,26 @@ impl SessionManager {
             .collect())
     }
 
-    /// Revoke every session belonging to `user_id` *except* `except`. The
+    /// Revoke every session belonging to `user` *except* `except`. The
     /// retained session is the caller's "current" device on the typical
     /// "sign out everywhere else" path. Notifies the invalidation hook so
-    /// any framework-side cache evicts the removed sessions.
-    #[tracing::instrument(skip(self), fields(user_id = %user_id, session_id = %except))]
-    pub async fn revoke_others_for_user(&self, user_id: UserId, except: SessionId) -> Result<u64> {
+    /// any framework-side cache evicts the removed sessions, and — when
+    /// anything was revoked — sends the best-effort "other sessions revoked"
+    /// security notice so the notice originates here rather than in each
+    /// host's HTTP layer.
+    #[tracing::instrument(skip(self, user), fields(user_id = %user.id, session_id = %except))]
+    pub async fn revoke_others_for_user(&self, user: &User, except: SessionId) -> Result<u64> {
         let count = self
             .sessions
-            .delete_other_sessions_for_user(user_id, except)
+            .delete_other_sessions_for_user(user.id, except)
             .await?;
         if count > 0 {
             self.invalidation_hook()
-                .on_user_sessions_invalidated(user_id)
+                .on_user_sessions_invalidated(user.id)
                 .await;
+            if let Some(notifier) = &self.notifier {
+                notifier.other_sessions_revoked(user).await;
+            }
         }
         tracing::info!(
             count,
@@ -311,6 +334,42 @@ impl SessionManager {
             "other user sessions revoked"
         );
         Ok(count)
+    }
+
+    /// Revoke a single session the caller owns, identified by `session_id`.
+    ///
+    /// Reads the target once, rejects a missing session or one owned by a
+    /// different user with [`Error::SessionNotFound`] (so a probe cannot
+    /// learn whether another user's session id exists), then revokes it.
+    /// When the revoked session is not the caller's current one
+    /// (`current_session_id`) the best-effort "session revoked" security
+    /// notice is sent — self-revocation stays silent. Keeping this in the
+    /// manager means the notice originates in core for every host.
+    #[tracing::instrument(
+        skip(self, user),
+        fields(user_id = %user.id, session_id = %session_id),
+    )]
+    pub async fn revoke_owned_session(
+        &self,
+        user: &User,
+        session_id: SessionId,
+        current_session_id: SessionId,
+    ) -> Result<()> {
+        let Some(session) = self.sessions.find_session_by_id(session_id).await? else {
+            tracing::warn!(outcome = "not_found", "session revoke failed");
+            return Err(Error::SessionNotFound);
+        };
+        if session.user_id != user.id {
+            tracing::warn!(outcome = "not_owned", "session revoke failed");
+            return Err(Error::SessionNotFound);
+        }
+        self.revoke_session(session).await?;
+        if session_id != current_session_id
+            && let Some(notifier) = &self.notifier
+        {
+            notifier.other_session_revoked(user).await;
+        }
+        Ok(())
     }
 
     #[tracing::instrument(skip(self))]

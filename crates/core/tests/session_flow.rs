@@ -4,7 +4,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bauth_core::audit::{AuditEventKind, AuditSink};
 use bauth_core::clock::{Clock, SystemClock};
-use bauth_core::email::{Email, EmailSender};
+use bauth_core::email::{DefaultBauthEmails, Email, EmailSender, SecurityEmailNotifier};
 use bauth_core::error::Error;
 use bauth_core::memory::{InMemorySessionStore, InMemoryUserStore};
 use bauth_core::session::{
@@ -37,6 +37,19 @@ fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
         .single()
         .expect("valid timestamp")
+}
+
+/// A bare [`User`] with the given id. `SessionManager` does not own a user
+/// store, so the revoke APIs take the caller's already-loaded user; tests
+/// fabricate one carrying just the fields the notices read.
+fn user_with_id(id: UserId, email: Option<&str>) -> User {
+    User {
+        id,
+        email: email.map(str::to_owned),
+        email_verified_at: None,
+        created_at: ts(2026, 1, 1),
+        updated_at: ts(2026, 1, 1),
+    }
 }
 
 #[test]
@@ -319,7 +332,7 @@ async fn revoke_others_for_user_keeps_only_the_exception() {
         .expect("bob");
 
     let removed = manager
-        .revoke_others_for_user(alice, keep.session.id)
+        .revoke_others_for_user(&user_with_id(alice, None), keep.session.id)
         .await
         .expect("revoke_others");
     assert_eq!(removed, 2);
@@ -360,11 +373,109 @@ async fn revoke_others_for_user_notifies_user_hook_when_anything_removed() {
         .expect("alice other");
 
     let removed = manager
-        .revoke_others_for_user(alice, keep.session.id)
+        .revoke_others_for_user(&user_with_id(alice, None), keep.session.id)
         .await
         .expect("revoke_others");
     assert_eq!(removed, 1);
     assert_eq!(*hook.users.lock().expect("read"), vec![alice]);
+}
+
+#[tokio::test]
+async fn revoke_others_for_user_sends_notice_in_core() {
+    // A non-axum host driving the manager directly must still get the
+    // security notice — it originates in core, not in the HTTP layer.
+    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
+    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
+    let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
+    let notifier = SecurityEmailNotifier::new(
+        email.clone() as Arc<dyn EmailSender>,
+        Arc::new(DefaultBauthEmails),
+    );
+    let manager = SessionManager::new(
+        sessions as Arc<dyn SessionStore>,
+        Arc::new(SystemClock) as Arc<dyn Clock>,
+        audit as Arc<dyn AuditSink>,
+        SessionConfig {
+            lifetime: Duration::from_secs(60 * 60),
+        },
+    )
+    .with_security_notifier(notifier);
+
+    let alice = user_with_id(UserId::new(), Some("alice@example.com"));
+    let keep = manager
+        .create(alice.id, SessionContext::default())
+        .await
+        .expect("alice keep");
+    manager
+        .create(alice.id, SessionContext::default())
+        .await
+        .expect("alice other");
+
+    manager
+        .revoke_others_for_user(&alice, keep.session.id)
+        .await
+        .expect("revoke_others");
+
+    let sent = email.sent();
+    assert_eq!(sent.len(), 1, "one bulk-revocation notice queued in core");
+    assert_eq!(sent[0].subject, "Security notice: other sessions revoked");
+    assert_eq!(sent[0].to, "alice@example.com");
+}
+
+#[tokio::test]
+async fn revoke_owned_session_notifies_only_for_other_sessions() {
+    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
+    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
+    let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
+    let notifier = SecurityEmailNotifier::new(
+        email.clone() as Arc<dyn EmailSender>,
+        Arc::new(DefaultBauthEmails),
+    );
+    let manager = SessionManager::new(
+        sessions as Arc<dyn SessionStore>,
+        Arc::new(SystemClock) as Arc<dyn Clock>,
+        audit as Arc<dyn AuditSink>,
+        SessionConfig {
+            lifetime: Duration::from_secs(60 * 60),
+        },
+    )
+    .with_security_notifier(notifier);
+
+    let alice = user_with_id(UserId::new(), Some("alice@example.com"));
+    let current = manager
+        .create(alice.id, SessionContext::default())
+        .await
+        .expect("current");
+    let other = manager
+        .create(alice.id, SessionContext::default())
+        .await
+        .expect("other");
+
+    // Revoking the *other* session notifies.
+    manager
+        .revoke_owned_session(&alice, other.session.id, current.session.id)
+        .await
+        .expect("revoke other");
+    assert_eq!(email.sent().len(), 1, "revoking another session notifies");
+
+    // Revoking the caller's *own* current session stays silent.
+    manager
+        .revoke_owned_session(&alice, current.session.id, current.session.id)
+        .await
+        .expect("revoke self");
+    assert_eq!(email.sent().len(), 1, "self-revocation sends no notice");
+
+    // A session the caller does not own reads as not found.
+    let bob = user_with_id(UserId::new(), Some("bob@example.com"));
+    let bob_session = manager
+        .create(bob.id, SessionContext::default())
+        .await
+        .expect("bob");
+    let err = manager
+        .revoke_owned_session(&alice, bob_session.session.id, current.session.id)
+        .await
+        .expect_err("alice cannot revoke bob's session");
+    assert!(matches!(err, Error::SessionNotFound));
 }
 
 #[tokio::test]
@@ -380,7 +491,7 @@ async fn revoke_others_for_user_skips_hook_when_nothing_removed() {
         .expect("alice only");
 
     let removed = manager
-        .revoke_others_for_user(alice, only.session.id)
+        .revoke_others_for_user(&user_with_id(alice, None), only.session.id)
         .await
         .expect("revoke_others");
     assert_eq!(removed, 0);

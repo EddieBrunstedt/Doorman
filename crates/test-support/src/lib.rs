@@ -23,7 +23,7 @@ use chrono::{DateTime, Duration, Utc};
 
 use bauth_core::audit::{AuditEvent, AuditSink};
 use bauth_core::clock::Clock;
-use bauth_core::email::{Email, EmailSender, EmailSenderKind};
+use bauth_core::email::{Email, EmailSender};
 use bauth_core::error::{EmailError, EmailResult};
 
 /// Mutable clock for deterministic tests.
@@ -141,9 +141,5 @@ impl EmailSender for CapturingEmailSender {
         }
         sent.push(email);
         Ok(())
-    }
-
-    fn diagnostic_kind(&self) -> EmailSenderKind {
-        EmailSenderKind::Capturing
     }
 }

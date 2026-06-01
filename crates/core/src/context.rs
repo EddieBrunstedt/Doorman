@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::audit::AuditSink;
 use crate::clock::Clock;
-use crate::email::EmailSender;
+use crate::email::{EmailSender, SecurityEmailNotifier};
 use crate::rate_limit::RateLimiter;
 use crate::session::SessionManager;
 use crate::storage::{
@@ -45,6 +45,12 @@ pub struct CoreDeps {
     /// Transport for signup / recovery links and best-effort security
     /// notifications.
     pub email: Arc<dyn EmailSender>,
+    /// Notifier for best-effort security notices (passkey lifecycle,
+    /// session revocation). Built once at the composition root from
+    /// [`email`](Self::email) and the chosen [`BauthEmails`](crate::email::BauthEmails)
+    /// renderer, then shared by the passkey and session managers so every
+    /// bundled notice originates from one configured helper.
+    pub notifier: SecurityEmailNotifier,
     /// Limiter enforced by the enrollment (signup / recovery) request
     /// endpoints. Unused by the passkey and session managers.
     pub rate_limiter: Arc<dyn RateLimiter>,
@@ -63,14 +69,16 @@ pub struct CoreDeps {
 
 impl CoreDeps {
     /// Assemble a context from the orthogonal collaborators and a
-    /// [`Storage`] composite. The session manager is built separately (it
-    /// needs its own config and any invalidation hook wired before
-    /// dependent managers clone it), so it is passed in rather than derived
-    /// from `storage`.
+    /// [`Storage`] composite. The session manager and the security
+    /// [`SecurityEmailNotifier`] are built separately — the manager needs its
+    /// config and any invalidation hook (plus the notifier) wired before
+    /// dependent managers clone it — so both are passed in rather than
+    /// derived here.
     pub fn new(
         clock: Arc<dyn Clock>,
         audit: Arc<dyn AuditSink>,
         email: Arc<dyn EmailSender>,
+        notifier: SecurityEmailNotifier,
         rate_limiter: Arc<dyn RateLimiter>,
         sessions: SessionManager,
         storage: Storage,
@@ -79,6 +87,7 @@ impl CoreDeps {
             clock,
             audit,
             email,
+            notifier,
             rate_limiter,
             sessions,
             users: storage.users,

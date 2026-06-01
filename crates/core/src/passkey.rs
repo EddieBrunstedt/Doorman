@@ -26,7 +26,7 @@ use webauthn_rs_proto::ResidentKeyRequirement;
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
-use crate::email::{BauthEmails, SecurityEmailNotifier, default_emails};
+use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
@@ -48,11 +48,6 @@ pub struct PasskeyConfig {
     /// How long an unfinished ceremony stays valid. Defaults to 5 minutes,
     /// matching the W3C recommended authenticator timeout.
     pub challenge_lifetime: Duration,
-    /// Renderer for passkey lifecycle security notifications. Defaults to
-    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails); hosts that
-    /// want branded copy can replace this with their own [`BauthEmails`]
-    /// implementation.
-    pub emails: Arc<dyn BauthEmails>,
 }
 
 impl std::fmt::Debug for PasskeyConfig {
@@ -73,7 +68,6 @@ impl PasskeyConfig {
             rp_origin,
             rp_name: rp_name.into(),
             challenge_lifetime: Duration::from_secs(300),
-            emails: default_emails(),
         }
     }
 }
@@ -98,8 +92,12 @@ impl PasskeyManager {
     /// email, session manager, and the user / credential / challenge stores)
     /// are read from `deps` so they are named once at the composition root
     /// rather than threaded through a long positional argument list.
+    ///
+    /// The security-notification helper is taken from
+    /// [`CoreDeps::notifier`] — built once at the composition root — so the
+    /// passkey lifecycle notices share the one configured sender and email
+    /// renderer with every other bundled notice.
     pub fn new(deps: &CoreDeps, config: PasskeyConfig) -> Result<Self> {
-        let notifier = SecurityEmailNotifier::new(deps.email.clone(), config.emails.clone());
         let webauthn = WebauthnBuilder::new(&config.rp_id, &config.rp_origin)
             .map_err(|e| Error::InvalidRelyingParty(e.to_string()))?
             .rp_name(&config.rp_name)
@@ -113,7 +111,7 @@ impl PasskeyManager {
             sessions: deps.sessions.clone(),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
-            notifier,
+            notifier: deps.notifier.clone(),
             webauthn: Arc::new(webauthn),
             config,
         })
@@ -142,22 +140,6 @@ impl PasskeyManager {
     /// Borrow the audit sink, so the enrollment flow emits to the same one.
     pub(crate) fn audit(&self) -> &Arc<dyn AuditSink> {
         &self.audit
-    }
-
-    /// Diagnostic accessor used by the axum builder's startup warnings to
-    /// detect dev-only email transports.
-    #[doc(hidden)]
-    pub fn notification_email_kind(&self) -> crate::email::EmailSenderKind {
-        self.notifier.sender_kind()
-    }
-
-    /// Clone the security-notification helper used by this manager.
-    /// Axum uses it for session-management notifications so the same
-    /// configured sender and template renderer cover every bundled
-    /// security notice.
-    #[doc(hidden)]
-    pub fn security_email_notifier(&self) -> SecurityEmailNotifier {
-        self.notifier.clone()
     }
 
     /// Begin registering a new passkey for `user_id`. The returned

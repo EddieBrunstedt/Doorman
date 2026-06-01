@@ -24,7 +24,7 @@ use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredentia
 
 use crate::audit::{AuditEvent, AuditEventKind, RecoveryFailureReason};
 use crate::context::CoreDeps;
-use crate::email::{Email, EmailSender, EmailSenderKind};
+use crate::email::{Email, EmailSender};
 use crate::error::{Error, Result};
 use crate::passkey::PasskeyManager;
 use crate::rate_limit::{RateLimitDecision, RateLimitPolicy, RateLimiter};
@@ -252,12 +252,6 @@ impl EnrollmentFlow {
 
     pub(crate) fn now(&self) -> DateTime<Utc> {
         self.passkey.clock().now()
-    }
-
-    /// Diagnostic accessor used by the axum builder's startup warnings to
-    /// detect dev-only email transports.
-    pub(crate) fn email_kind(&self) -> EmailSenderKind {
-        self.email.diagnostic_kind()
     }
 
     /// Emit one audit event stamped with the current clock and the request

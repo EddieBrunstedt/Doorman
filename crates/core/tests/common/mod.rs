@@ -24,7 +24,7 @@ use std::time::Duration;
 use bauth_core::audit::{AuditEvent, AuditEventKind, AuditSink};
 use bauth_core::clock::Clock;
 use bauth_core::context::CoreDeps;
-use bauth_core::email::EmailSender;
+use bauth_core::email::{DefaultBauthEmails, EmailSender, SecurityEmailNotifier};
 use bauth_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
@@ -191,6 +191,10 @@ impl HarnessBuilder {
         let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
         let clock: Arc<MockClock> = Arc::new(MockClock::new(ts(2026, 1, 1)));
 
+        let notifier = SecurityEmailNotifier::new(
+            email.clone() as Arc<dyn EmailSender>,
+            Arc::new(DefaultBauthEmails),
+        );
         let session_manager = SessionManager::new(
             sessions.clone() as Arc<dyn SessionStore>,
             clock.clone() as Arc<dyn Clock>,
@@ -198,7 +202,8 @@ impl HarnessBuilder {
             SessionConfig {
                 lifetime: self.session_lifetime,
             },
-        );
+        )
+        .with_security_notifier(notifier.clone());
 
         let storage = Storage {
             users: users.clone(),
@@ -217,6 +222,7 @@ impl HarnessBuilder {
             clock.clone() as Arc<dyn Clock>,
             audit.clone() as Arc<dyn AuditSink>,
             email.clone() as Arc<dyn EmailSender>,
+            notifier,
             self.signup_limiter,
             session_manager,
             storage,

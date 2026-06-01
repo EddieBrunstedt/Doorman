@@ -7,7 +7,6 @@
 
 use std::sync::Arc;
 
-use bauth_core::email::SecurityEmailNotifier;
 use bauth_core::session::SessionManager;
 use bauth_core::storage::UserStore;
 
@@ -18,6 +17,10 @@ use bauth_core::signup::SignupManager;
 use crate::config::CookieConfig;
 
 /// Shared Axum router state holding configured auth managers and settings.
+///
+/// Session-revocation security notices originate inside [`SessionManager`]
+/// (which holds the configured notifier), so the state carries no separate
+/// notifier handle — the routes drive the manager and the notice follows.
 #[derive(Clone)]
 pub struct BauthState {
     pub(crate) session_manager: SessionManager,
@@ -26,7 +29,6 @@ pub struct BauthState {
     pub(crate) passkey: PasskeyManager,
     pub(crate) signup: SignupManager,
     pub(crate) recovery: RecoveryManager,
-    pub(crate) security_notifier: SecurityEmailNotifier,
 }
 
 impl BauthState {

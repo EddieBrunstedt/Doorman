@@ -4,6 +4,8 @@
 //! Hosts provide an [`AuditSink`] that persists or forwards them to a
 //! durable log; [`NoopAuditSink`] exists only as a development default.
 
+use std::any::Any;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -90,17 +92,14 @@ pub enum RecoveryFailureReason {
 }
 
 /// Destination for audit events emitted by the managers.
+///
+/// The [`Any`] supertrait lets a composition layer (e.g. the axum builder's
+/// startup sanity checks) downcast a boxed sink to recognise the bundled
+/// [`NoopAuditSink`]; host implementations get the blanket `Any` impl for
+/// free and never have to think about it.
 #[async_trait]
-pub trait AuditSink: Send + Sync {
+pub trait AuditSink: Send + Sync + Any {
     async fn emit(&self, event: AuditEvent);
-
-    /// Used by the axum builder's startup sanity checks to detect that the
-    /// host is running with no real audit sink wired up. Implementations
-    /// other than [`NoopAuditSink`] should leave the default in place.
-    #[doc(hidden)]
-    fn is_noop_sink(&self) -> bool {
-        false
-    }
 }
 
 /// Audit sink that discards every event.
@@ -110,25 +109,22 @@ pub struct NoopAuditSink;
 #[async_trait]
 impl AuditSink for NoopAuditSink {
     async fn emit(&self, _event: AuditEvent) {}
-
-    fn is_noop_sink(&self) -> bool {
-        true
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::Any;
     use std::sync::Arc;
 
     #[test]
-    fn noop_sink_is_detected_as_noop() {
+    fn noop_sink_downcasts_to_its_concrete_type() {
         let sink: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-        assert!(sink.is_noop_sink());
+        assert!((sink.as_ref() as &dyn Any).is::<NoopAuditSink>());
     }
 
     #[test]
-    fn custom_sink_default_is_not_noop() {
+    fn custom_sink_does_not_masquerade_as_noop() {
         struct MySink;
         #[async_trait]
         impl AuditSink for MySink {
@@ -136,6 +132,6 @@ mod tests {
         }
 
         let sink: Arc<dyn AuditSink> = Arc::new(MySink);
-        assert!(!sink.is_noop_sink());
+        assert!(!(sink.as_ref() as &dyn Any).is::<NoopAuditSink>());
     }
 }

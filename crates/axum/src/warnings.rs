@@ -15,7 +15,52 @@
 //! [`NoopAuditSink`]: bauth_core::audit::NoopAuditSink
 //! [`InMemoryRateLimiter`]: bauth_core::memory::InMemoryRateLimiter
 
+use std::any::Any;
+
+use bauth_core::audit::{AuditSink, NoopAuditSink};
+use bauth_core::email::{EmailSender, FileEmailSender, TerminalEmailSender};
+use bauth_core::memory::InMemoryRateLimiter;
+use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
+
 use crate::config::CookieConfig;
+
+/// `true` if `sink` is the bundled [`NoopAuditSink`].
+///
+/// The collaborator traits no longer carry diagnostic methods; the bundled
+/// dev/noop types are recognised here by downcasting through the traits'
+/// [`Any`] supertrait, so a host implementing the trait writes nothing extra.
+pub(crate) fn is_noop_audit(sink: &dyn AuditSink) -> bool {
+    (sink as &dyn Any).is::<NoopAuditSink>()
+}
+
+/// `true` if `sender` is one of the bundled dev-only transports
+/// ([`TerminalEmailSender`] or [`FileEmailSender`]) that never deliver mail.
+pub(crate) fn is_dev_email_transport(sender: &dyn EmailSender) -> bool {
+    let any = sender as &dyn Any;
+    any.is::<TerminalEmailSender>() || any.is::<FileEmailSender>()
+}
+
+/// Which bundled rate limiter (if any) `limiter` is, for the startup check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RateLimiterFlavor {
+    /// [`NoopRateLimiter`] — enforcement disabled.
+    Noop,
+    /// [`InMemoryRateLimiter`] — per-process only.
+    InMemory,
+    /// A host-supplied limiter; no warning.
+    Custom,
+}
+
+pub(crate) fn rate_limiter_flavor(limiter: &dyn RateLimiter) -> RateLimiterFlavor {
+    let any = limiter as &dyn Any;
+    if any.is::<NoopRateLimiter>() {
+        RateLimiterFlavor::Noop
+    } else if any.is::<InMemoryRateLimiter>() {
+        RateLimiterFlavor::InMemory
+    } else {
+        RateLimiterFlavor::Custom
+    }
+}
 
 /// Snapshot of the warning conditions detected at build time.
 ///
@@ -46,6 +91,12 @@ pub struct Warnings {
     /// is being printed to stdout or written to disk, not delivered to
     /// users.
     pub dev_email_transport: bool,
+    /// A custom [`BauthEmails`](bauth_core::email::BauthEmails) renderer was
+    /// set on one flow (signup or recovery) but no shared renderer was wired
+    /// via [`BauthBuilder::emails`](crate::BauthBuilder::emails), so the other
+    /// flow and the security notices still send the stock copy. Branding is
+    /// partial; use `.emails(..)` for one consistent renderer.
+    pub partial_email_branding: bool,
 }
 
 impl Warnings {
@@ -89,6 +140,14 @@ impl Warnings {
                  informed choice.",
             );
         }
+        if self.partial_email_branding {
+            out.push(
+                "A custom email renderer was set on only one flow. The other flow and the \
+                 security notices still use the stock copy. Wire one renderer for every flow \
+                 with BauthBuilder::emails(..), or silence this with .silence_warnings() once \
+                 you have made an informed choice.",
+            );
+        }
         out
     }
 
@@ -99,6 +158,7 @@ impl Warnings {
             && !self.noop_rate_limiter
             && !self.in_memory_rate_limiter
             && !self.dev_email_transport
+            && !self.partial_email_branding
     }
 
     /// Emit the warnings to the configured sink — `tracing::warn!` when a
@@ -175,14 +235,16 @@ mod tests {
             noop_rate_limiter: true,
             in_memory_rate_limiter: true,
             dev_email_transport: true,
+            partial_email_branding: true,
         };
         let lines = w.messages();
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 6);
         assert!(lines[0].contains("cookie.secure"));
         assert!(lines[1].contains("AuditSink"));
         assert!(lines[2].contains("Rate limiting is disabled"));
         assert!(lines[3].contains("InMemoryRateLimiter"));
         assert!(lines[4].contains("dev-only sender"));
+        assert!(lines[5].contains("custom email renderer"));
     }
 
     #[test]

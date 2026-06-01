@@ -52,7 +52,7 @@ use std::sync::Arc;
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::context::CoreDeps;
-use bauth_core::email::EmailSender;
+use bauth_core::email::{BauthEmails, DefaultBauthEmails, EmailSender, SecurityEmailNotifier};
 use bauth_core::memory::InMemoryRateLimiter;
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
 use bauth_core::rate_limit::RateLimiter;
@@ -69,7 +69,9 @@ use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
 use crate::manager_builder::{BuilderError, ManagerBuilder};
-use crate::warnings::Warnings;
+use crate::warnings::{
+    RateLimiterFlavor, Warnings, is_dev_email_transport, is_noop_audit, rate_limiter_flavor,
+};
 
 /// High-level builder returned from [`BauthAxum::builder`].
 ///
@@ -107,6 +109,7 @@ pub struct BauthBuilder {
     clock: Option<Arc<dyn Clock>>,
     audit: Option<Arc<dyn AuditSink>>,
     email: Option<Arc<dyn EmailSender>>,
+    emails: Option<Arc<dyn BauthEmails>>,
     rate_limiter: Option<Arc<dyn RateLimiter>>,
     session_config: Option<SessionConfig>,
     cookie_config: Option<CookieConfig>,
@@ -128,6 +131,7 @@ impl BauthBuilder {
             clock: None,
             audit: None,
             email: None,
+            emails: None,
             rate_limiter: None,
             session_config: None,
             cookie_config: None,
@@ -174,6 +178,23 @@ impl BauthBuilder {
     /// [`EmailSender`]: bauth_core::email::EmailSender
     pub fn email(mut self, email: Arc<dyn EmailSender>) -> Self {
         self.email = Some(email);
+        self
+    }
+
+    /// Wire one [`BauthEmails`] renderer for every flow at once: the signup
+    /// link, the recovery link and notices, and the best-effort security
+    /// notices (passkey lifecycle, session revocation). This is the single
+    /// place to brand all transactional copy.
+    ///
+    /// A renderer set directly on a [`SignupConfig`](bauth_core::signup::SignupConfig)
+    /// or [`RecoveryConfig`](bauth_core::recovery::RecoveryConfig) still wins
+    /// for that flow. Branding only some flows without calling this — leaving
+    /// the rest on the stock copy — trips a startup warning so partial wiring
+    /// is never silent.
+    ///
+    /// [`BauthEmails`]: bauth_core::email::BauthEmails
+    pub fn emails(mut self, emails: Arc<dyn BauthEmails>) -> Self {
+        self.emails = Some(emails);
         self
     }
 
@@ -256,24 +277,50 @@ impl BauthBuilder {
             .unwrap_or_else(|| Arc::new(InMemoryRateLimiter::new(clock.clone())));
         let session_config = self.session_config.unwrap_or_default();
 
+        // The collaborator traits no longer expose diagnostic methods; the
+        // bundled dev/noop defaults are recognised here by downcasting the
+        // raw `Arc<dyn …>` the host supplied (see `crate::warnings`).
         let mut warnings = Warnings::default();
-        if audit.is_noop_sink() {
+        if is_noop_audit(audit.as_ref()) {
             warnings.noop_audit = true;
         }
-        match limiter.diagnostic_kind() {
-            bauth_core::rate_limit::RateLimiterKind::Noop => {
-                warnings.noop_rate_limiter = true;
-            }
-            bauth_core::rate_limit::RateLimiterKind::InMemory => {
-                warnings.in_memory_rate_limiter = true;
-            }
-            bauth_core::rate_limit::RateLimiterKind::Custom => {}
+        match rate_limiter_flavor(limiter.as_ref()) {
+            RateLimiterFlavor::Noop => warnings.noop_rate_limiter = true,
+            RateLimiterFlavor::InMemory => warnings.in_memory_rate_limiter = true,
+            RateLimiterFlavor::Custom => {}
         }
+        if is_dev_email_transport(email.as_ref()) {
+            warnings.dev_email_transport = true;
+        }
+
+        // Resolve the one renderer that brands every flow. A renderer set on
+        // a specific config still wins for that flow; the shared `.emails(..)`
+        // value fills the rest. Branding only some flows without the shared
+        // renderer leaves the security notices on the stock copy — flag that
+        // so partial wiring is never silent.
+        let mut signup_config = self.signup.unwrap_or_default();
+        let mut recovery_config = self.recovery.unwrap_or_default();
+        if self.emails.is_none()
+            && (signup_config.emails.is_some() || recovery_config.emails.is_some())
+        {
+            warnings.partial_email_branding = true;
+        }
+        if let Some(shared) = &self.emails {
+            signup_config.emails.get_or_insert_with(|| shared.clone());
+            recovery_config.emails.get_or_insert_with(|| shared.clone());
+        }
+        let notifier_renderer: Arc<dyn BauthEmails> = self
+            .emails
+            .clone()
+            .unwrap_or_else(|| Arc::new(DefaultBauthEmails));
+        let notifier = SecurityEmailNotifier::new(email.clone(), notifier_renderer);
+
         // Build the cache up-front so its invalidator can be attached to
         // the `SessionManager` before any dependent manager clones it.
         // Every clone captures the same invalidation hook, so revocations
         // routed through manager logout / revoke paths evict the cache for
-        // free.
+        // free. The security notifier is installed the same way — before the
+        // manager is cloned into `CoreDeps` — so every clone carries it.
         let cache = SessionCache::new(self.cache_config.unwrap_or_default());
 
         let session_manager = SessionManager::new(
@@ -282,7 +329,8 @@ impl BauthBuilder {
             audit.clone(),
             session_config,
         )
-        .with_invalidation_hook(cache.invalidator());
+        .with_invalidation_hook(cache.invalidator())
+        .with_security_notifier(notifier.clone());
 
         // Bundle the shared collaborators once. Every manager below reads
         // what it needs from this context instead of re-threading each
@@ -291,6 +339,7 @@ impl BauthBuilder {
             clock,
             audit,
             email,
+            notifier,
             limiter,
             session_manager.clone(),
             self.storage.clone(),
@@ -323,14 +372,12 @@ impl BauthBuilder {
         // Signup is part of the only login UX — wire it implicitly so the
         // host doesn't have to opt in. Hosts that need to tune the rate
         // limits or token lifetime call `.signup(...)`.
-        let signup_manager =
-            SignupManager::new(enrollment_flow.clone(), self.signup.unwrap_or_default());
+        let signup_manager = SignupManager::new(enrollment_flow.clone(), signup_config);
 
         // Recovery rides on the same primitives as signup and is similarly
         // always-on. Hosts override the defaults via `.recovery(...)` to
         // tune the aggressive rate limits.
-        let recovery_manager =
-            RecoveryManager::new(enrollment_flow, self.recovery.unwrap_or_default());
+        let recovery_manager = RecoveryManager::new(enrollment_flow, recovery_config);
 
         builder = builder
             .passkey_manager(passkey_manager)

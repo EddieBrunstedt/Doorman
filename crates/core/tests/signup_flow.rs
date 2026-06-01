@@ -428,7 +428,7 @@ impl BauthEmails for BrandedEmails {
 async fn custom_emails_override_signup_subject_and_html() {
     let h = Harness::builder()
         .signup_config(SignupConfig {
-            emails: Arc::new(BrandedEmails),
+            emails: Some(Arc::new(BrandedEmails)),
             ..signup_config()
         })
         .build();

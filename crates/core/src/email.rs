@@ -14,6 +14,7 @@
 //! lifecycle, and high-risk session revocation events. The default copy
 //! describes a passkey-driven flow; hosts override [`BauthEmails`] to brand it.
 
+use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,38 +36,15 @@ pub struct Email {
     pub body_html: Option<String>,
 }
 
-/// Diagnostic tag returned by [`EmailSender::diagnostic_kind`]. Used by
-/// the axum builder's startup sanity checks to surface transports that
-/// are not safe in production. `Terminal` and `File` are convenient for
-/// local development; both leave the user's recovery / signup links in
-/// places that real users will never see.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EmailSenderKind {
-    /// A host-supplied transport. The default for any third-party
-    /// implementation; no warning is emitted at build time.
-    Custom,
-    /// [`TerminalEmailSender`] — prints to stdout, never delivers.
-    Terminal,
-    /// [`FileEmailSender`] — writes `.eml` files to disk, never
-    /// delivers.
-    File,
-    /// `CapturingEmailSender` from `bauth-test-support` — for tests only.
-    Capturing,
-}
-
 /// Transport for sending rendered transactional emails.
+///
+/// The [`Any`] supertrait lets a composition layer (e.g. the axum builder's
+/// startup sanity checks) downcast a boxed sender to recognise the bundled
+/// dev-only transports; it places no burden on host implementations, which
+/// get the blanket `Any` impl for free.
 #[async_trait]
-pub trait EmailSender: Send + Sync {
+pub trait EmailSender: Send + Sync + Any {
     async fn send(&self, email: Email) -> EmailResult<()>;
-
-    /// Used by the axum builder's startup sanity checks to detect
-    /// dev-only transports. Third-party implementations should leave
-    /// the default in place.
-    #[doc(hidden)]
-    fn diagnostic_kind(&self) -> EmailSenderKind {
-        EmailSenderKind::Custom
-    }
 }
 
 /// Prints every rendered email to stdout in a clearly-labelled block.
@@ -85,10 +63,6 @@ impl EmailSender for TerminalEmailSender {
             email.to, email.subject, email.body_text
         );
         Ok(())
-    }
-
-    fn diagnostic_kind(&self) -> EmailSenderKind {
-        EmailSenderKind::Terminal
     }
 }
 
@@ -145,10 +119,6 @@ impl EmailSender for FileEmailSender {
             .map_err(EmailError::new)?;
         file.flush().await.map_err(EmailError::new)?;
         Ok(())
-    }
-
-    fn diagnostic_kind(&self) -> EmailSenderKind {
-        EmailSenderKind::File
     }
 }
 
@@ -382,10 +352,6 @@ impl SecurityEmailNotifier {
         Self { sender, emails }
     }
 
-    pub fn sender_kind(&self) -> EmailSenderKind {
-        self.sender.diagnostic_kind()
-    }
-
     pub async fn passkey_registered(&self, user: &User, passkey_name: Option<&str>) {
         if user.email.is_none() {
             tracing::debug!(
@@ -479,12 +445,6 @@ pub(crate) fn default_emails() -> Arc<dyn BauthEmails> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn terminal_sender_reports_terminal_kind() {
-        let sender: Arc<dyn EmailSender> = Arc::new(TerminalEmailSender);
-        assert_eq!(sender.diagnostic_kind(), EmailSenderKind::Terminal);
-    }
-
     #[tokio::test]
     async fn terminal_sender_does_not_panic() {
         let sender = TerminalEmailSender;
@@ -508,7 +468,6 @@ mod tests {
         ));
         fs::create_dir_all(&dir).await.expect("mkdir");
         let sender = FileEmailSender::new(&dir);
-        assert_eq!(sender.diagnostic_kind(), EmailSenderKind::File);
 
         sender
             .send(Email {
