@@ -28,6 +28,19 @@ pub fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     None
 }
 
+/// Extract the token from an `Authorization: Bearer <token>` header.
+///
+/// Returns the trimmed token when the header is present, well-formed, and
+/// carries a non-empty value; `None` otherwise. Shared by the session layer
+/// (which decides *which* token to validate) and the CSRF layer (which
+/// decides *whether* a request authenticates outside cookie scope) so the
+/// two cannot disagree about what counts as a bearer request.
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let token = value.strip_prefix("Bearer ")?.trim();
+    if token.is_empty() { None } else { Some(token) }
+}
+
 /// Build a `Set-Cookie` header value for the session cookie.
 pub fn session_cookie(config: &CookieConfig, value: &str) -> HeaderValue {
     encode(

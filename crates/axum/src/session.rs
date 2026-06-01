@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
-use axum::http::{HeaderMap, Request, header};
+use axum::http::{HeaderMap, Request};
 use axum::response::Response;
 use bauth_core::clock::Clock;
 use bauth_core::session::SessionManager;
@@ -29,7 +29,7 @@ use tower_service::Service;
 use tracing::Instrument;
 
 use crate::cache::SessionCache;
-use crate::cookies::read_cookie;
+use crate::cookies::{bearer_token, read_cookie};
 use crate::csrf::{self, CsrfConfig};
 
 /// Successfully resolved authentication state for a request.
@@ -184,14 +184,8 @@ where
 /// to use only the header and shouldn't be tripped up by a stale cookie
 /// that happened to ride along.
 pub(crate) fn extract_token(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
-    if let Some(raw) = headers.get(header::AUTHORIZATION)
-        && let Ok(value) = raw.to_str()
-        && let Some(rest) = value.strip_prefix("Bearer ")
-    {
-        let trimmed = rest.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_owned());
-        }
+    if let Some(token) = bearer_token(headers) {
+        return Some(token.to_owned());
     }
     read_cookie(headers, cookie_name)
 }
@@ -199,7 +193,7 @@ pub(crate) fn extract_token(headers: &HeaderMap, cookie_name: &str) -> Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
+    use axum::http::{HeaderValue, header};
 
     #[test]
     fn bearer_header_wins_over_cookie() {

@@ -20,7 +20,7 @@ use tower_layer::Layer;
 use tower_service::Service;
 use url::Url;
 
-use crate::cookies::read_cookie;
+use crate::cookies::{bearer_token, read_cookie};
 use crate::error::{ErrorBody, ErrorPayload};
 
 /// CSRF origin-check configuration.
@@ -149,7 +149,7 @@ pub(crate) fn should_reject(
     session_cookie_name: &str,
     config: &CsrfConfig,
 ) -> bool {
-    if is_safe_method(method) || has_bearer_authorization(headers) {
+    if is_safe_method(method) || bearer_token(headers).is_some() {
         return false;
     }
 
@@ -187,15 +187,6 @@ pub(crate) fn rejection_response() -> Response {
 
 fn is_safe_method(method: &Method) -> bool {
     matches!(method, &Method::GET | &Method::HEAD | &Method::OPTIONS)
-}
-
-fn has_bearer_authorization(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::AUTHORIZATION)
-        .and_then(|raw| raw.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .map(|rest| !rest.trim().is_empty())
-        .unwrap_or(false)
 }
 
 /// Returns `None` when the header is absent. A present-but-malformed
@@ -316,6 +307,32 @@ mod tests {
             header::AUTHORIZATION,
             HeaderValue::from_static("Bearer bearer-token"),
         );
+        assert!(!should_reject(
+            &Method::POST,
+            &headers,
+            "bauth_session",
+            &config()
+        ));
+    }
+
+    #[test]
+    fn missing_origin_and_referer_with_cookie_is_rejected() {
+        // Fail closed: a state-changing cookie request that presents neither
+        // an Origin nor a Referer header gives the layer no same-origin
+        // signal, so it must be rejected rather than waved through.
+        let headers = headers(true, None, None);
+        assert!(should_reject(
+            &Method::POST,
+            &headers,
+            "bauth_session",
+            &config()
+        ));
+    }
+
+    #[test]
+    fn missing_origin_and_referer_without_cookie_is_allowed() {
+        // No cookie session means nothing for CSRF to protect.
+        let headers = headers(false, None, None);
         assert!(!should_reject(
             &Method::POST,
             &headers,
