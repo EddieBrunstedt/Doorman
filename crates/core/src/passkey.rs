@@ -93,7 +93,7 @@ impl Default for PasskeyRateLimits {
 }
 
 /// WebAuthn relying-party configuration for passkey flows.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PasskeyConfig {
     /// Relying party identifier, typically the registrable suffix of
     /// the site origin (e.g. `"example.com"` for `https://app.example.com`).
@@ -120,23 +120,6 @@ pub struct PasskeyConfig {
     /// authenticated foothold can accumulate. `None` (the default) is
     /// unbounded.
     pub max_pending_registrations_per_user: Option<NonZeroU32>,
-}
-
-impl std::fmt::Debug for PasskeyConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PasskeyConfig")
-            .field("rp_id", &self.rp_id)
-            .field("rp_origin", &self.rp_origin)
-            .field("rp_name", &self.rp_name)
-            .field("challenge_lifetime", &self.challenge_lifetime)
-            .field("rate_limits", &self.rate_limits)
-            .field("max_credentials_per_user", &self.max_credentials_per_user)
-            .field(
-                "max_pending_registrations_per_user",
-                &self.max_pending_registrations_per_user,
-            )
-            .finish()
-    }
 }
 
 impl PasskeyConfig {
@@ -303,7 +286,7 @@ impl PasskeyManager {
             }
         }
 
-        let (user_name, user_display_name) = display_names_for(&user);
+        let display_name = display_name_for(&user);
 
         let existing = self.credentials.list_passkeys_for_user(user_id).await?;
         let exclude = if existing.is_empty() {
@@ -321,7 +304,7 @@ impl PasskeyManager {
 
         let (mut ccr, reg_state) = self
             .webauthn
-            .start_passkey_registration(user_id.0, &user_name, &user_display_name, exclude)
+            .start_passkey_registration(user_id.0, &display_name, &display_name, exclude)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
         require_discoverable_credential(&mut ccr);
 
@@ -385,7 +368,12 @@ impl PasskeyManager {
         .await
     }
 
-    async fn finish_registration_inner(
+    /// Shared registration-finish body taking the cool-down deadline as an
+    /// `Option`. The two public wrappers above pass `None` / `Some(..)`; the
+    /// in-crate enrollment flow ([`crate::verification::EnrollmentFlow`]) calls
+    /// this directly so it threads its already-`Option`al deadline through one
+    /// call instead of branching.
+    pub(crate) async fn finish_registration_inner(
         &self,
         challenge_id: PasskeyChallengeId,
         response: &RegisterPublicKeyCredential,
@@ -807,10 +795,11 @@ impl PasskeyManager {
     }
 }
 
-fn display_names_for(user: &User) -> (String, String) {
-    let id_str = user.id.to_string();
-    let name = user.email.clone().unwrap_or_else(|| id_str.clone());
-    (name.clone(), name)
+/// The label shown in the platform passkey UI. bauth uses the email when set
+/// (the user id otherwise) for both the WebAuthn user name and display name —
+/// the two are intentionally identical, so one value feeds both parameters.
+fn display_name_for(user: &User) -> String {
+    user.email.clone().unwrap_or_else(|| user.id.to_string())
 }
 
 /// RAII guard that records a `finish_authentication` ceremony's wall-clock

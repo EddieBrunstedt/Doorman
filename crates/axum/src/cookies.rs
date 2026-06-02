@@ -19,7 +19,10 @@ use crate::config::CookieConfig;
 pub fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     for raw in headers.get_all(header::COOKIE).iter() {
         let Ok(text) = raw.to_str() else { continue };
-        for piece in Cookie::split_parse(text.to_owned()).flatten() {
+        // Borrow the header text: `split_parse` accepts `&str` and we only ever
+        // return an owned copy of the matched value, so no allocation of the
+        // whole header is needed per request.
+        for piece in Cookie::split_parse(text).flatten() {
             if piece.name() == name {
                 return Some(piece.value().to_owned());
             }

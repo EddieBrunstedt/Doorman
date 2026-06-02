@@ -14,7 +14,9 @@ use axum::routing::post;
 use bauth_core::signup::SignupManager;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
-use crate::dto::{PasskeyChallenge, SignupConsumeRequest, SignupFinishRequest, SignupRequest};
+use crate::dto::{
+    PasskeyChallenge, RegistrationFinishRequest, SignupConsumeRequest, SignupRequest,
+};
 use crate::error::ErrorResponse;
 use crate::extractors::RequestContext;
 use crate::routes::{consume_response, enrollment_success, parse_challenge_id};
@@ -52,7 +54,7 @@ async fn consume(
 async fn finish(
     State(state): State<BauthState>,
     RequestContext(context): RequestContext,
-    Json(body): Json<SignupFinishRequest>,
+    Json(body): Json<RegistrationFinishRequest>,
 ) -> Result<Response, ErrorResponse> {
     let challenge_id = parse_challenge_id(&body.challenge_id)?;
     let outcome = manager(&state)

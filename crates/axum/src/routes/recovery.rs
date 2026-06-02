@@ -15,7 +15,7 @@ use bauth_core::recovery::RecoveryManager;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
 use crate::dto::{
-    PasskeyChallenge, RecoveryConsumeRequest, RecoveryFinishRequest, RecoveryRequest,
+    PasskeyChallenge, RecoveryConsumeRequest, RecoveryRequest, RegistrationFinishRequest,
 };
 use crate::error::ErrorResponse;
 use crate::extractors::RequestContext;
@@ -58,7 +58,7 @@ async fn consume(
 async fn finish(
     State(state): State<BauthState>,
     RequestContext(context): RequestContext,
-    Json(body): Json<RecoveryFinishRequest>,
+    Json(body): Json<RegistrationFinishRequest>,
 ) -> Result<Response, ErrorResponse> {
     let challenge_id = parse_challenge_id(&body.challenge_id)?;
     let outcome = manager(&state)

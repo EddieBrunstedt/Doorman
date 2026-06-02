@@ -10,8 +10,8 @@ mod common;
 use axum::Router;
 use axum::http::StatusCode;
 use bauth_axum::dto::{
-    AuthResponse, PasskeyChallenge, RecoveryConsumeRequest, RecoveryFinishRequest, RecoveryRequest,
-    SignupRequest,
+    AuthResponse, PasskeyChallenge, RecoveryConsumeRequest, RecoveryRequest,
+    RegistrationFinishRequest, SignupRequest,
 };
 use bauth_core::storage::PasskeyCredentialStore;
 use chrono::Duration as ChronoDuration;
@@ -177,7 +177,7 @@ async fn full_recovery_round_trip() {
 
     let finish = cookie_client
         .post(app.url("/auth/recovery/finish"))
-        .json(&RecoveryFinishRequest {
+        .json(&RegistrationFinishRequest {
             challenge_id: challenge.challenge_id,
             response: attestation,
             name: Some("recovery device".into()),
@@ -428,7 +428,7 @@ async fn provision_recovery_session_with_authenticator(
 
     let finish = cookie_client
         .post(app.url("/auth/recovery/finish"))
-        .json(&RecoveryFinishRequest {
+        .json(&RegistrationFinishRequest {
             challenge_id: challenge.challenge_id,
             response: attestation,
             name: Some("backup".into()),

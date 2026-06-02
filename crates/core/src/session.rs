@@ -195,7 +195,12 @@ impl SessionManager {
         self.issue(user_id, context, Some(cooldown_until)).await
     }
 
-    async fn issue(
+    /// Shared session-issuing body taking the cool-down deadline as an
+    /// `Option`. [`create`](Self::create) / [`create_restricted`](Self::create_restricted)
+    /// pass `None` / `Some(..)`; the in-crate enrollment flow
+    /// ([`crate::verification::EnrollmentFlow`]) calls this directly so it
+    /// threads its already-`Option`al deadline through one call.
+    pub(crate) async fn issue(
         &self,
         user_id: UserId,
         context: SessionContext,

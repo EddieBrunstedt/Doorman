@@ -22,7 +22,7 @@ use bauth_axum::BauthAxum;
 use bauth_axum::SessionCache;
 use bauth_axum::config::CookieConfig;
 use bauth_axum::dto::{
-    AuthResponse, PasskeyChallenge, PasskeyDto, SignupConsumeRequest, SignupFinishRequest,
+    AuthResponse, PasskeyChallenge, PasskeyDto, RegistrationFinishRequest, SignupConsumeRequest,
     SignupRequest, UserDto,
 };
 use bauth_axum::extractors::AuthSession;
@@ -282,7 +282,7 @@ impl SignupClient {
 
         let finish = client
             .post(app.url("/auth/signup/finish"))
-            .json(&SignupFinishRequest {
+            .json(&RegistrationFinishRequest {
                 challenge_id: challenge.challenge_id,
                 response: attestation,
                 name: Some("test device".into()),

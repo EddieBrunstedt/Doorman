@@ -44,15 +44,29 @@ impl IntoResponse for ErrorResponse {
 
 pub(crate) fn error_response(err: &Error) -> Response {
     let (status, code) = classify(err);
+    // Client-facing messages stay coarse for server-side failures: the inner
+    // detail (DB driver text, SMTP transport errors, relying-party config) can
+    // carry sensitive internals, so it is logged here and replaced with an
+    // opaque message. The stable `code` still lets a client distinguish the
+    // category. Client errors (4xx) carry domain messages that are safe to
+    // surface.
+    let message = if status.is_server_error() {
+        tracing::error!(error = %err, code, "bauth request failed with internal error");
+        "internal server error".to_owned()
+    } else {
+        err.to_string()
+    };
     let body = ErrorBody {
-        error: ErrorPayload {
-            code,
-            message: err.to_string(),
-        },
+        error: ErrorPayload { code, message },
     };
     let mut response = (status, Json(body)).into_response();
     if let Error::RateLimited { retry_after } = err {
-        let secs = retry_after.as_secs().max(1);
+        // Round up to whole seconds (floored at 1) so a client that waits the
+        // advertised time is past the window, never told to retry while the
+        // limiter would still reject. Truncating would under-state the back-off
+        // by up to ~1s.
+        let round_up = u64::from(retry_after.subsec_nanos() > 0);
+        let secs = retry_after.as_secs().saturating_add(round_up).max(1);
         if let Ok(value) = HeaderValue::from_str(&secs.to_string()) {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
@@ -87,19 +101,149 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bauth_core::error::{EmailError, StorageError};
     use std::time::Duration;
 
-    #[test]
-    fn rate_limited_includes_retry_after_header() {
-        let response = error_response(&Error::RateLimited {
-            retry_after: Duration::from_millis(2400),
-        });
+    fn retry_after_secs(retry_after: Duration) -> String {
+        let response = error_response(&Error::RateLimited { retry_after });
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        let header = response
+        response
             .headers()
             .get(header::RETRY_AFTER)
-            .expect("retry-after present");
-        // 2.4 s rounds down to 2 s (max with 1 s floor).
-        assert_eq!(header, "2");
+            .expect("retry-after present")
+            .to_str()
+            .expect("ascii header")
+            .to_owned()
+    }
+
+    #[test]
+    fn retry_after_rounds_up_to_whole_seconds() {
+        // 2.4 s rounds up to 3 s: a client waiting the advertised time is past
+        // the window.
+        assert_eq!(retry_after_secs(Duration::from_millis(2400)), "3");
+        // Whole seconds are not inflated.
+        assert_eq!(retry_after_secs(Duration::from_secs(2)), "2");
+        // Sub-second and zero back-offs floor at 1 s.
+        assert_eq!(retry_after_secs(Duration::from_millis(10)), "1");
+        assert_eq!(retry_after_secs(Duration::ZERO), "1");
+    }
+
+    /// Every `Error` variant must map to a stable `(status, code)`. This pins
+    /// the contract a frontend switches on: a mis-edit turning a 4xx into a 5xx,
+    /// or renaming a code, fails here.
+    #[test]
+    fn classify_covers_every_variant() {
+        use StatusCode as S;
+        let cases: &[(Error, StatusCode, &str)] = &[
+            (
+                Error::Storage(StorageError::msg("x")),
+                S::INTERNAL_SERVER_ERROR,
+                "storage_error",
+            ),
+            (
+                Error::Email(EmailError::msg("x")),
+                S::INTERNAL_SERVER_ERROR,
+                "email_error",
+            ),
+            (Error::SessionNotFound, S::UNAUTHORIZED, "session_not_found"),
+            (Error::SessionExpired, S::UNAUTHORIZED, "session_expired"),
+            (Error::UserNotFound, S::NOT_FOUND, "user_not_found"),
+            (Error::InvalidEmail, S::BAD_REQUEST, "invalid_email"),
+            (
+                Error::EmailAlreadyInUse,
+                S::CONFLICT,
+                "email_already_in_use",
+            ),
+            (
+                Error::InvalidVerificationToken,
+                S::BAD_REQUEST,
+                "invalid_verification_token",
+            ),
+            (
+                Error::InvalidPasskeyChallenge,
+                S::BAD_REQUEST,
+                "invalid_passkey_challenge",
+            ),
+            (Error::PasskeyNotFound, S::NOT_FOUND, "passkey_not_found"),
+            (
+                Error::PasskeyOwnershipMismatch,
+                S::FORBIDDEN,
+                "passkey_ownership_mismatch",
+            ),
+            (
+                Error::PasskeyPossibleCompromise,
+                S::FORBIDDEN,
+                "passkey_possible_compromise",
+            ),
+            (
+                Error::Webauthn("x".to_owned()),
+                S::BAD_REQUEST,
+                "webauthn_error",
+            ),
+            (
+                Error::InvalidRelyingParty("x".to_owned()),
+                S::INTERNAL_SERVER_ERROR,
+                "invalid_relying_party",
+            ),
+            (
+                Error::RateLimited {
+                    retry_after: Duration::from_secs(1),
+                },
+                S::TOO_MANY_REQUESTS,
+                "rate_limited",
+            ),
+            (
+                Error::RecoveryCooldownActive,
+                S::CONFLICT,
+                "recovery_cooldown_active",
+            ),
+            (
+                Error::ResourceLimitExceeded {
+                    resource: "credentials",
+                    limit: 5,
+                },
+                S::CONFLICT,
+                "resource_limit_exceeded",
+            ),
+        ];
+        for (err, status, code) in cases {
+            let (got_status, got_code) = classify(err);
+            assert_eq!(got_status, *status, "status for {code}");
+            assert_eq!(got_code, *code, "code mismatch");
+        }
+    }
+
+    /// Server-error responses must not leak the inner error detail into the
+    /// client-facing message; the stable code is still present.
+    #[test]
+    fn internal_errors_do_not_leak_detail() {
+        let secret = "connection refused to db.internal:5432 (password=hunter2)";
+        let response = error_response(&Error::Storage(StorageError::msg(secret)));
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let bytes = body_bytes(response);
+        let body = std::str::from_utf8(&bytes).expect("utf8 body");
+        assert!(
+            !body.contains("hunter2") && !body.contains("db.internal"),
+            "internal detail leaked into response body: {body}"
+        );
+        assert!(
+            body.contains("storage_error"),
+            "stable code missing from body: {body}"
+        );
+    }
+
+    fn body_bytes(response: Response) -> Vec<u8> {
+        // The error body is a small in-memory JSON value, so collecting it
+        // synchronously via a minimal runtime is fine for a unit test.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body")
+                .to_vec()
+        })
     }
 }

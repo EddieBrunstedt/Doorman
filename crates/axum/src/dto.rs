@@ -228,11 +228,14 @@ pub struct SignupConsumeRequest {
     pub token: String,
 }
 
-/// Request body for `/auth/signup/finish`. Echoes the `challenge_id` the
-/// consume endpoint returned and carries the WebAuthn attestation the
-/// browser produced from the embedded `options`.
+/// Request body shared by the three registration-finish endpoints
+/// (`/auth/signup/finish`, `/auth/recovery/finish`,
+/// `/auth/passkeys/register/finish`). Each echoes the `challenge_id` its
+/// matching `start`/`consume` endpoint returned and carries the WebAuthn
+/// attestation the browser produced from the embedded `options`; the field
+/// shape is identical across all three, so they share one type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SignupFinishRequest {
+pub struct RegistrationFinishRequest {
     pub challenge_id: String,
     pub response: webauthn_rs::prelude::RegisterPublicKeyCredential,
     #[serde(default)]
@@ -252,17 +255,6 @@ pub struct RecoveryRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecoveryConsumeRequest {
     pub token: String,
-}
-
-/// Request body for `/auth/recovery/finish`. Echoes the `challenge_id`
-/// the consume endpoint returned and carries the WebAuthn attestation the
-/// browser produced from the embedded `options`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecoveryFinishRequest {
-    pub challenge_id: String,
-    pub response: webauthn_rs::prelude::RegisterPublicKeyCredential,
-    #[serde(default)]
-    pub name: Option<String>,
 }
 
 /// Request body for `/auth/account/email`. Starts a verified email change:
@@ -288,15 +280,6 @@ pub struct EmailChangeConfirmRequest {
 pub struct PasskeyChallenge<T> {
     pub challenge_id: String,
     pub options: T,
-}
-
-/// Request body for completing passkey registration.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PasskeyRegisterFinishRequest {
-    pub challenge_id: String,
-    pub response: webauthn_rs::prelude::RegisterPublicKeyCredential,
-    #[serde(default)]
-    pub name: Option<String>,
 }
 
 /// Request body for completing passkey authentication.

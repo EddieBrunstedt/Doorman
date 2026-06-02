@@ -425,42 +425,29 @@ impl EnrollmentFlow {
             self.passkey.clock().now() + cooldown
         });
 
-        let passkey = match cooldown_until.as_ref().cloned() {
-            Some(cooldown_until) => {
-                self.passkey
-                    .finish_registration_with_recovery_cooldown(
-                        challenge_id,
-                        response,
-                        name,
-                        context.clone(),
-                        cooldown_until,
-                    )
-                    .await?
-            }
-            None => {
-                self.passkey
-                    .finish_registration(challenge_id, response, name, context.clone())
-                    .await?
-            }
-        };
+        // `cooldown_until` is `Option<DateTime<Utc>>` (`Copy`); the passkey and
+        // session creation bodies both take it as an `Option`, so the deadline
+        // (or its absence) threads through one call each instead of a
+        // Some/None branch per side.
+        let passkey = self
+            .passkey
+            .finish_registration_inner(
+                challenge_id,
+                response,
+                name,
+                context.clone(),
+                cooldown_until,
+            )
+            .await?;
         let Some(user) = self.users().find_user_by_id(passkey.user_id).await? else {
             return Err(Error::UserNotFound);
         };
 
-        let session = match cooldown_until.as_ref().cloned() {
-            Some(cooldown_until) => {
-                self.passkey
-                    .sessions()
-                    .create_restricted(user.id, context.clone(), cooldown_until)
-                    .await?
-            }
-            None => {
-                self.passkey
-                    .sessions()
-                    .create(user.id, context.clone())
-                    .await?
-            }
-        };
+        let session = self
+            .passkey
+            .sessions()
+            .issue(user.id, context.clone(), cooldown_until)
+            .await?;
 
         if kind == FlowKind::Recovery {
             // Close the pre-recovery-challenge bypass: any registration
