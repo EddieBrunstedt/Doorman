@@ -24,6 +24,9 @@
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 mod common;
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod stores;
+
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 

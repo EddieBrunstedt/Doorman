@@ -1,12 +1,44 @@
 //! Helpers shared between the SQLite and Postgres adapters: type
 //! conversions for stored values and a uniform error mapper.
 
+use std::borrow::Cow;
+
 use bauth_core::error::{StorageError, StorageResult};
 use bauth_core::storage::{TokenHash, VerificationPurpose};
 use uuid::Uuid;
 
 pub(crate) fn storage<E: std::fmt::Display>(e: E) -> StorageError {
     StorageError::msg(e.to_string())
+}
+
+/// Placeholder rewriter for the SQLite dialect: a no-op. The shared store
+/// bodies in [`crate::stores`] write every placeholder as `?`, which is
+/// SQLite's native syntax. The bodies only ever pass `&'static` string
+/// literals, so the borrowed result threads straight into sqlx's
+/// `SqlSafeStr` (`'static`-bound) path without a copy.
+#[cfg(feature = "sqlite")]
+pub(crate) fn ph_sqlite(sql: &'static str) -> Cow<'static, str> {
+    Cow::Borrowed(sql)
+}
+
+/// Placeholder rewriter for the Postgres dialect: rewrites each positional
+/// `?` into the `$1`, `$2`, … form Postgres expects, in order. No SQL the
+/// shared store bodies emit contains a literal `?` outside a placeholder, so
+/// the substitution is unambiguous.
+#[cfg(feature = "postgres")]
+pub(crate) fn ph_postgres(sql: &'static str) -> Cow<'static, str> {
+    let mut out = String::with_capacity(sql.len() + 8);
+    let mut n: u32 = 0;
+    for ch in sql.chars() {
+        if ch == '?' {
+            n += 1;
+            out.push('$');
+            out.push_str(&n.to_string());
+        } else {
+            out.push(ch);
+        }
+    }
+    Cow::Owned(out)
 }
 
 pub(crate) fn token_hash_bytes(h: &TokenHash) -> &[u8] {
