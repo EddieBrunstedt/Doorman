@@ -166,6 +166,32 @@ impl SessionCache {
             .put(token_hash, entry);
     }
 
+    /// Insert an entry whose `inserted_at` is backdated by `age`, so a test
+    /// can make an entry look stale without sleeping. The cache keys
+    /// freshness off the monotonic [`Instant`] clock (not the domain clock),
+    /// so this is the deterministic way to drive TTL expiry in a test.
+    #[cfg(test)]
+    fn insert_aged(
+        &self,
+        token_hash: TokenHash,
+        session: Arc<Session>,
+        user: Arc<User>,
+        age: Duration,
+    ) {
+        let inserted_at = Instant::now()
+            .checked_sub(age)
+            .expect("test backdate stays within the monotonic clock's range");
+        let entry = Entry {
+            cached: Arc::new(CachedAuth { session, user }),
+            inserted_at,
+        };
+        self.shard(&token_hash)
+            .inner
+            .lock()
+            .expect("session cache lock poisoned")
+            .put(token_hash, entry);
+    }
+
     /// Drop the single entry that maps to `session_id`, if any. Scans every
     /// shard since the lookup is by session id, not token hash; linear in
     /// the cache size, which at the default capacity is comfortably faster
@@ -322,16 +348,21 @@ mod tests {
     }
 
     #[test]
-    fn ttl_zero_evicts_on_get() {
+    fn stale_entry_evicts_on_get() {
         let cache = SessionCache::new(SessionCacheConfig {
             capacity: NonZeroUsize::new(8).unwrap(),
-            ttl: Duration::from_nanos(0),
+            ttl: Duration::from_secs(60),
         });
         let uid = UserId::new();
         let key = token_hash(2);
-        cache.insert(key, Arc::new(make_session(uid)), Arc::new(make_user(uid)));
-        // Spin for at least one nanosecond.
-        std::thread::sleep(Duration::from_millis(1));
+        // Backdate the entry well past the TTL so it is stale on read, with no
+        // real sleep: freshness is measured against the monotonic clock.
+        cache.insert_aged(
+            key,
+            Arc::new(make_session(uid)),
+            Arc::new(make_user(uid)),
+            Duration::from_secs(3600),
+        );
         assert!(cache.get(&key).is_none(), "ttl expired");
         assert_eq!(cache.len(), 0, "stale entry dropped on miss");
     }

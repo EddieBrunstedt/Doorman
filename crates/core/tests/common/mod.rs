@@ -38,8 +38,10 @@ use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
 use bauth_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use bauth_core::storage::{SessionStore, Storage, StoredPasskey, User, UserId, UserStore};
 use bauth_core::verification::EnrollmentFlow;
-use bauth_core::verification::TOKEN_PLACEHOLDER;
 use bauth_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
+// Re-export the shared token extractor so the flow suites can keep importing
+// it from `common` while the one implementation lives in `bauth-test-support`.
+pub use bauth_test_support::token_from_email;
 use chrono::{DateTime, TimeZone, Utc};
 use url::Url;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
@@ -93,22 +95,6 @@ pub fn recovery_config() -> RecoveryConfig {
         rate_limits: RecoveryRateLimits::disabled(),
         ..RecoveryConfig::default()
     }
-}
-
-/// Recover the raw token from an email body whose URL was rendered from
-/// `template` (either [`SIGNUP_URL`] or [`RECOVERY_URL`]).
-pub fn token_from_email(body: &str, template: &str) -> String {
-    let prefix = template
-        .split(TOKEN_PLACEHOLDER)
-        .next()
-        .expect("template has prefix");
-    let start = body.find(prefix).expect("body contains url prefix");
-    let after = &body[start + prefix.len()..];
-    after
-        .split_whitespace()
-        .next()
-        .expect("token follows prefix")
-        .to_string()
 }
 
 /// In-memory stores plus the three flow managers, all sharing one clock,

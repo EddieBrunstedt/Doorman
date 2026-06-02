@@ -15,94 +15,20 @@ use bauth_axum::dto::{
 };
 use bauth_core::storage::PasskeyCredentialStore;
 use chrono::Duration as ChronoDuration;
-use common::{RECOVERY_URL, SignupClient, TestApp, token_from_email, token_from_email_with};
+use common::{
+    RECOVERY_URL, ResidentHttpAuthenticator, SignupClient, TestApp, token_from_email,
+    token_from_email_with,
+};
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::prelude::Url as AuthUrl;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
-use webauthn_rs::prelude::{
-    CreationChallengeResponse, PublicKeyCredential, RegisterPublicKeyCredential,
-    RequestChallengeResponse,
-};
-use webauthn_rs_proto::AllowCredentials;
+use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 const RECOVERY_LINK_SUBJECT: &str = "Recover access to your account";
 const RECOVERY_REQUESTED_NOTIFICATION_SUBJECT: &str = "Security notice: account recovery requested";
 const RECOVERY_COMPLETED_NOTIFICATION_SUBJECT: &str = "Security notice: account recovery completed";
 const PASSKEY_REGISTERED_NOTIFICATION_SUBJECT: &str = "Security notice: passkey registered";
 const PASSKEY_REMOVED_NOTIFICATION_SUBJECT: &str = "Security notice: passkey removed";
-
-#[derive(Clone)]
-struct ResidentCredential {
-    credential_id: Vec<u8>,
-    user_handle: Vec<u8>,
-}
-
-struct ResidentHttpAuthenticator {
-    inner: WebauthnAuthenticator<SoftPasskey>,
-    rp_origin: AuthUrl,
-    resident_credentials: Vec<ResidentCredential>,
-}
-
-impl ResidentHttpAuthenticator {
-    fn new(app: &TestApp) -> Self {
-        Self {
-            inner: WebauthnAuthenticator::new(SoftPasskey::new(true)),
-            rp_origin: AuthUrl::parse(app.rp_origin.as_str()).expect("rp origin"),
-            resident_credentials: Vec::new(),
-        }
-    }
-
-    fn do_registration(
-        &mut self,
-        challenge: CreationChallengeResponse,
-    ) -> RegisterPublicKeyCredential {
-        let user_handle = challenge.public_key.user.id.as_ref().to_vec();
-        let mut compatible = challenge;
-        let selection = compatible
-            .public_key
-            .authenticator_selection
-            .as_mut()
-            .expect("authenticator selection present");
-        selection.require_resident_key = false;
-        selection.resident_key = None;
-
-        let response = self
-            .inner
-            .do_registration(self.rp_origin.clone(), compatible)
-            .expect("authenticator register");
-        self.resident_credentials.push(ResidentCredential {
-            credential_id: response.raw_id.as_ref().to_vec(),
-            user_handle,
-        });
-        response
-    }
-
-    fn do_authentication(
-        &mut self,
-        challenge: RequestChallengeResponse,
-        credential_id: &[u8],
-    ) -> PublicKeyCredential {
-        let resident = self
-            .resident_credentials
-            .iter()
-            .find(|credential| credential.credential_id == credential_id)
-            .cloned()
-            .expect("credential is resident on test authenticator");
-
-        let mut compatible = challenge;
-        compatible.public_key.allow_credentials = vec![AllowCredentials {
-            type_: "public-key".to_string(),
-            id: resident.credential_id.clone().into(),
-            transports: None,
-        }];
-        let mut assertion = self
-            .inner
-            .do_authentication(self.rp_origin.clone(), compatible)
-            .expect("authenticator auth");
-        assertion.response.user_handle = Some(resident.user_handle.into());
-        assertion
-    }
-}
 
 #[tokio::test]
 async fn full_recovery_round_trip() {
@@ -380,7 +306,7 @@ async fn provision_recovery_session(
     cookie_client: &reqwest::Client,
     email: &str,
 ) -> AuthResponse {
-    let mut authenticator = ResidentHttpAuthenticator::new(app);
+    let mut authenticator = ResidentHttpAuthenticator::new(&app.rp_origin);
     provision_recovery_session_with_authenticator(app, cookie_client, email, &mut authenticator)
         .await
         .0
@@ -621,7 +547,7 @@ async fn recovery_passkey_login_during_cooldown_cannot_delete_passkeys_or_revoke
         .build()
         .expect("client");
     let plain = reqwest::Client::new();
-    let mut recovery_authenticator = ResidentHttpAuthenticator::new(&app);
+    let mut recovery_authenticator = ResidentHttpAuthenticator::new(&app.rp_origin);
 
     let (_recovery_session, recovery_credential_id) =
         provision_recovery_session_with_authenticator(
@@ -714,7 +640,7 @@ async fn passkey_added_during_cooldown_inherits_cooldown() {
         .recovery_cooldown_until
         .expect("recovery session restricted");
 
-    let mut backup_authenticator = ResidentHttpAuthenticator::new(&app);
+    let mut backup_authenticator = ResidentHttpAuthenticator::new(&app.rp_origin);
     let backup_credential_id =
         register_additional_passkey(&app, &plain, &auth.token, &mut backup_authenticator).await;
 

@@ -108,6 +108,63 @@ fn encode(cookie: Cookie<'_>) -> HeaderValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `read_cookie` must never panic on an arbitrary `Cookie` header, no
+        /// matter how malformed: it parses untrusted request input on every
+        /// request, so it has to degrade to `None` rather than crash.
+        #[test]
+        fn read_cookie_never_panics(header in ".*", name in ".*") {
+            let mut headers = HeaderMap::new();
+            if let Ok(value) = HeaderValue::from_str(&header) {
+                headers.insert(header::COOKIE, value);
+            }
+            // The contract is "does not panic"; the value is irrelevant here.
+            let _ = read_cookie(&headers, &name);
+        }
+
+        /// A single, well-formed `name=value` pair round-trips: reading the
+        /// cookie back by name yields the value. Restricted to the unreserved
+        /// cookie-token/value characters so the pair needs no quoting and the
+        /// `cookie` crate parses it verbatim.
+        #[test]
+        fn read_cookie_round_trips_simple_pair(
+            name in "[A-Za-z0-9_]{1,16}",
+            value in "[A-Za-z0-9_]{0,32}",
+        ) {
+            let mut headers = HeaderMap::new();
+            let header = format!("{name}={value}");
+            headers.insert(header::COOKIE, HeaderValue::from_str(&header).expect("ascii"));
+            let read = read_cookie(&headers, &name);
+            prop_assert_eq!(read.as_deref(), Some(value.as_str()));
+        }
+
+        /// `bearer_token` never panics on an arbitrary `Authorization` header.
+        #[test]
+        fn bearer_token_never_panics(header in ".*") {
+            let mut headers = HeaderMap::new();
+            if let Ok(value) = HeaderValue::from_str(&header) {
+                headers.insert(header::AUTHORIZATION, value);
+            }
+            let _ = bearer_token(&headers);
+        }
+
+        /// A `Bearer <token>` header parses back to the token, trimmed of the
+        /// surrounding whitespace `bearer_token` strips. The generated token
+        /// itself contains no whitespace and is non-empty, so the trimmed
+        /// result equals it exactly.
+        #[test]
+        fn bearer_token_round_trips_non_empty(token in "[A-Za-z0-9._~+/=-]{1,64}") {
+            let mut headers = HeaderMap::new();
+            let header = format!("Bearer {token}");
+            headers.insert(
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&header).expect("ascii"),
+            );
+            prop_assert_eq!(bearer_token(&headers), Some(token.as_str()));
+        }
+    }
 
     fn cfg() -> CookieConfig {
         CookieConfig {

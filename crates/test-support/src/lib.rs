@@ -26,6 +26,30 @@ use bauth_core::clock::Clock;
 use bauth_core::email::{Email, EmailSender};
 use bauth_core::error::{EmailError, EmailResult};
 use bauth_core::metrics::{MetricEvent, Metrics};
+use bauth_core::verification::TOKEN_PLACEHOLDER;
+
+/// Recover the raw verification token from an email body whose link was
+/// rendered from `template` (a URL containing [`TOKEN_PLACEHOLDER`], e.g. the
+/// signup or recovery `url_template`).
+///
+/// Both the core and the axum integration suites mint links the same way and
+/// then need to read the token back out of the captured mail; keeping the one
+/// extractor here stops the two scaffolds from drifting on the URL convention.
+pub fn token_from_email(body: &str, template: &str) -> String {
+    let prefix = template
+        .split(TOKEN_PLACEHOLDER)
+        .next()
+        .expect("template has a prefix before the token placeholder");
+    let start = body
+        .find(prefix)
+        .expect("email body contains the link prefix");
+    let after = &body[start + prefix.len()..];
+    after
+        .split_whitespace()
+        .next()
+        .expect("a token follows the link prefix")
+        .to_string()
+}
 
 /// Mutable clock for deterministic tests.
 #[derive(Debug)]

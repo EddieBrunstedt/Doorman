@@ -36,7 +36,6 @@ use bauth_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use bauth_core::session::{SessionContext, SessionManager};
 use bauth_core::signup::{SignupConfig, SignupRateLimits};
 use bauth_core::storage::{PasskeyCredentialStore, Storage, User, UserId, UserStore};
-use bauth_core::verification::TOKEN_PLACEHOLDER;
 use bauth_test_support::CapturingEmailSender;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -44,7 +43,11 @@ use url::Url as ServerUrl;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::prelude::Url as AuthUrl;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
-use webauthn_rs::prelude::CreationChallengeResponse;
+use webauthn_rs::prelude::{
+    CreationChallengeResponse, PublicKeyCredential, RegisterPublicKeyCredential,
+    RequestChallengeResponse,
+};
+use webauthn_rs_proto::AllowCredentials;
 
 pub const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 pub const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
@@ -345,6 +348,91 @@ impl SignupClient {
     }
 }
 
+/// A discoverable credential the [`ResidentHttpAuthenticator`] has "stored",
+/// so a later usernameless authentication can assert the right user handle.
+#[derive(Clone)]
+struct ResidentCredential {
+    credential_id: Vec<u8>,
+    user_handle: Vec<u8>,
+}
+
+/// WebAuthn test client for the HTTP suites that drive a full
+/// register-then-login round trip. `SoftPasskey` cannot mint resident keys,
+/// so on registration it relaxes the local resident-key input while recording
+/// the user handle, then replays it on authentication — modelling a
+/// discoverable credential end to end. Shared by the recovery and
+/// quickstart suites so they drive the ceremony the same way.
+pub struct ResidentHttpAuthenticator {
+    inner: WebauthnAuthenticator<SoftPasskey>,
+    rp_origin: AuthUrl,
+    resident_credentials: Vec<ResidentCredential>,
+}
+
+impl ResidentHttpAuthenticator {
+    /// Build an authenticator that signs against `rp_origin` (the public
+    /// origin the relying party was configured with, not the bound address).
+    pub fn new(rp_origin: &ServerUrl) -> Self {
+        Self {
+            inner: WebauthnAuthenticator::new(SoftPasskey::new(true)),
+            rp_origin: AuthUrl::parse(rp_origin.as_str()).expect("rp origin"),
+            resident_credentials: Vec::new(),
+        }
+    }
+
+    pub fn do_registration(
+        &mut self,
+        challenge: CreationChallengeResponse,
+    ) -> RegisterPublicKeyCredential {
+        let user_handle = challenge.public_key.user.id.as_ref().to_vec();
+        let mut compatible = challenge;
+        let selection = compatible
+            .public_key
+            .authenticator_selection
+            .as_mut()
+            .expect("authenticator selection present");
+        selection.require_resident_key = false;
+        selection.resident_key = None;
+
+        let response = self
+            .inner
+            .do_registration(self.rp_origin.clone(), compatible)
+            .expect("authenticator register");
+        self.resident_credentials.push(ResidentCredential {
+            credential_id: response.raw_id.as_ref().to_vec(),
+            user_handle,
+        });
+        response
+    }
+
+    pub fn do_authentication(
+        &mut self,
+        challenge: RequestChallengeResponse,
+        credential_id: &[u8],
+    ) -> PublicKeyCredential {
+        let resident = self
+            .resident_credentials
+            .iter()
+            .find(|credential| credential.credential_id == credential_id)
+            .cloned()
+            .expect("credential is resident on test authenticator");
+
+        // SoftPasskey needs an allow-list to pick a key; the server-issued
+        // challenge stays discoverable. This is a test-shim only.
+        let mut compatible = challenge;
+        compatible.public_key.allow_credentials = vec![AllowCredentials {
+            type_: "public-key".to_string(),
+            id: resident.credential_id.clone().into(),
+            transports: None,
+        }];
+        let mut assertion = self
+            .inner
+            .do_authentication(self.rp_origin.clone(), compatible)
+            .expect("authenticator auth");
+        assertion.response.user_handle = Some(resident.user_handle.into());
+        assertion
+    }
+}
+
 /// Locate the raw signup token in an email body whose URL was rendered
 /// from [`SIGNUP_URL`].
 pub fn token_from_email(body: &str) -> String {
@@ -352,19 +440,11 @@ pub fn token_from_email(body: &str) -> String {
 }
 
 /// Locate the raw token in an email body whose URL was rendered from the
-/// given template (signup or recovery).
+/// given template (signup or recovery). Thin wrapper over the shared
+/// [`bauth_test_support::token_from_email`] so the two suites extract tokens
+/// the same way.
 pub fn token_from_email_with(body: &str, template: &str) -> String {
-    let prefix = template
-        .split(TOKEN_PLACEHOLDER)
-        .next()
-        .expect("template has prefix");
-    let start = body.find(prefix).expect("body contains url prefix");
-    let after = &body[start + prefix.len()..];
-    after
-        .split_whitespace()
-        .next()
-        .expect("token follows prefix")
-        .to_string()
+    bauth_test_support::token_from_email(body, template)
 }
 
 async fn me_handler(

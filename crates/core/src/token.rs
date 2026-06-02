@@ -75,6 +75,53 @@ pub(crate) fn generate_token() -> (String, TokenHash) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Hashing is a pure function of its input: the same cleartext always
+        /// hashes to the same [`TokenHash`], for any input string.
+        #[test]
+        fn hash_token_is_deterministic(s in ".*") {
+            prop_assert_eq!(hash_token(&s), hash_token(&s));
+        }
+
+        /// Distinct cleartext tokens hash to distinct values. SHA-256 makes a
+        /// collision astronomically unlikely, so any two different inputs the
+        /// generator produces must land on different hashes — a regression that
+        /// truncated or constant-folded the digest would surface here.
+        #[test]
+        fn distinct_tokens_hash_distinctly(a in ".*", b in ".*") {
+            prop_assume!(a != b);
+            prop_assert_ne!(hash_token(&a), hash_token(&b));
+        }
+
+        /// `TokenHash`'s constant-time `PartialEq` agrees with a plain byte
+        /// comparison of the underlying digests for arbitrary inputs, so the
+        /// constant-time path never changes the equality answer.
+        #[test]
+        fn token_hash_eq_matches_byte_compare(a in ".*", b in ".*") {
+            let ha = hash_token(&a);
+            let hb = hash_token(&b);
+            prop_assert_eq!(ha == hb, ha.0 == hb.0);
+        }
+
+        /// Every freshly generated token is URL-safe (base64url, no padding)
+        /// and its returned hash matches `hash_token` of the cleartext, so the
+        /// cleartext handed to the client and the hash persisted at rest stay
+        /// in lock-step. `seed` only varies the proptest case count.
+        #[test]
+        fn generated_token_is_url_safe_and_hash_matches(_seed in any::<u8>()) {
+            let (token, hash) = generate_token();
+            for ch in token.chars() {
+                prop_assert!(
+                    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_',
+                    "token contains non-url-safe char: {:?}",
+                    ch
+                );
+            }
+            prop_assert_eq!(hash, hash_token(&token));
+        }
+    }
 
     #[test]
     fn generated_tokens_are_url_safe_and_unique() {

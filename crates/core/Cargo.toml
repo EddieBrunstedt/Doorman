@@ -37,6 +37,7 @@ webauthn-rs-proto.workspace = true
 # path-only edge means a `cargo publish` of bauth-core drops it.
 bauth-test-support = { path = "../test-support" }
 criterion.workspace = true
+proptest.workspace = true
 # `test-util` adds paused-time control for the `background-purge` task test.
 tokio = { workspace = true, features = ["test-util"] }
 webauthn-authenticator-rs.workspace = true
