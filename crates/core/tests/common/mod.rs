@@ -30,6 +30,7 @@ use bauth_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
 };
+use bauth_core::metrics::Metrics;
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
 use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use bauth_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
@@ -38,7 +39,7 @@ use bauth_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use bauth_core::storage::{SessionStore, Storage, StoredPasskey, User, UserId, UserStore};
 use bauth_core::verification::EnrollmentFlow;
 use bauth_core::verification::TOKEN_PLACEHOLDER;
-use bauth_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
+use bauth_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
 use chrono::{DateTime, TimeZone, Utc};
 use url::Url;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
@@ -130,6 +131,7 @@ pub struct Harness {
     pub audit: Arc<InMemoryAuditSink>,
     pub email: Arc<CapturingEmailSender>,
     pub clock: Arc<MockClock>,
+    pub metrics: Arc<CapturingMetrics>,
 }
 
 impl Harness {
@@ -219,6 +221,7 @@ impl HarnessBuilder {
         let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
         let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
         let clock: Arc<MockClock> = Arc::new(MockClock::new(ts(2026, 1, 1)));
+        let metrics: Arc<CapturingMetrics> = Arc::new(CapturingMetrics::new());
 
         let notifier = SecurityEmailNotifier::new(
             email.clone() as Arc<dyn EmailSender>,
@@ -253,7 +256,8 @@ impl HarnessBuilder {
             self.signup_limiter,
             session_manager,
             storage,
-        );
+        )
+        .with_metrics(metrics.clone() as Arc<dyn Metrics>);
         let recovery_deps = CoreDeps {
             rate_limiter: self.recovery_limiter,
             ..signup_deps.clone()
@@ -288,6 +292,7 @@ impl HarnessBuilder {
             audit,
             email,
             clock,
+            metrics,
         }
     }
 }

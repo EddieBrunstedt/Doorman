@@ -13,6 +13,7 @@ pub mod context;
 pub mod email;
 pub mod error;
 pub mod memory;
+pub mod metrics;
 pub mod passkey;
 pub mod prelude;
 pub mod purge;

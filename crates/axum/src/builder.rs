@@ -56,6 +56,7 @@ use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::context::CoreDeps;
 use bauth_core::email::{BauthEmails, DefaultBauthEmails, EmailSender, SecurityEmailNotifier};
 use bauth_core::memory::InMemoryRateLimiter;
+use bauth_core::metrics::{Metrics, NoopMetrics};
 use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
 use bauth_core::rate_limit::RateLimiter;
 use bauth_core::recovery::{RecoveryConfig, RecoveryManager};
@@ -150,6 +151,7 @@ pub struct BauthBuilder {
     email: Option<Arc<dyn EmailSender>>,
     emails: Option<Arc<dyn BauthEmails>>,
     rate_limiter: Option<Arc<dyn RateLimiter>>,
+    metrics: Option<Arc<dyn Metrics>>,
     session_config: Option<SessionConfig>,
     cookie_config: Option<CookieConfig>,
     cache_config: Option<SessionCacheConfig>,
@@ -173,6 +175,7 @@ impl BauthBuilder {
             email: None,
             emails: None,
             rate_limiter: None,
+            metrics: None,
             session_config: None,
             cookie_config: None,
             cache_config: None,
@@ -246,6 +249,18 @@ impl BauthBuilder {
     /// [`InMemoryRateLimiter`]: bauth_core::memory::InMemoryRateLimiter
     pub fn limiter(mut self, limiter: Arc<dyn RateLimiter>) -> Self {
         self.rate_limiter = Some(limiter);
+        self
+    }
+
+    /// Wire a [`Metrics`] sink for production telemetry. The auth managers
+    /// report login success, authentication failure, and per-ceremony
+    /// latency through it, and the session layer reports cache hit / miss.
+    /// Defaults to [`NoopMetrics`], which discards every observation.
+    ///
+    /// [`Metrics`]: bauth_core::metrics::Metrics
+    /// [`NoopMetrics`]: bauth_core::metrics::NoopMetrics
+    pub fn metrics(mut self, metrics: Arc<dyn Metrics>) -> Self {
+        self.metrics = Some(metrics);
         self
     }
 
@@ -326,6 +341,9 @@ impl BauthBuilder {
         let limiter: Arc<dyn RateLimiter> = self
             .rate_limiter
             .unwrap_or_else(|| Arc::new(InMemoryRateLimiter::new(clock.clone())));
+        let metrics: Arc<dyn Metrics> = self
+            .metrics
+            .unwrap_or_else(|| Arc::new(NoopMetrics) as Arc<dyn Metrics>);
         let session_config = self.session_config.unwrap_or_default();
 
         // The collaborator traits no longer expose diagnostic methods; the
@@ -427,12 +445,14 @@ impl BauthBuilder {
             limiter,
             session_manager.clone(),
             self.storage.clone(),
-        );
+        )
+        .with_metrics(metrics.clone());
 
         let mut builder = ManagerBuilder::default()
             .session_manager(session_manager)
             .user_store(deps.users.clone())
             .session_cache(cache)
+            .metrics(metrics)
             .inherited_warnings(warnings);
         if self.silence_warnings {
             builder = builder.silence_warnings();

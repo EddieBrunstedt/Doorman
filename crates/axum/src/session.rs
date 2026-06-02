@@ -21,6 +21,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Request};
 use axum::response::Response;
 use bauth_core::clock::Clock;
+use bauth_core::metrics::{MetricEvent, Metrics};
 use bauth_core::session::SessionManager;
 use bauth_core::storage::{Session, User, UserStore};
 use bauth_core::token::hash_token;
@@ -64,6 +65,7 @@ pub(crate) struct SessionLayerState {
     pub(crate) cookie_name: String,
     pub(crate) cache: SessionCache,
     pub(crate) csrf: Option<CsrfConfig>,
+    pub(crate) metrics: Arc<dyn Metrics>,
 }
 
 /// Tower layer constructed via
@@ -142,6 +144,7 @@ where
                     // user-store fetch. On miss, fall through to the canonical
                     // validate path and seed the cache with the result.
                     if let Some(cached) = state.cache.get(&token_hash) {
+                        state.metrics.record(MetricEvent::CacheHit);
                         let span = tracing::Span::current();
                         span.record("session_id", tracing::field::display(cached.session.id));
                         span.record("user_id", tracing::field::display(cached.user.id));
@@ -151,25 +154,30 @@ where
                             token,
                             clock: state.session_manager.clock().clone(),
                         });
-                    } else if let Ok(session) =
-                        state.session_manager.validate_by_hash(&token_hash).await
-                        && let Ok(Some(user)) =
-                            state.user_store.find_user_by_id(session.user_id).await
-                    {
-                        let span = tracing::Span::current();
-                        span.record("session_id", tracing::field::display(session.id));
-                        span.record("user_id", tracing::field::display(user.id));
-                        let session = Arc::new(session);
-                        let user = Arc::new(user);
-                        state
-                            .cache
-                            .insert(token_hash, session.clone(), user.clone());
-                        req.extensions_mut().insert(AuthContext {
-                            user,
-                            session,
-                            token,
-                            clock: state.session_manager.clock().clone(),
-                        });
+                    } else {
+                        // Miss: the cache did not serve this token, regardless
+                        // of whether the fall-through validate then succeeds.
+                        state.metrics.record(MetricEvent::CacheMiss);
+                        if let Ok(session) =
+                            state.session_manager.validate_by_hash(&token_hash).await
+                            && let Ok(Some(user)) =
+                                state.user_store.find_user_by_id(session.user_id).await
+                        {
+                            let span = tracing::Span::current();
+                            span.record("session_id", tracing::field::display(session.id));
+                            span.record("user_id", tracing::field::display(user.id));
+                            let session = Arc::new(session);
+                            let user = Arc::new(user);
+                            state
+                                .cache
+                                .insert(token_hash, session.clone(), user.clone());
+                            req.extensions_mut().insert(AuthContext {
+                                user,
+                                session,
+                                token,
+                                clock: state.session_manager.clock().clone(),
+                            });
+                        }
                     }
                 }
                 inner.call(req).await

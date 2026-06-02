@@ -16,6 +16,7 @@ use std::sync::Arc;
 use crate::audit::AuditSink;
 use crate::clock::Clock;
 use crate::email::{EmailSender, SecurityEmailNotifier};
+use crate::metrics::{Metrics, NoopMetrics};
 use crate::rate_limit::RateLimiter;
 use crate::session::SessionManager;
 use crate::storage::{
@@ -54,6 +55,11 @@ pub struct CoreDeps {
     /// Limiter enforced by the enrollment (signup / recovery) request
     /// endpoints. Unused by the passkey and session managers.
     pub rate_limiter: Arc<dyn RateLimiter>,
+    /// Optional metrics sink for the auth hot-path counters (login success,
+    /// auth failure, auth latency). Defaults to
+    /// [`NoopMetrics`](crate::metrics::NoopMetrics); set a host backend with
+    /// [`with_metrics`](Self::with_metrics).
+    pub metrics: Arc<dyn Metrics>,
     /// Session manager the passkey and enrollment flows mint sessions
     /// through.
     pub sessions: SessionManager,
@@ -89,11 +95,20 @@ impl CoreDeps {
             email,
             notifier,
             rate_limiter,
+            metrics: Arc::new(NoopMetrics),
             sessions,
             users: storage.users,
             verification_tokens: storage.verification_tokens,
             passkey_credentials: storage.passkey_credentials,
             passkey_challenges: storage.passkey_challenges,
         }
+    }
+
+    /// Attach a metrics sink for the auth hot-path counters. Returns the
+    /// updated context so it can be chained after [`new`](Self::new); the
+    /// default is [`NoopMetrics`](crate::metrics::NoopMetrics).
+    pub fn with_metrics(mut self, metrics: Arc<dyn Metrics>) -> Self {
+        self.metrics = metrics;
+        self
     }
 }

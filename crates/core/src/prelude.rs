@@ -19,6 +19,7 @@ pub use crate::email::{
     TerminalEmailSender,
 };
 pub use crate::error::{Error, Result, StorageError, StorageResult};
+pub use crate::metrics::{MetricEvent, Metrics, NoopMetrics};
 pub use crate::passkey::{PasskeyConfig, PasskeyManager};
 pub use crate::purge::PurgeSummary;
 pub use crate::rate_limit::{

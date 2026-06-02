@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use bauth_core::metrics::{Metrics, NoopMetrics};
 use bauth_core::session::SessionManager;
 use bauth_core::storage::UserStore;
 use url::Url;
@@ -149,6 +150,7 @@ pub struct ManagerBuilder {
     silence_warnings: bool,
     external_origin: Option<Url>,
     csrf_config: Option<CsrfConfig>,
+    metrics: Option<Arc<dyn Metrics>>,
 
     passkey: Option<PasskeyManager>,
     signup: Option<SignupManager>,
@@ -219,6 +221,16 @@ impl ManagerBuilder {
     /// and disabled otherwise.
     pub fn csrf(mut self, config: CsrfConfig) -> Self {
         self.csrf_config = Some(config);
+        self
+    }
+
+    /// Wire a [`Metrics`] sink for the session-layer cache hit / miss
+    /// counters. The core managers report their own counters (login success,
+    /// auth failure, latency) through the metrics sink they were built with;
+    /// this setter covers the axum layer's cache observations. Defaults to
+    /// [`NoopMetrics`].
+    pub fn metrics(mut self, metrics: Arc<dyn Metrics>) -> Self {
+        self.metrics = Some(metrics);
         self
     }
 
@@ -306,12 +318,17 @@ impl ManagerBuilder {
             .session_cache
             .unwrap_or_else(|| SessionCache::new(self.cache_config.unwrap_or_default()));
 
+        let metrics = self
+            .metrics
+            .unwrap_or_else(|| Arc::new(NoopMetrics) as Arc<dyn Metrics>);
+
         let layer_state = Arc::new(SessionLayerState {
             session_manager: session_manager.clone(),
             user_store: user_store.clone(),
             cookie_name: cookie_config.session_cookie_name.clone(),
             cache: cache.clone(),
             csrf: csrf_config,
+            metrics,
         });
 
         let state = BauthState {

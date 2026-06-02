@@ -939,3 +939,84 @@ async fn authenticate_finish_is_rate_limited_per_credential() {
         .expect_err("second finish for the same credential is limited");
     assert!(matches!(err, Error::RateLimited { .. }));
 }
+
+#[tokio::test]
+async fn successful_login_records_login_and_latency_metrics() {
+    use bauth_core::metrics::MetricEvent;
+
+    let h = Harness::fresh();
+    let user = make_user(&h, "metrics@example.com").await;
+    let mut wa = authenticator();
+    let credential = register_passkey(&h, user.id, &mut wa, None).await;
+
+    let (auth_id, rcr) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
+    let assertion = wa.do_authentication(rcr, &credential.credential_id);
+    h.passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect("finish auth");
+
+    assert_eq!(
+        h.metrics.count(MetricEvent::LoginSucceeded),
+        1,
+        "one login recorded"
+    );
+    assert_eq!(
+        h.metrics.count(MetricEvent::AuthFailed {
+            reason: AuthFailureReason::BadAssertion,
+        }),
+        0,
+        "no failure recorded on the success path"
+    );
+    assert!(
+        h.metrics.has_latency(),
+        "auth ceremony latency recorded on success"
+    );
+}
+
+#[tokio::test]
+async fn failed_login_records_auth_failure_and_latency_metrics() {
+    use bauth_core::metrics::MetricEvent;
+
+    let h = Harness::fresh();
+    let user = make_user(&h, "gone@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+
+    let (auth_id, rcr) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
+    let assertion = wa.do_authentication(rcr, &cred.credential_id);
+    h.credentials
+        .delete_passkey(&cred.credential_id)
+        .await
+        .expect("delete credential");
+
+    h.passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect_err("missing credential");
+
+    assert_eq!(
+        h.metrics.count(MetricEvent::AuthFailed {
+            reason: AuthFailureReason::UnknownCredential,
+        }),
+        1,
+        "the unknown-credential rejection is counted"
+    );
+    assert_eq!(
+        h.metrics.count(MetricEvent::LoginSucceeded),
+        0,
+        "no login recorded on the failure path"
+    );
+    assert!(
+        h.metrics.has_latency(),
+        "auth ceremony latency recorded even on rejection"
+    );
+}

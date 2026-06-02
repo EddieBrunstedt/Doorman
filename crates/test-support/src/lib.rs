@@ -25,6 +25,7 @@ use bauth_core::audit::{AuditEvent, AuditSink};
 use bauth_core::clock::Clock;
 use bauth_core::email::{Email, EmailSender};
 use bauth_core::error::{EmailError, EmailResult};
+use bauth_core::metrics::{MetricEvent, Metrics};
 
 /// Mutable clock for deterministic tests.
 #[derive(Debug)]
@@ -141,5 +142,49 @@ impl EmailSender for CapturingEmailSender {
         }
         sent.push(email);
         Ok(())
+    }
+}
+
+/// Metrics sink that records every [`MetricEvent`] in memory for tests.
+#[derive(Debug, Default)]
+pub struct CapturingMetrics {
+    events: Mutex<Vec<MetricEvent>>,
+}
+
+impl CapturingMetrics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn events(&self) -> Vec<MetricEvent> {
+        self.events.lock().expect("metrics mutex poisoned").clone()
+    }
+
+    /// Count the observations equal to `event`.
+    pub fn count(&self, event: MetricEvent) -> usize {
+        self.events
+            .lock()
+            .expect("metrics mutex poisoned")
+            .iter()
+            .filter(|e| **e == event)
+            .count()
+    }
+
+    /// Whether any recorded [`MetricEvent::AuthLatency`] observation exists.
+    pub fn has_latency(&self) -> bool {
+        self.events
+            .lock()
+            .expect("metrics mutex poisoned")
+            .iter()
+            .any(|e| matches!(e, MetricEvent::AuthLatency(_)))
+    }
+}
+
+impl Metrics for CapturingMetrics {
+    fn record(&self, event: MetricEvent) {
+        self.events
+            .lock()
+            .expect("metrics mutex poisoned")
+            .push(event);
     }
 }

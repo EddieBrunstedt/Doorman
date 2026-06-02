@@ -12,7 +12,7 @@
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -32,6 +32,7 @@ use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
+use crate::metrics::{MetricEvent, Metrics};
 use crate::rate_limit::{RateLimitPolicy, RateLimiter};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
@@ -181,6 +182,7 @@ pub struct PasskeyManager {
     audit: Arc<dyn AuditSink>,
     notifier: SecurityEmailNotifier,
     rate_limiter: Arc<dyn RateLimiter>,
+    metrics: Arc<dyn Metrics>,
     webauthn: Arc<Webauthn>,
     config: PasskeyConfig,
 }
@@ -212,6 +214,7 @@ impl PasskeyManager {
             audit: deps.audit.clone(),
             notifier: deps.notifier.clone(),
             rate_limiter: deps.rate_limiter.clone(),
+            metrics: deps.metrics.clone(),
             webauthn: Arc::new(webauthn),
             config,
         })
@@ -510,6 +513,7 @@ impl PasskeyManager {
         user_id: Option<UserId>,
         reason: AuthFailureReason,
     ) {
+        self.metrics.record(MetricEvent::AuthFailed { reason });
         self.audit
             .emit(AuditEvent {
                 timestamp: now,
@@ -574,6 +578,13 @@ impl PasskeyManager {
         response: &PublicKeyCredential,
         context: SessionContext,
     ) -> Result<IssuedSession> {
+        // Record the ceremony's wall-clock latency on every outcome: the
+        // guard fires its `AuthLatency` observation when this scope unwinds,
+        // whether through a rate-limit `?`, a rejection, or success — so the
+        // histogram captures the full finish-endpoint cost without a record
+        // call on each return path.
+        let _latency = AuthLatencyGuard::start(self.metrics.clone());
+
         // Throttle before consuming the single-use challenge, keyed both by
         // source IP and by the asserted credential id, so a flood cannot burn
         // challenges or pound one credential. The credential id is the raw
@@ -701,6 +712,7 @@ impl PasskeyManager {
         credential.backup_state = refreshed.backup_state;
         self.credentials.update_passkey(credential).await?;
 
+        self.metrics.record(MetricEvent::LoginSucceeded);
         self.audit
             .emit(AuditEvent {
                 timestamp: now,
@@ -799,6 +811,33 @@ fn display_names_for(user: &User) -> (String, String) {
     let id_str = user.id.to_string();
     let name = user.email.clone().unwrap_or_else(|| id_str.clone());
     (name.clone(), name)
+}
+
+/// RAII guard that records a `finish_authentication` ceremony's wall-clock
+/// duration through the metrics sink on drop, so the [`MetricEvent::AuthLatency`]
+/// observation fires on every return path without a record call threaded
+/// through each early `?`. Uses [`Instant`] (monotonic) rather than the
+/// domain [`Clock`] because this is elapsed real time, not a logical
+/// timestamp.
+struct AuthLatencyGuard {
+    metrics: Arc<dyn Metrics>,
+    started: Instant,
+}
+
+impl AuthLatencyGuard {
+    fn start(metrics: Arc<dyn Metrics>) -> Self {
+        Self {
+            metrics,
+            started: Instant::now(),
+        }
+    }
+}
+
+impl Drop for AuthLatencyGuard {
+    fn drop(&mut self) {
+        self.metrics
+            .record(MetricEvent::AuthLatency(self.started.elapsed()));
+    }
 }
 
 /// Device metadata read out of a freshly finished or updated [`Passkey`].
