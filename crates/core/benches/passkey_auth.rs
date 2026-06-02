@@ -1,10 +1,15 @@
-//! Passkey-authentication bench: the only crypto-heavy steady-state path.
+//! Passkey-authentication benches: the only crypto-heavy steady-state path.
 //!
-//! A credential is registered once during setup; each iteration drives a
-//! full discoverable authentication ceremony — `start_authentication`, the
-//! `SoftPasskey` signs the challenge, then `finish_authentication` verifies
-//! the assertion and issues a session. This is the headline number a host
-//! cares about for login throughput.
+//! A credential is registered once during setup; two benches then drive it:
+//!
+//! - `passkey_authenticate` — the full discoverable ceremony per iteration:
+//!   `start_authentication`, the `SoftPasskey` signs the challenge, then
+//!   `finish_authentication` verifies the assertion and issues a session. The
+//!   headline login-throughput number.
+//! - `passkey_finish` — isolates the server-side verify cost. Each iteration's
+//!   `start_authentication` + signing happens in an untimed `iter_custom`
+//!   setup, so only `finish_authentication` (assertion verification, counter
+//!   check, user-handle binding, session issue) is timed.
 //!
 //! `SoftPasskey` cannot mint resident keys, so registration relaxes the
 //! resident-key flags locally (bauth still issues `residentKey=required`)
@@ -18,7 +23,7 @@
 //! ```
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
@@ -192,6 +197,49 @@ fn passkey_auth(c: &mut Criterion) {
                     .finish_authentication(auth_id, &assertion, SessionContext::default())
                     .await
                     .expect("finish authentication");
+            }
+        });
+    });
+
+    // Finish-only: start + sign in untimed setup, time just the verify path.
+    c.bench_function("passkey_finish", |b| {
+        b.to_async(&runtime).iter_custom(|iters| {
+            let scaffold = &scaffold;
+            let authenticator = authenticator.clone();
+            let credential_id = credential_id.clone();
+            let user_handle = user_handle.clone();
+            async move {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    // Untimed: fresh challenge and a signed assertion for it.
+                    let (auth_id, rcr) = scaffold
+                        .manager
+                        .start_authentication(SessionContext::default())
+                        .await
+                        .expect("start authentication");
+                    let mut compatible = rcr;
+                    compatible.public_key.allow_credentials = vec![AllowCredentials {
+                        type_: "public-key".to_string(),
+                        id: credential_id.clone().into(),
+                        transports: None,
+                    }];
+                    let mut assertion: PublicKeyCredential = authenticator
+                        .lock()
+                        .expect("authenticator poisoned")
+                        .do_authentication(auth_origin(), compatible)
+                        .expect("authenticator auth");
+                    assertion.response.user_handle = Some(user_handle.clone().into());
+
+                    // Timed: server-side assertion verification + session issue.
+                    let start = Instant::now();
+                    scaffold
+                        .manager
+                        .finish_authentication(auth_id, &assertion, SessionContext::default())
+                        .await
+                        .expect("finish authentication");
+                    total += start.elapsed();
+                }
+                total
             }
         });
     });

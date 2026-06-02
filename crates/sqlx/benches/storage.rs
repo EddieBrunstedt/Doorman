@@ -1,49 +1,75 @@
-//! Storage-adapter bench: the cost of the SQLx + SQLite session adapter,
-//! to compare against the in-memory reference baseline (`bauth-core`'s
-//! `session` bench).
+//! Storage-adapter benches: the cost of the SQLx adapters, to compare
+//! against the in-memory reference baseline (`bauth-core`'s `session` bench).
 //!
-//! - `create` — insert a fresh session row into a table pre-seeded to a
-//!   representative size, so the number reflects a populated table rather
-//!   than the empty-table fast path. (Note: an insert-only bench grows the
-//!   table over a run, so very long runs drift upward; the seed keeps the
-//!   number stable and realistic across normal runs.)
-//! - `find_by_token_hash` — the per-request hot path the session layer
-//!   runs on every authenticated request.
+//! Every benchmark is registered under a per-dialect criterion group so the
+//! ids read `sqlite/...` and (when enabled) `postgres/...`:
+//!
+//! - `session_create` — insert a fresh session row into a table pre-seeded to
+//!   a representative size, so the number reflects a populated B-tree rather
+//!   than the empty-table fast path.
+//! - `find_by_token_hash` — the per-request hot path the session layer runs
+//!   on every authenticated request, against the seeded table.
 //! - `find_by_id` — the indexed primary-key lookup.
+//! - `find_by_token_hash/{1,100,10000}` — the same lookup at three table
+//!   sizes, to show how the hashed-token index scales.
+//! - `list_for_user/{1,100,10000}` — listing a user's active sessions as the
+//!   per-user row count grows.
+//! - `purge_expired` — sweeping a table full of expired rows (the indexed
+//!   `DELETE ... WHERE expires_at <= ?`), re-seeded before each timed pass.
 //!
-//! Runs against an ephemeral `sqlite::memory:` database. Requires the
-//! `sqlite` feature:
+//! SQLite always runs against an ephemeral `sqlite::memory:` database.
+//! Postgres is optional: compile with the `postgres` feature and point
+//! `PG_URL` at a disposable database to add a mirrored `postgres/...` group.
+//! The Postgres path drops and recreates the `public` schema for a clean
+//! migration state, exactly like the conformance suite — do not point it at
+//! data you want to keep.
 //!
 //! ```sh
+//! # SQLite only
 //! cargo bench -p bauth-sqlx --features sqlite --bench storage
+//!
+//! # SQLite + Postgres
+//! PG_URL=postgres://postgres:postgres@localhost/bauth_bench \
+//!     cargo bench -p bauth-sqlx --features "sqlite postgres" --bench storage
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bauth_core::session::hash_token;
-use bauth_core::storage::{Session, SessionId, SessionStore, User, UserId};
-use bauth_sqlx::SqliteStorage;
+use bauth_core::storage::{Session, SessionId, Storage, TokenHash, User, UserId};
 use chrono::Utc;
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tokio::runtime::Runtime;
 
-struct Scaffold {
-    sessions: std::sync::Arc<dyn SessionStore>,
+/// Table sizes used by the scaling benches.
+const SCALE_SIZES: [u32; 3] = [1, 100, 10_000];
+/// Rows pre-seeded for the fixed-size read/write benches.
+const SEED_ROWS: u32 = 2_000;
+/// Expired rows seeded before each `purge_expired` pass.
+const PURGE_EXPIRED_ROWS: u32 = 500;
+
+fn make_session(
+    id: SessionId,
     user_id: UserId,
-    seeded_token_hash: bauth_core::storage::TokenHash,
-    seeded_id: SessionId,
+    token_hash: TokenHash,
+    now: chrono::DateTime<Utc>,
+    expires_at: chrono::DateTime<Utc>,
+) -> Session {
+    Session {
+        id,
+        user_id,
+        token_hash,
+        created_at: now,
+        expires_at,
+        ip: None,
+        user_agent: None,
+        recovery_cooldown_until: None,
+    }
 }
 
-async fn build_scaffold() -> Scaffold {
-    let storage = SqliteStorage::connect("sqlite::memory:")
-        .await
-        .expect("connect");
-    storage.migrate().await.expect("migrate");
-
-    let users = storage.user_store();
-    let sessions = storage.session_store();
-
+/// Create a verified user in `storage` and return its id.
+async fn seed_user(storage: &Storage) -> UserId {
     let now = Utc::now();
     let user = User {
         id: UserId::new(),
@@ -53,107 +79,259 @@ async fn build_scaffold() -> Scaffold {
         updated_at: now,
     };
     let user_id = user.id;
-    users.create_user(user).await.expect("create user");
+    storage.users.create_user(user).await.expect("create user");
+    user_id
+}
 
-    // Pre-seed the table to a representative size so `create` measures
-    // inserts into a populated B-tree, not the empty-table fast path, and
-    // the read benches resolve against a realistically sized index.
-    const SEED_ROWS: u32 = 2_000;
-    for n in 0..SEED_ROWS {
-        sessions
+/// Insert `count` live sessions for `user_id`, tagging each token hash with
+/// `prefix` so callers can seed disjoint sets.
+async fn seed_sessions(storage: &Storage, user_id: UserId, count: u32, prefix: &str) {
+    let now = Utc::now();
+    let expires_at = now + chrono::Duration::hours(1);
+    for n in 0..count {
+        storage
+            .sessions
             .create_session(make_session(
                 SessionId::new(),
                 user_id,
-                hash_token(&format!("seed-{n}")),
+                hash_token(&format!("{prefix}-{n}")),
                 now,
+                expires_at,
             ))
             .await
             .expect("seed session");
     }
-
-    // One known seeded session for the read benches.
-    let seeded_token_hash = hash_token("seeded-token");
-    let seeded_id = SessionId::new();
-    sessions
-        .create_session(make_session(seeded_id, user_id, seeded_token_hash, now))
-        .await
-        .expect("seed session");
-
-    Scaffold {
-        sessions,
-        user_id,
-        seeded_token_hash,
-        seeded_id,
-    }
 }
 
-fn make_session(
-    id: SessionId,
-    user_id: UserId,
-    token_hash: bauth_core::storage::TokenHash,
-    now: chrono::DateTime<Utc>,
-) -> Session {
-    Session {
-        id,
-        user_id,
-        token_hash,
-        created_at: now,
-        expires_at: now + chrono::Duration::hours(1),
-        ip: None,
-        user_agent: None,
-        recovery_cooldown_until: None,
-    }
-}
+/// Run the full bench suite for one dialect's composite store.
+fn run_backend(c: &mut Criterion, runtime: &Runtime, label: &str, make: &dyn Fn() -> Storage) {
+    // A populated store shared by the fixed-size read/write benches.
+    let fixed = make();
+    let (user_id, seeded_token_hash, seeded_id) = runtime.block_on(async {
+        let user_id = seed_user(&fixed).await;
+        seed_sessions(&fixed, user_id, SEED_ROWS, "seed").await;
 
-fn storage(c: &mut Criterion) {
-    let runtime = Runtime::new().expect("tokio runtime");
-    let scaffold = runtime.block_on(build_scaffold());
+        let now = Utc::now();
+        let seeded_token_hash = hash_token("seeded-token");
+        let seeded_id = SessionId::new();
+        fixed
+            .sessions
+            .create_session(make_session(
+                seeded_id,
+                user_id,
+                seeded_token_hash,
+                now,
+                now + chrono::Duration::hours(1),
+            ))
+            .await
+            .expect("seed known session");
+        (user_id, seeded_token_hash, seeded_id)
+    });
+
+    let mut group = c.benchmark_group(label);
+    group.measurement_time(Duration::from_secs(5));
+
     let now = Utc::now();
     let counter = AtomicU64::new(0);
-
-    c.bench_function("sqlite_session_create", |b| {
-        b.to_async(&runtime).iter(|| async {
+    group.bench_function("session_create", |b| {
+        b.to_async(runtime).iter(|| async {
             let n = counter.fetch_add(1, Ordering::Relaxed);
-            let session = make_session(
-                SessionId::new(),
-                scaffold.user_id,
-                hash_token(&format!("create-{n}")),
-                now,
-            );
-            scaffold
+            fixed
                 .sessions
-                .create_session(session)
+                .create_session(make_session(
+                    SessionId::new(),
+                    user_id,
+                    hash_token(&format!("create-{n}")),
+                    now,
+                    now + chrono::Duration::hours(1),
+                ))
                 .await
                 .expect("create session");
         });
     });
 
-    c.bench_function("sqlite_find_by_token_hash", |b| {
-        b.to_async(&runtime).iter(|| async {
-            scaffold
+    group.bench_function("find_by_token_hash", |b| {
+        b.to_async(runtime).iter(|| async {
+            fixed
                 .sessions
-                .find_session_by_token_hash(&scaffold.seeded_token_hash)
+                .find_session_by_token_hash(&seeded_token_hash)
                 .await
                 .expect("find by token hash")
                 .expect("session exists");
         });
     });
 
-    c.bench_function("sqlite_find_by_id", |b| {
-        b.to_async(&runtime).iter(|| async {
-            scaffold
+    group.bench_function("find_by_id", |b| {
+        b.to_async(runtime).iter(|| async {
+            fixed
                 .sessions
-                .find_session_by_id(scaffold.seeded_id)
+                .find_session_by_id(seeded_id)
                 .await
                 .expect("find by id")
                 .expect("session exists");
         });
     });
+
+    // Scaling: token-hash lookup against tables of growing size. Each size
+    // gets its own fresh store so the row count is exactly `size + 1`.
+    for size in SCALE_SIZES {
+        let store = make();
+        let token_hash = runtime.block_on(async {
+            let user_id = seed_user(&store).await;
+            seed_sessions(&store, user_id, size, "scale").await;
+            let token_hash = hash_token("scale-known");
+            let now = Utc::now();
+            store
+                .sessions
+                .create_session(make_session(
+                    SessionId::new(),
+                    user_id,
+                    token_hash,
+                    now,
+                    now + chrono::Duration::hours(1),
+                ))
+                .await
+                .expect("seed known session");
+            token_hash
+        });
+        group.bench_with_input(
+            BenchmarkId::new("find_by_token_hash", size),
+            &token_hash,
+            |b, token_hash| {
+                b.to_async(runtime).iter(|| async {
+                    store
+                        .sessions
+                        .find_session_by_token_hash(token_hash)
+                        .await
+                        .expect("find by token hash")
+                        .expect("session exists");
+                });
+            },
+        );
+    }
+
+    // Scaling: list a user's active sessions as the per-user count grows.
+    for size in SCALE_SIZES {
+        let store = make();
+        let scoped_user = runtime.block_on(async {
+            let user_id = seed_user(&store).await;
+            seed_sessions(&store, user_id, size, "list").await;
+            user_id
+        });
+        group.throughput(Throughput::Elements(u64::from(size)));
+        group.bench_with_input(
+            BenchmarkId::new("list_for_user", size),
+            &scoped_user,
+            |b, &scoped_user| {
+                b.to_async(runtime).iter(|| async {
+                    let now = Utc::now();
+                    let sessions = store
+                        .sessions
+                        .list_for_user(scoped_user, now)
+                        .await
+                        .expect("list for user");
+                    std::hint::black_box(sessions);
+                });
+            },
+        );
+    }
+    // Purge: sweep a table full of expired rows. Re-seed before each timed
+    // pass via `iter_custom`, since the sweep empties the table. Throughput is
+    // reported per expired row removed.
+    let purge_store = make();
+    let purge_user = runtime.block_on(seed_user(&purge_store));
+    group.throughput(Throughput::Elements(u64::from(PURGE_EXPIRED_ROWS)));
+    group.sample_size(20);
+    group.bench_function("purge_expired", |b| {
+        b.to_async(runtime).iter_custom(|iters| {
+            let store = &purge_store;
+            async move {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    // Untimed setup: a fresh batch of already-expired rows.
+                    let now = Utc::now();
+                    let expired = now - chrono::Duration::hours(1);
+                    for n in 0..PURGE_EXPIRED_ROWS {
+                        store
+                            .sessions
+                            .create_session(make_session(
+                                SessionId::new(),
+                                purge_user,
+                                hash_token(&format!("expired-{n}")),
+                                now - chrono::Duration::hours(2),
+                                expired,
+                            ))
+                            .await
+                            .expect("seed expired session");
+                    }
+                    let start = Instant::now();
+                    let removed = store
+                        .sessions
+                        .purge_expired(now)
+                        .await
+                        .expect("purge expired");
+                    total += start.elapsed();
+                    assert!(removed >= u64::from(PURGE_EXPIRED_ROWS));
+                }
+                total
+            }
+        });
+    });
+
+    group.finish();
 }
 
-criterion_group! {
-    name = benches;
-    config = Criterion::default().measurement_time(Duration::from_secs(5));
-    targets = storage
+/// Build a fresh, migrated in-memory SQLite composite. Each call is an
+/// independent database, so the scaling benches get exact row counts.
+#[cfg(feature = "sqlite")]
+fn sqlite_storage(runtime: &Runtime) -> Storage {
+    runtime.block_on(async {
+        let storage = bauth_sqlx::SqliteStorage::connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite");
+        storage.migrate().await.expect("migrate sqlite");
+        storage.storage()
+    })
 }
+
+fn storage(c: &mut Criterion) {
+    let runtime = Runtime::new().expect("tokio runtime");
+
+    #[cfg(feature = "sqlite")]
+    run_backend(c, &runtime, "sqlite", &|| sqlite_storage(&runtime));
+
+    // `run_backend` finishes each store's benches before the next `make()`
+    // call, so resetting the shared Postgres schema per call is safe: it only
+    // ever wipes a store whose benches have already completed. This gives each
+    // scaling size an exact row count, mirroring SQLite's fresh databases.
+    #[cfg(feature = "postgres")]
+    match std::env::var("PG_URL").ok() {
+        Some(url) => {
+            let pool = runtime
+                .block_on(sqlx::PgPool::connect(&url))
+                .expect("pg connect");
+            let make = || {
+                runtime.block_on(async {
+                    sqlx::query("DROP SCHEMA IF EXISTS public CASCADE")
+                        .execute(&pool)
+                        .await
+                        .expect("drop schema");
+                    sqlx::query("CREATE SCHEMA public")
+                        .execute(&pool)
+                        .await
+                        .expect("create schema");
+                    let storage = bauth_sqlx::PostgresStorage::from_pool(pool.clone());
+                    storage.migrate().await.expect("migrate postgres");
+                    storage.storage()
+                })
+            };
+            run_backend(c, &runtime, "postgres", &make);
+        }
+        None => {
+            eprintln!("PG_URL not set; skipping Postgres storage benches");
+        }
+    }
+}
+
+criterion_group!(benches, storage);
 criterion_main!(benches);

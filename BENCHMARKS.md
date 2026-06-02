@@ -2,7 +2,7 @@
 
 bauth ships [criterion](https://github.com/bheisler/criterion.rs) benches covering the hot auth paths at three layers: the framework-agnostic managers (`bauth-core`), the HTTP request path (`bauth-axum`), and the storage adapters (`bauth-sqlx`).
 
-Absolute numbers are machine-specific and not meaningful on their own. The value is in **relative** comparison: cached vs uncached, allowed vs limited, in-memory vs SQLite, with vs without crypto. Run a baseline, change something, and compare — criterion reports the delta automatically.
+Absolute numbers are machine-specific and not meaningful on their own. The value is in **relative** comparison: cached vs uncached, allowed vs limited, in-memory vs SQLite vs Postgres, with vs without crypto, and one table size vs another. Run a baseline, change something, and compare — criterion reports the delta automatically.
 
 ## Running
 
@@ -12,12 +12,17 @@ cargo bench -p bauth-core
 cargo bench -p bauth-axum
 cargo bench -p bauth-sqlx --features sqlite
 
+# Storage benches with the optional Postgres path (see below)
+PG_URL=postgres://postgres:postgres@localhost/bauth_bench \
+    cargo bench -p bauth-sqlx --features "sqlite postgres" --bench storage
+
 # A single bench target
 cargo bench -p bauth-core --bench passkey_auth
-cargo bench -p bauth-axum --bench session_cache
+cargo bench -p bauth-axum --bench concurrency
 
 # A single function within a target (substring filter)
 cargo bench -p bauth-core --bench session -- token_hash
+cargo bench -p bauth-sqlx --features sqlite --bench storage -- list_for_user
 
 # Quick smoke run (rough numbers, much faster)
 cargo bench -p bauth-core --bench session -- \
@@ -25,6 +30,60 @@ cargo bench -p bauth-core --bench session -- \
 ```
 
 Criterion writes detailed reports (including HTML if `gnuplot` is present) under `target/criterion/`.
+
+## Reproducible protocol
+
+Benchmarks are only comparable when the build and the machine are held fixed. The workspace pins a dedicated `[profile.bench]` (in the root `Cargo.toml`) so the binary is built the same way every time:
+
+```toml
+[profile.bench]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = false
+```
+
+`codegen-units = 1` plus fat LTO removes the run-to-run variance that incremental codegen-unit partitioning otherwise introduces. The first build under this profile is slow; subsequent runs reuse it.
+
+To get stable, comparable numbers:
+
+1. **Record the environment** (fill the table below for any numbers you publish): exact `rustc -Vv`, CPU model, core count, RAM, OS/kernel, and the CPU frequency governor.
+2. **Pin the CPU.** On Linux set the governor to `performance` and disable turbo/boost so clocks don't drift mid-run:
+   ```sh
+   sudo cpupower frequency-set -g performance
+   # AMD: echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost
+   # Intel: echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
+   ```
+3. **Quiesce the machine.** Close other workloads; run on AC power; let the machine reach thermal steady state.
+4. **Use a real measurement window.** Run the full criterion defaults (no `--measurement-time` shortcuts) for any number you intend to compare or publish. The smoke-run flags above are for "did it move a lot?", not for the record.
+5. **Compare with saved baselines** (below) rather than eyeballing two separate runs.
+
+### Environment template
+
+Fill this in alongside any published numbers:
+
+| Field      | Value                                  |
+| ---------- | -------------------------------------- |
+| `rustc`    | _e.g._ `1.85.0 (stable)`               |
+| CPU        | _e.g._ `AMD Ryzen 9 7950X, 16C/32T`    |
+| RAM        | _e.g._ `64 GiB`                        |
+| OS/kernel  | _e.g._ `Arch Linux, 7.0.10`            |
+| Governor   | _e.g._ `performance, boost off`        |
+| bauth rev  | _e.g._ `git rev-parse --short HEAD`    |
+
+## Saved baselines and regression comparison
+
+Criterion can persist a named baseline and compare a later run against it — this is what CI uses to flag regressions (wired up in the release-hygiene phase).
+
+```sh
+# Record a baseline named "main"
+cargo bench -p bauth-core --bench session -- --save-baseline main
+
+# Later, compare the working tree against it (does not overwrite "main")
+cargo bench -p bauth-core --bench session -- --baseline main
+```
+
+A typical local flow: `--save-baseline before`, make a change, `--baseline before`. Criterion prints the percentage change and whether it considers the difference significant. Baselines live under `target/criterion/` and are keyed by benchmark id, so renaming a bench function starts a fresh baseline.
 
 ## What is measured
 
@@ -34,35 +93,48 @@ Criterion writes detailed reports (including HTML if `gnuplot` is present) under
 | ----------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `session`         | `session_create`       | `SessionManager::create` against the in-memory store (token gen + hash + insert + audit emit).                                                                    |
 | `session`         | `session_validate`     | Manager-level `validate` against the in-memory store (no cache in front — `bauth-axum` measures cache behavior separately).                                       |
-| `session`         | `token_hash`           | `hash_token` throughput. Runs on every authenticated request.                                                                                                     |
+| `session`         | `token_hash`           | `hash_token` throughput. Runs on every authenticated request; the end-to-end request benches (`bauth-axum` `request_path`) fold this cost into the full path.     |
 | `rate_limit`      | `rate_limit_allowed`   | `InMemoryRateLimiter::check` on a within-budget attempt.                                                                                                          |
 | `rate_limit`      | `rate_limit_limited`   | `check` on a saturated bucket (the hot path under an active attack).                                                                                              |
 | `enrollment`      | `signup_request`       | `SignupManager::request_signup` — normalize/validate, rate-limit, user provisioning, token issuance, link render, captured email send.                            |
-| `passkey_auth`    | `passkey_authenticate` | Full discoverable auth ceremony: `start_authentication` → `SoftPasskey` signs → `finish_authentication` + session issue. The only crypto-heavy steady-state path. |
+| `passkey_auth`    | `passkey_authenticate` | Full discoverable auth ceremony: `start_authentication` → `SoftPasskey` signs → `finish_authentication` + session issue. The headline login-throughput number.    |
+| `passkey_auth`    | `passkey_finish`       | Just `finish_authentication` (assertion verify, counter check, user-handle binding, session issue); the start + signing happen in untimed `iter_custom` setup.    |
 
 ### `bauth-axum` — HTTP path via `tower::ServiceExt::oneshot`
 
-| Bench           | Function              | Path measured                                                                                                                                                              |
-| --------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session_cache` | `cache_hit`           | Raw `SessionCache::get` hit with a precomputed token hash. This isolates the real process-local cache, not the full session layer.                                         |
-| `session_cache` | `cache_miss_populate` | Cold-cache populate sequence after token extraction: hash token, observe cache miss, manager validate, user lookup, cache insert. Cache clearing happens in untimed setup. |
-| `request_path`  | `me_cached`           | `GET /me` with a valid bearer token, cache warm — the realistic per-request auth overhead added to every endpoint.                                                         |
-| `request_path`  | `me_uncached`         | The same request with the cache cleared in untimed setup each iteration (cold-cache store round-trip through the full router).                                             |
-| `request_path`  | `layer_no_auth`       | An unauthenticated request through the layer — its fixed cost on traffic carrying no session.                                                                              |
+| Bench           | Function                | Path measured                                                                                                                                                              |
+| --------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session_cache` | `cache_hit`             | Raw `SessionCache::get` hit with a precomputed token hash. This isolates the real process-local cache, not the full session layer.                                         |
+| `session_cache` | `cache_miss_populate`   | Cold-cache populate sequence after token extraction: hash token, observe cache miss, manager validate, user lookup, cache insert. Cache clearing happens in untimed setup. |
+| `request_path`  | `me_cached`             | `GET /me` with a valid bearer token, cache warm — the realistic per-request auth overhead (including token hashing) added to every endpoint.                               |
+| `request_path`  | `me_uncached`           | The same request with the cache cleared in untimed setup each iteration (cold-cache store round-trip through the full router).                                             |
+| `request_path`  | `layer_no_auth`         | An unauthenticated request through the layer — its fixed cost on traffic carrying no session.                                                                              |
+| `concurrency`   | `cache_hit`             | 32 concurrent `SessionCache::get` hits across distinct keys on a fixed 4-worker runtime — characterizes the sharded cache lock under fan-out.                              |
+| `concurrency`   | `validate`              | 32 concurrent `SessionManager::validate_by_hash` calls against the in-memory store with no cache — characterizes the reference store's read lock under fan-out.            |
+| `parsing`       | `csrf/same_origin_allow`| `CsrfLayer` decision on a same-origin cookie POST: parse `Cookie` + `Origin`, then call the inner service.                                                                 |
+| `parsing`       | `csrf/cross_origin_reject` | The CSRF decision on a cross-origin cookie POST: parse and short-circuit with a rejection.                                                                              |
+| `parsing`       | `csrf/bearer_bypass`    | The CSRF decision when an `Authorization: Bearer` header is present: the bearer parse skips the origin check.                                                              |
 
-### `bauth-sqlx` — storage adapters (requires `--features sqlite`)
+### `bauth-sqlx` — storage adapters
 
-| Bench     | Function                    | Path measured                                                |
-| --------- | --------------------------- | ------------------------------------------------------------ |
-| `storage` | `sqlite_session_create`     | Insert a session row.                                        |
-| `storage` | `sqlite_find_by_token_hash` | The per-request hot path: look up a session by hashed token. |
-| `storage` | `sqlite_find_by_id`         | Indexed primary-key lookup.                                  |
+All storage benches are registered under a per-dialect group, so ids read `sqlite/...` and (with the Postgres path enabled) `postgres/...`.
 
-Runs against an ephemeral `sqlite::memory:` database. Compare these against the `bauth-core` `session` numbers (in-memory reference) to see the adapter cost. A Postgres counterpart can be added behind a `DATABASE_URL`-gated bench if a server is available.
+| Bench (group/id)                  | Path measured                                                                                                |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `{dialect}/session_create`        | Insert a session row into a table pre-seeded to a representative size.                                        |
+| `{dialect}/find_by_token_hash`    | The per-request hot path: look up a session by hashed token.                                                 |
+| `{dialect}/find_by_id`            | Indexed primary-key lookup.                                                                                  |
+| `{dialect}/find_by_token_hash/{1,100,10000}` | The hashed-token lookup at three table sizes, showing index scaling.                              |
+| `{dialect}/list_for_user/{1,100,10000}`      | Listing a user's active sessions as the per-user row count grows (throughput reported per row).    |
+| `{dialect}/purge_expired`         | The indexed `DELETE ... WHERE expires_at <= ?` over a table of expired rows, re-seeded before each pass (throughput reported per row removed). |
+
+SQLite runs against an ephemeral `sqlite::memory:` database and is always enabled. The Postgres path is optional: compile with the `postgres` feature **and** set `PG_URL` to a disposable database. It drops and recreates the `public` schema for a clean migration state — exactly like the conformance suite — so do not point it at data you want to keep. Compare the `sqlite/...` and `postgres/...` groups against the `bauth-core` `session` numbers (the in-memory reference) to see adapter overhead.
 
 ## Reading the results
 
 - **Cached vs uncached** (`session_cache`, `request_path`) shows what the session-resolution cache buys. Use `request_path` for full router / middleware costs; `session_cache` is a lower-level cache/store microbench.
+- **Contention** (`concurrency`) shows how cache and store locking hold up under concurrent fan-out; compare its per-element throughput against the single-threaded `session_cache`/`session` latencies.
 - **Allowed vs limited** (`rate_limit`) shows the limiter's cost in both regimes.
-- **With vs without crypto**: `passkey_authenticate` dwarfs the other core paths — WebAuthn signature verification dominates login latency.
-- **In-memory vs SQLite**: compare `bauth-sqlx` `storage` against the `bauth-core` `session` baseline for adapter overhead.
+- **With vs without crypto**: `passkey_authenticate`/`passkey_finish` dwarf the other core paths — WebAuthn signature verification dominates login latency. `passkey_finish` isolates the server-side verify from the ceremony setup.
+- **In-memory vs SQLite vs Postgres**: compare the `bauth-sqlx` dialect groups against the `bauth-core` `session` baseline for adapter overhead, and read the scaling ids to see how lookups and listing grow with table size.
+- **Parsing overhead** (`parsing`) shows the fixed per-request cookie/header parsing cost the CSRF layer adds to state-changing requests.

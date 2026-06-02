@@ -49,3 +49,11 @@ harness = false
 [[bench]]
 name = "request_path"
 harness = false
+
+[[bench]]
+name = "concurrency"
+harness = false
+
+[[bench]]
+name = "parsing"
+harness = false
