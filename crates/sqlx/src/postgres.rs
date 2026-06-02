@@ -243,12 +243,17 @@ impl SessionStore for PgSessionStore {
         row.map(row_to_session).transpose()
     }
 
-    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
+    async fn list_for_user(
+        &self,
+        user_id: UserId,
+        now: DateTime<Utc>,
+    ) -> StorageResult<Vec<Session>> {
         let rows = sqlx::query(
             "SELECT id, user_id, token_hash, created_at, expires_at, ip, user_agent, recovery_cooldown_until
-             FROM sessions WHERE user_id = $1",
+             FROM sessions WHERE user_id = $1 AND expires_at > $2",
         )
         .bind(uuid_to_bytes(user_id.0))
+        .bind(now)
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;

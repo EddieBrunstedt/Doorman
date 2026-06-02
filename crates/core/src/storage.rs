@@ -164,11 +164,18 @@ pub trait SessionStore: Send + Sync {
 
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>>;
 
-    /// Return every unexpired session belonging to a user. Implementations
-    /// MAY return expired sessions; callers (e.g. `SessionManager::list_for_user`)
-    /// are expected to filter on `expires_at` so adapters are not forced to
-    /// re-implement the expiry rule.
-    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>>;
+    /// Return the sessions belonging to a user. `now` is the caller's clock
+    /// instant: database-backed adapters SHOULD push `expires_at > now` into
+    /// the query so dead rows never leave the store, while the in-memory
+    /// reference store MAY return expired rows. Either way
+    /// [`SessionManager::list_for_user`](crate::session::SessionManager::list_for_user)
+    /// applies the same `expires_at > now` filter, so a caller never observes
+    /// an expired session regardless of which adapter is in use.
+    async fn list_for_user(
+        &self,
+        user_id: UserId,
+        now: DateTime<Utc>,
+    ) -> StorageResult<Vec<Session>>;
 
     async fn delete_session(&self, id: SessionId) -> StorageResult<()>;
 

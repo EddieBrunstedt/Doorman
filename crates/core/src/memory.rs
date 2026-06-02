@@ -198,7 +198,15 @@ impl SessionStore for InMemorySessionStore {
         Ok(self.read().by_id.get(&id).cloned())
     }
 
-    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
+    async fn list_for_user(
+        &self,
+        user_id: UserId,
+        _now: DateTime<Utc>,
+    ) -> StorageResult<Vec<Session>> {
+        // The reference store returns every session for the user, expired
+        // rows included; `SessionManager::list_for_user` applies the
+        // `expires_at > now` filter. SQL adapters instead push the predicate
+        // into the query (see the `SessionStore::list_for_user` contract).
         Ok(self
             .read()
             .by_id
@@ -642,7 +650,7 @@ mod tests {
         assert!(
             storage
                 .sessions
-                .list_for_user(user.id)
+                .list_for_user(user.id, now)
                 .await
                 .expect("session store wired")
                 .is_empty()

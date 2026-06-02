@@ -10,6 +10,9 @@ description = "Core authentication primitives for the bauth library: storage tra
 
 [features]
 default = []
+# Opt-in `purge::spawn_purge_task` background sweeper. Pulls tokio's runtime
+# and timer so the default build stays lean.
+background-purge = ["tokio/time", "tokio/rt"]
 
 [dependencies]
 async-trait.workspace = true
@@ -34,7 +37,8 @@ webauthn-rs-proto.workspace = true
 # path-only edge means a `cargo publish` of bauth-core drops it.
 bauth-test-support = { path = "../test-support" }
 criterion.workspace = true
-tokio.workspace = true
+# `test-util` adds paused-time control for the `background-purge` task test.
+tokio = { workspace = true, features = ["test-util"] }
 webauthn-authenticator-rs.workspace = true
 
 [[bench]]

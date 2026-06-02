@@ -15,4 +15,5 @@ async fn sqlite_storage_conformance() {
         .expect("connect");
     storage.migrate().await.expect("migrate");
     conformance::run(&storage.storage()).await;
+    conformance::run_db_backed(&storage.storage()).await;
 }

@@ -39,7 +39,7 @@ fn user(id: UserId, email: &str) -> User {
     }
 }
 
-/// Run the full suite against `storage`.
+/// Run the full backend-agnostic suite against `storage`.
 pub async fn run(storage: &Storage) {
     users_round_trip(storage).await;
     verification_token_single_use(storage).await;
@@ -49,6 +49,58 @@ pub async fn run(storage: &Storage) {
     passkey_credentials_cooldown_round_trip(storage).await;
     passkey_registration_cooldown_round_trip(storage).await;
     passkey_registration_delete_for_user(storage).await;
+}
+
+/// Extra assertions that only hold for database-backed adapters, which push
+/// the expiry predicate into the query. The in-memory reference store
+/// deliberately returns expired rows (the manager filters them), so these
+/// run from the SQLite/Postgres harnesses only, not the shared [`run`].
+pub async fn run_db_backed(storage: &Storage) {
+    sessions_list_excludes_expired(storage).await;
+}
+
+/// `SessionStore::list_for_user` must drop rows whose `expires_at <= now`
+/// before they leave the database.
+async fn sessions_list_excludes_expired(storage: &Storage) {
+    let now = ts(2026, 3, 1);
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "list-expiry@example.com"))
+        .await
+        .expect("user");
+
+    let mk = |token: &str, expires_at: DateTime<Utc>| Session {
+        id: SessionId::new(),
+        user_id,
+        token_hash: hash_token(token),
+        created_at: now - Duration::hours(2),
+        expires_at,
+        ip: None,
+        user_agent: None,
+        recovery_cooldown_until: None,
+    };
+    let live = mk("list-live", now + Duration::hours(1));
+    let expired = mk("list-expired", now - Duration::hours(1));
+    for session in [&live, &expired] {
+        storage
+            .sessions
+            .create_session(session.clone())
+            .await
+            .expect("create session");
+    }
+
+    let listed = storage
+        .sessions
+        .list_for_user(user_id, now)
+        .await
+        .expect("list");
+    let ids: std::collections::HashSet<_> = listed.iter().map(|s| s.id).collect();
+    assert!(ids.contains(&live.id), "live session is listed");
+    assert!(
+        !ids.contains(&expired.id),
+        "expired session is excluded at the store"
+    );
 }
 
 async fn users_round_trip(storage: &Storage) {
@@ -318,7 +370,7 @@ async fn sessions_crud_and_queries(storage: &Storage) {
     assert_eq!(by_id.recovery_cooldown_until, Some(cooldown_until));
 
     // list_for_user returns every (unexpired) session for the user.
-    let listed = sessions.list_for_user(user_id).await.expect("list");
+    let listed = sessions.list_for_user(user_id, now).await.expect("list");
     let listed_ids: std::collections::HashSet<_> = listed.iter().map(|s| s.id).collect();
     let expected: std::collections::HashSet<_> =
         [keep.id, other_a.id, other_b.id, with_cooldown.id].into();
@@ -333,7 +385,10 @@ async fn sessions_crud_and_queries(storage: &Storage) {
         .await
         .expect("delete others");
     assert_eq!(removed, 3, "every session except the exception was removed");
-    let after = sessions.list_for_user(user_id).await.expect("list after");
+    let after = sessions
+        .list_for_user(user_id, now)
+        .await
+        .expect("list after");
     assert_eq!(after.len(), 1);
     assert_eq!(after[0].id, keep.id);
 
@@ -354,7 +409,7 @@ async fn sessions_crud_and_queries(storage: &Storage) {
     assert_eq!(removed, 1, "the surviving session was removed");
     assert!(
         sessions
-            .list_for_user(user_id)
+            .list_for_user(user_id, now)
             .await
             .expect("list cleared")
             .is_empty()

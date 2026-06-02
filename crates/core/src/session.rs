@@ -348,7 +348,10 @@ impl SessionManager {
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn list_for_user(&self, user_id: UserId) -> Result<Vec<Session>> {
         let now = self.clock.now();
-        let sessions = self.sessions.list_for_user(user_id).await?;
+        let sessions = self.sessions.list_for_user(user_id, now).await?;
+        // Adapters that push `expires_at > now` into the query already exclude
+        // dead rows; this filter is the belt-and-suspenders that keeps the
+        // in-memory reference store (which returns everything) correct too.
         Ok(sessions
             .into_iter()
             .filter(|s| s.expires_at > now)

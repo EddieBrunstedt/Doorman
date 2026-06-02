@@ -463,7 +463,7 @@ async fn revoke_others_for_user_keeps_only_the_exception() {
     assert_eq!(removed, 2);
 
     let remaining_alice: Vec<SessionId> = sessions
-        .list_for_user(alice)
+        .list_for_user(alice, manager.clock().now())
         .await
         .expect("list alice")
         .into_iter()
