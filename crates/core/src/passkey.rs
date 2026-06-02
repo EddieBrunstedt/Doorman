@@ -20,9 +20,10 @@ use chrono::{DateTime, Utc};
 use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
-    CreationChallengeResponse, CredentialID, DiscoverableAuthentication, DiscoverableKey, Passkey,
-    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
-    RequestChallengeResponse, Webauthn, WebauthnBuilder, WebauthnError,
+    AttestationMetadata, CreationChallengeResponse, Credential, CredentialID,
+    DiscoverableAuthentication, DiscoverableKey, Passkey, PasskeyRegistration, PublicKeyCredential,
+    RegisterPublicKeyCredential, RequestChallengeResponse, Webauthn, WebauthnBuilder,
+    WebauthnError,
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
 
@@ -427,6 +428,7 @@ impl PasskeyManager {
             .finish_passkey_registration(response, &reg_state)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
 
+        let metadata = PasskeyMetadata::from_passkey(&passkey);
         let credential = StoredPasskey {
             credential_id: passkey.cred_id().to_vec(),
             user_id,
@@ -434,6 +436,10 @@ impl PasskeyManager {
             name,
             created_at: now,
             last_used_at: None,
+            aaguid: metadata.aaguid,
+            transports: metadata.transports,
+            backup_eligible: metadata.backup_eligible,
+            backup_state: metadata.backup_state,
             recovery_cooldown_until: recovery_cooldown_override
                 .or(challenge_recovery_cooldown_until),
         };
@@ -684,10 +690,15 @@ impl PasskeyManager {
         // last_used_at always advances, so we persist on every success. The
         // mutated passkey is re-serialised into the opaque blob; `credential`
         // is then moved into the store rather than cloned — nothing below
-        // reads it, only the `user_id` captured above.
+        // reads it, only the `user_id` captured above. The backup flags are
+        // refreshed from the (possibly updated) credential so the surfaced
+        // metadata tracks a passkey that became backed up after registration.
         passkey.update_credential(&auth_result);
+        let refreshed = PasskeyMetadata::from_passkey(&passkey);
         credential.passkey = encode_credential(&passkey)?;
         credential.last_used_at = Some(now);
+        credential.backup_eligible = refreshed.backup_eligible;
+        credential.backup_state = refreshed.backup_state;
         self.credentials.update_passkey(credential).await?;
 
         self.audit
@@ -788,6 +799,47 @@ fn display_names_for(user: &User) -> (String, String) {
     let id_str = user.id.to_string();
     let name = user.email.clone().unwrap_or_else(|| id_str.clone());
     (name.clone(), name)
+}
+
+/// Device metadata read out of a freshly finished or updated [`Passkey`].
+///
+/// `webauthn-rs` keeps these on the credential internals, reachable via the
+/// `danger-credential-internals` feature; `bauth-core` is the only layer that
+/// touches the `webauthn-rs` types, lowering them to the primitive fields the
+/// storage traits persist so a host's store stays `webauthn-rs`-free.
+struct PasskeyMetadata {
+    aaguid: Option<Uuid>,
+    transports: Vec<String>,
+    backup_eligible: bool,
+    backup_state: bool,
+}
+
+impl PasskeyMetadata {
+    fn from_passkey(passkey: &Passkey) -> Self {
+        let cred: Credential = passkey.clone().into();
+        // AAGUID is only present when the authenticator volunteered packed or
+        // TPM attestation metadata. Passkey registration requests no
+        // attestation, so for the common discoverable-credential flow this is
+        // `None`.
+        let aaguid = match cred.attestation.metadata {
+            AttestationMetadata::Packed { aaguid } | AttestationMetadata::Tpm { aaguid, .. } => {
+                Some(aaguid)
+            }
+            _ => None,
+        };
+        let transports = cred
+            .transports
+            .unwrap_or_default()
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
+        Self {
+            aaguid,
+            transports,
+            backup_eligible: cred.backup_eligible,
+            backup_state: cred.backup_state,
+        }
+    }
 }
 
 fn require_discoverable_credential(ccr: &mut CreationChallengeResponse) {

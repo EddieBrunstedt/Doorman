@@ -44,3 +44,30 @@ pub(crate) fn purpose_from_str(s: &str) -> StorageResult<VerificationPurpose> {
         ))),
     }
 }
+
+/// Flatten the passkey transport hints into a single comma-separated column
+/// value. Transport tokens (`usb`, `nfc`, `ble`, `internal`, `hybrid`) never
+/// contain commas, so the join is unambiguous; an empty slice stores `""`.
+pub(crate) fn transports_to_str(transports: &[String]) -> String {
+    transports.join(",")
+}
+
+/// Split a comma-separated transports column back into the list. Empty
+/// segments are dropped so a stored `""` round-trips to an empty `Vec`.
+pub(crate) fn transports_from_str(s: &str) -> Vec<String> {
+    s.split(',')
+        .filter(|seg| !seg.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// Render an optional AAGUID for its (nullable) TEXT column.
+pub(crate) fn aaguid_to_str(aaguid: Option<Uuid>) -> Option<String> {
+    aaguid.map(|u| u.to_string())
+}
+
+/// Parse a nullable AAGUID TEXT column back into a [`Uuid`].
+pub(crate) fn aaguid_from_str(s: Option<String>) -> StorageResult<Option<Uuid>> {
+    s.map(|raw| Uuid::parse_str(&raw).map_err(storage))
+        .transpose()
+}

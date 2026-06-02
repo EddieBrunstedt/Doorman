@@ -20,8 +20,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
 use crate::common::{
-    purpose_from_str, purpose_to_str, storage, token_hash_bytes, token_hash_from_bytes,
-    uuid_from_row, uuid_to_bytes,
+    aaguid_from_str, aaguid_to_str, purpose_from_str, purpose_to_str, storage, token_hash_bytes,
+    token_hash_from_bytes, transports_from_str, transports_to_str, uuid_from_row, uuid_to_bytes,
 };
 
 /// SQLite storage adapter. Construct once at startup and hand `storage()`
@@ -417,8 +417,9 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
     async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
         sqlx::query(
             "INSERT INTO passkey_credentials
-             (credential_id, user_id, passkey, name, created_at, last_used_at, recovery_cooldown_until)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (credential_id, user_id, passkey, name, created_at, last_used_at,
+              aaguid, transports, backup_eligible, backup_state, recovery_cooldown_until)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&credential.credential_id)
         .bind(uuid_to_bytes(credential.user_id.0))
@@ -426,6 +427,10 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
         .bind(&credential.name)
         .bind(credential.created_at)
         .bind(credential.last_used_at)
+        .bind(aaguid_to_str(credential.aaguid))
+        .bind(transports_to_str(&credential.transports))
+        .bind(credential.backup_eligible)
+        .bind(credential.backup_state)
         .bind(credential.recovery_cooldown_until)
         .execute(&self.pool)
         .await
@@ -436,7 +441,9 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
     async fn update_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
         let result = sqlx::query(
             "UPDATE passkey_credentials
-             SET user_id = ?, passkey = ?, name = ?, created_at = ?, last_used_at = ?, recovery_cooldown_until = ?
+             SET user_id = ?, passkey = ?, name = ?, created_at = ?, last_used_at = ?,
+                 aaguid = ?, transports = ?, backup_eligible = ?, backup_state = ?,
+                 recovery_cooldown_until = ?
              WHERE credential_id = ?",
         )
         .bind(uuid_to_bytes(credential.user_id.0))
@@ -444,6 +451,10 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
         .bind(&credential.name)
         .bind(credential.created_at)
         .bind(credential.last_used_at)
+        .bind(aaguid_to_str(credential.aaguid))
+        .bind(transports_to_str(&credential.transports))
+        .bind(credential.backup_eligible)
+        .bind(credential.backup_state)
         .bind(credential.recovery_cooldown_until)
         .bind(&credential.credential_id)
         .execute(&self.pool)
@@ -457,7 +468,8 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
 
     async fn list_passkeys_for_user(&self, user_id: UserId) -> StorageResult<Vec<StoredPasskey>> {
         let rows = sqlx::query(
-            "SELECT credential_id, user_id, passkey, name, created_at, last_used_at, recovery_cooldown_until
+            "SELECT credential_id, user_id, passkey, name, created_at, last_used_at,
+                    aaguid, transports, backup_eligible, backup_state, recovery_cooldown_until
              FROM passkey_credentials WHERE user_id = ?",
         )
         .bind(uuid_to_bytes(user_id.0))
@@ -474,7 +486,8 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
         // Deliberately omits the `passkey` blob column: the listing path
         // never deserialises it.
         let rows = sqlx::query(
-            "SELECT credential_id, user_id, name, created_at, last_used_at, recovery_cooldown_until
+            "SELECT credential_id, user_id, name, created_at, last_used_at,
+                    aaguid, transports, backup_eligible, backup_state, recovery_cooldown_until
              FROM passkey_credentials WHERE user_id = ?",
         )
         .bind(uuid_to_bytes(user_id.0))
@@ -489,7 +502,8 @@ impl PasskeyCredentialStore for SqlitePasskeyCredentialStore {
         credential_id: &[u8],
     ) -> StorageResult<Option<StoredPasskey>> {
         let row = sqlx::query(
-            "SELECT credential_id, user_id, passkey, name, created_at, last_used_at, recovery_cooldown_until
+            "SELECT credential_id, user_id, passkey, name, created_at, last_used_at,
+                    aaguid, transports, backup_eligible, backup_state, recovery_cooldown_until
              FROM passkey_credentials WHERE credential_id = ?",
         )
         .bind(credential_id)
@@ -513,6 +527,8 @@ fn row_to_passkey(row: sqlx::sqlite::SqliteRow) -> StorageResult<StoredPasskey> 
     let credential_id: Vec<u8> = row.try_get("credential_id").map_err(storage)?;
     let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err(storage)?;
     let passkey: Vec<u8> = row.try_get("passkey").map_err(storage)?;
+    let aaguid: Option<String> = row.try_get("aaguid").map_err(storage)?;
+    let transports: String = row.try_get("transports").map_err(storage)?;
     Ok(StoredPasskey {
         credential_id,
         user_id: UserId(uuid_from_row(user_id_bytes)?),
@@ -520,6 +536,10 @@ fn row_to_passkey(row: sqlx::sqlite::SqliteRow) -> StorageResult<StoredPasskey> 
         name: row.try_get("name").map_err(storage)?,
         created_at: row.try_get("created_at").map_err(storage)?,
         last_used_at: row.try_get("last_used_at").map_err(storage)?,
+        aaguid: aaguid_from_str(aaguid)?,
+        transports: transports_from_str(&transports),
+        backup_eligible: row.try_get("backup_eligible").map_err(storage)?,
+        backup_state: row.try_get("backup_state").map_err(storage)?,
         recovery_cooldown_until: row.try_get("recovery_cooldown_until").map_err(storage)?,
     })
 }
@@ -527,12 +547,18 @@ fn row_to_passkey(row: sqlx::sqlite::SqliteRow) -> StorageResult<StoredPasskey> 
 fn row_to_passkey_summary(row: sqlx::sqlite::SqliteRow) -> StorageResult<PasskeySummary> {
     let credential_id: Vec<u8> = row.try_get("credential_id").map_err(storage)?;
     let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err(storage)?;
+    let aaguid: Option<String> = row.try_get("aaguid").map_err(storage)?;
+    let transports: String = row.try_get("transports").map_err(storage)?;
     Ok(PasskeySummary {
         credential_id,
         user_id: UserId(uuid_from_row(user_id_bytes)?),
         name: row.try_get("name").map_err(storage)?,
         created_at: row.try_get("created_at").map_err(storage)?,
         last_used_at: row.try_get("last_used_at").map_err(storage)?,
+        aaguid: aaguid_from_str(aaguid)?,
+        transports: transports_from_str(&transports),
+        backup_eligible: row.try_get("backup_eligible").map_err(storage)?,
+        backup_state: row.try_get("backup_state").map_err(storage)?,
         recovery_cooldown_until: row.try_get("recovery_cooldown_until").map_err(storage)?,
     })
 }

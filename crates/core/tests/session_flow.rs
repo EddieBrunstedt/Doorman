@@ -106,6 +106,10 @@ fn stored_passkey_cooldown_predicate_mirrors_session() {
         name: None,
         created_at: now,
         last_used_at: None,
+        aaguid: None,
+        transports: Vec::new(),
+        backup_eligible: false,
+        backup_state: false,
         recovery_cooldown_until: Some(active_until),
     };
 

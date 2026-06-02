@@ -238,6 +238,24 @@ pub struct StoredPasskey {
     pub name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Authenticator Attestation GUID identifying the make/model of the
+    /// authenticator, when the ceremony produced one. Passkey registration
+    /// requests no attestation, so this is usually `None`; it is populated
+    /// only when the authenticator volunteered packed/TPM attestation
+    /// metadata. Captured at registration from the credential.
+    pub aaguid: Option<Uuid>,
+    /// Transport hints the authenticator advertised (`"usb"`, `"nfc"`,
+    /// `"ble"`, `"internal"`, `"hybrid"`). A UI hint only, not a security
+    /// property. Captured at registration; empty when none were advertised.
+    pub transports: Vec<String>,
+    /// `true` when the credential's private key may be backed up or synced
+    /// across devices (the WebAuthn BE flag). Captured at registration and
+    /// refreshed on each authentication.
+    pub backup_eligible: bool,
+    /// `true` when the credential is currently backed up or synced (the
+    /// WebAuthn BS flag). Captured at registration and refreshed on each
+    /// authentication, since it can change over the credential's life.
+    pub backup_state: bool,
     /// When set, sessions created by authenticating with this passkey may
     /// inherit the recovery cool-down restriction until this instant. `None`
     /// means the credential is unrestricted.
@@ -267,7 +285,8 @@ impl StoredPasskey {
 /// Metadata-only view of a registered passkey.
 ///
 /// Carries every field a management UI needs to list a user's credentials
-/// (id, friendly name, timestamps, cool-down) *without* the `webauthn-rs`
+/// (id, friendly name, timestamps, device metadata, cool-down) *without* the
+/// `webauthn-rs`
 /// [`Passkey`] credential blob. The listing path
 /// ([`PasskeyCredentialStore::list_passkey_summaries_for_user`]) returns
 /// this so an adapter never has to deserialise the blob just to render the
@@ -281,6 +300,14 @@ pub struct PasskeySummary {
     pub name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Authenticator AAGUID, mirroring [`StoredPasskey::aaguid`].
+    pub aaguid: Option<Uuid>,
+    /// Advertised transport hints, mirroring [`StoredPasskey::transports`].
+    pub transports: Vec<String>,
+    /// Backup-eligibility flag, mirroring [`StoredPasskey::backup_eligible`].
+    pub backup_eligible: bool,
+    /// Backup-state flag, mirroring [`StoredPasskey::backup_state`].
+    pub backup_state: bool,
     pub recovery_cooldown_until: Option<DateTime<Utc>>,
 }
 
@@ -292,6 +319,10 @@ impl From<StoredPasskey> for PasskeySummary {
             name: value.name,
             created_at: value.created_at,
             last_used_at: value.last_used_at,
+            aaguid: value.aaguid,
+            transports: value.transports,
+            backup_eligible: value.backup_eligible,
+            backup_state: value.backup_state,
             recovery_cooldown_until: value.recovery_cooldown_until,
         }
     }

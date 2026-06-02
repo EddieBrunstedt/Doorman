@@ -94,6 +94,38 @@ async fn register_then_discoverable_authenticate_round_trip() {
 }
 
 #[tokio::test]
+async fn registration_captures_device_metadata_and_surfaces_it_in_summary() {
+    // Phase 15: the metadata a management UI needs (AAGUID, transports, and
+    // the backup-eligibility/state flags) is captured at registration and
+    // surfaced through the metadata-only summary projection without touching
+    // the credential blob.
+    let h = Harness::fresh();
+    let user = make_user(&h, "metadata@example.com").await;
+    let mut wa = authenticator();
+
+    let credential = register_passkey(&h, user.id, &mut wa, Some("Alice's Mac")).await;
+
+    // Passkey registration requests no attestation, so no AAGUID is produced.
+    assert_eq!(credential.aaguid, None, "passkey flow yields no AAGUID");
+
+    let summaries = h
+        .passkey
+        .list_passkey_summaries(user.id)
+        .await
+        .expect("list summaries");
+    assert_eq!(summaries.len(), 1);
+    let summary = &summaries[0];
+
+    // The summary carries the exact metadata captured on the stored credential
+    // — proving it is both captured at registration and surfaced on the
+    // listing path.
+    assert_eq!(summary.aaguid, credential.aaguid);
+    assert_eq!(summary.transports, credential.transports);
+    assert_eq!(summary.backup_eligible, credential.backup_eligible);
+    assert_eq!(summary.backup_state, credential.backup_state);
+}
+
+#[tokio::test]
 async fn registration_with_none_recovery_cooldown_stores_unrestricted_passkey() {
     let h = Harness::fresh();
     let user = make_user(&h, "none-cooldown@example.com").await;

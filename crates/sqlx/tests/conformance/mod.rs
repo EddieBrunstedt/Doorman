@@ -502,6 +502,7 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
     let credential_id = b"conformance-credential-id".to_vec();
     let passkey_blob = b"opaque-serialised-passkey-blob".to_vec();
     let cooldown_until = now + Duration::hours(24);
+    let aaguid = uuid::Uuid::from_u128(0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10);
     let credential = StoredPasskey {
         credential_id: credential_id.clone(),
         user_id,
@@ -509,6 +510,10 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
         name: Some("security key".into()),
         created_at: now,
         last_used_at: None,
+        aaguid: Some(aaguid),
+        transports: vec!["usb".into(), "nfc".into()],
+        backup_eligible: false,
+        backup_state: false,
         recovery_cooldown_until: Some(cooldown_until),
     };
 
@@ -526,6 +531,10 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
     assert_eq!(by_id.user_id, user_id);
     assert_eq!(by_id.name.as_deref(), Some("security key"));
     assert_eq!(by_id.passkey, passkey_blob, "blob round-trips verbatim");
+    assert_eq!(by_id.aaguid, Some(aaguid), "aaguid round-trips");
+    assert_eq!(by_id.transports, vec!["usb".to_string(), "nfc".to_string()]);
+    assert!(!by_id.backup_eligible);
+    assert!(!by_id.backup_state);
     assert_eq!(by_id.recovery_cooldown_until, Some(cooldown_until));
 
     let updated_cooldown_until = now + Duration::hours(48);
@@ -534,6 +543,11 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
         passkey: updated_blob.clone(),
         name: Some("renamed security key".into()),
         last_used_at: Some(now + Duration::minutes(5)),
+        // The credential became backed up after registration: the update
+        // must persist the refreshed flags and the (now single) transport.
+        transports: vec!["internal".into()],
+        backup_eligible: true,
+        backup_state: true,
         recovery_cooldown_until: Some(updated_cooldown_until),
         ..by_id
     };
@@ -551,6 +565,13 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
     assert_eq!(listed[0].passkey, updated_blob, "updated blob round-trips");
     assert_eq!(listed[0].name.as_deref(), Some("renamed security key"));
     assert_eq!(listed[0].last_used_at, updated.last_used_at);
+    assert_eq!(listed[0].aaguid, Some(aaguid), "aaguid preserved on update");
+    assert_eq!(listed[0].transports, vec!["internal".to_string()]);
+    assert!(
+        listed[0].backup_eligible,
+        "backup flags refreshed on update"
+    );
+    assert!(listed[0].backup_state);
     assert_eq!(
         listed[0].recovery_cooldown_until,
         Some(updated_cooldown_until),
@@ -569,6 +590,10 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
     assert_eq!(summary.name.as_deref(), Some("renamed security key"));
     assert_eq!(summary.created_at, updated.created_at);
     assert_eq!(summary.last_used_at, updated.last_used_at);
+    assert_eq!(summary.aaguid, Some(aaguid));
+    assert_eq!(summary.transports, vec!["internal".to_string()]);
+    assert!(summary.backup_eligible);
+    assert!(summary.backup_state);
     assert_eq!(
         summary.recovery_cooldown_until,
         Some(updated_cooldown_until)

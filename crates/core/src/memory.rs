@@ -427,6 +427,10 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
                 name: c.name.clone(),
                 created_at: c.created_at,
                 last_used_at: c.last_used_at,
+                aaguid: c.aaguid,
+                transports: c.transports.clone(),
+                backup_eligible: c.backup_eligible,
+                backup_state: c.backup_state,
                 recovery_cooldown_until: c.recovery_cooldown_until,
             })
             .collect())

@@ -59,6 +59,11 @@ pub struct SessionDto {
     pub ip: Option<String>,
     /// Browser/CLI `User-Agent` captured at session-issue time.
     pub user_agent: Option<String>,
+    /// Best-effort human label derived from `user_agent` ("Chrome on macOS",
+    /// "Safari on iOS", "Firefox on Windows"). Powers a friendly
+    /// "your active sessions" list without the frontend re-parsing the raw
+    /// UA. `None` when there is no UA or none of the known tokens match.
+    pub device_label: Option<String>,
     /// `true` when this dto represents the session the request was made
     /// on. Set by the routes that build a session list via `from_session`.
     pub is_current: bool,
@@ -72,8 +77,54 @@ impl SessionDto {
             expires_at: value.expires_at,
             ip: value.ip.clone(),
             user_agent: value.user_agent.clone(),
+            device_label: value.user_agent.as_deref().and_then(device_label),
             is_current,
         }
+    }
+}
+
+/// Derive a coarse "Browser on OS" label from a `User-Agent` string.
+///
+/// Intentionally a small heuristic over the common desktop/mobile tokens, not
+/// a full UA database: it gives the session list a readable device name and
+/// returns `None` when nothing recognisable matches (the frontend can then
+/// fall back to showing the raw UA or IP).
+fn device_label(ua: &str) -> Option<String> {
+    let lower = ua.to_ascii_lowercase();
+
+    let os = if lower.contains("windows") {
+        Some("Windows")
+    } else if lower.contains("iphone") || lower.contains("ipad") || lower.contains("ios") {
+        Some("iOS")
+    } else if lower.contains("mac os") || lower.contains("macos") || lower.contains("macintosh") {
+        Some("macOS")
+    } else if lower.contains("android") {
+        Some("Android")
+    } else if lower.contains("linux") {
+        Some("Linux")
+    } else {
+        None
+    };
+
+    // Order matters: Edge/Chrome both carry "chrome", and Chrome carries
+    // "safari", so test the more specific tokens first.
+    let browser = if lower.contains("edg/") || lower.contains("edge") {
+        Some("Edge")
+    } else if lower.contains("firefox") {
+        Some("Firefox")
+    } else if lower.contains("chrome") || lower.contains("chromium") {
+        Some("Chrome")
+    } else if lower.contains("safari") {
+        Some("Safari")
+    } else {
+        None
+    };
+
+    match (browser, os) {
+        (Some(b), Some(o)) => Some(format!("{b} on {o}")),
+        (Some(b), None) => Some(b.to_owned()),
+        (None, Some(o)) => Some(o.to_owned()),
+        (None, None) => None,
     }
 }
 
@@ -102,6 +153,11 @@ impl AuthResponse {
 }
 
 /// Public JSON representation of a registered passkey.
+///
+/// The device-metadata fields (`aaguid`, `transports`, `backup_eligible`,
+/// `backup_state`) are captured at registration and let a management UI label
+/// each credential ("synced passkey", "hardware security key") and nudge the
+/// user to add a backup when every credential is single-device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PasskeyDto {
     /// Raw credential id encoded as URL-safe base64 (no padding). Matches
@@ -111,6 +167,16 @@ pub struct PasskeyDto {
     pub name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Authenticator AAGUID, when the ceremony produced one. Usually `null`
+    /// for passkeys, which request no attestation.
+    pub aaguid: Option<String>,
+    /// Transport hints the authenticator advertised (`"usb"`, `"internal"`,
+    /// `"hybrid"`, …). A UI hint, not a security property.
+    pub transports: Vec<String>,
+    /// `true` when the credential may be backed up or synced across devices.
+    pub backup_eligible: bool,
+    /// `true` when the credential is currently backed up or synced.
+    pub backup_state: bool,
 }
 
 impl From<StoredPasskey> for PasskeyDto {
@@ -120,6 +186,10 @@ impl From<StoredPasskey> for PasskeyDto {
             name: value.name,
             created_at: value.created_at,
             last_used_at: value.last_used_at,
+            aaguid: value.aaguid.map(|a| a.to_string()),
+            transports: value.transports,
+            backup_eligible: value.backup_eligible,
+            backup_state: value.backup_state,
         }
     }
 }
@@ -131,6 +201,10 @@ impl From<PasskeySummary> for PasskeyDto {
             name: value.name,
             created_at: value.created_at,
             last_used_at: value.last_used_at,
+            aaguid: value.aaguid.map(|a| a.to_string()),
+            transports: value.transports,
+            backup_eligible: value.backup_eligible,
+            backup_state: value.backup_state,
         }
     }
 }
@@ -215,4 +289,64 @@ pub struct PasskeyRegisterFinishRequest {
 pub struct PasskeyAuthenticateFinishRequest {
     pub challenge_id: String,
     pub response: webauthn_rs::prelude::PublicKeyCredential,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bauth_core::storage::{Session, SessionId, TokenHash, UserId};
+    use chrono::TimeZone;
+
+    fn session_with_ua(ua: Option<&str>) -> Session {
+        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).single().unwrap();
+        Session {
+            id: SessionId::new(),
+            user_id: UserId::new(),
+            token_hash: TokenHash([0u8; 32]),
+            created_at: now,
+            expires_at: now,
+            ip: None,
+            user_agent: ua.map(ToOwned::to_owned),
+            recovery_cooldown_until: None,
+        }
+    }
+
+    #[test]
+    fn device_label_recognises_common_user_agents() {
+        let chrome_mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+        assert_eq!(device_label(chrome_mac).as_deref(), Some("Chrome on macOS"));
+
+        let safari_ios = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) \
+             AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+        assert_eq!(device_label(safari_ios).as_deref(), Some("Safari on iOS"));
+
+        let firefox_win = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) \
+             Gecko/20100101 Firefox/121.0";
+        assert_eq!(
+            device_label(firefox_win).as_deref(),
+            Some("Firefox on Windows")
+        );
+
+        // Edge carries "chrome" too; the more specific token wins.
+        let edge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0";
+        assert_eq!(device_label(edge).as_deref(), Some("Edge on Windows"));
+    }
+
+    #[test]
+    fn device_label_is_none_for_unrecognised_ua() {
+        assert_eq!(device_label("curl/8.4.0"), None);
+    }
+
+    #[test]
+    fn session_dto_populates_device_label_from_user_agent() {
+        let chrome_mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+        let dto = SessionDto::from_session(&session_with_ua(Some(chrome_mac)), true);
+        assert_eq!(dto.device_label.as_deref(), Some("Chrome on macOS"));
+
+        let dto = SessionDto::from_session(&session_with_ua(None), false);
+        assert_eq!(dto.device_label, None);
+    }
 }
