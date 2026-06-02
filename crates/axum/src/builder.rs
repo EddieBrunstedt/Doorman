@@ -50,6 +50,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use bauth_core::account::{AccountConfig, AccountManager};
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::context::CoreDeps;
@@ -160,6 +161,7 @@ pub struct BauthBuilder {
     passkey: Option<PasskeyConfig>,
     signup: Option<SignupConfig>,
     recovery: Option<RecoveryConfig>,
+    account: Option<AccountConfig>,
 }
 
 impl BauthBuilder {
@@ -180,6 +182,7 @@ impl BauthBuilder {
             passkey: None,
             signup: None,
             recovery: None,
+            account: None,
         }
     }
 
@@ -297,6 +300,16 @@ impl BauthBuilder {
         self
     }
 
+    /// Override the default [`AccountConfig`] backing the verified
+    /// email-change flow (15-minute confirmation-token lifetime). Set the
+    /// `url_template` to a route in your app that posts the token back to
+    /// `/auth/account/email/confirm`; like signup / recovery, the template
+    /// must contain the `{token}` placeholder.
+    pub fn account(mut self, config: AccountConfig) -> Self {
+        self.account = Some(config);
+        self
+    }
+
     /// Absolute public origin clients use to reach the auth routes.
     /// Supplying an origin enables CSRF origin checks by default.
     pub fn external_origin(mut self, origin: Url) -> Self {
@@ -338,8 +351,11 @@ impl BauthBuilder {
         // so partial wiring is never silent.
         let mut signup_config = self.signup.unwrap_or_default();
         let mut recovery_config = self.recovery.unwrap_or_default();
+        let mut account_config = self.account.unwrap_or_default();
         if self.emails.is_none()
-            && (signup_config.emails.is_some() || recovery_config.emails.is_some())
+            && (signup_config.emails.is_some()
+                || recovery_config.emails.is_some()
+                || account_config.emails.is_some())
         {
             warnings.partial_email_branding = true;
         }
@@ -353,11 +369,14 @@ impl BauthBuilder {
         // does not own.
         validate_url_template("signup", &signup_config.url_template)?;
         validate_url_template("recovery", &recovery_config.url_template)?;
+        validate_url_template("account email change", &account_config.url_template)?;
         validate_lifetime("session lifetime", session_config.lifetime)?;
         validate_lifetime("signup token_lifetime", signup_config.token_lifetime)?;
         validate_lifetime("recovery token_lifetime", recovery_config.token_lifetime)?;
+        validate_lifetime("account token_lifetime", account_config.token_lifetime)?;
         if signup_config.url_template.contains(PLACEHOLDER_URL_HOST)
             || recovery_config.url_template.contains(PLACEHOLDER_URL_HOST)
+            || account_config.url_template.contains(PLACEHOLDER_URL_HOST)
         {
             warnings.placeholder_url_template = true;
         }
@@ -372,6 +391,7 @@ impl BauthBuilder {
         if let Some(shared) = &self.emails {
             signup_config.emails.get_or_insert_with(|| shared.clone());
             recovery_config.emails.get_or_insert_with(|| shared.clone());
+            account_config.emails.get_or_insert_with(|| shared.clone());
         }
         let notifier_renderer: Arc<dyn BauthEmails> = self
             .emails
@@ -441,10 +461,15 @@ impl BauthBuilder {
         // tune the aggressive rate limits.
         let recovery_manager = RecoveryManager::new(enrollment_flow, recovery_config)?;
 
+        // The account manager reads its collaborators (stores, clock, audit,
+        // email transport, session manager) from the same shared context.
+        let account_manager = AccountManager::new(&deps, account_config);
+
         builder = builder
             .passkey_manager(passkey_manager)
             .signup_manager(signup_manager)
-            .recovery_manager(recovery_manager);
+            .recovery_manager(recovery_manager)
+            .account_manager(account_manager);
 
         if let Some(origin) = self.external_origin {
             builder = builder.external_origin(origin);

@@ -25,6 +25,7 @@ use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::BauthState;
 use crate::warnings::{self, Warnings};
 
+use bauth_core::account::AccountManager;
 use bauth_core::passkey::PasskeyManager;
 use bauth_core::recovery::RecoveryManager;
 use bauth_core::signup::SignupManager;
@@ -60,6 +61,8 @@ pub enum BuilderError {
     MissingSignupManager,
     #[error("recovery_manager is required")]
     MissingRecoveryManager,
+    #[error("account_manager is required")]
+    MissingAccountManager,
     /// Returned through [`BauthBuilder`](crate::BauthBuilder), which has to
     /// construct the passkey manager itself. The direct `ManagerBuilder`
     /// path takes a pre-built [`PasskeyManager`] and surfaces the same
@@ -150,6 +153,7 @@ pub struct ManagerBuilder {
     passkey: Option<PasskeyManager>,
     signup: Option<SignupManager>,
     recovery: Option<RecoveryManager>,
+    account: Option<AccountManager>,
 }
 
 impl ManagerBuilder {
@@ -233,6 +237,11 @@ impl ManagerBuilder {
         self
     }
 
+    pub fn account_manager(mut self, manager: AccountManager) -> Self {
+        self.account = Some(manager);
+        self
+    }
+
     /// Suppress the build-time configuration warnings. Use after you have
     /// reviewed the warnings and made an informed choice — e.g. you are
     /// intentionally running with an in-memory rate limiter in a
@@ -259,6 +268,7 @@ impl ManagerBuilder {
         let passkey = self.passkey.ok_or(BuilderError::MissingPasskeyManager)?;
         let signup = self.signup.ok_or(BuilderError::MissingSignupManager)?;
         let recovery = self.recovery.ok_or(BuilderError::MissingRecoveryManager)?;
+        let account = self.account.ok_or(BuilderError::MissingAccountManager)?;
         let cookie_config = self.cookie_config.unwrap_or_default();
         validate_cookie_prefix(&cookie_config)?;
         let cookie_config = Arc::new(cookie_config);
@@ -311,6 +321,7 @@ impl ManagerBuilder {
             passkey,
             signup,
             recovery,
+            account,
         };
 
         Ok(BauthAxum {

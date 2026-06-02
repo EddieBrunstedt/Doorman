@@ -35,6 +35,9 @@ pub enum Error {
     #[error("invalid email address")]
     InvalidEmail,
 
+    #[error("email address is already in use by another account")]
+    EmailAlreadyInUse,
+
     #[error("verification token is invalid or expired")]
     InvalidVerificationToken,
 

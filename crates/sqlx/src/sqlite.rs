@@ -334,12 +334,13 @@ struct SqliteVerificationTokenStore {
 impl VerificationTokenStore for SqliteVerificationTokenStore {
     async fn create_token(&self, token: VerificationToken) -> StorageResult<()> {
         sqlx::query(
-            "INSERT INTO verification_tokens (token_hash, purpose, user_id, created_at, expires_at)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO verification_tokens (token_hash, purpose, user_id, new_email, created_at, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(token_hash_bytes(&token.token_hash))
         .bind(purpose_to_str(token.purpose))
         .bind(uuid_to_bytes(token.user_id.0))
+        .bind(&token.new_email)
         .bind(token.created_at)
         .bind(token.expires_at)
         .execute(&self.pool)
@@ -356,7 +357,7 @@ impl VerificationTokenStore for SqliteVerificationTokenStore {
         let row = sqlx::query(
             "DELETE FROM verification_tokens
              WHERE token_hash = ? AND purpose = ?
-             RETURNING token_hash, purpose, user_id, created_at, expires_at",
+             RETURNING token_hash, purpose, user_id, new_email, created_at, expires_at",
         )
         .bind(token_hash_bytes(hash))
         .bind(purpose_to_str(purpose))
@@ -399,6 +400,7 @@ fn row_to_verification_token(row: sqlx::sqlite::SqliteRow) -> StorageResult<Veri
         token_hash: token_hash_from_bytes(&hash_bytes)?,
         purpose: purpose_from_str(&purpose_str)?,
         user_id: UserId(uuid_from_row(user_id_bytes)?),
+        new_email: row.try_get("new_email").map_err(storage)?,
         created_at: row.try_get("created_at").map_err(storage)?,
         expires_at: row.try_get("expires_at").map_err(storage)?,
     })

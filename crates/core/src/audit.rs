@@ -84,6 +84,21 @@ pub enum AuditEventKind {
         user_id: Option<UserId>,
         reason: RecoveryFailureReason,
     },
+    /// Emitted when a verified email-change is requested: a confirmation link
+    /// has been issued to the new address and the old address notified.
+    EmailChangeRequested {
+        user_id: UserId,
+    },
+    /// Emitted when an email-change confirmation token is redeemed and the
+    /// account's address is updated.
+    EmailChangeCompleted {
+        user_id: UserId,
+    },
+    /// Emitted when an account and all of its sessions, credentials, tokens,
+    /// and pending ceremonies are deleted.
+    AccountDeleted {
+        user_id: UserId,
+    },
 }
 
 /// Why a passkey authentication attempt did not succeed. Pairs with

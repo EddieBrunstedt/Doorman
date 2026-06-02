@@ -141,6 +141,7 @@ pub(crate) async fn issue_link(
     tokens: &dyn VerificationTokenStore,
     user_id: UserId,
     purpose: VerificationPurpose,
+    new_email: Option<String>,
     token_lifetime: std::time::Duration,
     url_template: &str,
     now: DateTime<Utc>,
@@ -156,6 +157,7 @@ pub(crate) async fn issue_link(
             token_hash,
             user_id,
             purpose,
+            new_email,
             created_at: now,
             expires_at: now + lifetime,
         })

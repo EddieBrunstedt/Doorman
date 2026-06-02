@@ -203,6 +203,7 @@ impl SignupManager {
             self.flow.tokens().as_ref(),
             user.id,
             VerificationPurpose::Signup,
+            None,
             self.config.token_lifetime,
             &self.config.url_template,
             now,

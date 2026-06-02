@@ -21,6 +21,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use bauth_core::account::{AccountConfig, AccountManager};
 use bauth_core::audit::{AuditEvent, AuditEventKind, AuditSink};
 use bauth_core::clock::Clock;
 use bauth_core::context::CoreDeps;
@@ -51,6 +52,7 @@ use webauthn_rs_proto::{AllowCredentials, ResidentKeyRequirement};
 
 pub const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 pub const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
+pub const ACCOUNT_URL: &str = "https://app.test/email-change?token={token}";
 pub const RP_ID: &str = "localhost";
 pub const RP_NAME: &str = "bauth tests";
 
@@ -114,6 +116,7 @@ pub struct Harness {
     pub passkey: PasskeyManager,
     pub signup: SignupManager,
     pub recovery: RecoveryManager,
+    pub account: AccountManager,
     /// The recovery flow the harness built `recovery` from, kept so tests
     /// can construct another `RecoveryManager` (e.g. to exercise
     /// `RecoveryManager::new`'s cool-down validation) without re-wiring the
@@ -263,11 +266,19 @@ impl HarnessBuilder {
         let signup = SignupManager::new(signup_flow, self.signup);
         let recovery = RecoveryManager::new(recovery_flow.clone(), self.recovery)
             .expect("recovery cooldown is at or above the floor");
+        let account = AccountManager::new(
+            &signup_deps,
+            AccountConfig {
+                url_template: ACCOUNT_URL.to_string(),
+                ..AccountConfig::default()
+            },
+        );
 
         Harness {
             passkey,
             signup,
             recovery,
+            account,
             recovery_flow,
             users,
             sessions,

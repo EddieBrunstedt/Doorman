@@ -265,6 +265,21 @@ pub struct RecoveryFinishRequest {
     pub name: Option<String>,
 }
 
+/// Request body for `/auth/account/email`. Starts a verified email change:
+/// a confirmation link is sent to `new_email` and the current address is
+/// notified. The change only takes effect once the link is confirmed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailChangeRequest {
+    pub new_email: String,
+}
+
+/// Request body for `/auth/account/email/confirm`. The token comes from the
+/// confirmation link sent to the new address.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailChangeConfirmRequest {
+    pub token: String,
+}
+
 /// Returned by both passkey ceremony `start` endpoints. The `options`
 /// field is the JSON `webauthn-rs` produces for
 /// `navigator.credentials.{create,get}`; we wrap it so the response also

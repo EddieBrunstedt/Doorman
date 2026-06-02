@@ -321,9 +321,14 @@ impl SessionManager {
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn revoke_all_for_user(&self, user_id: UserId) -> Result<u64> {
         let count = self.sessions.delete_sessions_for_user(user_id).await?;
-        self.invalidation_hook()
-            .on_user_sessions_invalidated(user_id)
-            .await;
+        // Only notify the invalidation hook when something was actually
+        // revoked, matching `revoke_others_for_user`'s guarded shape — a
+        // zero-count sweep evicts nothing, so there is nothing to invalidate.
+        if count > 0 {
+            self.invalidation_hook()
+                .on_user_sessions_invalidated(user_id)
+                .await;
+        }
         tracing::info!(count, outcome = "revoked_all", "user sessions revoked");
         Ok(count)
     }
@@ -460,9 +465,78 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::NoopAuditSink;
+    use crate::clock::SystemClock;
+    use crate::memory::InMemorySessionStore;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn default_config_builds() {
         let _ = SessionConfig::default();
+    }
+
+    #[derive(Default)]
+    struct CountingHook {
+        user_invalidations: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl SessionInvalidationHook for CountingHook {
+        async fn on_session_invalidated(&self, _: SessionId) {}
+        async fn on_user_sessions_invalidated(&self, _: UserId) {
+            self.user_invalidations.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn manager_with_hook(hook: Arc<CountingHook>) -> SessionManager {
+        SessionManager::new(
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(SystemClock),
+            Arc::new(NoopAuditSink),
+            SessionConfig::default(),
+        )
+        .with_invalidation_hook(hook)
+    }
+
+    /// `revoke_all_for_user` must only notify the invalidation hook when it
+    /// actually revoked something — matching `revoke_others_for_user`'s
+    /// guarded shape (P1-03). A zero-count sweep evicts nothing.
+    #[tokio::test]
+    async fn revoke_all_does_not_notify_hook_on_zero_count() {
+        let hook = Arc::new(CountingHook::default());
+        let manager = manager_with_hook(hook.clone());
+
+        let count = manager
+            .revoke_all_for_user(UserId::new())
+            .await
+            .expect("revoke all");
+        assert_eq!(count, 0, "no sessions to revoke");
+        assert_eq!(
+            hook.user_invalidations.load(Ordering::SeqCst),
+            0,
+            "a zero-count sweep must not notify the hook",
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_all_notifies_hook_when_sessions_removed() {
+        let hook = Arc::new(CountingHook::default());
+        let manager = manager_with_hook(hook.clone());
+        let user_id = UserId::new();
+        manager
+            .create(user_id, SessionContext::default())
+            .await
+            .expect("create session");
+
+        let count = manager
+            .revoke_all_for_user(user_id)
+            .await
+            .expect("revoke all");
+        assert_eq!(count, 1);
+        assert_eq!(
+            hook.user_invalidations.load(Ordering::SeqCst),
+            1,
+            "revoking sessions notifies the hook exactly once",
+        );
     }
 }

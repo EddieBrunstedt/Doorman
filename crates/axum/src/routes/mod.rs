@@ -1,8 +1,8 @@
 //! Mountable HTTP router.
 //!
 //! [`router`] is called by [`BauthAxum::router`](crate::BauthAxum::router)
-//! to assemble the always-on passkey, signup, recovery, and session route
-//! trees.
+//! to assemble the always-on passkey, signup, recovery, session, and account
+//! route trees.
 
 use axum::Json;
 use axum::Router;
@@ -19,6 +19,7 @@ use crate::dto::{AuthResponse, PasskeyChallenge};
 use crate::error::ErrorResponse;
 use crate::state::BauthState;
 
+pub(crate) mod account;
 pub(crate) mod passkey;
 pub(crate) mod recovery;
 pub(crate) mod sessions;
@@ -84,5 +85,6 @@ pub(crate) fn router(state: BauthState) -> Router {
         .merge(signup::routes())
         .merge(recovery::routes())
         .merge(sessions::routes())
+        .merge(account::routes())
         .with_state(state)
 }

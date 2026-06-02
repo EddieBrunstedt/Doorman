@@ -6,6 +6,7 @@
 //! audit, and rate-limiter traits plus the managers that implement each
 //! auth flow.
 
+pub mod account;
 pub mod audit;
 pub mod clock;
 pub mod context;

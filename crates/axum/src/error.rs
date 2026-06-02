@@ -68,6 +68,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::SessionExpired => (StatusCode::UNAUTHORIZED, "session_expired"),
         Error::UserNotFound => (StatusCode::NOT_FOUND, "user_not_found"),
         Error::InvalidEmail => (StatusCode::BAD_REQUEST, "invalid_email"),
+        Error::EmailAlreadyInUse => (StatusCode::CONFLICT, "email_already_in_use"),
         Error::InvalidVerificationToken => (StatusCode::BAD_REQUEST, "invalid_verification_token"),
         Error::InvalidPasskeyChallenge => (StatusCode::BAD_REQUEST, "invalid_passkey_challenge"),
         Error::PasskeyNotFound => (StatusCode::NOT_FOUND, "passkey_not_found"),

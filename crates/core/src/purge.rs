@@ -134,6 +134,7 @@ mod tests {
             token_hash: TokenHash([tag; 32]),
             user_id,
             purpose: VerificationPurpose::Signup,
+            new_email: None,
             created_at: now - chrono::Duration::hours(2),
             expires_at,
         };

@@ -22,6 +22,7 @@ use crate::state::BauthState;
 pub(crate) fn routes() -> Router<BauthState> {
     Router::new()
         .route("/logout", post(logout))
+        .route("/logout-all", post(logout_all))
         .route("/sessions", get(list).delete(remove_others))
         .route("/sessions/{id}", delete(remove))
 }
@@ -38,6 +39,28 @@ async fn logout(
     auth: AuthSession,
 ) -> Result<Response, ErrorResponse> {
     state.session_manager.revoke(&auth.token).await?;
+    let cookie = clear_session_cookie(&state.cookie_config);
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response.headers_mut().insert(header::SET_COOKIE, cookie);
+    Ok(response)
+}
+
+/// "Log out everywhere": revoke *every* session the caller has, including the
+/// current one, then clear the session cookie. Wired to
+/// [`revoke_all_for_user`](bauth_core::session::SessionManager::revoke_all_for_user).
+///
+/// Not gated by the post-recovery cool-down: this revokes the caller's own
+/// sessions across all devices (the legitimate owner can always re-authenticate
+/// with a passkey), so unlike "sign out everywhere *else*" it cannot be used to
+/// strand the real user.
+async fn logout_all(
+    State(state): State<BauthState>,
+    auth: AuthSession,
+) -> Result<Response, ErrorResponse> {
+    state
+        .session_manager
+        .revoke_all_for_user(auth.user.id)
+        .await?;
     let cookie = clear_session_cookie(&state.cookie_config);
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(header::SET_COOKIE, cookie);

@@ -231,6 +231,46 @@ pub trait BauthEmails: Send + Sync {
         }
     }
 
+    /// Sent to the **new** address when a verified email-change is requested.
+    /// Clicking the link confirms the user controls the new address and moves
+    /// the account's email to it. `new_email` is the requested address (also
+    /// the recipient); `url` carries the single-use confirmation token.
+    fn email_change_confirmation_email(&self, _user: &User, new_email: &str, url: &str) -> Email {
+        Email {
+            to: new_email.to_string(),
+            subject: "Confirm your new email address".to_string(),
+            body_text: format!(
+                "Hello,\n\n\
+                 A request was made to change the email address on an account to this one. \
+                 Click the link below to confirm it:\n\n\
+                 {url}\n\n\
+                 The link can only be used once and expires shortly. \
+                 If you did not request this, you can safely ignore this message.\n"
+            ),
+            body_html: None,
+        }
+    }
+
+    /// Sent to the **old** address when a verified email-change is requested,
+    /// so the current inbox owner sees that a change was initiated before it
+    /// takes effect. `new_email` is the address the account would move to.
+    fn email_change_requested_notification_email(&self, user: &User, new_email: &str) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Security notice: email change requested".to_string(),
+            body_text: format!(
+                "Hello,\n\n\
+                 We received a request to change the email address on your account to \
+                 {new_email}. The change does not take effect until it is confirmed from the \
+                 new address. If this was you, no action is needed.\n\n\
+                 If this was not you, sign in with one of your passkeys immediately, review the \
+                 sessions on your account, and revoke anything you do not recognise. Contact \
+                 support if you cannot regain access.\n"
+            ),
+            body_html: None,
+        }
+    }
+
     /// Sent whenever a passkey is successfully registered for the account.
     /// `passkey_name` is the optional user-supplied friendly label; raw
     /// credential ids, attestation data, tokens, and other secrets are not

@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use bauth_axum::config::CookieConfig;
 use bauth_axum::{BauthAxum, BuilderError};
+use bauth_core::account::{AccountConfig, AccountManager};
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::context::CoreDeps;
@@ -88,6 +89,7 @@ fn passkey_config() -> PasskeyConfig {
 
 const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
+const ACCOUNT_URL: &str = "https://app.test/email-change?token={token}";
 
 /// A signup config with a real (non-placeholder) URL template, so the
 /// build does not trip the URL warning/error while a different validation
@@ -103,6 +105,13 @@ fn real_recovery() -> RecoveryConfig {
     RecoveryConfig {
         url_template: RECOVERY_URL.to_string(),
         ..RecoveryConfig::default()
+    }
+}
+
+fn real_account() -> AccountConfig {
+    AccountConfig {
+        url_template: ACCOUNT_URL.to_string(),
+        ..AccountConfig::default()
     }
 }
 
@@ -320,6 +329,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
     let signup = SignupManager::new(flow.clone(), SignupConfig::default());
     let recovery =
         RecoveryManager::new(flow, RecoveryConfig::default()).expect("recovery cooldown valid");
+    let account = AccountManager::new(&deps, AccountConfig::default());
 
     let auth = BauthAxum::from_managers()
         .session_manager(session_manager)
@@ -327,6 +337,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         .passkey_manager(passkey)
         .signup_manager(signup)
         .recovery_manager(recovery)
+        .account_manager(account)
         .silence_warnings()
         .build()
         .expect("low-level build should succeed when every manager is supplied");
@@ -507,6 +518,7 @@ fn real_url_templates_do_not_warn_about_placeholder() {
             .passkey(passkey_config())
             .signup(real_signup())
             .recovery(real_recovery())
+            .account(real_account())
             .build()
             .expect("build");
     });

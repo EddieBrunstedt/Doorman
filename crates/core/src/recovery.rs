@@ -280,6 +280,7 @@ impl RecoveryManager {
             self.flow.tokens().as_ref(),
             user.id,
             VerificationPurpose::Recovery,
+            None,
             self.config.token_lifetime,
             &self.config.url_template,
             now,

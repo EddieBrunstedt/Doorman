@@ -43,6 +43,7 @@ fn user(id: UserId, email: &str) -> User {
 pub async fn run(storage: &Storage) {
     users_round_trip(storage).await;
     verification_token_single_use(storage).await;
+    verification_token_email_change_payload(storage).await;
     verification_token_purge_and_delete(storage).await;
     sessions_crud_and_queries(storage).await;
     sessions_purge_expired(storage).await;
@@ -177,6 +178,7 @@ async fn verification_token_single_use(storage: &Storage) {
             token_hash: hash,
             user_id,
             purpose: VerificationPurpose::Signup,
+            new_email: None,
             created_at: ts(2026, 1, 1),
             expires_at: ts(2099, 1, 1),
         })
@@ -207,6 +209,7 @@ async fn verification_token_single_use(storage: &Storage) {
             token_hash: signup_hash,
             user_id,
             purpose: VerificationPurpose::Signup,
+            new_email: None,
             created_at: ts(2026, 1, 1),
             expires_at: ts(2099, 1, 1),
         })
@@ -230,6 +233,43 @@ async fn verification_token_single_use(storage: &Storage) {
     );
 }
 
+/// An email-change token carries the target address in `new_email`; it must
+/// round-trip through `create`/`consume` so the confirm step can read it back.
+async fn verification_token_email_change_payload(storage: &Storage) {
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "email-change@example.com"))
+        .await
+        .expect("user");
+
+    let tokens = &storage.verification_tokens;
+    let hash = hash_token("email-change-token");
+    tokens
+        .create_token(VerificationToken {
+            token_hash: hash,
+            user_id,
+            purpose: VerificationPurpose::EmailChange,
+            new_email: Some("new-address@example.com".to_string()),
+            created_at: ts(2026, 1, 1),
+            expires_at: ts(2099, 1, 1),
+        })
+        .await
+        .expect("create email-change token");
+
+    let consumed = tokens
+        .consume_token(&hash, VerificationPurpose::EmailChange)
+        .await
+        .expect("consume")
+        .expect("token present");
+    assert_eq!(consumed.purpose, VerificationPurpose::EmailChange);
+    assert_eq!(
+        consumed.new_email.as_deref(),
+        Some("new-address@example.com"),
+        "the target address round-trips through storage",
+    );
+}
+
 async fn verification_token_purge_and_delete(storage: &Storage) {
     let user_id = UserId::new();
     storage
@@ -246,6 +286,7 @@ async fn verification_token_purge_and_delete(storage: &Storage) {
             token_hash: signup_hash,
             user_id,
             purpose: VerificationPurpose::Signup,
+            new_email: None,
             created_at: ts(2026, 1, 1),
             expires_at: ts(2099, 1, 1),
         })
@@ -256,6 +297,7 @@ async fn verification_token_purge_and_delete(storage: &Storage) {
             token_hash: recovery_hash,
             user_id,
             purpose: VerificationPurpose::Recovery,
+            new_email: None,
             created_at: ts(2026, 1, 1),
             expires_at: ts(2099, 1, 1),
         })
@@ -292,6 +334,7 @@ async fn verification_token_purge_and_delete(storage: &Storage) {
             token_hash: expired_hash,
             user_id,
             purpose: VerificationPurpose::Signup,
+            new_email: None,
             created_at: ts(2020, 1, 1),
             expires_at: ts(2020, 1, 2),
         })

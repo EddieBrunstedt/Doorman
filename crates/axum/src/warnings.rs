@@ -155,9 +155,9 @@ impl Warnings {
         }
         if self.placeholder_url_template {
             out.push(
-                "A signup or recovery url_template is still the stock example.invalid \
-                 placeholder. The emailed link points at a domain you do not own, so signup / \
-                 recovery links are dead. Set a real template via .signup(..) / .recovery(..).",
+                "A signup, recovery, or account url_template is still the stock example.invalid \
+                 placeholder. The emailed link points at a domain you do not own, so the link is \
+                 dead. Set a real template via .signup(..) / .recovery(..) / .account(..).",
             );
         }
         out

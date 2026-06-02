@@ -10,6 +10,7 @@ use std::sync::Arc;
 use bauth_core::session::SessionManager;
 use bauth_core::storage::UserStore;
 
+use bauth_core::account::AccountManager;
 use bauth_core::passkey::PasskeyManager;
 use bauth_core::recovery::RecoveryManager;
 use bauth_core::signup::SignupManager;
@@ -29,6 +30,7 @@ pub struct BauthState {
     pub(crate) passkey: PasskeyManager,
     pub(crate) signup: SignupManager,
     pub(crate) recovery: RecoveryManager,
+    pub(crate) account: AccountManager,
 }
 
 impl BauthState {
@@ -60,5 +62,11 @@ impl BauthState {
     /// Borrow the recovery manager the bundled recovery routes drive.
     pub fn recovery(&self) -> &RecoveryManager {
         &self.recovery
+    }
+
+    /// Borrow the account manager the bundled account routes drive (verified
+    /// email change and account deletion).
+    pub fn account(&self) -> &AccountManager {
+        &self.account
     }
 }

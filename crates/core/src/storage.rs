@@ -432,6 +432,11 @@ pub trait PasskeyChallengeStore: Send + Sync {
 pub enum VerificationPurpose {
     Signup,
     Recovery,
+    /// Confirms a verified email-change request. The token is emailed to the
+    /// *new* address (proving the user controls it) and, when redeemed,
+    /// moves the account's email to the value carried in
+    /// [`VerificationToken::new_email`].
+    EmailChange,
 }
 
 /// A single-use, time-limited token issued for an out-of-band flow such
@@ -442,6 +447,11 @@ pub struct VerificationToken {
     pub token_hash: TokenHash,
     pub user_id: UserId,
     pub purpose: VerificationPurpose,
+    /// Target address for an [`EmailChange`](VerificationPurpose::EmailChange)
+    /// token: the already-normalized address the account moves to when the
+    /// token is redeemed. `None` for signup and recovery tokens, which carry
+    /// no payload beyond the user binding.
+    pub new_email: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }

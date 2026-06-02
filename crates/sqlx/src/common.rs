@@ -32,6 +32,7 @@ pub(crate) fn purpose_to_str(p: VerificationPurpose) -> &'static str {
     match p {
         VerificationPurpose::Signup => "signup",
         VerificationPurpose::Recovery => "recovery",
+        VerificationPurpose::EmailChange => "email_change",
     }
 }
 
@@ -39,6 +40,7 @@ pub(crate) fn purpose_from_str(s: &str) -> StorageResult<VerificationPurpose> {
     match s {
         "signup" => Ok(VerificationPurpose::Signup),
         "recovery" => Ok(VerificationPurpose::Recovery),
+        "email_change" => Ok(VerificationPurpose::EmailChange),
         other => Err(StorageError::msg(format!(
             "unknown verification purpose `{other}` in database"
         ))),

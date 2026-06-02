@@ -9,6 +9,7 @@
 //! line. Hosts who want a narrower import surface should reach into the
 //! individual modules instead.
 
+pub use crate::account::{AccountConfig, AccountManager};
 pub use crate::audit::{
     AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, RecoveryFailureReason,
 };
