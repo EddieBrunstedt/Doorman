@@ -5,10 +5,10 @@
 
 mod conformance;
 
-use doorman_core::storage::Storage;
+use doorman_core::memory::InMemoryStorage;
 
 #[tokio::test]
 async fn in_memory_storage_conformance() {
-    let storage = Storage::in_memory();
+    let storage = InMemoryStorage::new().all_stores();
     conformance::run(&storage).await;
 }

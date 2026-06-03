@@ -7,7 +7,7 @@
 //! ## Picking an adapter
 //!
 //! - **SQLx hosts** (SQLite or Postgres) should depend on `doorman-sqlx`
-//!   and let `SqliteStorage::storage()` / `PostgresStorage::storage()`
+//!   and let `SqliteStorage::all_stores()` / `PostgresStorage::all_stores()`
 //!   populate the [`Storage`] composite for them.
 //! - **Hosts on other stacks** (Diesel, sea-orm, Redis, a bespoke
 //!   driver) implement these traits directly. The in-memory stores in
@@ -34,11 +34,11 @@ pub use crate::token::TokenHash;
 /// Bundles the per-concern `Arc<dyn ...>` stores so a host can pass
 /// one value to the high-level builder (or assemble it once and reuse it
 /// across multiple managers) instead of threading each store through by
-/// hand. Storage adapters typically expose a `fn storage(&self) -> Storage`
-/// that returns this struct populated against a single backend; hosts that
-/// want to mix backends (e.g. SQLx for most stores, a Redis-backed
-/// `SessionStore` for cross-process revoke speed) construct the struct
-/// directly and swap individual fields.
+/// hand. Storage adapters that can fill every field typically expose a
+/// `fn all_stores(&self) -> Storage` that returns this struct populated against
+/// a single backend; hosts that want to mix backends (e.g. SQLx for most
+/// stores, a Redis-backed `SessionStore` for cross-process revoke speed)
+/// construct the struct directly and swap individual fields.
 #[derive(Clone)]
 pub struct Storage {
     /// Local user records.

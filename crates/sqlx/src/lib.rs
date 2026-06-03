@@ -5,8 +5,8 @@
 //! - `sqlite` — `SqliteStorage` for SQLite databases.
 //! - `postgres` — `PostgresStorage` for Postgres databases.
 //!
-//! Both expose `connect`, `from_pool`, `pool`, `migrate`, and `storage`.
-//! `storage()` returns a [`doorman_core::storage::Storage`] populated with
+//! Both expose `connect`, `from_pool`, `pool`, `migrate`, and `all_stores`.
+//! `all_stores()` returns a [`doorman_core::storage::Storage`] populated with
 //! every store implementation, ready to hand to `AuthService::builder` in
 //! `doorman-axum`.
 //!
@@ -16,7 +16,7 @@
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! let storage = SqliteStorage::connect("sqlite::memory:").await?;
 //! storage.migrate().await?;
-//! let composite = storage.storage();
+//! let composite = storage.all_stores();
 //! # let _ = composite;
 //! # Ok(()) }
 //! ```

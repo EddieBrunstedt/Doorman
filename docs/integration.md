@@ -17,7 +17,7 @@ storage.migrate().await?;
 
 let origin = "https://app.example.com".parse()?;
 let base = origin.as_str().trim_end_matches('/');
-let auth = AuthService::builder(storage.storage())
+let auth = AuthService::builder(storage.all_stores())
     .email(Arc::new(TerminalEmailSender))
     .passkey(PasskeyConfig::from_origin(origin.clone(), "Example")?)
     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
@@ -59,7 +59,7 @@ Every collaborator and config has a bare-noun setter on `AuthServiceBuilder` (an
 
 ## Choosing or implementing a store
 
-For SQLite/Postgres, depend on `doorman-sqlx` and call `storage.storage()` to get the composite `Storage` value. For an in-memory store (tests, ephemeral deployments) use `Storage::in_memory()`.
+For SQLite/Postgres, depend on `doorman-sqlx` and call `storage.all_stores()` to get the composite `Storage` value. For an in-memory store (tests, ephemeral deployments) use `InMemoryStorage::new().all_stores()`.
 
 To back doorman with another database, implement the five storage traits from `doorman_core::storage`:
 

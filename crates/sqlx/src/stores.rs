@@ -30,7 +30,11 @@ macro_rules! sqlx_stores {
         impl $storage {
             /// Build a [`Storage`](doorman_core::storage::Storage) populated with
             /// every per-concern store backed by this pool.
-            pub fn storage(&self) -> $crate::stores::__reexport::Storage {
+            ///
+            /// The single-backend shortcut: when every store uses this pool,
+            /// this is the struct literal of the five per-store accessors. Mix
+            /// backends by writing the `Storage` literal directly instead.
+            pub fn all_stores(&self) -> $crate::stores::__reexport::Storage {
                 $crate::stores::__reexport::Storage {
                     users: self.user_store(),
                     sessions: self.session_store(),

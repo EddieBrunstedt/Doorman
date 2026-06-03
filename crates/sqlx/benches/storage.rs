@@ -290,7 +290,7 @@ fn sqlite_storage(runtime: &Runtime) -> Storage {
             .await
             .expect("connect sqlite");
         storage.migrate().await.expect("migrate sqlite");
-        storage.storage()
+        storage.all_stores()
     })
 }
 
@@ -322,7 +322,7 @@ fn storage(c: &mut Criterion) {
                         .expect("create schema");
                     let storage = doorman_sqlx::PostgresStorage::from_pool(pool.clone());
                     storage.migrate().await.expect("migrate postgres");
-                    storage.storage()
+                    storage.all_stores()
                 })
             };
             run_backend(c, &runtime, "postgres", &make);

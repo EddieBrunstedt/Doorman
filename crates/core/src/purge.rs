@@ -93,6 +93,7 @@ pub fn spawn_purge_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::InMemoryStorage;
     use crate::storage::{
         PasskeyChallengeId, Session, SessionId, StoredPasskeyAuthentication,
         StoredPasskeyRegistration, TokenHash, UserId, VerificationPurpose, VerificationToken,
@@ -184,7 +185,7 @@ mod tests {
     #[tokio::test]
     async fn purge_all_expired_sweeps_every_store_and_reports_counts() {
         let now = ts(1_000_000);
-        let storage = Storage::in_memory();
+        let storage = InMemoryStorage::new().all_stores();
         seed(&storage, UserId::new(), now).await;
 
         let summary = storage.purge_all_expired(now).await.expect("purge");
@@ -216,7 +217,7 @@ mod tests {
 
         let now = ts(2_000_000);
         let user_id = UserId::new();
-        let storage = Storage::in_memory();
+        let storage = InMemoryStorage::new().all_stores();
         seed(&storage, user_id, now).await;
 
         let handle = spawn_purge_task(

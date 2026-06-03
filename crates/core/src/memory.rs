@@ -23,15 +23,28 @@ use crate::storage::{
     VerificationToken, VerificationTokenStore,
 };
 
-impl Storage {
-    /// Build a [`Storage`] composite backed entirely by the in-memory
-    /// reference stores, each `Arc`-wrapped. Mirrors the SQLx adapters'
-    /// `storage()` so framework-agnostic hosts, quickstarts, and benches get
-    /// a one-call composite instead of hand-assembling the five fields.
-    ///
-    /// In-memory storage is process-local and lost on restart; use it for
-    /// tests and local experiments, not production.
-    pub fn in_memory() -> Self {
+/// A backend handle owning one shared instance of each in-memory store.
+///
+/// Mirrors the SQLx adapter handles (`SqliteStorage`, `PostgresStorage`): the
+/// per-store accessors (`user_store()`, `session_store()`, …) return clones of
+/// the *same* underlying `Arc`, so repeated calls share state — exactly as
+/// `pg.user_store()` shares one pool. [`all_stores()`](Self::all_stores) is the
+/// single-backend shortcut that assembles the full [`Storage`] composite.
+///
+/// In-memory storage is process-local and lost on restart; use it for tests
+/// and local experiments, not production.
+#[derive(Clone)]
+pub struct InMemoryStorage {
+    users: Arc<InMemoryUserStore>,
+    sessions: Arc<InMemorySessionStore>,
+    verification_tokens: Arc<InMemoryVerificationTokenStore>,
+    passkey_credentials: Arc<InMemoryPasskeyCredentialStore>,
+    passkey_challenges: Arc<InMemoryPasskeyChallengeStore>,
+}
+
+impl InMemoryStorage {
+    /// Create a fresh handle with one empty instance of each store.
+    pub fn new() -> Self {
         Self {
             users: Arc::new(InMemoryUserStore::new()),
             sessions: Arc::new(InMemorySessionStore::new()),
@@ -39,6 +52,52 @@ impl Storage {
             passkey_credentials: Arc::new(InMemoryPasskeyCredentialStore::new()),
             passkey_challenges: Arc::new(InMemoryPasskeyChallengeStore::new()),
         }
+    }
+
+    /// The user store backed by this handle.
+    pub fn user_store(&self) -> Arc<dyn UserStore> {
+        self.users.clone()
+    }
+
+    /// The session store backed by this handle.
+    pub fn session_store(&self) -> Arc<dyn SessionStore> {
+        self.sessions.clone()
+    }
+
+    /// The verification-token store backed by this handle.
+    pub fn verification_token_store(&self) -> Arc<dyn VerificationTokenStore> {
+        self.verification_tokens.clone()
+    }
+
+    /// The passkey-credential store backed by this handle.
+    pub fn passkey_credential_store(&self) -> Arc<dyn PasskeyCredentialStore> {
+        self.passkey_credentials.clone()
+    }
+
+    /// The passkey-challenge store backed by this handle.
+    pub fn passkey_challenge_store(&self) -> Arc<dyn PasskeyChallengeStore> {
+        self.passkey_challenges.clone()
+    }
+
+    /// Build a [`Storage`] composite from this handle's five shared stores.
+    ///
+    /// The single-backend shortcut, mirroring the SQLx adapters'
+    /// `all_stores()`, so framework-agnostic hosts, quickstarts, and benches
+    /// get a one-call composite instead of hand-assembling the five fields.
+    pub fn all_stores(&self) -> Storage {
+        Storage {
+            users: self.user_store(),
+            sessions: self.session_store(),
+            verification_tokens: self.verification_token_store(),
+            passkey_credentials: self.passkey_credential_store(),
+            passkey_challenges: self.passkey_challenge_store(),
+        }
+    }
+}
+
+impl Default for InMemoryStorage {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -636,13 +695,12 @@ impl RateLimiter for InMemoryRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::Storage;
 
     #[tokio::test]
     async fn in_memory_composite_wires_every_store() {
         // The composite must hand back working, independent stores; exercise
         // one method per store to prove each field is populated and live.
-        let storage = Storage::in_memory();
+        let storage = InMemoryStorage::new().all_stores();
         let now = chrono::Utc::now();
 
         let user = User {
@@ -697,6 +755,38 @@ mod tests {
                 .await
                 .expect("passkey challenge store wired")
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_accessor_calls_share_state() {
+        // Unlike the old `Storage::in_memory()` associated function, the
+        // handle's accessors return clones of the *same* underlying store, so a
+        // row written through one accessor handle is visible through another —
+        // matching how a pooled SQL adapter shares one pool.
+        let storage = InMemoryStorage::new();
+        let now = chrono::Utc::now();
+        let user = User {
+            id: UserId::new(),
+            email: Some("shared@example.com".into()),
+            email_verified_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        storage
+            .user_store()
+            .create_user(user.clone())
+            .await
+            .expect("create via first handle");
+
+        assert_eq!(
+            storage
+                .user_store()
+                .find_user_by_id(user.id)
+                .await
+                .expect("find via second handle"),
+            Some(user),
         );
     }
 }
