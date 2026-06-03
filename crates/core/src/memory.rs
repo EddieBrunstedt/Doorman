@@ -603,7 +603,7 @@ impl InMemoryRateLimiter {
 
 #[async_trait]
 impl RateLimiter for InMemoryRateLimiter {
-    async fn check(
+    async fn check_and_charge(
         &self,
         key: &RateLimitKey,
         policy: RateLimitPolicy,

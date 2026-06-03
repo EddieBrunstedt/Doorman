@@ -20,10 +20,9 @@ use crate::error::StorageResult;
 
 /// A structured, multi-dimensional rate-limit key.
 ///
-/// Replaces the opaque `&str` the trait used to take, so layered limits —
-/// per-IP, per-account, per-credential — name their dimensions rather than
-/// smuggling them into a flat string a backend cannot decompose. The
-/// `operation` names the limited action (e.g.
+/// Layered limits — per-IP, per-account, per-credential — name their
+/// dimensions rather than smuggling them into a flat string a backend
+/// cannot decompose. The `operation` names the limited action (e.g.
 /// `"passkey/authenticate/finish"`); each appended dimension is a
 /// `(name, value)` pair such as `("ip", "1.2.3.4")` or
 /// `("credential", "<id>")`.
@@ -66,10 +65,15 @@ impl RateLimitKey {
         &self.dimensions
     }
 
-    /// Stable single-string rendering for backends that key on one string:
-    /// the operation followed by each `|name=value` in order. Two keys render
-    /// equal iff they share the same operation and the same ordered
-    /// dimensions, so distinct axes never collide into one bucket.
+    /// Stable single-string rendering for backends that key on one string,
+    /// such as the bundled
+    /// [`InMemoryRateLimiter`](crate::memory::InMemoryRateLimiter): the
+    /// operation followed by each `|name=value` in order. Such a backend uses
+    /// this string as the bucket identity, so the mapping must be
+    /// collision-free — two keys produce the same string only when they share
+    /// the same operation and the same ordered dimensions. Distinct axes (a
+    /// per-IP limit versus a per-account limit, say) therefore never charge
+    /// into the same bucket.
     pub fn canonical(&self) -> String {
         let mut out = String::with_capacity(self.operation.len() + self.dimensions.len() * 16);
         out.push_str(&self.operation);
@@ -89,7 +93,7 @@ impl fmt::Display for RateLimitKey {
     }
 }
 
-/// What a [`RateLimiter::check`] call decided.
+/// What a [`RateLimiter::check_and_charge`] call decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RateLimitDecision {
     /// Within budget; the attempt was charged and the caller may proceed.
@@ -147,7 +151,7 @@ pub trait RateLimiter: Send + Sync + Any {
     /// The [`RateLimitKey`] is structured (operation + named dimensions); a
     /// single-string backend flattens it with
     /// [`RateLimitKey::canonical`].
-    async fn check(
+    async fn check_and_charge(
         &self,
         key: &RateLimitKey,
         policy: RateLimitPolicy,
@@ -161,7 +165,7 @@ pub struct NoopRateLimiter;
 
 #[async_trait]
 impl RateLimiter for NoopRateLimiter {
-    async fn check(
+    async fn check_and_charge(
         &self,
         _key: &RateLimitKey,
         _policy: RateLimitPolicy,
@@ -208,7 +212,7 @@ mod tests {
         struct MyLimiter;
         #[async_trait]
         impl RateLimiter for MyLimiter {
-            async fn check(
+            async fn check_and_charge(
                 &self,
                 _key: &RateLimitKey,
                 _policy: RateLimitPolicy,

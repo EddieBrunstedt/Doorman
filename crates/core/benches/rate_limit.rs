@@ -34,7 +34,7 @@ fn rate_limit(c: &mut Criterion) {
     c.bench_function("rate_limit_allowed", |b| {
         b.to_async(&runtime).iter(|| async {
             limiter
-                .check(&allowed_key, allowed_policy)
+                .check_and_charge(&allowed_key, allowed_policy)
                 .await
                 .expect("check");
         });
@@ -45,14 +45,14 @@ fn rate_limit(c: &mut Criterion) {
     let limited_key = RateLimitKey::new("rate_limit").with("ip", "203.0.113.9");
     runtime.block_on(async {
         limiter
-            .check(&limited_key, limited_policy)
+            .check_and_charge(&limited_key, limited_policy)
             .await
             .expect("seed attempt");
     });
     c.bench_function("rate_limit_limited", |b| {
         b.to_async(&runtime).iter(|| async {
             limiter
-                .check(&limited_key, limited_policy)
+                .check_and_charge(&limited_key, limited_policy)
                 .await
                 .expect("check");
         });

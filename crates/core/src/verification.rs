@@ -101,7 +101,7 @@ pub(crate) async fn enforce_rate_limit(
         return Ok(());
     };
     let key = RateLimitKey::new(operation).with(dimension, value);
-    match rate_limiter.check(&key, policy).await? {
+    match rate_limiter.check_and_charge(&key, policy).await? {
         RateLimitDecision::Allowed => Ok(()),
         RateLimitDecision::Limited { retry_after } => Err(Error::RateLimited { retry_after }),
     }

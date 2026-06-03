@@ -94,8 +94,8 @@ A typical local flow: `--save-baseline before`, make a change, `--baseline befor
 | `session`         | `session_create`       | `SessionManager::create` against the in-memory store (token gen + hash + insert + audit emit).                                                                  |
 | `session`         | `session_validate`     | Manager-level `validate` against the in-memory store (no cache in front — `doorman-axum` measures cache behavior separately).                                   |
 | `session`         | `token_hash`           | `hash_token` throughput. Runs on every authenticated request; the end-to-end request benches (`doorman-axum` `request_path`) fold this cost into the full path. |
-| `rate_limit`      | `rate_limit_allowed`   | `InMemoryRateLimiter::check` on a within-budget attempt.                                                                                                        |
-| `rate_limit`      | `rate_limit_limited`   | `check` on a saturated bucket (the hot path under an active attack).                                                                                            |
+| `rate_limit`      | `rate_limit_allowed`   | `InMemoryRateLimiter::check_and_charge` on a within-budget attempt.                                                                                             |
+| `rate_limit`      | `rate_limit_limited`   | `check_and_charge` on a saturated bucket (the hot path under an active attack).                                                                                 |
 | `enrollment`      | `signup_request`       | `SignupManager::request_signup` — normalize/validate, rate-limit, user provisioning, token issuance, link render, captured email send.                          |
 | `passkey_auth`    | `passkey_authenticate` | Full discoverable auth ceremony: `start_authentication` → `SoftPasskey` signs → `finish_authentication` + session issue. The headline login-throughput number.  |
 | `passkey_auth`    | `passkey_finish`       | Just `finish_authentication` (assertion verify, counter check, user-handle binding, session issue); the start + signing happen in untimed `iter_custom` setup.  |
