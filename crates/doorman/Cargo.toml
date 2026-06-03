@@ -1,15 +1,15 @@
 [package]
 name = "doorman"
 version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
 authors.workspace = true
-rust-version.workspace = true
-description = "Opinionated passkey-only authentication for Rust web apps. Umbrella crate re-exporting doorman-core, doorman-axum, and doorman-sqlx behind features."
-keywords = ["authentication", "passkey", "webauthn", "axum", "auth"]
 categories = ["authentication", "web-programming"]
 documentation = "https://docs.rs/doorman"
+edition.workspace = true
+keywords = ["authentication", "passkey", "webauthn", "axum", "auth"]
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Opinionated passkey-only authentication for Rust web apps. Umbrella crate re-exporting doorman-core, doorman-axum, and doorman-sqlx behind features."
 
 [features]
 default = []
@@ -26,8 +26,8 @@ file-email = ["doorman-core/file-email", "doorman-axum?/file-email"]
 workspace = true
 
 [dependencies]
-doorman-core = { path = "../core", version = "0.1.0" }
 doorman-axum = { path = "../axum", version = "0.1.0", optional = true }
+doorman-core = { path = "../core", version = "0.1.0" }
 doorman-sqlx = { path = "../sqlx", version = "0.1.0", optional = true }
 
 [dev-dependencies]

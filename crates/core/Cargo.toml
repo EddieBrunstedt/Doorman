@@ -1,15 +1,15 @@
 [package]
 name = "doorman-core"
 version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
 authors.workspace = true
-rust-version.workspace = true
-description = "Core authentication primitives for the doorman library: storage traits, session management, and audit events."
-keywords = ["authentication", "passkey", "webauthn", "sessions", "auth"]
 categories = ["authentication", "web-programming"]
 documentation = "https://docs.rs/doorman-core"
+edition.workspace = true
+keywords = ["authentication", "passkey", "webauthn", "sessions", "auth"]
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Core authentication primitives for the doorman library: storage traits, session management, and audit events."
 
 [features]
 default = []
@@ -48,8 +48,8 @@ all-features = true
 # Test-only collaborators (mock clock, in-memory audit sink, capturing email
 # sender) live in their own crate so they never reach a production build. The
 # path-only edge means a `cargo publish` of doorman-core drops it.
-doorman-test-support = { path = "../test-support" }
 criterion.workspace = true
+doorman-test-support = { path = "../test-support" }
 proptest.workspace = true
 # `test-util` adds paused-time control for the `background-purge` task test.
 tokio = { workspace = true, features = ["test-util"] }

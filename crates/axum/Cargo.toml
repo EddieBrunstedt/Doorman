@@ -1,15 +1,15 @@
 [package]
 name = "doorman-axum"
 version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
 authors.workspace = true
-rust-version.workspace = true
-description = "Axum HTTP integration for the doorman authentication library."
-keywords = ["authentication", "passkey", "webauthn", "axum", "auth"]
 categories = ["authentication", "web-programming::http-server"]
 documentation = "https://docs.rs/doorman-axum"
+edition.workspace = true
+keywords = ["authentication", "passkey", "webauthn", "axum", "auth"]
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Axum HTTP integration for the doorman authentication library."
 
 [features]
 default = []
@@ -27,9 +27,9 @@ all-features = true
 async-trait.workspace = true
 axum = { version = "0.8", default-features = false, features = ["json", "query", "tokio", "http1"] }
 base64.workspace = true
-doorman-core = { path = "../core", version = "0.1.0" }
 chrono.workspace = true
 cookie = "0.18"
+doorman-core = { path = "../core", version = "0.1.0" }
 http = "1"
 lru.workspace = true
 serde.workspace = true
@@ -44,9 +44,9 @@ uuid.workspace = true
 webauthn-rs.workspace = true
 
 [dev-dependencies]
-doorman-test-support = { path = "../test-support" }
-doorman-sqlx = { path = "../sqlx", version = "0.1.0", features = ["sqlite"] }
 criterion.workspace = true
+doorman-sqlx = { path = "../sqlx", version = "0.1.0", features = ["sqlite"] }
+doorman-test-support = { path = "../test-support" }
 proptest.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }
 tokio = { workspace = true, features = ["net"] }

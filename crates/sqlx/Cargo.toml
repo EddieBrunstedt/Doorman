@@ -1,16 +1,16 @@
 [package]
 name = "doorman-sqlx"
 version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
 authors.workspace = true
-rust-version.workspace = true
-description = "SQLx-backed storage adapter for the doorman authentication library (SQLite and Postgres)."
-keywords = ["authentication", "passkey", "sqlx", "sqlite", "postgres"]
 categories = ["authentication", "database"]
 documentation = "https://docs.rs/doorman-sqlx"
+edition.workspace = true
+keywords = ["authentication", "passkey", "sqlx", "sqlite", "postgres"]
+license.workspace = true
 readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+description = "SQLx-backed storage adapter for the doorman authentication library (SQLite and Postgres)."
 
 [features]
 default = []
@@ -25,8 +25,8 @@ all-features = true
 
 [dependencies]
 async-trait.workspace = true
-doorman-core = { path = "../core", version = "0.1.0" }
 chrono.workspace = true
+doorman-core = { path = "../core", version = "0.1.0" }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "chrono", "uuid", "macros", "migrate"] }
 uuid.workspace = true
 

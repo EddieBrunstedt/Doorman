@@ -1,21 +1,21 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/core",
   "crates/axum",
-  "crates/sqlx",
+  "crates/core",
   "crates/doorman",
+  "crates/sqlx",
   "crates/test-support",
   "examples/minimal-app",
 ]
 
 [workspace.package]
 version = "0.1.0"
+authors = ["Eddie Brunstedt <eddie.brunstedt@protonmail.com>"]
 edition = "2024"
+homepage = "https://codeberg.org/EddieBrunstedt/bauth"
 license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/EddieBrunstedt/bauth"
-homepage = "https://codeberg.org/EddieBrunstedt/bauth"
-authors = ["Eddie Brunstedt <eddie.brunstedt@protonmail.com>"]
 # MSRV is driven by the dependency tree: sqlx 0.9 requires rustc 1.94, which is
 # the highest floor among the deps (webauthn-rs/time need 1.88). Verified with
 # `cargo +1.94 check --workspace --all-features`.
@@ -56,9 +56,9 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 url = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
+webauthn-authenticator-rs = { version = "0.5", default-features = false, features = ["softpasskey"] }
 webauthn-rs = { version = "0.5", default-features = false, features = ["danger-allow-state-serialisation", "danger-credential-internals", "conditional-ui"] }
 webauthn-rs-proto = "0.5"
-webauthn-authenticator-rs = { version = "0.5", default-features = false, features = ["softpasskey"] }
 
 # Pinned bench profile: optimise like release but with a single codegen unit
 # and fat LTO so numbers are stable run-to-run and don't drift with incremental
