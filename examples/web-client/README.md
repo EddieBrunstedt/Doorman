@@ -9,6 +9,32 @@ between the base64url strings returned by `webauthn-rs` JSON and the
 `ArrayBuffer` fields required by `navigator.credentials.create()` and
 `navigator.credentials.get()`.
 
+## Running this reference
+
+This is a TypeScript reference, not a ready-to-serve page: `index.html` imports
+`./passkey.ts` directly, so you need a TypeScript-aware dev server or bundler
+(Vite, esbuild, `tsx`, …) and a running `bauth-axum` backend to talk to (the
+WebAuthn origin must match the backend's `external_origin`). For a no-build,
+runnable demo against a live Axum + SQLite server, use
+[`examples/minimal-app`](../minimal-app) instead — it ships a plain static
+page with the same flows.
+
+## Mapping error codes to user copy
+
+bauth returns a stable machine error code, never end-user prose — the HTTP error
+body is `{ "error": { "code", "message" } }`. The client decides what the user
+reads. `passkey.ts` shows the pattern: failed requests throw a `BauthError`
+carrying `.code`, `.status`, and a `.guidance` string resolved from the
+exported `ERROR_GUIDANCE` table (e.g. `recovery_cooldown_active` →
+"This action is blocked during the 24-hour recovery cool-down…").
+
+Customise it by editing `ERROR_GUIDANCE` (wording, tone, localisation) or by
+reading `err.code` yourself and routing to your own UI. Codes worth handling:
+`recovery_cooldown_active`, `csrf_origin_mismatch`, `session_not_found` /
+`session_expired`, `email_already_in_use`, `invalid_verification_token`,
+`rate_limited`, and `passkey_possible_compromise`. The full set is in
+`crates/axum/src/error.rs`.
+
 ## Helpers
 
 - `requestSignup(email)` → `POST /auth/signup/request`

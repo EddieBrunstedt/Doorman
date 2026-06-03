@@ -2,46 +2,57 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>bauth web-client reference</title>
+    <style>
+      :focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+      label { display: block; margin: .25rem 0; }
+    </style>
   </head>
   <body>
     <h1>bauth web-client reference</h1>
 
-    <section>
-      <h2>Sign up</h2>
-      <input id="signup-email" type="email" value="alice@example.com" />
+    <section aria-labelledby="signup-h">
+      <h2 id="signup-h">Sign up</h2>
+      <label for="signup-email">Email</label>
+      <input id="signup-email" type="email" value="alice@example.com" autocomplete="email" />
       <button id="request-signup">Request signup email</button>
+      <label for="signup-token">Signup token from email</label>
       <input id="signup-token" placeholder="token from email" />
       <button id="finish-signup">Finish signup</button>
     </section>
 
-    <section>
-      <h2>Sign in</h2>
+    <section aria-labelledby="signin-h">
+      <h2 id="signin-h">Sign in</h2>
       <button id="authenticate">Sign in with discoverable passkey</button>
     </section>
 
-    <section>
-      <h2>Recover</h2>
-      <input id="recovery-email" type="email" value="alice@example.com" />
+    <section aria-labelledby="recovery-h">
+      <h2 id="recovery-h">Recover</h2>
+      <label for="recovery-email">Email</label>
+      <input id="recovery-email" type="email" value="alice@example.com" autocomplete="email" />
       <button id="request-recovery">Request recovery email</button>
+      <label for="recovery-token">Recovery token from email</label>
       <input id="recovery-token" placeholder="token from email" />
       <button id="finish-recovery">Finish recovery</button>
     </section>
 
-    <section>
-      <h2>Passkeys</h2>
+    <section aria-labelledby="passkeys-h">
+      <h2 id="passkeys-h">Passkeys</h2>
+      <label for="passkey-name">New passkey name</label>
       <input id="passkey-name" placeholder="new passkey name" />
       <button id="register">Register additional passkey</button>
       <button id="list-passkeys">List passkeys</button>
     </section>
 
-    <section>
-      <h2>Sessions</h2>
+    <section aria-labelledby="sessions-h">
+      <h2 id="sessions-h">Sessions</h2>
       <button id="list-sessions">List sessions</button>
       <button id="revoke-others">Sign out everywhere else</button>
     </section>
 
-    <pre id="log"></pre>
+    <p id="error" role="alert" aria-live="assertive"></p>
+    <pre id="log" role="log" aria-live="polite" aria-label="Activity log"></pre>
 
     <script type="module">
       import {
@@ -57,12 +68,20 @@
       } from "./passkey.ts";
 
       const value = (id) => document.getElementById(id).value;
+      const errorEl = document.getElementById("error");
       const log = (msg) => {
+        errorEl.textContent = "";
         document.getElementById("log").textContent +=
           (typeof msg === "string" ? msg : JSON.stringify(msg, null, 2)) + "\n";
       };
       const run = (label, fn) => async () => {
-        try { log(await fn()); } catch (e) { log(`${label} error: ${e.message}`); }
+        try {
+          log(await fn());
+        } catch (e) {
+          // BauthError carries `.guidance` (human copy) and `.code` (for logs).
+          errorEl.textContent = e.guidance ?? e.message;
+          log(`${label} error: ${e.code ?? e.message}`);
+        }
       };
 
       document.getElementById("request-signup").addEventListener("click", run("signup request", async () => {

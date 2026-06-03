@@ -91,6 +91,15 @@ impl EmailSender for TerminalEmailSender {
 ///
 /// Available only with the `file-email` feature, which is what pulls
 /// `tokio`'s filesystem support into the build.
+///
+/// # Unbounded growth
+///
+/// This is a development-only transport. It writes one `.eml` per send and
+/// **never prunes** them, so the directory grows without bound over a long dev
+/// session. Point it at a scratch/temp directory and clear it periodically
+/// (e.g. on startup, or with a cron/`tmpwatch` job); it caps nothing itself.
+/// Do not use it in production — implement [`EmailSender`] against a real
+/// transactional-email provider there.
 #[cfg(feature = "file-email")]
 #[derive(Debug)]
 pub struct FileEmailSender {

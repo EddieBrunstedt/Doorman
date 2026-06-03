@@ -62,6 +62,7 @@ export type SessionDto = {
   expires_at: string;
   ip: string | null;
   user_agent: string | null;
+  device_label: string | null;
   is_current: boolean;
 };
 
@@ -76,6 +77,10 @@ export type PasskeyDto = {
   name: string | null;
   created_at: string;
   last_used_at: string | null;
+  aaguid: string | null;
+  transports: string[];
+  backup_eligible: boolean;
+  backup_state: boolean;
 };
 
 function decodeCreationOptions(o: ServerCreationOptions): CredentialCreationOptions {
@@ -137,10 +142,61 @@ function encodeAssertion(cred: PublicKeyCredential) {
   };
 }
 
+// bauth returns a stable machine error code in `{ "error": { "code, message } }`.
+// `BauthError` carries that code so the UI can map it to product copy instead of
+// showing the raw JSON.
+export class BauthError extends Error {
+  constructor(
+    public code: string | null,
+    public status: number,
+    public guidance: string,
+  ) {
+    super(guidance);
+    this.name = "BauthError";
+  }
+}
+
+// Jargon -> end-user guidance. This is the table a host customises per product
+// (wording, localisation). The keys are the codes bauth-axum emits.
+export const ERROR_GUIDANCE: Record<string, string> = {
+  recovery_cooldown_active:
+    "This action is blocked during the 24-hour recovery cool-down. You can still add a passkey and sign out of this session.",
+  csrf_origin_mismatch:
+    "The request was blocked by the cross-origin check. Make sure you are using the app's real address.",
+  session_not_found: "You are signed out. Sign in with a passkey to continue.",
+  session_expired: "Your session expired. Sign in with a passkey again.",
+  email_already_in_use: "That email is already linked to an account.",
+  invalid_email: "That does not look like a valid email address.",
+  invalid_verification_token: "This link is invalid or has already been used. Request a new one.",
+  invalid_passkey_challenge: "The passkey step timed out. Try again.",
+  passkey_not_found: "That passkey is no longer registered.",
+  passkey_ownership_mismatch: "That passkey does not belong to this account.",
+  passkey_possible_compromise:
+    "Sign-in was blocked because this authenticator may have been cloned. Use another passkey and review your account.",
+  rate_limited: "Too many attempts. Wait a little while and try again.",
+  resource_limit_exceeded: "You have reached the limit for this resource.",
+  webauthn_error: "The passkey step failed. Try again, or use a different authenticator.",
+  user_not_found: "No matching account.",
+};
+
+export function guidanceFor(code: string | null, status: number): string {
+  if (code && ERROR_GUIDANCE[code]) return ERROR_GUIDANCE[code];
+  if (status === 401) return ERROR_GUIDANCE.session_not_found;
+  return "Something went wrong. Try again.";
+}
+
 async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { credentials: "include", ...init });
   const text = await res.text();
-  if (!res.ok) throw new Error(`${init.method ?? "GET"} ${path} -> ${res.status} ${text}`);
+  if (!res.ok) {
+    let code: string | null = null;
+    try {
+      code = (JSON.parse(text) as { error?: { code?: string } }).error?.code ?? null;
+    } catch {
+      // non-JSON body (e.g. the CSRF layer); fall back to status-based guidance.
+    }
+    throw new BauthError(code, res.status, guidanceFor(code, res.status));
+  }
   return text ? (JSON.parse(text) as T) : (undefined as T);
 }
 
