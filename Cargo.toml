@@ -16,7 +16,10 @@ license = "MIT"
 repository = "https://codeberg.org/EddieBrunstedt/bauth"
 homepage = "https://codeberg.org/EddieBrunstedt/bauth"
 authors = ["Eddie Brunstedt <eddie.brunstedt@protonmail.com>"]
-rust-version = "1.85"
+# MSRV is driven by the dependency tree: sqlx 0.9 requires rustc 1.94, which is
+# the highest floor among the deps (webauthn-rs/time need 1.88). Verified with
+# `cargo +1.94 check --workspace --all-features`.
+rust-version = "1.94"
 
 # Shared lints applied to every crate that opts in with `[lints] workspace = true`.
 # `unsafe_code` is forbidden outright — bauth never uses `unsafe`. `clippy::all`
