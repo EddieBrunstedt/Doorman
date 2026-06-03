@@ -1,19 +1,10 @@
-# Continuous integration for doorman, written for Forgejo Actions (Codeberg).
+# Continuous integration for doorman on Forgejo Actions (Codeberg).
 #
-# Codeberg runs Forgejo, whose Actions use GitHub-Actions-compatible syntax but
-# need a runner enabled for the repository (Settings -> Actions) and execute on
-# the `docker` label. GitHub Actions YAML under `.github/` is NOT run by
-# Codeberg, which is why this lives under `.forgejo/`.
-#
-# Each job runs in a Rust container that ships no Node.js, so every job installs
-# Node first: actions/checkout (and any other JS action) needs a `node` binary on
-# the container PATH. The MSRV job pins Rust 1.94 (the declared `rust-version`,
-# driven by sqlx 0.9); keep the two in sync if the dependency floor changes.
+# Jobs run on the `docker` label.
 
 name: ci
 
 on:
-  # Manual trigger: adds a "Run workflow" button in the Actions tab.
   workflow_dispatch:
   push:
     branches: [main]
@@ -22,49 +13,58 @@ on:
     # Weekly, so newly disclosed advisories surface even without a push.
     - cron: "0 6 * * 1"
 
+# A newer push to the same ref cancels the in-flight run.
+concurrency:
+  group: ${{ forgejo.workflow }}-${{ forgejo.ref }}
+  cancel-in-progress: true
+
+# Shared by every job: colored cargo output and backtraces on test failures.
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
+  # Static checks that never run tests: formatting, lints, and a doc build.
   lint:
     runs-on: docker
     container:
       image: rust:1.96-bookworm
     steps:
-      - name: install Node.js (required by JS actions like checkout)
+      - name: install Node.js (required by actions/checkout@v4)
         run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
-      - run: rustup component add rustfmt clippy
+      - name: install rustfmt + clippy
+        run: rustup component add rustfmt clippy
       - name: rustfmt
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      # Plain doc build (catches doctest/doc-compile failures). Not yet
-      # `-D warnings`: the pre-1.0 tree still carries rustdoc link warnings that
-      # the documentation rewrite clears, after which this should be tightened
-      # to `RUSTDOCFLAGS: -D warnings`.
       - name: docs
+        env:
+          RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --all-features --locked
 
+  # Formatting check for the non-Rust files (Markdown, TOML, YAML, JSON).
   format:
     runs-on: docker
     container:
       image: rust:1.96-bookworm
     steps:
-      - name: install deps (checkout needs node; dprint installer needs curl + unzip)
+      - name: install deps (actions/checkout@v4 needs node; dprint installer needs curl + unzip)
         run: apt-get update && apt-get install -y --no-install-recommends nodejs curl unzip
       - uses: actions/checkout@v4
-      # Prebuilt binary install (no compile). Pin the CLI version for
-      # reproducibility; the plugin versions are pinned in dprint.json.
       - name: install dprint
         run: curl -fsSL https://dprint.dev/install.sh | sh -s 0.54.0 > /dev/null
-      # Checks formatting of Markdown, TOML, YAML, and JSON (see dprint.json).
       - name: dprint check
         run: ~/.dprint/bin/dprint check
 
+  # The test suite, run twice to cover both the default and the full feature set.
   test:
     runs-on: docker
     container:
       image: rust:1.96-bookworm
     steps:
-      - name: install Node.js (required by JS actions like checkout)
+      - name: install Node.js (required by actions/checkout@v4)
         run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - name: test (default features)
@@ -72,6 +72,8 @@ jobs:
       - name: test (all features)
         run: cargo test --workspace --all-features --locked
 
+  # Storage-backend conformance tests, run against SQLite and a live Postgres
+  # service so both implementations are held to the same contract.
   conformance:
     runs-on: docker
     container:
@@ -90,20 +92,22 @@ jobs:
     env:
       PG_URL: postgres://postgres:postgres@postgres:5432/doorman_test
     steps:
-      - name: install Node.js (required by JS actions like checkout)
+      - name: install Node.js (required by actions/checkout@v4)
         run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
-      - name: SQLite storage conformance
+      - name: sqlite storage conformance
         run: cargo test -p doorman-sqlx --features sqlite --locked
-      - name: Postgres storage conformance
+      - name: postgres storage conformance
         run: cargo test -p doorman-sqlx --features postgres --locked
 
+  # Compile-only check of each feature combination, so a feature gate that only
+  # breaks under a specific mix of features is caught without running tests.
   features:
     runs-on: docker
     container:
       image: rust:1.96-bookworm
     steps:
-      - name: install Node.js (required by JS actions like checkout)
+      - name: install Node.js (required by actions/checkout@v4)
         run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - name: core (default — no tokio)
@@ -125,23 +129,26 @@ jobs:
       - name: benches compile
         run: cargo bench --workspace --all-features --no-run --locked
 
+  # Verifies the crate still builds on its minimum supported Rust version. Pinned
+  # to the declared `rust-version` 1.94 (driven by sqlx 0.9); keep the two in sync.
   msrv:
     runs-on: docker
     container:
       image: rust:1.94-bookworm
     steps:
-      - name: install Node.js (required by JS actions like checkout)
+      - name: install Node.js (required by actions/checkout@v4)
         run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - name: check on MSRV
         run: cargo check --workspace --all-features --locked
 
+  # Dependency policy gate: license, advisory, and ban checks via cargo-deny.
   deny:
     runs-on: docker
     container:
       image: rust:1.96-bookworm
     steps:
-      - name: install Node.js (required by JS actions like checkout)
+      - name: install Node.js (required by actions/checkout@v4)
         run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - name: install cargo-deny
