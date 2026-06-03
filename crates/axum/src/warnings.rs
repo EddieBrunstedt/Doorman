@@ -1,7 +1,7 @@
 //! Startup sanity checks.
 //!
 //! Both [`ManagerBuilder::build`](crate::manager_builder::ManagerBuilder::build)
-//! and [`DoormanBuilder::build`](crate::builder::DoormanBuilder::build)
+//! and [`AuthServiceBuilder::build`](crate::builder::AuthServiceBuilder::build)
 //! produce a [`Warnings`] snapshot describing apparent misconfigurations
 //! (insecure cookies in apparent production, a [`NoopAuditSink`], an
 //! [`InMemoryRateLimiter`] in a multi-replica-friendly deployment, etc.)
@@ -97,9 +97,9 @@ pub struct Warnings {
     /// is being printed to stdout or written to disk, not delivered to
     /// users.
     pub dev_email_transport: bool,
-    /// A custom [`DoormanEmails`](doorman_core::email::DoormanEmails) renderer was
+    /// A custom [`EmailTemplates`](doorman_core::email::EmailTemplates) renderer was
     /// set on one flow (signup or recovery) but no shared renderer was wired
-    /// via [`DoormanBuilder::emails`](crate::DoormanBuilder::emails), so the other
+    /// via [`AuthServiceBuilder::emails`](crate::AuthServiceBuilder::emails), so the other
     /// flow and the security notices still send the stock copy. Branding is
     /// partial; use `.emails(..)` for one consistent renderer.
     pub partial_email_branding: bool,
@@ -155,7 +155,7 @@ impl Warnings {
             out.push(
                 "A custom email renderer was set on only one flow. The other flow and the \
                  security notices still use the stock copy. Wire one renderer for every flow \
-                 with DoormanBuilder::emails(..), or silence this with .silence_warnings() once \
+                 with AuthServiceBuilder::emails(..), or silence this with .silence_warnings() once \
                  you have made an informed choice.",
             );
         }

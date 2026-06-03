@@ -7,7 +7,7 @@
 //!
 //! Both expose `connect`, `from_pool`, `pool`, `migrate`, and `storage`.
 //! `storage()` returns a [`doorman_core::storage::Storage`] populated with
-//! every store implementation, ready to hand to `DoormanAxum::builder` in
+//! every store implementation, ready to hand to `AuthService::builder` in
 //! `doorman-axum`.
 //!
 //! ```ignore

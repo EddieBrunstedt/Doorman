@@ -1,7 +1,7 @@
 //! High-level builder smoke test.
 //!
 //! Drives the three-step signup flow end-to-end through the
-//! [`DoormanAxum::builder`] wiring path. Validates that the builder-built app
+//! [`AuthService::builder`] wiring path. Validates that the builder-built app
 //! produces a working session cookie, a working bearer token, and that the
 //! resulting session resolves through the session layer on a host route.
 

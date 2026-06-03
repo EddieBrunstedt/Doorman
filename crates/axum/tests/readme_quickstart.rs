@@ -42,7 +42,7 @@ async fn readme_quickstart_snippet_compiles() -> std::result::Result<(), Box<dyn
     storage.migrate().await?;
     let origin: Url = "http://localhost:3000".parse()?;
     let base = origin.as_str().trim_end_matches('/');
-    let auth = DoormanAxum::builder(storage.storage())
+    let auth = AuthService::builder(storage.storage())
         .email(Arc::new(TerminalEmailSender))
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
         .signup(SignupConfig {
@@ -87,7 +87,7 @@ async fn readme_quickstart_drives_signup_login_recovery() {
     let email = Arc::new(CapturingEmailSender::new());
     let origin: Url = ORIGIN.parse().expect("origin");
     let base = origin.as_str().trim_end_matches('/');
-    let auth = DoormanAxum::builder(storage.storage())
+    let auth = AuthService::builder(storage.storage())
         .email(email.clone() as Arc<dyn doorman_core::email::EmailSender>)
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
         .signup(SignupConfig {

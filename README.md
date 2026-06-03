@@ -27,7 +27,7 @@ let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").a
 storage.migrate().await?;
 let origin = "https://app.example.com".parse()?;
 let base = origin.as_str().trim_end_matches('/');
-let auth = DoormanAxum::builder(storage.storage())
+let auth = AuthService::builder(storage.storage())
     .email(Arc::new(TerminalEmailSender))
     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
@@ -75,7 +75,7 @@ Open <http://localhost:3000>. Signup and recovery emails are printed to the term
 
 ## Production checklist
 
-Review the startup warnings emitted by `DoormanAxum::builder().build()` or `DoormanAxum::from_managers().build()` and make explicit choices before silencing them.
+Review the startup warnings emitted by `AuthService::builder().build()` or `AuthService::from_managers().build()` and make explicit choices before silencing them.
 
 - Replace `TerminalEmailSender` / `FileEmailSender` with a real `EmailSender` for signup/recovery links and security notifications.
 - Wire a durable `AuditSink`; `NoopAuditSink` discards security events.
@@ -108,7 +108,7 @@ cargo bench -p doorman-sqlx --features sqlite
 
 ## Custom storage or HTTP surface
 
-The quickest path is `doorman-sqlx` plus `DoormanAxum::builder(...)`. Hosts on another database stack implement the `doorman-core` storage traits: `UserStore`, `SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`, and `PasskeyChallengeStore`.
+The quickest path is `doorman-sqlx` plus `AuthService::builder(...)`. Hosts on another database stack implement the `doorman-core` storage traits: `UserStore`, `SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`, and `PasskeyChallengeStore`.
 
 If you want a custom HTTP API, call the core managers directly: `SessionManager`, `PasskeyManager`, `SignupManager`, and `RecoveryManager`.
 

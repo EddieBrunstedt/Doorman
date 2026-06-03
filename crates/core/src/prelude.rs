@@ -17,7 +17,7 @@ pub use crate::clock::{Clock, SystemClock};
 #[cfg(feature = "file-email")]
 pub use crate::email::FileEmailSender;
 pub use crate::email::{
-    DefaultDoormanEmails, DoormanEmails, Email, EmailSender, SecurityEmailNotifier,
+    DefaultEmailTemplates, Email, EmailSender, EmailTemplates, SecurityEmailNotifier,
     TerminalEmailSender,
 };
 pub use crate::error::{Error, Result, StorageError, StorageResult};

@@ -1,6 +1,6 @@
 //! Email transport and email-template customization.
 //!
-//! Managers build transactional emails through [`DoormanEmails`] and hand
+//! Managers build transactional emails through [`EmailTemplates`] and hand
 //! them to an [`EmailSender`]. The library does not ship a silent
 //! transport — every host wires an explicit sender. First-party
 //! implementations: [`TerminalEmailSender`] (prints rendered messages to
@@ -13,7 +13,7 @@
 //! The library uses email purely as a side channel for **signup links**,
 //! **recovery links**, and security notifications for recovery, passkey
 //! lifecycle, and high-risk session revocation events. The default copy
-//! describes a passkey-driven flow; hosts override [`DoormanEmails`] to brand it.
+//! describes a passkey-driven flow; hosts override [`EmailTemplates`] to brand it.
 
 use std::any::Any;
 #[cfg(feature = "file-email")]
@@ -160,19 +160,19 @@ impl EmailSender for FileEmailSender {
 /// (brand name, language, HTML body, etc.) without rewriting the auth
 /// flows that send them.
 ///
-/// The default impl, [`DefaultDoormanEmails`], ships with neutral copy for
+/// The default impl, [`DefaultEmailTemplates`], ships with neutral copy for
 /// the built-in passkey-driven flows. Each method has a default body so a
 /// host can override one method and inherit the rest:
 ///
 /// ```ignore
-/// use doorman_core::email::{DoormanEmails, Email};
+/// use doorman_core::email::{EmailTemplates, Email};
 /// use doorman_core::storage::User;
 ///
 /// struct MyEmails {
 ///     brand: String,
 /// }
 ///
-/// impl DoormanEmails for MyEmails {
+/// impl EmailTemplates for MyEmails {
 ///     fn signup_email(&self, user: &User, url: &str) -> Email {
 ///         Email {
 ///             to: user.email.clone().unwrap_or_default(),
@@ -188,7 +188,7 @@ impl EmailSender for FileEmailSender {
 /// guard on that before calling. Default impls populate the `to` field
 /// from `user.email.clone().unwrap_or_default()` for convenience; custom
 /// impls should do the same.
-pub trait DoormanEmails: Send + Sync {
+pub trait EmailTemplates: Send + Sync {
     /// The signup link emailed to a new address. The link redeems once and
     /// starts first-passkey registration; it does not create a session.
     fn signup_email(&self, user: &User, url: &str) -> Email {
@@ -401,13 +401,13 @@ fn display_passkey_name(passkey_name: Option<&str>) -> Option<String> {
     Some(name.replace(['\r', '\n'], " "))
 }
 
-/// Stock [`DoormanEmails`] impl. Produces neutral copy for the built-in
+/// Stock [`EmailTemplates`] impl. Produces neutral copy for the built-in
 /// passkey-driven flows. Used as the default when a config does not
 /// specify its own.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct DefaultDoormanEmails;
+pub struct DefaultEmailTemplates;
 
-impl DoormanEmails for DefaultDoormanEmails {}
+impl EmailTemplates for DefaultEmailTemplates {}
 
 /// Best-effort sender for security notifications.
 ///
@@ -419,12 +419,12 @@ impl DoormanEmails for DefaultDoormanEmails {}
 #[derive(Clone)]
 pub struct SecurityEmailNotifier {
     sender: Arc<dyn EmailSender>,
-    emails: Arc<dyn DoormanEmails>,
+    emails: Arc<dyn EmailTemplates>,
 }
 
 impl SecurityEmailNotifier {
     /// Build a notifier from a transport and an email renderer.
-    pub fn new(sender: Arc<dyn EmailSender>, emails: Arc<dyn DoormanEmails>) -> Self {
+    pub fn new(sender: Arc<dyn EmailSender>, emails: Arc<dyn EmailTemplates>) -> Self {
         Self { sender, emails }
     }
 
@@ -513,10 +513,10 @@ impl SecurityEmailNotifier {
     }
 }
 
-/// Convenience for the default [`Arc<dyn DoormanEmails>`] handed to configs
+/// Convenience for the default [`Arc<dyn EmailTemplates>`] handed to configs
 /// that don't otherwise specify a renderer.
-pub(crate) fn default_emails() -> Arc<dyn DoormanEmails> {
-    Arc::new(DefaultDoormanEmails)
+pub(crate) fn default_emails() -> Arc<dyn EmailTemplates> {
+    Arc::new(DefaultEmailTemplates)
 }
 
 #[cfg(test)]

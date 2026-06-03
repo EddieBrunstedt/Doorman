@@ -32,7 +32,7 @@ use std::time::Duration;
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
 use crate::audit::{AuditEventKind, RecoveryFailureReason};
-use crate::email::{DoormanEmails, default_emails};
+use crate::email::{EmailTemplates, default_emails};
 use crate::error::Result;
 use crate::rate_limit::RateLimitPolicy;
 use crate::session::SessionContext;
@@ -59,13 +59,13 @@ pub struct RecoveryConfig {
     /// [`RecoveryRateLimits::default`].
     pub rate_limits: RecoveryRateLimits,
     /// Renderer for the recovery emails. `None` falls back to the renderer
-    /// the composition root threads in (see [`DoormanBuilder::emails`]), and to
-    /// [`DefaultDoormanEmails`](crate::email::DefaultDoormanEmails) if none was
+    /// the composition root threads in (see [`AuthServiceBuilder::emails`]), and to
+    /// [`DefaultEmailTemplates`](crate::email::DefaultEmailTemplates) if none was
     /// set. Set `Some(..)` to brand this flow specifically, overriding the
     /// shared renderer.
     ///
-    /// [`DoormanBuilder::emails`]: https://docs.rs/doorman-axum
-    pub emails: Option<Arc<dyn DoormanEmails>>,
+    /// [`AuthServiceBuilder::emails`]: https://docs.rs/doorman-axum
+    pub emails: Option<Arc<dyn EmailTemplates>>,
     /// Length of the post-recovery cool-down applied to the session and
     /// passkey created by `finish_recovery`. Sessions created from that
     /// passkey, or from passkeys added by a restricted session, stay
@@ -169,8 +169,8 @@ pub struct RecoveryManager {
     flow: EnrollmentFlow,
     config: RecoveryConfig,
     /// Renderer resolved from [`RecoveryConfig::emails`], falling back to
-    /// [`DefaultDoormanEmails`](crate::email::DefaultDoormanEmails) when unset.
-    emails: Arc<dyn DoormanEmails>,
+    /// [`DefaultEmailTemplates`](crate::email::DefaultEmailTemplates) when unset.
+    emails: Arc<dyn EmailTemplates>,
 }
 
 impl RecoveryManager {

@@ -1,16 +1,16 @@
 # doorman-axum
 
-Axum HTTP integration for [doorman](../../README.md): the `DoormanAxum` router,
+Axum HTTP integration for [doorman](../../README.md): the `AuthService` router,
 session-loading layer, `AuthUser` / `OptionalAuthUser` / `AuthSession`
-extractors, CSRF layer, and the high-level `DoormanBuilder` that wires
+extractors, CSRF layer, and the high-level `AuthServiceBuilder` that wires
 [`doorman-core`](../core)'s managers from sensible defaults.
 
-This is the supported user-facing integration. Hand `DoormanAxum::builder` a
+This is the supported user-facing integration. Hand `AuthService::builder` a
 `Storage` value (e.g. from [`doorman-sqlx`](../sqlx)), configure the relying party
 and email transport, mount `auth.router()`, and apply `auth.session_layer()`.
 
 ```rust,ignore
-let auth = DoormanAxum::builder(storage.storage())
+let auth = AuthService::builder(storage.storage())
     .email(Arc::new(TerminalEmailSender))
     .passkey(PasskeyConfig::from_origin(origin.clone(), "Example")?)
     .signup(SignupConfig { url_template, ..Default::default() })

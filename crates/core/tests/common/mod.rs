@@ -25,7 +25,7 @@ use doorman_core::account::{AccountConfig, AccountManager};
 use doorman_core::audit::{AuditEvent, AuditEventKind, AuditSink};
 use doorman_core::clock::Clock;
 use doorman_core::context::CoreDeps;
-use doorman_core::email::{DefaultDoormanEmails, EmailSender, SecurityEmailNotifier};
+use doorman_core::email::{DefaultEmailTemplates, EmailSender, SecurityEmailNotifier};
 use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
@@ -211,7 +211,7 @@ impl HarnessBuilder {
 
         let notifier = SecurityEmailNotifier::new(
             email.clone() as Arc<dyn EmailSender>,
-            Arc::new(DefaultDoormanEmails),
+            Arc::new(DefaultEmailTemplates),
         );
         let session_manager = SessionManager::new(
             sessions.clone() as Arc<dyn SessionStore>,

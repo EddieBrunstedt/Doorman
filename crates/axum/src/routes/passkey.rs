@@ -20,9 +20,9 @@ use crate::dto::{
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, AuthUser, RequestContext};
 use crate::routes::{auth_success, parse_challenge_id};
-use crate::state::DoormanState;
+use crate::state::AuthState;
 
-pub(crate) fn routes() -> Router<DoormanState> {
+pub(crate) fn routes() -> Router<AuthState> {
     Router::new()
         .route("/passkey/register/start", post(register_start))
         .route("/passkey/register/finish", post(register_finish))
@@ -32,12 +32,12 @@ pub(crate) fn routes() -> Router<DoormanState> {
         .route("/passkey/{credential_id}", delete(remove))
 }
 
-fn manager(state: &DoormanState) -> &PasskeyManager {
+fn manager(state: &AuthState) -> &PasskeyManager {
     &state.passkey
 }
 
 async fn register_start(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ErrorResponse> {
     let recovery_cooldown_until = state
@@ -53,7 +53,7 @@ async fn register_start(
 }
 
 async fn register_finish(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     RequestContext(context): RequestContext,
     Json(body): Json<RegistrationFinishRequest>,
 ) -> Result<Json<PasskeyDto>, ErrorResponse> {
@@ -65,7 +65,7 @@ async fn register_finish(
 }
 
 async fn authenticate_start(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     RequestContext(context): RequestContext,
 ) -> Result<Json<PasskeyChallenge<RequestChallengeResponse>>, ErrorResponse> {
     let (id, options) = manager(&state).start_authentication(context).await?;
@@ -76,7 +76,7 @@ async fn authenticate_start(
 }
 
 async fn authenticate_finish(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     RequestContext(context): RequestContext,
     Json(body): Json<PasskeyAuthenticateFinishRequest>,
 ) -> Result<Response, ErrorResponse> {
@@ -99,7 +99,7 @@ async fn authenticate_finish(
 }
 
 async fn list(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     AuthUser(user): AuthUser,
 ) -> Result<Json<Vec<PasskeyDto>>, ErrorResponse> {
     let creds = manager(&state).list_passkey_summaries(user.id).await?;
@@ -107,7 +107,7 @@ async fn list(
 }
 
 async fn remove(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     auth: AuthSession,
     RequestContext(context): RequestContext,
     Path(credential_id): Path<String>,

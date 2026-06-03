@@ -25,7 +25,7 @@ use axum::http::{Request, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use doorman_axum::DoormanAxum;
+use doorman_axum::AuthService;
 use doorman_axum::SessionCache;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::dto::UserDto;
@@ -69,7 +69,7 @@ async fn build_scaffold() -> Scaffold {
         passkey_challenges,
     };
 
-    let auth = DoormanAxum::builder(storage)
+    let auth = AuthService::builder(storage)
         .email(email as Arc<dyn EmailSender>)
         .passkey(PasskeyConfig::new("localhost", rp_origin, "doorman bench"))
         .cookie(CookieConfig {

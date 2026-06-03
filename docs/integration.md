@@ -4,7 +4,7 @@ How to wire doorman into an Axum application, swap in your own stores, and brand
 
 ## The five-minute path
 
-The shortest route is `doorman-sqlx` for storage plus the high-level `DoormanAxum::builder`. This is the quickstart from the [top-level README](../README.md):
+The shortest route is `doorman-sqlx` for storage plus the high-level `AuthService::builder`. This is the quickstart from the [top-level README](../README.md):
 
 ```rust,ignore
 use std::sync::Arc;
@@ -17,7 +17,7 @@ storage.migrate().await?;
 
 let origin = "https://app.example.com".parse()?;
 let base = origin.as_str().trim_end_matches('/');
-let auth = DoormanAxum::builder(storage.storage())
+let auth = AuthService::builder(storage.storage())
     .email(Arc::new(TerminalEmailSender))
     .passkey(PasskeyConfig::from_origin(origin.clone(), "Example")?)
     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
@@ -39,12 +39,12 @@ let app = Router::new()
 
 ## The builder setters
 
-Every collaborator and config has a bare-noun setter on `DoormanBuilder` (and the same names on the low-level `ManagerBuilder`):
+Every collaborator and config has a bare-noun setter on `AuthServiceBuilder` (and the same names on the low-level `ManagerBuilder`):
 
 | Setter                                                                                                   | Purpose                                                  |
 | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | `.email(Arc<dyn EmailSender>)`                                                                           | Transport for links and notices. Required.               |
-| `.emails(Arc<dyn DoormanEmails>)`                                                                          | One renderer branding all flows (see below).             |
+| `.emails(Arc<dyn EmailTemplates>)`                                                                          | One renderer branding all flows (see below).             |
 | `.audit(Arc<dyn AuditSink>)`                                                                             | Sink for security events.                                |
 | `.limiter(Arc<dyn RateLimiter>)`                                                                         | Shared rate-limit backend.                               |
 | `.metrics(Arc<dyn Metrics>)`                                                                             | Observability hook.                                      |
@@ -103,13 +103,13 @@ impl EmailSender for MyTransport {
 }
 ```
 
-Implement `DoormanEmails` to customise the copy. Every method has a default body, so override only what you want to brand and inherit the rest. One `.emails(Arc<dyn DoormanEmails>)` call brands signup, recovery, and account flows at once; a per-config renderer still wins. Branding only one flow without the shared renderer trips a `partial_email_branding` startup warning.
+Implement `EmailTemplates` to customise the copy. Every method has a default body, so override only what you want to brand and inherit the rest. One `.emails(Arc<dyn EmailTemplates>)` call brands signup, recovery, and account flows at once; a per-config renderer still wins. Branding only one flow without the shared renderer trips a `partial_email_branding` startup warning.
 
 User-facing copy is the host's responsibility on the **client** too: doorman returns machine error codes (see `crates/axum/src/error.rs`), and the example client maps those codes to human guidance. See [operations.md](operations.md#customizing-user-facing-messages).
 
 ## Driving the managers directly
 
-For a custom HTTP surface (not Axum, or a bespoke API shape), skip the router and call the core managers: `SessionManager`, `PasskeyManager`, `SignupManager`, `RecoveryManager`, `AccountManager`. The high-level builder exposes the same managers the routes use via `DoormanState::session_manager()`, `passkey()`, `signup()`, and `recovery()` accessors, so host code can drive them alongside the bundled routes. The low-level `DoormanAxum::from_managers()` path accepts managers you constructed yourself.
+For a custom HTTP surface (not Axum, or a bespoke API shape), skip the router and call the core managers: `SessionManager`, `PasskeyManager`, `SignupManager`, `RecoveryManager`, `AccountManager`. The high-level builder exposes the same managers the routes use via `AuthState::session_manager()`, `passkey()`, `signup()`, and `recovery()` accessors, so host code can drive them alongside the bundled routes. The low-level `AuthService::from_managers()` path accepts managers you constructed yourself.
 
 ## Extractors
 

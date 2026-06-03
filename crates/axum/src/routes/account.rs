@@ -18,9 +18,9 @@ use crate::cookies::clear_session_cookie;
 use crate::dto::{EmailChangeConfirmRequest, EmailChangeRequest, UserDto};
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, RequestContext};
-use crate::state::DoormanState;
+use crate::state::AuthState;
 
-pub(crate) fn routes() -> Router<DoormanState> {
+pub(crate) fn routes() -> Router<AuthState> {
     Router::new()
         .route("/account/email", post(request_email_change))
         .route("/account/email/confirm", post(confirm_email_change))
@@ -31,7 +31,7 @@ pub(crate) fn routes() -> Router<DoormanState> {
 /// address and notifies the current one; the account's email is not changed
 /// until the link is confirmed.
 async fn request_email_change(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     auth: AuthSession,
     RequestContext(context): RequestContext,
     Json(body): Json<EmailChangeRequest>,
@@ -50,7 +50,7 @@ async fn request_email_change(
 /// session is required — possession of the single-use token (delivered to the
 /// new address) authorises the change. Returns the updated user.
 async fn confirm_email_change(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     RequestContext(context): RequestContext,
     Json(body): Json<EmailChangeConfirmRequest>,
 ) -> Result<Json<UserDto>, ErrorResponse> {
@@ -65,7 +65,7 @@ async fn confirm_email_change(
 /// Irreversibly delete the caller's account and every row tied to it, then
 /// clear the session cookie so the browser stops replaying the now-dead token.
 async fn delete_account(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     auth: AuthSession,
     RequestContext(context): RequestContext,
 ) -> Result<Response, ErrorResponse> {

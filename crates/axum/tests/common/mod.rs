@@ -18,7 +18,7 @@ use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
-use doorman_axum::DoormanAxum;
+use doorman_axum::AuthService;
 use doorman_axum::SessionCache;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::dto::{
@@ -62,7 +62,7 @@ pub struct TestApp {
     /// cache-invalidation tests can observe eviction directly.
     pub cache: SessionCache,
     /// The live, invalidation-hooked `SessionManager` the app runs on
-    /// (cloned out of the built `DoormanAxum`). `login` mints sessions
+    /// (cloned out of the built `AuthService`). `login` mints sessions
     /// through it, and revoking through it evicts [`Self::cache`].
     pub session_manager: SessionManager,
     user_store: Arc<InMemoryUserStore>,
@@ -71,17 +71,17 @@ pub struct TestApp {
 }
 
 impl TestApp {
-    /// Start an app wired through [`DoormanAxum::builder`] with the in-memory
+    /// Start an app wired through [`AuthService::builder`] with the in-memory
     /// stores and the passkey + signup configs needed for full HTTP coverage.
     pub async fn start(host_routes: Router, secure_cookies: bool) -> Self {
         Self::start_with(host_routes, secure_cookies, |b| b).await
     }
 
-    /// Start an app, letting the caller tweak the `DoormanBuilder`
+    /// Start an app, letting the caller tweak the `AuthServiceBuilder`
     /// (e.g. to set an `external_origin` for CSRF coverage).
     pub async fn start_with<F>(host_routes: Router, secure_cookies: bool, customise: F) -> Self
     where
-        F: FnOnce(doorman_axum::DoormanBuilder) -> doorman_axum::DoormanBuilder,
+        F: FnOnce(doorman_axum::AuthServiceBuilder) -> doorman_axum::AuthServiceBuilder,
     {
         let email = Arc::new(CapturingEmailSender::new());
         let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
@@ -102,7 +102,7 @@ impl TestApp {
             passkey_challenges,
         };
 
-        let builder = DoormanAxum::builder(storage)
+        let builder = AuthService::builder(storage)
             .email(email.clone() as Arc<dyn EmailSender>)
             .passkey(PasskeyConfig::new(
                 "localhost",

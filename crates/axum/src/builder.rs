@@ -1,13 +1,13 @@
-//! High-level [`DoormanBuilder`] entry point, reached via
-//! [`DoormanAxum::builder`].
+//! High-level [`AuthServiceBuilder`] entry point, reached via
+//! [`AuthService::builder`].
 //!
 //! Most hosts want one wired-up auth surface, not a tour of every manager
-//! they need to construct. [`DoormanAxum::builder`] takes the composite
+//! they need to construct. [`AuthService::builder`] takes the composite
 //! [`doorman_core::storage::Storage`] (typically obtained in one call from a
 //! storage adapter such as `doorman-sqlx`) plus the passkey config,
 //! constructs the `SessionManager`/`PasskeyManager`/`SignupManager`/
 //! `RecoveryManager` internally with sensible defaults, and returns a
-//! fully built [`DoormanAxum`].
+//! fully built [`AuthService`].
 //!
 //! Defaults applied when the host does not override them:
 //! - [`Clock`] → [`SystemClock`]
@@ -15,8 +15,8 @@
 //! - [`RateLimiter`] → [`InMemoryRateLimiter`]
 //!
 //! The [`EmailSender`] and [`PasskeyConfig`] have **no defaults**. Hosts
-//! must wire them explicitly via [`DoormanBuilder::email`] and
-//! [`DoormanBuilder::passkey`]; otherwise [`build`](DoormanBuilder::build)
+//! must wire them explicitly via [`AuthServiceBuilder::email`] and
+//! [`AuthServiceBuilder::passkey`]; otherwise [`build`](AuthServiceBuilder::build)
 //! returns [`BuilderError::MissingEmailSender`] or
 //! [`BuilderError::MissingPasskeyConfig`]. First-party email transports:
 //! [`TerminalEmailSender`] (stdout) and [`FileEmailSender`] (`.eml`
@@ -29,11 +29,11 @@
 //! few and the simpler builder is easier to read.
 //!
 //! These defaults are fine for development but not for production.
-//! [`build`](DoormanBuilder::build) surfaces the mismatch via the
+//! [`build`](AuthServiceBuilder::build) surfaces the mismatch via the
 //! [`warnings`](crate::warnings) module — hosts who have made an informed
-//! choice silence them with [`DoormanBuilder::silence_warnings`]. The
+//! choice silence them with [`AuthServiceBuilder::silence_warnings`]. The
 //! host's responsibility is to wire real implementations through
-//! [`DoormanBuilder::clock`], [`audit`], etc.
+//! [`AuthServiceBuilder::clock`], [`audit`], etc.
 //!
 //! [`Clock`]: doorman_core::clock::Clock
 //! [`SystemClock`]: doorman_core::clock::SystemClock
@@ -45,7 +45,7 @@
 //! [`PasskeyConfig`]: doorman_core::passkey::PasskeyConfig
 //! [`TerminalEmailSender`]: doorman_core::email::TerminalEmailSender
 //! [`FileEmailSender`]: doorman_core::email::FileEmailSender
-//! [`audit`]: DoormanBuilder::audit
+//! [`audit`]: AuthServiceBuilder::audit
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,7 +55,7 @@ use doorman_core::audit::{AuditSink, NoopAuditSink};
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::context::CoreDeps;
 use doorman_core::email::{
-    DefaultDoormanEmails, DoormanEmails, EmailSender, SecurityEmailNotifier,
+    DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityEmailNotifier,
 };
 use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::metrics::{Metrics, NoopMetrics};
@@ -106,7 +106,7 @@ fn validate_url_template(flow: &'static str, template: &str) -> Result<(), Build
     }
 }
 
-use crate::DoormanAxum;
+use crate::AuthService;
 use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
@@ -115,13 +115,13 @@ use crate::warnings::{
     RateLimiterFlavor, Warnings, is_dev_email_transport, is_noop_audit, rate_limiter_flavor,
 };
 
-/// High-level builder returned from [`DoormanAxum::builder`].
+/// High-level builder returned from [`AuthService::builder`].
 ///
 /// This is the headline path: hand it a composite [`Storage`] (typically
 /// from a storage adapter such as `doorman-sqlx`) plus the passkey config
 /// and email transport, and it constructs the core managers for you. Hosts
 /// that have already built the managers themselves want the lower-level
-/// [`ManagerBuilder`] via [`DoormanAxum::from_managers`] instead.
+/// [`ManagerBuilder`] via [`AuthService::from_managers`] instead.
 ///
 /// See the module-level docs for the full picture. Typical use:
 ///
@@ -130,7 +130,7 @@ use crate::warnings::{
 /// use doorman_core::verification::TOKEN_PLACEHOLDER;
 ///
 /// let base = origin.as_str().trim_end_matches('/');
-/// let auth = DoormanAxum::builder(storage)
+/// let auth = AuthService::builder(storage)
 ///     .email(Arc::new(TerminalEmailSender))
 ///     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
 ///     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
@@ -146,12 +146,12 @@ use crate::warnings::{
 /// configured implicitly; hosts that want to override its defaults call
 /// [`signup`](Self::signup). Construction of the core managers happens in
 /// [`build`](Self::build).
-pub struct DoormanBuilder {
+pub struct AuthServiceBuilder {
     storage: Storage,
     clock: Option<Arc<dyn Clock>>,
     audit: Option<Arc<dyn AuditSink>>,
     email: Option<Arc<dyn EmailSender>>,
-    emails: Option<Arc<dyn DoormanEmails>>,
+    emails: Option<Arc<dyn EmailTemplates>>,
     rate_limiter: Option<Arc<dyn RateLimiter>>,
     metrics: Option<Arc<dyn Metrics>>,
     session_config: Option<SessionConfig>,
@@ -168,7 +168,7 @@ pub struct DoormanBuilder {
     account: Option<AccountConfig>,
 }
 
-impl DoormanBuilder {
+impl AuthServiceBuilder {
     pub(crate) fn new(storage: Storage) -> Self {
         Self {
             storage,
@@ -227,7 +227,7 @@ impl DoormanBuilder {
         self
     }
 
-    /// Wire one [`DoormanEmails`] renderer for every flow at once: the signup
+    /// Wire one [`EmailTemplates`] renderer for every flow at once: the signup
     /// link, the recovery link and notices, and the best-effort security
     /// notices (passkey lifecycle, session revocation). This is the single
     /// place to brand all transactional copy.
@@ -238,8 +238,8 @@ impl DoormanBuilder {
     /// the rest on the stock copy — trips a startup warning so partial wiring
     /// is never silent.
     ///
-    /// [`DoormanEmails`]: doorman_core::email::DoormanEmails
-    pub fn emails(mut self, emails: Arc<dyn DoormanEmails>) -> Self {
+    /// [`EmailTemplates`]: doorman_core::email::EmailTemplates
+    pub fn emails(mut self, emails: Arc<dyn EmailTemplates>) -> Self {
         self.emails = Some(emails);
         self
     }
@@ -334,8 +334,8 @@ impl DoormanBuilder {
         self
     }
 
-    /// Construct the managers and return a wired-up [`DoormanAxum`].
-    pub fn build(self) -> Result<DoormanAxum, BuilderError> {
+    /// Construct the managers and return a wired-up [`AuthService`].
+    pub fn build(self) -> Result<AuthService, BuilderError> {
         let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock));
         let audit: Arc<dyn AuditSink> = self.audit.unwrap_or_else(|| Arc::new(NoopAuditSink));
         let email: Arc<dyn EmailSender> = self.email.ok_or(BuilderError::MissingEmailSender)?;
@@ -413,10 +413,10 @@ impl DoormanBuilder {
             recovery_config.emails.get_or_insert_with(|| shared.clone());
             account_config.emails.get_or_insert_with(|| shared.clone());
         }
-        let notifier_renderer: Arc<dyn DoormanEmails> = self
+        let notifier_renderer: Arc<dyn EmailTemplates> = self
             .emails
             .clone()
-            .unwrap_or_else(|| Arc::new(DefaultDoormanEmails));
+            .unwrap_or_else(|| Arc::new(DefaultEmailTemplates));
         let notifier = SecurityEmailNotifier::new(email.clone(), notifier_renderer);
 
         // Build the cache up-front so its invalidator can be attached to

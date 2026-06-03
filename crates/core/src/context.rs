@@ -48,7 +48,7 @@ pub struct CoreDeps {
     pub email: Arc<dyn EmailSender>,
     /// Notifier for best-effort security notices (passkey lifecycle,
     /// session revocation). Built once at the composition root from
-    /// [`email`](Self::email) and the chosen [`DoormanEmails`](crate::email::DoormanEmails)
+    /// [`email`](Self::email) and the chosen [`EmailTemplates`](crate::email::EmailTemplates)
     /// renderer, then shared by the passkey and session managers so every
     /// bundled notice originates from one configured helper.
     pub notifier: SecurityEmailNotifier,

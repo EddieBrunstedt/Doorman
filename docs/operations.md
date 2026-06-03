@@ -70,11 +70,11 @@ Two seams:
 - **`AuditSink`** receives security-significant events (signup, recovery, login success/failure, credential add/remove, session create/revoke/expire, email change, account deletion). Ship them to durable, queryable storage and alert on recovery volume, WebAuthn failures, and passkey deletions.
 - **`Metrics`** is a counter/timing hook for the hot paths; the default is `NoopMetrics`. Implement it to feed Prometheus/StatsD.
 
-The session-resolution cache is internal; `DoormanAxum::cache()` exposes a handle mainly for tests and inspection.
+The session-resolution cache is internal; `AuthService::cache()` exposes a handle mainly for tests and inspection.
 
 ## Customizing user-facing messages
 
-doorman returns **machine error codes**, not end-user prose — the HTTP error body carries a stable `code` (see `crates/axum/src/error.rs`). The client maps those codes to human guidance; the bundled example client (`examples/web-client`) demonstrates a jargon-to-guidance mapping you can adapt. Branding the **emails** is separate and lives in `DoormanEmails` — see [integration.md](integration.md#custom-email-and-branding).
+doorman returns **machine error codes**, not end-user prose — the HTTP error body carries a stable `code` (see `crates/axum/src/error.rs`). The client maps those codes to human guidance; the bundled example client (`examples/web-client`) demonstrates a jargon-to-guidance mapping you can adapt. Branding the **emails** is separate and lives in `EmailTemplates` — see [integration.md](integration.md#custom-email-and-branding).
 
 ## `.eml` output growth
 

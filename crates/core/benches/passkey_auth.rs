@@ -30,7 +30,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use doorman_core::audit::{AuditSink, NoopAuditSink};
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::context::CoreDeps;
-use doorman_core::email::{DefaultDoormanEmails, EmailSender, SecurityEmailNotifier};
+use doorman_core::email::{DefaultEmailTemplates, EmailSender, SecurityEmailNotifier};
 use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
@@ -97,7 +97,7 @@ async fn build_scaffold() -> Scaffold {
         passkey_challenges: challenges,
     };
     let email = email as Arc<dyn EmailSender>;
-    let notifier = SecurityEmailNotifier::new(email.clone(), Arc::new(DefaultDoormanEmails));
+    let notifier = SecurityEmailNotifier::new(email.clone(), Arc::new(DefaultEmailTemplates));
     let deps = CoreDeps::new(
         clock,
         audit,

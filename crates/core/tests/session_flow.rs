@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
 use doorman_core::audit::{AuditEventKind, AuditSink};
 use doorman_core::clock::{Clock, SystemClock};
-use doorman_core::email::{DefaultDoormanEmails, Email, EmailSender, SecurityEmailNotifier};
+use doorman_core::email::{DefaultEmailTemplates, Email, EmailSender, SecurityEmailNotifier};
 use doorman_core::error::Error;
 use doorman_core::memory::{InMemorySessionStore, InMemoryUserStore};
 use doorman_core::session::{
@@ -518,7 +518,7 @@ async fn revoke_others_for_user_sends_notice_in_core() {
     let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
     let notifier = SecurityEmailNotifier::new(
         email.clone() as Arc<dyn EmailSender>,
-        Arc::new(DefaultDoormanEmails),
+        Arc::new(DefaultEmailTemplates),
     );
     let manager = SessionManager::new(
         sessions as Arc<dyn SessionStore>,
@@ -559,7 +559,7 @@ async fn revoke_owned_session_notifies_only_for_other_sessions() {
     let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
     let notifier = SecurityEmailNotifier::new(
         email.clone() as Arc<dyn EmailSender>,
-        Arc::new(DefaultDoormanEmails),
+        Arc::new(DefaultEmailTemplates),
     );
     let manager = SessionManager::new(
         sessions as Arc<dyn SessionStore>,

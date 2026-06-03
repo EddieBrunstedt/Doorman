@@ -1,9 +1,9 @@
 //! Axum-first HTTP integration for doorman.
 //!
-//! Most hosts start with [`DoormanAxum::builder`], hand it a
+//! Most hosts start with [`AuthService::builder`], hand it a
 //! [`doorman_core::storage::Storage`] value from a storage adapter such as
 //! `doorman-sqlx`, configure the passkey relying party and email transport,
-//! and mount the returned [`DoormanAxum`] on their application router.
+//! and mount the returned [`AuthService`] on their application router.
 //!
 //! ```ignore
 //! use std::sync::Arc;
@@ -17,7 +17,7 @@
 //!
 //! let origin = "https://app.example.com".parse()?;
 //! let base = origin.as_str().trim_end_matches('/');
-//! let auth = DoormanAxum::builder(storage.storage())
+//! let auth = AuthService::builder(storage.storage())
 //!     .email(Arc::new(TerminalEmailSender))
 //!     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
 //!     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
@@ -33,7 +33,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! [`DoormanAxum::from_managers`] remains available for hosts that want to
+//! [`AuthService::from_managers`] remains available for hosts that want to
 //! construct the core managers by hand.
 
 // Every public item in this library carries rustdoc. Scoped to this crate on
@@ -59,7 +59,7 @@ mod manager_builder;
 
 pub use doorman_core as core;
 
-pub use builder::DoormanBuilder;
+pub use builder::AuthServiceBuilder;
 pub use cache::{DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, SessionCache, SessionCacheConfig};
 pub use config::CookieConfig;
 pub use csrf::{CsrfConfig, CsrfLayer};
@@ -67,28 +67,28 @@ pub use error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use extractors::{AuthSession, AuthUser, OptionalAuthUser, RequestContext};
 pub use manager_builder::{BuilderError, ManagerBuilder};
 pub use session::{AuthContext, SessionLayer};
-pub use state::DoormanState;
+pub use state::AuthState;
 
 use axum::Router;
 
 use doorman_core::storage::Storage;
 
 /// Wired-up authentication HTTP layer. Construct via
-/// [`DoormanAxum::builder`], then mount the [`router()`](DoormanAxum::router)
-/// into your application and apply the [`session_layer()`](DoormanAxum::session_layer)
+/// [`AuthService::builder`], then mount the [`router()`](AuthService::router)
+/// into your application and apply the [`session_layer()`](AuthService::session_layer)
 /// so the extractors see the per-request `AuthContext`.
-pub struct DoormanAxum {
-    state: DoormanState,
+pub struct AuthService {
+    state: AuthState,
     session_layer: SessionLayer,
     cache: SessionCache,
 }
 
-impl DoormanAxum {
+impl AuthService {
     /// Start the high-level builder from a composite [`Storage`]. This is
     /// the path most hosts want: it constructs the core managers for you
-    /// from sensible defaults. See [`DoormanBuilder`].
-    pub fn builder(storage: Storage) -> DoormanBuilder {
-        DoormanBuilder::new(storage)
+    /// from sensible defaults. See [`AuthServiceBuilder`].
+    pub fn builder(storage: Storage) -> AuthServiceBuilder {
+        AuthServiceBuilder::new(storage)
     }
 
     /// Start the low-level builder that accepts pre-constructed managers.
@@ -120,7 +120,7 @@ impl DoormanAxum {
     }
 
     /// Access the router state backing the auth routes.
-    pub fn state(&self) -> &DoormanState {
+    pub fn state(&self) -> &AuthState {
         &self.state
     }
 

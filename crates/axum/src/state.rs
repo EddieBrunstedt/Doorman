@@ -3,7 +3,7 @@
 //! Axum requires the state passed to `Router::with_state` to be cheaply
 //! cloneable (it is handed to each handler on every request). All the
 //! managers in [`doorman_core`] hold their dependencies behind `Arc`, so
-//! cloning [`DoormanState`] is the cost of cloning a handful of `Arc`s.
+//! cloning [`AuthState`] is the cost of cloning a handful of `Arc`s.
 
 use std::sync::Arc;
 
@@ -23,7 +23,7 @@ use crate::config::CookieConfig;
 /// (which holds the configured notifier), so the state carries no separate
 /// notifier handle — the routes drive the manager and the notice follows.
 #[derive(Clone)]
-pub struct DoormanState {
+pub struct AuthState {
     pub(crate) session_manager: SessionManager,
     pub(crate) user_store: Arc<dyn UserStore>,
     pub(crate) cookie_config: Arc<CookieConfig>,
@@ -33,7 +33,7 @@ pub struct DoormanState {
     pub(crate) account: AccountManager,
 }
 
-impl DoormanState {
+impl AuthState {
     /// The session cookie configuration backing the routes.
     pub fn cookie_config(&self) -> &CookieConfig {
         &self.cookie_config

@@ -17,9 +17,9 @@ use crate::cookies::clear_session_cookie;
 use crate::dto::SessionDto;
 use crate::error::ErrorResponse;
 use crate::extractors::AuthSession;
-use crate::state::DoormanState;
+use crate::state::AuthState;
 
-pub(crate) fn routes() -> Router<DoormanState> {
+pub(crate) fn routes() -> Router<AuthState> {
     Router::new()
         .route("/logout", post(logout))
         .route("/logout-all", post(logout_all))
@@ -35,7 +35,7 @@ pub(crate) fn routes() -> Router<DoormanState> {
 /// drop the current session during the cool-down window. The session
 /// layer's origin check covers CSRF for cookie-bearing POSTs.
 async fn logout(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Response, ErrorResponse> {
     state.session_manager.revoke(&auth.token).await?;
@@ -54,7 +54,7 @@ async fn logout(
 /// with a passkey), so unlike "sign out everywhere *else*" it cannot be used to
 /// strand the real user.
 async fn logout_all(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Response, ErrorResponse> {
     state
@@ -68,7 +68,7 @@ async fn logout_all(
 }
 
 async fn list(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Json<Vec<SessionDto>>, ErrorResponse> {
     let current_id = auth.session.id;
@@ -84,7 +84,7 @@ async fn list(
 }
 
 async fn remove(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     auth: AuthSession,
     Path(raw_id): Path<String>,
 ) -> Result<StatusCode, ErrorResponse> {
@@ -116,7 +116,7 @@ async fn remove(
 /// Powers the "sign out everywhere else" surface. Blocked while the
 /// current session is within the post-recovery cool-down window.
 async fn remove_others(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<StatusCode, ErrorResponse> {
     if state.session_manager.is_in_recovery_cooldown(&auth.session) {

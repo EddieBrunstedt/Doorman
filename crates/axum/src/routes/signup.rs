@@ -20,21 +20,21 @@ use crate::dto::{
 use crate::error::ErrorResponse;
 use crate::extractors::RequestContext;
 use crate::routes::{consume_response, enrollment_success, parse_challenge_id};
-use crate::state::DoormanState;
+use crate::state::AuthState;
 
-pub(crate) fn routes() -> Router<DoormanState> {
+pub(crate) fn routes() -> Router<AuthState> {
     Router::new()
         .route("/signup/request", post(request))
         .route("/signup/consume", post(consume))
         .route("/signup/finish", post(finish))
 }
 
-fn manager(state: &DoormanState) -> &SignupManager {
+fn manager(state: &AuthState) -> &SignupManager {
     &state.signup
 }
 
 async fn request(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     RequestContext(context): RequestContext,
     Json(body): Json<SignupRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
@@ -43,7 +43,7 @@ async fn request(
 }
 
 async fn consume(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     RequestContext(context): RequestContext,
     Json(body): Json<SignupConsumeRequest>,
 ) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ErrorResponse> {
@@ -52,7 +52,7 @@ async fn consume(
 }
 
 async fn finish(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     RequestContext(context): RequestContext,
     Json(body): Json<RegistrationFinishRequest>,
 ) -> Result<Response, ErrorResponse> {

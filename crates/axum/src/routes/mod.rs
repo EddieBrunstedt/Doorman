@@ -1,6 +1,6 @@
 //! Mountable HTTP router.
 //!
-//! [`router`] is called by [`DoormanAxum::router`](crate::DoormanAxum::router)
+//! [`router`] is called by [`AuthService::router`](crate::AuthService::router)
 //! to assemble the always-on passkey, signup, recovery, session, and account
 //! route trees.
 
@@ -17,7 +17,7 @@ use crate::config::CookieConfig;
 use crate::cookies::session_cookie;
 use crate::dto::{AuthResponse, PasskeyChallenge};
 use crate::error::ErrorResponse;
-use crate::state::DoormanState;
+use crate::state::AuthState;
 
 pub(crate) mod account;
 pub(crate) mod passkey;
@@ -64,7 +64,7 @@ pub(crate) fn consume_response(
 /// issuing response. Shared by the signup/recovery `finish` steps, which
 /// differ only in which manager produced the outcome.
 pub(crate) async fn enrollment_success(
-    state: &DoormanState,
+    state: &AuthState,
     outcome: EnrollmentOutcome,
 ) -> Result<Response, ErrorResponse> {
     let passkey_count = state
@@ -79,7 +79,7 @@ pub(crate) async fn enrollment_success(
     ))
 }
 
-pub(crate) fn router(state: DoormanState) -> Router {
+pub(crate) fn router(state: AuthState) -> Router {
     Router::new()
         .merge(passkey::routes())
         .merge(signup::routes())

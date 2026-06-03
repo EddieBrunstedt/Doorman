@@ -42,7 +42,7 @@
 //!
 //! let origin = "https://app.example.com".parse()?;
 //! let base = origin.as_str().trim_end_matches('/');
-//! let auth = DoormanAxum::builder(storage.storage())
+//! let auth = AuthService::builder(storage.storage())
 //!     .email(Arc::new(TerminalEmailSender))
 //!     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
 //!     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })

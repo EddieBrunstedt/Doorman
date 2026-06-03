@@ -23,7 +23,7 @@ page with the same flows.
 
 doorman returns a stable machine error code, never end-user prose — the HTTP error
 body is `{ "error": { "code", "message" } }`. The client decides what the user
-reads. `passkey.ts` shows the pattern: failed requests throw a `DoormanError`
+reads. `passkey.ts` shows the pattern: failed requests throw a `AuthError`
 carrying `.code`, `.status`, and a `.guidance` string resolved from the
 exported `ERROR_GUIDANCE` table (e.g. `recovery_cooldown_active` →
 "This action is blocked during the 24-hour recovery cool-down…").

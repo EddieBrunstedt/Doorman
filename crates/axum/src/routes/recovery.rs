@@ -20,21 +20,21 @@ use crate::dto::{
 use crate::error::ErrorResponse;
 use crate::extractors::RequestContext;
 use crate::routes::{consume_response, enrollment_success, parse_challenge_id};
-use crate::state::DoormanState;
+use crate::state::AuthState;
 
-pub(crate) fn routes() -> Router<DoormanState> {
+pub(crate) fn routes() -> Router<AuthState> {
     Router::new()
         .route("/recovery/request", post(request))
         .route("/recovery/consume", post(consume))
         .route("/recovery/finish", post(finish))
 }
 
-fn manager(state: &DoormanState) -> &RecoveryManager {
+fn manager(state: &AuthState) -> &RecoveryManager {
     &state.recovery
 }
 
 async fn request(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     RequestContext(context): RequestContext,
     Json(body): Json<RecoveryRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
@@ -45,7 +45,7 @@ async fn request(
 }
 
 async fn consume(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     RequestContext(context): RequestContext,
     Json(body): Json<RecoveryConsumeRequest>,
 ) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ErrorResponse> {
@@ -56,7 +56,7 @@ async fn consume(
 }
 
 async fn finish(
-    State(state): State<DoormanState>,
+    State(state): State<AuthState>,
     RequestContext(context): RequestContext,
     Json(body): Json<RegistrationFinishRequest>,
 ) -> Result<Response, ErrorResponse> {

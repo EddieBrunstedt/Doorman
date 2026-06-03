@@ -78,7 +78,7 @@
         try {
           log(await fn());
         } catch (e) {
-          // DoormanError carries `.guidance` (human copy) and `.code` (for logs).
+          // AuthError carries `.guidance` (human copy) and `.code` (for logs).
           errorEl.textContent = e.guidance ?? e.message;
           log(`${label} error: ${e.code ?? e.message}`);
         }

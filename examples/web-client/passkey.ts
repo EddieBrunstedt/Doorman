@@ -143,16 +143,16 @@ function encodeAssertion(cred: PublicKeyCredential) {
 }
 
 // doorman returns a stable machine error code in `{ "error": { "code, message } }`.
-// `DoormanError` carries that code so the UI can map it to product copy instead of
+// `AuthError` carries that code so the UI can map it to product copy instead of
 // showing the raw JSON.
-export class DoormanError extends Error {
+export class AuthError extends Error {
   constructor(
     public code: string | null,
     public status: number,
     public guidance: string,
   ) {
     super(guidance);
-    this.name = "DoormanError";
+    this.name = "AuthError";
   }
 }
 
@@ -195,7 +195,7 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
     } catch {
       // non-JSON body (e.g. the CSRF layer); fall back to status-based guidance.
     }
-    throw new DoormanError(code, res.status, guidanceFor(code, res.status));
+    throw new AuthError(code, res.status, guidanceFor(code, res.status));
   }
   return text ? (JSON.parse(text) as T) : (undefined as T);
 }

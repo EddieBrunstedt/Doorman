@@ -1,4 +1,4 @@
-//! Low-level [`ManagerBuilder`] for [`DoormanAxum`].
+//! Low-level [`ManagerBuilder`] for [`AuthService`].
 //!
 //! The host wires the framework-agnostic managers from [`doorman_core`]
 //! (each constructed against its storage traits, clock, email sender,
@@ -6,10 +6,10 @@
 //! back a value that exposes a mountable [`axum::Router`] plus the
 //! [`SessionLayer`] needed for the extractors.
 //!
-//! Reach this builder via [`DoormanAxum::from_managers`]. Most hosts want
+//! Reach this builder via [`AuthService::from_managers`]. Most hosts want
 //! the higher-level storage-in path instead — see
-//! [`DoormanAxum::builder`](crate::DoormanAxum::builder) and
-//! [`DoormanBuilder`](crate::DoormanBuilder).
+//! [`AuthService::builder`](crate::AuthService::builder) and
+//! [`AuthServiceBuilder`](crate::AuthServiceBuilder).
 
 use std::sync::Arc;
 
@@ -18,12 +18,12 @@ use doorman_core::session::SessionManager;
 use doorman_core::storage::UserStore;
 use url::Url;
 
-use crate::DoormanAxum;
+use crate::AuthService;
 use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
 use crate::session::{SessionLayer, SessionLayerState};
-use crate::state::DoormanState;
+use crate::state::AuthState;
 use crate::warnings::{self, Warnings};
 
 use doorman_core::account::AccountManager;
@@ -40,7 +40,7 @@ pub enum BuilderError {
     /// No `UserStore` was supplied to the low-level builder.
     #[error("user_store is required")]
     MissingUserStore,
-    /// The [`DoormanBuilder`](crate::DoormanBuilder) high-level builder, which
+    /// The [`AuthServiceBuilder`](crate::AuthServiceBuilder) high-level builder, which
     /// constructs the signup / recovery managers itself, was not given an
     /// [`EmailSender`]. There is no silent default; pick a real transport
     /// (lettre, resend, …) for production, or use [`TerminalEmailSender`] /
@@ -54,7 +54,7 @@ pub enum BuilderError {
     MissingEmailSender,
     /// The high-level builder cannot construct the passkey manager until
     /// the host supplies the WebAuthn relying-party configuration via
-    /// [`DoormanBuilder::passkey`](crate::DoormanBuilder::passkey).
+    /// [`AuthServiceBuilder::passkey`](crate::AuthServiceBuilder::passkey).
     #[error("passkey config is required")]
     MissingPasskeyConfig,
     /// No `PasskeyManager` was supplied to the low-level builder.
@@ -69,7 +69,7 @@ pub enum BuilderError {
     /// No `AccountManager` was supplied to the low-level builder.
     #[error("account_manager is required")]
     MissingAccountManager,
-    /// Returned through [`DoormanBuilder`](crate::DoormanBuilder), which has to
+    /// Returned through [`AuthServiceBuilder`](crate::AuthServiceBuilder), which has to
     /// construct the passkey manager itself. The direct `ManagerBuilder`
     /// path takes a pre-built [`PasskeyManager`] and surfaces the same
     /// error to the host at construction time.
@@ -142,12 +142,12 @@ pub enum BuilderError {
 /// the HTTP presentation layer bolted on. Each manager already owns its
 /// [`EmailSender`](doorman_core::email::EmailSender), so this builder does not
 /// take a separate sender. The dev-transport startup warning is emitted only
-/// on the high-level [`DoormanBuilder`](crate::DoormanBuilder) path, which holds
+/// on the high-level [`AuthServiceBuilder`](crate::AuthServiceBuilder) path, which holds
 /// the raw transport and can inspect it.
 ///
 /// If you would rather hand over a [`Storage`](doorman_core::storage::Storage)
 /// plus passkey / email config and let the managers be constructed for you,
-/// use [`DoormanAxum::builder`](crate::DoormanAxum::builder) instead.
+/// use [`AuthService::builder`](crate::AuthService::builder) instead.
 #[derive(Default)]
 pub struct ManagerBuilder {
     session_manager: Option<SessionManager>,
@@ -156,7 +156,7 @@ pub struct ManagerBuilder {
     cache_config: Option<SessionCacheConfig>,
     session_cache: Option<SessionCache>,
     /// Pre-computed warning conditions from a parent builder (the
-    /// high-level [`DoormanBuilder`](crate::DoormanBuilder) entry point) that
+    /// high-level [`AuthServiceBuilder`](crate::AuthServiceBuilder) entry point) that
     /// already inspected audit / rate-limiter / linking state the low-level
     /// builder does not see. Merged with the builder's own cookie-config
     /// check at [`Self::build`] time. Set through
@@ -215,7 +215,7 @@ impl ManagerBuilder {
     ///
     /// If the host neither supplies a cache nor wires an invalidator,
     /// revocations will only be cleared by the cache TTL. The
-    /// [`DoormanAxum::builder`](crate::DoormanAxum::builder) entry point handles
+    /// [`AuthService::builder`](crate::AuthService::builder) entry point handles
     /// all of this automatically.
     ///
     /// [`SessionManager`]: doorman_core::session::SessionManager
@@ -289,15 +289,15 @@ impl ManagerBuilder {
     /// Seed the warning conditions a parent builder has already computed
     /// (audit / rate-limiter / email-transport / partial-branding state the
     /// low-level builder cannot see). Crate-internal: only the high-level
-    /// [`DoormanBuilder`](crate::DoormanBuilder) supplies these.
+    /// [`AuthServiceBuilder`](crate::AuthServiceBuilder) supplies these.
     pub(crate) fn inherited_warnings(mut self, warnings: Warnings) -> Self {
         self.inherited_warnings = warnings;
         self
     }
 
-    /// Validate the configuration and assemble the [`DoormanAxum`] surface, or
+    /// Validate the configuration and assemble the [`AuthService`] surface, or
     /// return a [`BuilderError`] describing the first missing/invalid input.
-    pub fn build(self) -> Result<DoormanAxum, BuilderError> {
+    pub fn build(self) -> Result<AuthService, BuilderError> {
         let session_manager = self
             .session_manager
             .ok_or(BuilderError::MissingSessionManager)?;
@@ -314,7 +314,7 @@ impl ManagerBuilder {
             let mut warnings = self.inherited_warnings.clone();
             warnings.cookie_insecure_in_production = warnings::check_cookie(&cookie_config);
             // Email-transport and audit/limiter diagnostics are decided by the
-            // high-level `DoormanBuilder` (which holds the raw collaborators) and
+            // high-level `AuthServiceBuilder` (which holds the raw collaborators) and
             // arrive via `inherited_warnings`. The low-level path takes pre-built
             // managers that already own their transport, so it adds only the
             // cookie check here.
@@ -338,7 +338,7 @@ impl ManagerBuilder {
         // session manager is the host's responsibility on this path
         // because the `SessionManager` is immutable after construction —
         // see [`session_cache`](Self::session_cache) and
-        // [`DoormanAxum::builder`](crate::DoormanAxum::builder).
+        // [`AuthService::builder`](crate::AuthService::builder).
         let cache = self
             .session_cache
             .unwrap_or_else(|| SessionCache::new(self.cache_config.unwrap_or_default()));
@@ -356,7 +356,7 @@ impl ManagerBuilder {
             metrics,
         });
 
-        let state = DoormanState {
+        let state = AuthState {
             session_manager,
             user_store,
             cookie_config,
@@ -366,7 +366,7 @@ impl ManagerBuilder {
             account,
         };
 
-        Ok(DoormanAxum {
+        Ok(AuthService {
             state,
             session_layer: SessionLayer::new(layer_state),
             cache,

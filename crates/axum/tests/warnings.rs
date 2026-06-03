@@ -1,5 +1,5 @@
-//! Build-time configuration warnings emitted by `DoormanAxum::builder().build()`
-//! and `DoormanAxum::from_managers().build()`.
+//! Build-time configuration warnings emitted by `AuthService::builder().build()`
+//! and `AuthService::from_managers().build()`.
 //!
 //! Each test installs its own thread-scoped `tracing` subscriber that
 //! captures warnings into an in-memory buffer, then asserts the messages
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use doorman_axum::config::CookieConfig;
-use doorman_axum::{BuilderError, DoormanAxum};
+use doorman_axum::{AuthService, BuilderError};
 use doorman_core::account::{AccountConfig, AccountManager};
 use doorman_core::audit::{AuditSink, NoopAuditSink};
 use doorman_core::clock::{Clock, SystemClock};
@@ -18,7 +18,7 @@ use doorman_core::context::CoreDeps;
 #[cfg(feature = "file-email")]
 use doorman_core::email::FileEmailSender;
 use doorman_core::email::{
-    DefaultDoormanEmails, EmailSender, SecurityEmailNotifier, TerminalEmailSender,
+    DefaultEmailTemplates, EmailSender, SecurityEmailNotifier, TerminalEmailSender,
 };
 use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
@@ -136,7 +136,7 @@ where
 #[test]
 fn quickstart_defaults_warn_about_noop_audit_and_in_memory_limiter() {
     let output = capture(|| {
-        let _ = DoormanAxum::builder(fresh_storage())
+        let _ = AuthService::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .cookie(CookieConfig {
@@ -164,7 +164,7 @@ fn quickstart_defaults_warn_about_noop_audit_and_in_memory_limiter() {
 #[test]
 fn explicit_noop_rate_limiter_emits_noop_warning() {
     let output = capture(|| {
-        let _ = DoormanAxum::builder(fresh_storage())
+        let _ = AuthService::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .limiter(Arc::new(NoopRateLimiter))
@@ -185,7 +185,7 @@ fn explicit_noop_rate_limiter_emits_noop_warning() {
 #[test]
 fn cookie_secure_false_with_production_domain_warns() {
     let output = capture(|| {
-        let _ = DoormanAxum::builder(fresh_storage())
+        let _ = AuthService::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .cookie(CookieConfig {
@@ -208,7 +208,7 @@ fn cookie_secure_false_with_production_domain_warns() {
 #[test]
 fn cookie_warning_fires_when_not_silenced() {
     let output = capture(|| {
-        let _ = DoormanAxum::builder(fresh_storage())
+        let _ = AuthService::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .cookie(CookieConfig {
@@ -229,7 +229,7 @@ fn cookie_warning_fires_when_not_silenced() {
 #[test]
 fn quickstart_silence_warnings_suppresses_everything() {
     let output = capture(|| {
-        let _ = DoormanAxum::builder(fresh_storage())
+        let _ = AuthService::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .silence_warnings()
@@ -245,7 +245,7 @@ fn quickstart_silence_warnings_suppresses_everything() {
 
 #[test]
 fn missing_email_sender_returns_build_error() {
-    let result = DoormanAxum::builder(fresh_storage())
+    let result = AuthService::builder(fresh_storage())
         .silence_warnings()
         .build();
     match result {
@@ -257,7 +257,7 @@ fn missing_email_sender_returns_build_error() {
 
 #[test]
 fn missing_passkey_config_returns_build_error() {
-    let result = DoormanAxum::builder(fresh_storage())
+    let result = AuthService::builder(fresh_storage())
         .email(capturing_email())
         .silence_warnings()
         .build();
@@ -278,7 +278,7 @@ fn low_level_builder_rejects_missing_passkey_manager() {
         SessionConfig::default(),
     );
 
-    let result = DoormanAxum::from_managers()
+    let result = AuthService::from_managers()
         .session_manager(session_manager)
         .user_store(storage.users.clone())
         .silence_warnings()
@@ -306,7 +306,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
 
     let notifier = SecurityEmailNotifier::new(
         email.clone() as Arc<dyn EmailSender>,
-        Arc::new(DefaultDoormanEmails),
+        Arc::new(DefaultEmailTemplates),
     );
     let session_manager = SessionManager::new(
         storage.sessions.clone(),
@@ -333,7 +333,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         RecoveryManager::new(flow, RecoveryConfig::default()).expect("recovery cooldown valid");
     let account = AccountManager::new(&deps, AccountConfig::default());
 
-    let auth = DoormanAxum::from_managers()
+    let auth = AuthService::from_managers()
         .session_manager(session_manager)
         .user_store(storage.users.clone())
         .passkey_manager(passkey)
@@ -344,7 +344,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         .build()
         .expect("low-level build should succeed when every manager is supplied");
 
-    // The `DoormanState` flow accessors must reach the very managers the
+    // The `AuthState` flow accessors must reach the very managers the
     // routes drive. Driving signup through `state().signup()` (rather than a
     // separately held handle) proves the accessor returns the wired manager:
     // the request must enqueue a link email on the shared transport.
@@ -374,11 +374,11 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
 #[test]
 fn branding_one_flow_without_shared_renderer_warns() {
     let output = capture(|| {
-        let _ = DoormanAxum::builder(fresh_storage())
+        let _ = AuthService::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .signup(SignupConfig {
-                emails: Some(Arc::new(DefaultDoormanEmails)),
+                emails: Some(Arc::new(DefaultEmailTemplates)),
                 ..SignupConfig::default()
             })
             .build()
@@ -394,12 +394,12 @@ fn branding_one_flow_without_shared_renderer_warns() {
 #[test]
 fn shared_emails_renderer_does_not_warn_about_partial_branding() {
     let output = capture(|| {
-        let _ = DoormanAxum::builder(fresh_storage())
+        let _ = AuthService::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
-            .emails(Arc::new(DefaultDoormanEmails))
+            .emails(Arc::new(DefaultEmailTemplates))
             .signup(SignupConfig {
-                emails: Some(Arc::new(DefaultDoormanEmails)),
+                emails: Some(Arc::new(DefaultEmailTemplates)),
                 ..SignupConfig::default()
             })
             .build()
@@ -415,7 +415,7 @@ fn shared_emails_renderer_does_not_warn_about_partial_branding() {
 #[test]
 fn terminal_email_transport_emits_dev_email_warning() {
     let output = capture(|| {
-        let _ = DoormanAxum::builder(fresh_storage())
+        let _ = AuthService::builder(fresh_storage())
             .email(Arc::new(TerminalEmailSender))
             .passkey(passkey_config())
             .build()
@@ -434,7 +434,7 @@ fn file_email_transport_emits_dev_email_warning() {
     let dir = std::env::temp_dir().join(format!("doorman-warnings-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("mkdir");
     let output = capture(|| {
-        let _ = DoormanAxum::builder(fresh_storage())
+        let _ = AuthService::builder(fresh_storage())
             .email(Arc::new(FileEmailSender::new(&dir)))
             .passkey(passkey_config())
             .build()
@@ -452,7 +452,7 @@ fn file_email_transport_emits_dev_email_warning() {
 
 #[test]
 fn signup_url_template_without_token_is_rejected() {
-    let err = DoormanAxum::builder(fresh_storage())
+    let err = AuthService::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(SignupConfig {
@@ -474,7 +474,7 @@ fn signup_url_template_without_token_is_rejected() {
 
 #[test]
 fn recovery_url_template_without_token_is_rejected() {
-    let err = DoormanAxum::builder(fresh_storage())
+    let err = AuthService::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
@@ -500,7 +500,7 @@ fn recovery_url_template_without_token_is_rejected() {
 #[test]
 fn default_example_invalid_url_template_warns() {
     let output = capture(|| {
-        let _ = DoormanAxum::builder(fresh_storage())
+        let _ = AuthService::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .build()
@@ -516,7 +516,7 @@ fn default_example_invalid_url_template_warns() {
 #[test]
 fn real_url_templates_do_not_warn_about_placeholder() {
     let output = capture(|| {
-        let _ = DoormanAxum::builder(fresh_storage())
+        let _ = AuthService::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .signup(real_signup())
@@ -533,7 +533,7 @@ fn real_url_templates_do_not_warn_about_placeholder() {
 
 #[test]
 fn subfloor_recovery_cooldown_is_rejected() {
-    let err = DoormanAxum::builder(fresh_storage())
+    let err = AuthService::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
@@ -553,7 +553,7 @@ fn subfloor_recovery_cooldown_is_rejected() {
 
 #[test]
 fn host_prefixed_cookie_without_secure_is_rejected() {
-    let err = DoormanAxum::builder(fresh_storage())
+    let err = AuthService::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
@@ -580,7 +580,7 @@ fn host_prefixed_cookie_without_secure_is_rejected() {
 
 #[test]
 fn host_prefixed_cookie_with_domain_is_rejected() {
-    let err = DoormanAxum::builder(fresh_storage())
+    let err = AuthService::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
@@ -608,7 +608,7 @@ fn host_prefixed_cookie_with_domain_is_rejected() {
 
 #[test]
 fn secure_prefixed_cookie_without_secure_is_rejected() {
-    let err = DoormanAxum::builder(fresh_storage())
+    let err = AuthService::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
@@ -635,7 +635,7 @@ fn secure_prefixed_cookie_without_secure_is_rejected() {
 
 #[test]
 fn host_prefixed_cookie_with_correct_attributes_builds() {
-    let err = DoormanAxum::builder(fresh_storage())
+    let err = AuthService::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
@@ -658,7 +658,7 @@ fn host_prefixed_cookie_with_correct_attributes_builds() {
 
 #[test]
 fn zero_session_lifetime_is_rejected() {
-    let err = DoormanAxum::builder(fresh_storage())
+    let err = AuthService::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
@@ -684,7 +684,7 @@ fn zero_session_lifetime_is_rejected() {
 
 #[test]
 fn zero_signup_token_lifetime_is_rejected() {
-    let err = DoormanAxum::builder(fresh_storage())
+    let err = AuthService::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(SignupConfig {
@@ -710,7 +710,7 @@ fn zero_signup_token_lifetime_is_rejected() {
 
 #[test]
 fn cookie_max_age_exceeding_session_lifetime_is_rejected() {
-    let err = DoormanAxum::builder(fresh_storage())
+    let err = AuthService::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())

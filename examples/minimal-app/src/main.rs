@@ -10,7 +10,7 @@ use url::Url;
 
 #[derive(Clone)]
 struct AppState {
-    auth: DoormanState,
+    auth: AuthState,
 }
 
 #[tokio::main]
@@ -44,7 +44,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     };
     let base = external_origin.as_str().trim_end_matches('/');
 
-    let auth = DoormanAxum::builder(storage.storage())
+    let auth = AuthService::builder(storage.storage())
         .email(Arc::new(TerminalEmailSender))
         .passkey(passkey_config)
         .signup(SignupConfig {

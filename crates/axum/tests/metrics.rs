@@ -1,5 +1,5 @@
 //! Verifies the session layer reports cache hit / miss through the optional
-//! [`Metrics`] hook wired in via [`DoormanBuilder::metrics`]. The first
+//! [`Metrics`] hook wired in via [`AuthServiceBuilder::metrics`]. The first
 //! authenticated request resolves against a cold cache (a miss + a store
 //! validate); the second is served from the warm cache (a hit).
 

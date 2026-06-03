@@ -67,8 +67,8 @@ impl CsrfConfig {
 /// Tower layer that rejects cross-site state-changing requests carrying a
 /// doorman session cookie.
 ///
-/// [`DoormanAxum`](crate::DoormanAxum) wires the same check into
-/// [`session_layer`](crate::DoormanAxum::session_layer) automatically when
+/// [`AuthService`](crate::AuthService) wires the same check into
+/// [`session_layer`](crate::AuthService::session_layer) automatically when
 /// an external origin is configured. Use this standalone layer only when
 /// composing your own middleware stack.
 #[derive(Clone)]

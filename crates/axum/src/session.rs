@@ -69,7 +69,7 @@ pub(crate) struct SessionLayerState {
 }
 
 /// Tower layer constructed via
-/// [`DoormanAxum::session_layer`](crate::DoormanAxum::session_layer) and applied
+/// [`AuthService::session_layer`](crate::AuthService::session_layer) and applied
 /// once to the router that mounts the auth routes (and any application
 /// routes that want `AuthUser` extraction to work).
 #[derive(Clone)]
