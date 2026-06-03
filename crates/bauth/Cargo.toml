@@ -7,6 +7,9 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "Opinionated passkey-only authentication for Rust web apps. Umbrella crate re-exporting bauth-core, bauth-axum, and bauth-sqlx behind features."
+keywords = ["authentication", "passkey", "webauthn", "axum", "auth"]
+categories = ["authentication", "web-programming"]
+documentation = "https://docs.rs/bauth"
 
 [features]
 default = []
@@ -15,6 +18,12 @@ axum = ["dep:bauth-axum"]
 # SQLx storage adapters.
 sqlite = ["dep:bauth-sqlx", "bauth-sqlx/sqlite"]
 postgres = ["dep:bauth-sqlx", "bauth-sqlx/postgres"]
+# Bundled `.eml` file email transport for local development (pulls tokio's
+# filesystem support). Also enables it in `bauth-axum` when `axum` is on.
+file-email = ["bauth-core/file-email", "bauth-axum?/file-email"]
+
+[lints]
+workspace = true
 
 [dependencies]
 bauth-core = { path = "../core", version = "0.1.0" }

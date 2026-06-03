@@ -36,6 +36,11 @@
 //! [`BauthAxum::from_managers`] remains available for hosts that want to
 //! construct the core managers by hand.
 
+// TODO(Phase 23): flip to `#![deny(missing_docs)]` once every public item is
+// documented. Scoped to this library's public API on purpose — kept out of the
+// workspace lints so the requirement never fires on test/bench helpers.
+#![allow(missing_docs)]
+
 pub mod cache;
 pub mod config;
 mod cookies;

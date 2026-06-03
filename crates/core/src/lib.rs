@@ -6,6 +6,11 @@
 //! audit, and rate-limiter traits plus the managers that implement each
 //! auth flow.
 
+// TODO(Phase 23): flip to `#![deny(missing_docs)]` once every public item is
+// documented. Scoped to this library's public API on purpose — kept out of the
+// workspace lints so the requirement never fires on test/bench helpers.
+#![allow(missing_docs)]
+
 pub mod account;
 pub mod audit;
 pub mod clock;

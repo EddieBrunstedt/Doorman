@@ -71,7 +71,7 @@ Open <http://localhost:3000>. Signup and recovery emails are printed to the term
 - CSRF origin checks for cookie-authenticated state-changing requests.
 - Audit and rate-limiter traits, with development defaults.
 - First-party SQLx storage for SQLite and Postgres.
-- Development email transports: terminal and `.eml` file output.
+- Development email transports: terminal output, and `.eml` file output behind the `file-email` feature.
 
 ## Production checklist
 
@@ -118,4 +118,4 @@ See [`SECURITY.md`](SECURITY.md) for the threat model, recovery design, defaults
 
 ## License
 
-MIT OR Apache-2.0 at your option.
+Licensed under the [MIT License](LICENSE).

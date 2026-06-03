@@ -7,11 +7,21 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "SQLx-backed storage adapter for the bauth authentication library (SQLite and Postgres)."
+keywords = ["authentication", "passkey", "sqlx", "sqlite", "postgres"]
+categories = ["authentication", "database"]
+documentation = "https://docs.rs/bauth-sqlx"
+readme = "README.md"
 
 [features]
 default = []
 sqlite = ["sqlx/sqlite"]
 postgres = ["sqlx/postgres"]
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 async-trait.workspace = true

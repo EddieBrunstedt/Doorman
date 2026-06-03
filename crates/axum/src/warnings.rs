@@ -18,7 +18,9 @@
 use std::any::Any;
 
 use bauth_core::audit::{AuditSink, NoopAuditSink};
-use bauth_core::email::{EmailSender, FileEmailSender, TerminalEmailSender};
+#[cfg(feature = "file-email")]
+use bauth_core::email::FileEmailSender;
+use bauth_core::email::{EmailSender, TerminalEmailSender};
 use bauth_core::memory::InMemoryRateLimiter;
 use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
 
@@ -34,10 +36,18 @@ pub(crate) fn is_noop_audit(sink: &dyn AuditSink) -> bool {
 }
 
 /// `true` if `sender` is one of the bundled dev-only transports
-/// ([`TerminalEmailSender`] or [`FileEmailSender`]) that never deliver mail.
+/// ([`TerminalEmailSender`], or `FileEmailSender` under the `file-email`
+/// feature) that never deliver mail.
 pub(crate) fn is_dev_email_transport(sender: &dyn EmailSender) -> bool {
     let any = sender as &dyn Any;
-    any.is::<TerminalEmailSender>() || any.is::<FileEmailSender>()
+    if any.is::<TerminalEmailSender>() {
+        return true;
+    }
+    #[cfg(feature = "file-email")]
+    if any.is::<FileEmailSender>() {
+        return true;
+    }
+    false
 }
 
 /// Which bundled rate limiter (if any) `limiter` is, for the startup check.

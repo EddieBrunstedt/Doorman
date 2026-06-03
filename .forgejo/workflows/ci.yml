@@ -1,0 +1,119 @@
+# Continuous integration for bauth, written for Forgejo Actions (Codeberg).
+#
+# Codeberg runs Forgejo, whose Actions use GitHub-Actions-compatible syntax but
+# need a runner enabled for the repository (Settings -> Actions) and execute on
+# the `docker` label. GitHub Actions YAML under `.github/` is NOT run by
+# Codeberg, which is why this lives under `.forgejo/`.
+#
+# Note: this workflow has not been executed on a live runner yet — review the
+# first run. The MSRV job pins Rust 1.85 (the declared `rust-version`); if a
+# dependency needs newer, bump `rust-version` in the workspace manifest.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so newly disclosed advisories surface even without a push.
+    - cron: "0 6 * * 1"
+
+jobs:
+  lint:
+    runs-on: docker
+    container:
+      image: rust:1.96-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add rustfmt clippy
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # Plain doc build (catches doctest/doc-compile failures). Not yet
+      # `-D warnings`: the pre-1.0 tree still carries rustdoc link warnings that
+      # the documentation rewrite clears, after which this should be tightened
+      # to `RUSTDOCFLAGS: -D warnings`.
+      - name: docs
+        run: cargo doc --workspace --no-deps --all-features --locked
+
+  test:
+    runs-on: docker
+    container:
+      image: rust:1.96-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: test (default features)
+        run: cargo test --workspace --locked
+      - name: test (all features)
+        run: cargo test --workspace --all-features --locked
+
+  conformance:
+    runs-on: docker
+    container:
+      image: rust:1.96-bookworm
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bauth_test
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PG_URL: postgres://postgres:postgres@postgres:5432/bauth_test
+    steps:
+      - uses: actions/checkout@v4
+      - name: SQLite storage conformance
+        run: cargo test -p bauth-sqlx --features sqlite --locked
+      - name: Postgres storage conformance
+        run: cargo test -p bauth-sqlx --features postgres --locked
+
+  features:
+    runs-on: docker
+    container:
+      image: rust:1.96-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: core (default — no tokio)
+        run: cargo check -p bauth-core --locked
+      - name: core (file-email)
+        run: cargo check -p bauth-core --features file-email --locked
+      - name: core (background-purge)
+        run: cargo check -p bauth-core --features background-purge --locked
+      - name: core (all features)
+        run: cargo check -p bauth-core --all-features --locked
+      - name: sqlx (sqlite)
+        run: cargo check -p bauth-sqlx --features sqlite --locked
+      - name: sqlx (postgres)
+        run: cargo check -p bauth-sqlx --features postgres --locked
+      - name: umbrella (axum + sqlite)
+        run: cargo check -p bauth --features axum,sqlite --locked
+      - name: umbrella (axum + postgres + file-email)
+        run: cargo check -p bauth --features axum,postgres,file-email --locked
+      - name: benches compile
+        run: cargo bench --workspace --all-features --no-run --locked
+
+  msrv:
+    runs-on: docker
+    container:
+      image: rust:1.85-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: check on MSRV
+        run: cargo check --workspace --all-features --locked
+
+  deny:
+    runs-on: docker
+    container:
+      image: rust:1.96-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: cargo-deny
+        run: cargo deny check

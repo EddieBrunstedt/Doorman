@@ -7,9 +7,21 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "Axum HTTP integration for the bauth authentication library."
+keywords = ["authentication", "passkey", "webauthn", "axum", "auth"]
+categories = ["authentication", "web-programming::http-server"]
+documentation = "https://docs.rs/bauth-axum"
 
 [features]
 default = []
+# Re-export of core's bundled `.eml` file transport for local development.
+# Passes through to `bauth-core/file-email` (which pulls tokio's filesystem).
+file-email = ["bauth-core/file-email"]
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 async-trait.workspace = true

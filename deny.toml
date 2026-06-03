@@ -1,0 +1,48 @@
+# cargo-deny configuration. Run with `cargo deny check`.
+# Scans the dependency tree for security advisories, disallowed licenses,
+# banned/duplicate crates, and untrusted sources. Enforced in CI on pull
+# requests and on a schedule (so newly disclosed advisories surface even
+# without a code change).
+
+[advisories]
+version = 2
+# Fail on crates with an open RustSec advisory or that have been yanked.
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# bauth is MIT; its dependencies must carry an OSI-approved permissive license.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "OpenSSL",
+    # Mozilla CA root list shipped by `webpki-roots` (via sqlx/reqwest TLS).
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+# Don't warn about allowed licenses that happen not to appear in the tree.
+unused-allowed-license = "allow"
+
+[bans]
+# Duplicate versions are a warning, not an error: the transitive graph of a
+# WebAuthn + SQLx + Axum stack legitimately carries a few. Wildcard version
+# requirements are rejected, except internal workspace path dependencies which
+# legitimately omit a version.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

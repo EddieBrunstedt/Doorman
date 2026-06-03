@@ -22,6 +22,7 @@
 //! - `axum` — re-export `bauth-axum` at `bauth::axum`.
 //! - `sqlite` — re-export `bauth-sqlx` (SQLite adapter) at `bauth::sqlx`.
 //! - `postgres` — re-export `bauth-sqlx` (Postgres adapter) at `bauth::sqlx`.
+//! - `file-email` — bundled `.eml` file email transport for local development.
 //!
 //! [`bauth::core`](core) is always available. The [`prelude`] re-exports the
 //! richest available prelude (axum's when the `axum` feature is on, core's
@@ -52,6 +53,11 @@
 //! # let _ = auth;
 //! # Ok(()) }
 //! ```
+
+// TODO(Phase 23): flip to `#![deny(missing_docs)]` once every public item is
+// documented. Scoped to this library's public API on purpose — kept out of the
+// workspace lints so the requirement never fires on test/bench helpers.
+#![allow(missing_docs)]
 
 /// Framework-agnostic authentication primitives. Always available.
 pub use bauth_core as core;

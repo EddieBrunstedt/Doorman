@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1"] }
 bauth-axum = { path = "../../crates/axum" }

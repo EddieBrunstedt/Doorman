@@ -15,8 +15,10 @@ use bauth_core::account::{AccountConfig, AccountManager};
 use bauth_core::audit::{AuditSink, NoopAuditSink};
 use bauth_core::clock::{Clock, SystemClock};
 use bauth_core::context::CoreDeps;
+#[cfg(feature = "file-email")]
+use bauth_core::email::FileEmailSender;
 use bauth_core::email::{
-    DefaultBauthEmails, EmailSender, FileEmailSender, SecurityEmailNotifier, TerminalEmailSender,
+    DefaultBauthEmails, EmailSender, SecurityEmailNotifier, TerminalEmailSender,
 };
 use bauth_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
@@ -426,6 +428,7 @@ fn terminal_email_transport_emits_dev_email_warning() {
     );
 }
 
+#[cfg(feature = "file-email")]
 #[test]
 fn file_email_transport_emits_dev_email_warning() {
     let dir = std::env::temp_dir().join(format!("bauth-warnings-{}", std::process::id()));

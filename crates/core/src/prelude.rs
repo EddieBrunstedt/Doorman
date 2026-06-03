@@ -14,9 +14,10 @@ pub use crate::audit::{
     AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, RecoveryFailureReason,
 };
 pub use crate::clock::{Clock, SystemClock};
+#[cfg(feature = "file-email")]
+pub use crate::email::FileEmailSender;
 pub use crate::email::{
-    BauthEmails, DefaultBauthEmails, Email, EmailSender, FileEmailSender, SecurityEmailNotifier,
-    TerminalEmailSender,
+    BauthEmails, DefaultBauthEmails, Email, EmailSender, SecurityEmailNotifier, TerminalEmailSender,
 };
 pub use crate::error::{Error, Result, StorageError, StorageResult};
 pub use crate::metrics::{MetricEvent, Metrics, NoopMetrics};

@@ -15,16 +15,23 @@
 //! describes a passkey-driven flow; hosts override [`BauthEmails`] to brand it.
 
 use std::any::Any;
+#[cfg(feature = "file-email")]
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(feature = "file-email")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+#[cfg(feature = "file-email")]
 use chrono::Utc;
+#[cfg(feature = "file-email")]
 use tokio::fs;
+#[cfg(feature = "file-email")]
 use tokio::io::AsyncWriteExt;
 
-use crate::error::{EmailError, EmailResult};
+#[cfg(feature = "file-email")]
+use crate::error::EmailError;
+use crate::error::EmailResult;
 use crate::storage::User;
 
 /// Transactional email ready to hand to a transport.
@@ -73,12 +80,17 @@ impl EmailSender for TerminalEmailSender {
 /// The directory must already exist; the sender does not create it.
 /// Filenames combine an RFC 3339 UTC timestamp with a per-process
 /// counter so multiple emails sent in the same second do not collide.
+///
+/// Available only with the `file-email` feature, which is what pulls
+/// `tokio`'s filesystem support into the build.
+#[cfg(feature = "file-email")]
 #[derive(Debug)]
 pub struct FileEmailSender {
     dir: PathBuf,
     seq: AtomicU64,
 }
 
+#[cfg(feature = "file-email")]
 impl FileEmailSender {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -92,6 +104,7 @@ impl FileEmailSender {
     }
 }
 
+#[cfg(feature = "file-email")]
 #[async_trait]
 impl EmailSender for FileEmailSender {
     async fn send(&self, email: Email) -> EmailResult<()> {
@@ -499,6 +512,7 @@ mod tests {
             .expect("send");
     }
 
+    #[cfg(feature = "file-email")]
     #[tokio::test]
     async fn file_sender_writes_to_dir() {
         let dir = std::env::temp_dir().join(format!(

@@ -12,17 +12,34 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://codeberg.org/EddieBrunstedt/bauth"
+homepage = "https://codeberg.org/EddieBrunstedt/bauth"
 authors = ["Eddie Brunstedt <eddie.brunstedt@protonmail.com>"]
 rust-version = "1.85"
+
+# Shared lints applied to every crate that opts in with `[lints] workspace = true`.
+# `unsafe_code` is forbidden outright — bauth never uses `unsafe`. `clippy::all`
+# is denied (negative priority so item-level allows still win).
+#
+# `missing_docs` is deliberately NOT here: a workspace lint applies to every
+# target in the package, including the test and bench crates whose `pub` helpers
+# are not part of any public API. It is instead a crate-root attribute on each
+# published library (currently `#![allow(missing_docs)]`, flipped to
+# `#![deny(missing_docs)]` by the Phase 23 documentation rewrite), so the
+# requirement scopes to the public API and never to test scaffolding.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
 
 [workspace.dependencies]
 async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 criterion = { version = "0.5", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
-lru = "0.12"
+lru = "0.16.3"
 proptest = "1"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
