@@ -61,10 +61,21 @@ pub struct AccountConfig {
     pub emails: Option<Arc<dyn EmailTemplates>>,
 }
 
+impl AccountConfig {
+    /// Default email-change confirmation-token lifetime: 15 minutes. Short by
+    /// design — see [`AccountConfig::token_lifetime`].
+    pub const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(60 * 15);
+}
+
 impl Default for AccountConfig {
+    /// Default: a 15-minute token lifetime ([`DEFAULT_TOKEN_LIFETIME`]), a
+    /// placeholder `example.invalid` URL template (the host must override
+    /// this), and no flow-specific email renderer.
+    ///
+    /// [`DEFAULT_TOKEN_LIFETIME`]: AccountConfig::DEFAULT_TOKEN_LIFETIME
     fn default() -> Self {
         Self {
-            token_lifetime: Duration::from_secs(60 * 15),
+            token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
             url_template: format!("https://example.invalid/email-change?token={TOKEN_PLACEHOLDER}"),
             emails: None,
         }

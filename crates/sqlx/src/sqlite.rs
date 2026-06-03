@@ -19,13 +19,20 @@ pub struct SqliteStorage {
 }
 
 impl SqliteStorage {
+    /// Pool size [`connect`](Self::connect) opens. A conservative default;
+    /// hosts that need different tuning build their own pool and use
+    /// [`from_pool`](Self::from_pool).
+    pub const DEFAULT_MAX_CONNECTIONS: u32 = 8;
+
     /// Open a pool against `url`. For an ephemeral in-memory DB use
     /// `"sqlite::memory:"`; for a file-backed DB use
-    /// `"sqlite:///absolute/path/to/db.sqlite?mode=rwc"`.
+    /// `"sqlite:///absolute/path/to/db.sqlite?mode=rwc"`. Opens
+    /// [`DEFAULT_MAX_CONNECTIONS`](Self::DEFAULT_MAX_CONNECTIONS) connections;
+    /// use [`from_pool`](Self::from_pool) for custom tuning.
     pub async fn connect(url: &str) -> Result<Self, sqlx::Error> {
         let opts: SqliteConnectOptions = url.parse()?;
         let pool = SqlitePoolOptions::new()
-            .max_connections(8)
+            .max_connections(Self::DEFAULT_MAX_CONNECTIONS)
             .connect_with(opts.foreign_keys(true).create_if_missing(true))
             .await?;
         Ok(Self { pool })

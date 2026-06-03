@@ -120,6 +120,17 @@ pub struct RecoveryRateLimits {
 }
 
 impl RecoveryRateLimits {
+    /// Default per-IP policy: 20 recovery requests per IP per hour.
+    pub const DEFAULT_PER_IP: RateLimitPolicy =
+        RateLimitPolicy::new(20, Duration::from_secs(60 * 60));
+    /// Default per-identifier policy: 5 recovery requests per email per hour.
+    pub const DEFAULT_PER_IDENTIFIER: RateLimitPolicy =
+        RateLimitPolicy::new(5, Duration::from_secs(60 * 60));
+    /// Default per-identifier daily policy: 10 recovery requests per email
+    /// per day, bounding sustained pressure that stays under the hourly cap.
+    pub const DEFAULT_PER_IDENTIFIER_DAILY: RateLimitPolicy =
+        RateLimitPolicy::new(10, Duration::from_secs(60 * 60 * 24));
+
     /// Turn off every policy.
     pub const fn disabled() -> Self {
         Self {
@@ -132,27 +143,50 @@ impl RecoveryRateLimits {
 }
 
 impl Default for RecoveryRateLimits {
+    /// Default: 20 / IP / hour ([`DEFAULT_PER_IP`]), 5 / email / hour
+    /// ([`DEFAULT_PER_IDENTIFIER`]), and 10 / email / day
+    /// ([`DEFAULT_PER_IDENTIFIER_DAILY`]). The global ceiling is off by
+    /// default; the host opts in. Override any field via struct-update
+    /// syntax, or pass [`disabled`] to turn every policy off.
+    ///
+    /// [`DEFAULT_PER_IP`]: RecoveryRateLimits::DEFAULT_PER_IP
+    /// [`DEFAULT_PER_IDENTIFIER`]: RecoveryRateLimits::DEFAULT_PER_IDENTIFIER
+    /// [`DEFAULT_PER_IDENTIFIER_DAILY`]: RecoveryRateLimits::DEFAULT_PER_IDENTIFIER_DAILY
+    /// [`disabled`]: RecoveryRateLimits::disabled
     fn default() -> Self {
         Self {
-            request_per_ip: Some(RateLimitPolicy::new(20, Duration::from_secs(60 * 60))),
-            request_per_identifier: Some(RateLimitPolicy::new(5, Duration::from_secs(60 * 60))),
-            request_per_identifier_daily: Some(RateLimitPolicy::new(
-                10,
-                Duration::from_secs(60 * 60 * 24),
-            )),
+            request_per_ip: Some(Self::DEFAULT_PER_IP),
+            request_per_identifier: Some(Self::DEFAULT_PER_IDENTIFIER),
+            request_per_identifier_daily: Some(Self::DEFAULT_PER_IDENTIFIER_DAILY),
             request_global: None,
         }
     }
 }
 
+impl RecoveryConfig {
+    /// Default recovery-token lifetime: 15 minutes. Short by design — see
+    /// [`RecoveryConfig::token_lifetime`].
+    pub const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(60 * 15);
+    /// Default post-recovery cool-down: 24 hours. Must stay at or above
+    /// [`MIN_COOLDOWN`]; see [`RecoveryConfig::cooldown`].
+    pub const DEFAULT_COOLDOWN: Duration = Duration::from_secs(60 * 60 * 24);
+}
+
 impl Default for RecoveryConfig {
+    /// Default: a 15-minute token lifetime ([`DEFAULT_TOKEN_LIFETIME`]), the
+    /// default [`RecoveryRateLimits`], a 24-hour post-recovery cool-down
+    /// ([`DEFAULT_COOLDOWN`]), a placeholder `example.invalid` URL template
+    /// (the host must override this), and no flow-specific email renderer.
+    ///
+    /// [`DEFAULT_TOKEN_LIFETIME`]: RecoveryConfig::DEFAULT_TOKEN_LIFETIME
+    /// [`DEFAULT_COOLDOWN`]: RecoveryConfig::DEFAULT_COOLDOWN
     fn default() -> Self {
         Self {
-            token_lifetime: Duration::from_secs(60 * 15),
+            token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
             url_template: format!("https://example.invalid/recovery?token={TOKEN_PLACEHOLDER}"),
             rate_limits: RecoveryRateLimits::default(),
             emails: None,
-            cooldown: Duration::from_secs(60 * 60 * 24),
+            cooldown: Self::DEFAULT_COOLDOWN,
         }
     }
 }

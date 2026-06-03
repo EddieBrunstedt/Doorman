@@ -69,6 +69,17 @@ pub struct PasskeyRateLimits {
 }
 
 impl PasskeyRateLimits {
+    /// Default per-IP policy on `start_authentication`: 60 / minute.
+    pub const DEFAULT_START_PER_IP: RateLimitPolicy =
+        RateLimitPolicy::new(60, Duration::from_secs(60));
+    /// Default per-IP policy on `finish_authentication`: 60 / minute.
+    pub const DEFAULT_FINISH_PER_IP: RateLimitPolicy =
+        RateLimitPolicy::new(60, Duration::from_secs(60));
+    /// Default per-credential policy on `finish_authentication`: 30 / minute.
+    /// Bounds repeated assertions against one credential independent of IP.
+    pub const DEFAULT_FINISH_PER_CREDENTIAL: RateLimitPolicy =
+        RateLimitPolicy::new(30, Duration::from_secs(60));
+
     /// Turn off every passkey-ceremony policy.
     pub const fn disabled() -> Self {
         Self {
@@ -80,14 +91,20 @@ impl PasskeyRateLimits {
 }
 
 impl Default for PasskeyRateLimits {
+    /// Default: 60 / IP / minute on start ([`DEFAULT_START_PER_IP`]) and on
+    /// finish ([`DEFAULT_FINISH_PER_IP`]), plus 30 / credential / minute on
+    /// finish ([`DEFAULT_FINISH_PER_CREDENTIAL`]). Override any field via
+    /// struct-update syntax, or pass [`disabled`] to turn every policy off.
+    ///
+    /// [`DEFAULT_START_PER_IP`]: PasskeyRateLimits::DEFAULT_START_PER_IP
+    /// [`DEFAULT_FINISH_PER_IP`]: PasskeyRateLimits::DEFAULT_FINISH_PER_IP
+    /// [`DEFAULT_FINISH_PER_CREDENTIAL`]: PasskeyRateLimits::DEFAULT_FINISH_PER_CREDENTIAL
+    /// [`disabled`]: PasskeyRateLimits::disabled
     fn default() -> Self {
         Self {
-            authenticate_start_per_ip: Some(RateLimitPolicy::new(60, Duration::from_secs(60))),
-            authenticate_finish_per_ip: Some(RateLimitPolicy::new(60, Duration::from_secs(60))),
-            authenticate_finish_per_credential: Some(RateLimitPolicy::new(
-                30,
-                Duration::from_secs(60),
-            )),
+            authenticate_start_per_ip: Some(Self::DEFAULT_START_PER_IP),
+            authenticate_finish_per_ip: Some(Self::DEFAULT_FINISH_PER_IP),
+            authenticate_finish_per_credential: Some(Self::DEFAULT_FINISH_PER_CREDENTIAL),
         }
     }
 }
@@ -123,6 +140,11 @@ pub struct PasskeyConfig {
 }
 
 impl PasskeyConfig {
+    /// Default ceremony challenge lifetime: 5 minutes, matching the W3C
+    /// recommended authenticator timeout. See
+    /// [`PasskeyConfig::challenge_lifetime`].
+    pub const DEFAULT_CHALLENGE_LIFETIME: Duration = Duration::from_secs(300);
+
     /// Build a config from an explicit relying-party id, origin, and display
     /// name. Use [`from_origin`](Self::from_origin) when the rp_id is just the
     /// origin host; the rp_id must be a registrable suffix of that host.
@@ -131,7 +153,7 @@ impl PasskeyConfig {
             rp_id: rp_id.into(),
             rp_origin,
             rp_name: rp_name.into(),
-            challenge_lifetime: Duration::from_secs(300),
+            challenge_lifetime: Self::DEFAULT_CHALLENGE_LIFETIME,
             rate_limits: PasskeyRateLimits::default(),
             max_credentials_per_user: None,
             max_pending_registrations_per_user: None,

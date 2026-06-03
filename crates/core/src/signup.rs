@@ -77,6 +77,13 @@ pub struct SignupRateLimits {
 }
 
 impl SignupRateLimits {
+    /// Default per-IP policy: 5 signup requests per IP per hour.
+    pub const DEFAULT_PER_IP: RateLimitPolicy =
+        RateLimitPolicy::new(5, Duration::from_secs(60 * 60));
+    /// Default per-identifier policy: 3 signup requests per email per hour.
+    pub const DEFAULT_PER_IDENTIFIER: RateLimitPolicy =
+        RateLimitPolicy::new(3, Duration::from_secs(60 * 60));
+
     /// Turn off every policy. Equivalent to wiring a
     /// [`NoopRateLimiter`](crate::rate_limit::NoopRateLimiter) but keeps
     /// the limiter free of fan-out on hot paths.
@@ -89,18 +96,37 @@ impl SignupRateLimits {
 }
 
 impl Default for SignupRateLimits {
+    /// Default: 5 requests per IP per hour ([`DEFAULT_PER_IP`]) and 3 per
+    /// email per hour ([`DEFAULT_PER_IDENTIFIER`]). The host overrides either
+    /// field via struct-update syntax; pass [`disabled`] to turn both off.
+    ///
+    /// [`DEFAULT_PER_IP`]: SignupRateLimits::DEFAULT_PER_IP
+    /// [`DEFAULT_PER_IDENTIFIER`]: SignupRateLimits::DEFAULT_PER_IDENTIFIER
+    /// [`disabled`]: SignupRateLimits::disabled
     fn default() -> Self {
         Self {
-            request_per_ip: Some(RateLimitPolicy::new(5, Duration::from_secs(60 * 60))),
-            request_per_identifier: Some(RateLimitPolicy::new(3, Duration::from_secs(60 * 60))),
+            request_per_ip: Some(Self::DEFAULT_PER_IP),
+            request_per_identifier: Some(Self::DEFAULT_PER_IDENTIFIER),
         }
     }
 }
 
+impl SignupConfig {
+    /// Default signup-token lifetime: 15 minutes. Short by design — see
+    /// [`SignupConfig::token_lifetime`].
+    pub const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(60 * 15);
+}
+
 impl Default for SignupConfig {
+    /// Default: a 15-minute token lifetime ([`DEFAULT_TOKEN_LIFETIME`]), the
+    /// default [`SignupRateLimits`], a placeholder `example.invalid` URL
+    /// template (the host must override this), and no flow-specific email
+    /// renderer.
+    ///
+    /// [`DEFAULT_TOKEN_LIFETIME`]: SignupConfig::DEFAULT_TOKEN_LIFETIME
     fn default() -> Self {
         Self {
-            token_lifetime: Duration::from_secs(60 * 15),
+            token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
             url_template: format!("https://example.invalid/signup?token={TOKEN_PLACEHOLDER}"),
             rate_limits: SignupRateLimits::default(),
             emails: None,
