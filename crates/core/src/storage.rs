@@ -117,7 +117,7 @@ pub struct User {
 }
 
 /// Persisted session row keyed by a hashed bearer token.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     /// Stable session identifier.
     pub id: SessionId,
@@ -374,7 +374,7 @@ impl From<StoredPasskey> for PasskeySummary {
 /// In-progress passkey registration ceremony state. The `state` field is
 /// the serialised `webauthn-rs` ceremony state as opaque bytes, preserved
 /// verbatim between start and finish; only `doorman-core` parses it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredPasskeyRegistration {
     /// Ceremony identifier returned to the client for the `finish` step.
     pub id: PasskeyChallengeId,
@@ -395,7 +395,7 @@ pub struct StoredPasskeyRegistration {
 /// `state` field is the serialised `webauthn-rs` ceremony state as opaque
 /// bytes, preserved verbatim between start and finish; only `doorman-core`
 /// parses it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredPasskeyAuthentication {
     /// Ceremony identifier returned to the client for the `finish` step.
     pub id: PasskeyChallengeId,
@@ -506,7 +506,7 @@ pub enum VerificationPurpose {
 /// A single-use, time-limited token issued for an out-of-band flow such
 /// as the signup link emailed to a prospective user. Stored keyed by token
 /// hash so that a database breach does not yield usable tokens.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationToken {
     /// SHA-256 hash of the token; the plaintext is never stored.
     pub token_hash: TokenHash,
@@ -552,4 +552,91 @@ pub trait VerificationTokenStore: Send + Sync {
     /// Delete every token whose `expires_at` is at or before `now`,
     /// returning the number removed.
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::token::hash_token;
+    use chrono::TimeZone;
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(secs, 0)
+            .single()
+            .expect("valid timestamp")
+    }
+
+    /// Every ephemeral struct the Redis adapter persists must survive a JSON
+    /// round trip unchanged, since `doorman-redis` stores them as `serde_json`
+    /// values. These guard the serde derives that adapter relies on.
+    #[test]
+    fn session_json_round_trips() {
+        let session = Session {
+            id: SessionId::new(),
+            user_id: UserId::new(),
+            token_hash: hash_token("a-session-token"),
+            created_at: ts(1_000),
+            expires_at: ts(2_000),
+            ip: Some("203.0.113.7".to_string()),
+            user_agent: Some("doorman-test/1.0".to_string()),
+            recovery_cooldown_until: Some(ts(1_500)),
+        };
+        let json = serde_json::to_string(&session).expect("serialize session");
+        let back: Session = serde_json::from_str(&json).expect("deserialize session");
+        assert_eq!(session, back);
+    }
+
+    #[test]
+    fn verification_token_json_round_trips() {
+        let token = VerificationToken {
+            token_hash: hash_token("a-verification-token"),
+            user_id: UserId::new(),
+            purpose: VerificationPurpose::EmailChange,
+            new_email: Some("new@example.com".to_string()),
+            created_at: ts(1_000),
+            expires_at: ts(2_000),
+        };
+        let json = serde_json::to_string(&token).expect("serialize token");
+        let back: VerificationToken = serde_json::from_str(&json).expect("deserialize token");
+        assert_eq!(token, back);
+    }
+
+    #[test]
+    fn stored_passkey_registration_json_round_trips() {
+        let reg = StoredPasskeyRegistration {
+            id: PasskeyChallengeId::new(),
+            user_id: UserId::new(),
+            state: vec![0x00, 0x01, 0xfe, 0xff],
+            created_at: ts(1_000),
+            expires_at: ts(2_000),
+            recovery_cooldown_until: None,
+        };
+        let json = serde_json::to_string(&reg).expect("serialize registration");
+        let back: StoredPasskeyRegistration =
+            serde_json::from_str(&json).expect("deserialize registration");
+        // `StoredPasskeyRegistration` is not `PartialEq`, so compare fields.
+        assert_eq!(reg.id, back.id);
+        assert_eq!(reg.user_id, back.user_id);
+        assert_eq!(reg.state, back.state);
+        assert_eq!(reg.created_at, back.created_at);
+        assert_eq!(reg.expires_at, back.expires_at);
+        assert_eq!(reg.recovery_cooldown_until, back.recovery_cooldown_until);
+    }
+
+    #[test]
+    fn stored_passkey_authentication_json_round_trips() {
+        let auth = StoredPasskeyAuthentication {
+            id: PasskeyChallengeId::new(),
+            state: vec![0xde, 0xad, 0xbe, 0xef],
+            created_at: ts(1_000),
+            expires_at: ts(2_000),
+        };
+        let json = serde_json::to_string(&auth).expect("serialize authentication");
+        let back: StoredPasskeyAuthentication =
+            serde_json::from_str(&json).expect("deserialize authentication");
+        assert_eq!(auth.id, back.id);
+        assert_eq!(auth.state, back.state);
+        assert_eq!(auth.created_at, back.created_at);
+        assert_eq!(auth.expires_at, back.expires_at);
+    }
 }
