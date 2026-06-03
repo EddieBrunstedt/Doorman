@@ -5,9 +5,10 @@
 # the `docker` label. GitHub Actions YAML under `.github/` is NOT run by
 # Codeberg, which is why this lives under `.forgejo/`.
 #
-# Note: this workflow has not been executed on a live runner yet — review the
-# first run. The MSRV job pins Rust 1.94 (the declared `rust-version`, driven by
-# sqlx 0.9); keep the two in sync if the dependency floor changes.
+# Each job runs in a Rust container that ships no Node.js, so every job installs
+# Node first: actions/checkout (and any other JS action) needs a `node` binary on
+# the container PATH. The MSRV job pins Rust 1.94 (the declared `rust-version`,
+# driven by sqlx 0.9); keep the two in sync if the dependency floor changes.
 
 name: ci
 
@@ -27,6 +28,8 @@ jobs:
     container:
       image: rust:1.96-bookworm
     steps:
+      - name: install Node.js (required by JS actions like checkout)
+        run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - run: rustup component add rustfmt clippy
       - name: rustfmt
@@ -45,6 +48,8 @@ jobs:
     container:
       image: rust:1.96-bookworm
     steps:
+      - name: install Node.js (required by JS actions like checkout)
+        run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - name: test (default features)
         run: cargo test --workspace --locked
@@ -69,6 +74,8 @@ jobs:
     env:
       PG_URL: postgres://postgres:postgres@postgres:5432/bauth_test
     steps:
+      - name: install Node.js (required by JS actions like checkout)
+        run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - name: SQLite storage conformance
         run: cargo test -p bauth-sqlx --features sqlite --locked
@@ -80,6 +87,8 @@ jobs:
     container:
       image: rust:1.96-bookworm
     steps:
+      - name: install Node.js (required by JS actions like checkout)
+        run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - name: core (default — no tokio)
         run: cargo check -p bauth-core --locked
@@ -105,6 +114,8 @@ jobs:
     container:
       image: rust:1.94-bookworm
     steps:
+      - name: install Node.js (required by JS actions like checkout)
+        run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - name: check on MSRV
         run: cargo check --workspace --all-features --locked
@@ -114,6 +125,8 @@ jobs:
     container:
       image: rust:1.96-bookworm
     steps:
+      - name: install Node.js (required by JS actions like checkout)
+        run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - name: install cargo-deny
         run: cargo install cargo-deny --locked
