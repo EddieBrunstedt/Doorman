@@ -96,6 +96,33 @@ examples/minimal-app/  runnable Axum + SQLite app
 examples/web-client/   browser-side WebAuthn helper reference
 ```
 
+## Development
+
+The repo ships a [`justfile`](justfile) and a [`compose.yaml`](compose.yaml) so the inner loop needs no manual setup. Install [`just`](https://github.com/casey/just) and Docker, then:
+
+```sh
+just up        # start local Redis (:6379) + Valkey (:6380), wait for health
+just test      # run the whole workspace suite against them
+just verify    # the full local gate: fmt-check, clippy, doc, test (mirrors CI)
+just down      # stop the containers when you are done
+```
+
+`just` exports `REDIS_URL` / `VALKEY_URL` into every recipe, so the `doorman-redis` conformance suite finds the servers automatically. Run `just` with no arguments to list every recipe.
+
+### Running the tests by hand
+
+Most of the suite needs no services. The database- and Redis-backed conformance suites are gated on environment variables and **skip with a message** when those are unset, so a bare `cargo test` still passes:
+
+```sh
+cargo test --workspace                     # everything that needs no server
+PG_URL=postgres://postgres:postgres@localhost/doorman_test \
+  cargo test -p doorman-sqlx --features postgres
+REDIS_URL=redis://127.0.0.1:6379 VALKEY_URL=redis://127.0.0.1:6380 \
+  cargo test -p doorman-redis
+```
+
+The Redis/Valkey suites flush their database at the start of each run, so point `REDIS_URL` / `VALKEY_URL` only at disposable servers.
+
 ## Benchmarks
 
 Criterion benches cover the hot auth paths at the manager, HTTP, and storage layers. See [`BENCHMARKS.md`](BENCHMARKS.md) for what is measured and how to read the numbers. Quick start:

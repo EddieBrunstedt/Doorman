@@ -1,0 +1,31 @@
+# Local Redis + Valkey for developing and testing `doorman-redis`.
+#
+# Brought up with `just up` (or `docker compose up -d --wait`). The test suite
+# reads REDIS_URL / VALKEY_URL; the `justfile` points those at these services.
+#
+# Persistence is disabled (`--save "" --appendonly no`): these are throwaway
+# test servers, so there is no point writing snapshots or an AOF to disk.
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: doorman-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: doorman-valkey
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
