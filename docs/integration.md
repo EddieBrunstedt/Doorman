@@ -44,7 +44,7 @@ Every collaborator and config has a bare-noun setter on `AuthServiceBuilder` (an
 | Setter                                                                                                   | Purpose                                                  |
 | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | `.email(Arc<dyn EmailSender>)`                                                                           | Transport for links and notices. Required.               |
-| `.emails(Arc<dyn EmailTemplates>)`                                                                          | One renderer branding all flows (see below).             |
+| `.emails(Arc<dyn EmailTemplates>)`                                                                       | One renderer branding all flows (see below).             |
 | `.audit(Arc<dyn AuditSink>)`                                                                             | Sink for security events.                                |
 | `.limiter(Arc<dyn RateLimiter>)`                                                                         | Shared rate-limit backend.                               |
 | `.metrics(Arc<dyn Metrics>)`                                                                             | Observability hook.                                      |
