@@ -986,6 +986,38 @@ fn recovery_config_at_floor_is_accepted() {
     );
 }
 
+#[test]
+fn recovery_config_with_subhour_cooldown_is_accepted_with_escape_hatch() {
+    let h = Harness::fresh();
+    assert!(
+        RecoveryManager::new(
+            h.recovery_flow.clone(),
+            RecoveryConfig {
+                cooldown: Duration::from_secs(60),
+                danger_allow_cooldown_below_floor: true,
+                ..recovery_config()
+            },
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn recovery_config_with_zero_cooldown_is_accepted_with_escape_hatch() {
+    let h = Harness::fresh();
+    assert!(
+        RecoveryManager::new(
+            h.recovery_flow.clone(),
+            RecoveryConfig {
+                cooldown: Duration::ZERO,
+                danger_allow_cooldown_below_floor: true,
+                ..recovery_config()
+            },
+        )
+        .is_ok()
+    );
+}
+
 #[tokio::test]
 async fn custom_emails_override_recovery_subjects_and_html() {
     let h = Harness::builder()

@@ -62,6 +62,8 @@ Recovery exists for users who lost every passkey. It deliberately requires the v
 
 During the cool-down, doorman blocks actions that could lock out the legitimate user: deleting passkeys, revoking other sessions, and "sign out everywhere else". The session may still add another passkey and may revoke or log out itself. Once the deadline has passed, checks treat that cool-down as inactive; no cleanup job is required. The cool-down is evaluated through the configured `Clock`, so all entry points agree and tests can drive it deterministically.
 
+The cool-down length is the host's to set. By default doorman rejects a configured value below a one-hour floor, because the cool-down is the only thing protecting a freshly-recovered account from an attacker who phished the link before the owner reacted — a near-zero value would silently defeat that property. A host that has weighed the trade-off can go below the floor (down to zero) by setting `RecoveryConfig::danger_allow_cooldown_below_floor`. The floor is not a cap on host control; it only forces the choice to be deliberate rather than accidental.
+
 ## Sessions
 
 - Session tokens are 256 bits of OS-CSPRNG output, URL-safe base64 encoded.
@@ -97,18 +99,18 @@ Security notifications are best-effort after the protected action has already su
 
 ## Defaults
 
-| Knob                                                    | Default                                                                 | Notes                                                         |
-| ------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------- |
-| Session lifetime                                        | 30 days                                                                 | Server-side revocable                                         |
-| Passkey challenge lifetime                              | 5 minutes                                                               | Registration and authentication ceremonies                    |
-| Signup token lifetime                                   | 15 minutes                                                              | Email link can only start first-passkey registration          |
-| Signup request limits                                   | 5/hour per IP, 3/hour per email                                         | Enumeration-resistant response                                |
-| Recovery token lifetime                                 | 15 minutes                                                              | Email link can only start recovery passkey registration       |
-| Recovery request limits                                 | 20/hour per IP, 5/hour per email, 10/day per email                      | Global ceiling off by default                                 |
-| Passkey auth limits                                     | 60/min start-per-IP, 60/min finish-per-IP, 30/min finish-per-credential | Charged before the challenge is consumed                      |
-| Recovery cool-down                                      | 24 hours                                                                | Configurable, minimum 1 hour                                  |
-| Per-user caps (sessions/credentials/pending challenges) | off                                                                     | Opt-in; sessions evict oldest, the others reject at the limit |
-| Cookie `secure`                                         | `true`                                                                  | Disable only for local plain-HTTP development                 |
+| Knob                                                    | Default                                                                 | Notes                                                          |
+| ------------------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Session lifetime                                        | 30 days                                                                 | Server-side revocable                                          |
+| Passkey challenge lifetime                              | 5 minutes                                                               | Registration and authentication ceremonies                     |
+| Signup token lifetime                                   | 15 minutes                                                              | Email link can only start first-passkey registration           |
+| Signup request limits                                   | 5/hour per IP, 3/hour per email                                         | Enumeration-resistant response                                 |
+| Recovery token lifetime                                 | 15 minutes                                                              | Email link can only start recovery passkey registration        |
+| Recovery request limits                                 | 20/hour per IP, 5/hour per email, 10/day per email                      | Global ceiling off by default                                  |
+| Passkey auth limits                                     | 60/min start-per-IP, 60/min finish-per-IP, 30/min finish-per-credential | Charged before the challenge is consumed                       |
+| Recovery cool-down                                      | 24 hours                                                                | Configurable; 1-hour floor unless the host opts out explicitly |
+| Per-user caps (sessions/credentials/pending challenges) | off                                                                     | Opt-in; sessions evict oldest, the others reject at the limit  |
+| Cookie `secure`                                         | `true`                                                                  | Disable only for local plain-HTTP development                  |
 
 ## Reporting a vulnerability
 

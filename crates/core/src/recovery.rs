@@ -73,14 +73,32 @@ pub struct RecoveryConfig {
     /// revoke other sessions — see
     /// [`crate::error::Error::RecoveryCooldownActive`]) refuse requests from
     /// restricted sessions. Floor of one hour enforced by
-    /// [`RecoveryManager::new`].
+    /// [`RecoveryManager::new`] unless [`danger_allow_cooldown_below_floor`]
+    /// is set.
+    ///
+    /// [`danger_allow_cooldown_below_floor`]: RecoveryConfig::danger_allow_cooldown_below_floor
     pub cooldown: Duration,
+    /// Escape hatch: when `true`, [`RecoveryManager::new`] accepts a
+    /// [`cooldown`] below [`MIN_COOLDOWN`] instead of rejecting it.
+    ///
+    /// The floor exists because the cool-down is the only thing protecting a
+    /// freshly-recovered account from an attacker who phished the recovery
+    /// link before the legitimate owner reacted; dropping below it weakens
+    /// that property. doorman does **not** prevent a host that has weighed
+    /// the trade-off from going lower — but it must say so explicitly here, so
+    /// a small [`cooldown`] can never silently disable the protection by
+    /// accident. Leave this `false` unless you have a deliberate reason.
+    ///
+    /// [`cooldown`]: RecoveryConfig::cooldown
+    pub danger_allow_cooldown_below_floor: bool,
 }
 
-/// Minimum permitted [`RecoveryConfig::cooldown`]. Set well below the 24h
-/// default so hosts have room to shorten the window in tests and local
-/// development, but high enough that a real deployment cannot accidentally
-/// disable the property.
+/// Minimum permitted [`RecoveryConfig::cooldown`] on the normal path. Set
+/// well below the 24h default so hosts have room to shorten the window in
+/// tests and local development, but high enough that a real deployment cannot
+/// accidentally disable the property. A host that has deliberately decided it
+/// wants a shorter (or zero) cool-down opts out of the floor with
+/// [`RecoveryConfig::danger_allow_cooldown_below_floor`].
 pub const MIN_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 
 /// Rejection returned by [`RecoveryManager::new`] when the supplied
@@ -89,11 +107,13 @@ pub const MIN_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 /// builder (the axum builder maps this onto its `BuilderError`).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RecoveryConfigError {
-    /// `cooldown` is below the documented [`MIN_COOLDOWN`] floor. The
+    /// `cooldown` is below the documented [`MIN_COOLDOWN`] floor and
+    /// [`RecoveryConfig::danger_allow_cooldown_below_floor`] was not set. The
     /// cool-down is the only thing protecting a freshly-recovered account
     /// from an attacker who phished the link before the legitimate owner
-    /// reacted, so a sub-floor value is rejected rather than silently
-    /// weakening the property.
+    /// reacted, so a sub-floor value is rejected by default rather than
+    /// silently weakening the property. A host that wants a shorter window
+    /// sets the escape hatch.
     #[error("recovery cooldown ({configured:?}) is below the floor of {minimum:?}")]
     CooldownTooShort {
         /// The cool-down the host configured.
@@ -187,6 +207,7 @@ impl Default for RecoveryConfig {
             rate_limits: RecoveryRateLimits::default(),
             emails: None,
             cooldown: Self::DEFAULT_COOLDOWN,
+            danger_allow_cooldown_below_floor: false,
         }
     }
 }
@@ -211,16 +232,20 @@ impl RecoveryManager {
     /// Construct a `RecoveryManager`.
     ///
     /// Returns [`RecoveryConfigError::CooldownTooShort`] if `config.cooldown`
-    /// is below [`MIN_COOLDOWN`] (one hour). The floor exists because the
-    /// cool-down is the only thing protecting a freshly-recovered account
-    /// from an attacker who phished the link before the legitimate owner
-    /// reacted; setting it shorter than that would defeat the post-recovery
-    /// cool-down protection.
+    /// is below [`MIN_COOLDOWN`] (one hour) and
+    /// [`config.danger_allow_cooldown_below_floor`] is `false`. The floor
+    /// exists because the cool-down is the only thing protecting a
+    /// freshly-recovered account from an attacker who phished the link before
+    /// the legitimate owner reacted; setting it shorter than that would defeat
+    /// the post-recovery cool-down protection. A host that has deliberately
+    /// accepted that trade-off sets the escape hatch to opt out of the floor.
+    ///
+    /// [`config.danger_allow_cooldown_below_floor`]: RecoveryConfig::danger_allow_cooldown_below_floor
     pub fn new(
         flow: EnrollmentFlow,
         config: RecoveryConfig,
     ) -> std::result::Result<Self, RecoveryConfigError> {
-        if config.cooldown < MIN_COOLDOWN {
+        if config.cooldown < MIN_COOLDOWN && !config.danger_allow_cooldown_below_floor {
             return Err(RecoveryConfigError::CooldownTooShort {
                 configured: config.cooldown,
                 minimum: MIN_COOLDOWN,
