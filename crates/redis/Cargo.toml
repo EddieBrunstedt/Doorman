@@ -1,0 +1,32 @@
+[package]
+name = "doorman-redis"
+version.workspace = true
+authors.workspace = true
+categories = ["authentication", "database"]
+documentation = "https://docs.rs/doorman-redis"
+edition.workspace = true
+keywords = ["authentication", "passkey", "redis", "valkey", "session"]
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+description = "Redis/Valkey-backed ephemeral storage and rate limiter for the doorman authentication library."
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+doorman-core = { path = "../core", version = "0.1.0" }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "connection-manager", "script"] }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+doorman-conformance = { path = "../conformance" }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

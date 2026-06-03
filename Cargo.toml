@@ -5,6 +5,7 @@ members = [
   "crates/conformance",
   "crates/core",
   "crates/doorman",
+  "crates/redis",
   "crates/sqlx",
   "crates/test-support",
   "examples/minimal-app",
