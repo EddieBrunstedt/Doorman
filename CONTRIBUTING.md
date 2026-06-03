@@ -1,20 +1,14 @@
 # Contributing to doorman
 
-Thanks for your interest. doorman is an opinionated, passkey-only authentication
-library for Axum. This guide covers how to build, test, and submit changes.
+Thanks for your interest. doorman is an opinionated, passkey-only authentication library for Axum. This guide covers how to build, test, and submit changes.
 
-For the auth model and what the library does, start with the
-[README](README.md) and [`docs/`](docs). For the security model and how to
-report a vulnerability, see [SECURITY.md](SECURITY.md) — **do not** open a
-public issue for an unfixed security bug.
+For the auth model and what the library does, start with the [README](README.md) and [`docs/`](docs). For the security model and how to report a vulnerability, see [SECURITY.md](SECURITY.md) — **do not** open a public issue for an unfixed security bug.
 
 ## Prerequisites
 
-- A recent stable Rust toolchain. The workspace MSRV is declared as
-  `rust-version` in the root `Cargo.toml`; build with that or newer.
+- A recent stable Rust toolchain. The workspace MSRV is declared as `rust-version` in the root `Cargo.toml`; build with that or newer.
 - `rustfmt` and `clippy` components (`rustup component add rustfmt clippy`).
-- No external services are needed for the default test suite. The Postgres
-  storage tests are opt-in (see below).
+- No external services are needed for the default test suite. The Postgres storage tests are opt-in (see below).
 
 ## Workspace layout
 
@@ -38,22 +32,34 @@ cargo clippy --workspace --all-targets        # lints (the workspace denies clip
 cargo doc --no-deps --workspace               # build the API docs
 ```
 
-The lib crates set `#![deny(missing_docs)]`, so every new public item needs
-rustdoc. `unsafe` is forbidden workspace-wide.
+The lib crates set `#![deny(missing_docs)]`, so every new public item needs rustdoc. `unsafe` is forbidden workspace-wide.
+
+### Formatting (Markdown, TOML, YAML, JSON)
+
+Non-Rust files are formatted with [dprint](https://dprint.dev) (config and pinned plugin versions in `dprint.json`); Rust stays on `cargo fmt`. Markdown is written one paragraph per line (no hard wraps), so prose changes show up as one-line diffs. TOML formatting follows Cargo conventions: `Cargo.toml` members, package keys, and dependency tables are sorted, so keep new dependencies in alphabetical order. CI fails on anything unformatted.
+
+```sh
+cargo install dprint   # or see https://dprint.dev/install
+dprint fmt             # format Markdown/TOML/YAML/JSON
+dprint check          # verify (what CI runs)
+```
+
+A pre-commit hook in `.githooks/` checks staged files. Enable it once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
 
 ### Postgres storage tests
 
-The Postgres conformance suite runs only when `PG_URL` points at a disposable
-database (it wipes the `public` schema first):
+The Postgres conformance suite runs only when `PG_URL` points at a disposable database (it wipes the `public` schema first):
 
 ```sh
 PG_URL=postgres://postgres:postgres@localhost/doorman_test \
   cargo test -p doorman-sqlx --features postgres
 ```
 
-The shared conformance suite (`crates/sqlx/tests/conformance`) is the
-executable contract for any storage adapter; run it against both dialects when
-you touch storage.
+The shared conformance suite (`crates/sqlx/tests/conformance`) is the executable contract for any storage adapter; run it against both dialects when you touch storage.
 
 ## Running the example
 
@@ -61,43 +67,26 @@ you touch storage.
 cargo run -p doorman-minimal-app
 ```
 
-Open <http://localhost:3000>. It uses `TerminalEmailSender`, so signup and
-recovery links are printed to the process stdout — copy one into the browser to
-finish a flow. The example is origin-portable: see its
-[README](examples/minimal-app/README.md) for the `EXTERNAL_ORIGIN`,
-`PASSKEY_RP_ID`, and other environment knobs.
+Open <http://localhost:3000>. It uses `TerminalEmailSender`, so signup and recovery links are printed to the process stdout — copy one into the browser to finish a flow. The example is origin-portable: see its [README](examples/minimal-app/README.md) for the `EXTERNAL_ORIGIN`, `PASSKEY_RP_ID`, and other environment knobs.
 
 ## Coding conventions
 
-These mirror [AGENTS.md](AGENTS.md) / [CLAUDE.md](CLAUDE.md), which automated
-contributors also follow:
+These mirror [AGENTS.md](AGENTS.md) / [CLAUDE.md](CLAUDE.md), which automated contributors also follow:
 
 - **No `unsafe`.** It is forbidden workspace-wide.
-- **No `unwrap`.** `expect` and `assert!`/`assert_eq!` are fine where an unmet
-  expectation should crash; prefer returning a typed error otherwise.
+- **No `unwrap`.** `expect` and `assert!`/`assert_eq!` are fine where an unmet expectation should crash; prefer returning a typed error otherwise.
 - **Keep changes focused.** Avoid unrelated refactors unless asked.
-- **Tests track behaviour.** After any non-docs change, add/revise/remove tests
-  to match and run the relevant suite before considering it done. Do not weaken
-  a test to get a green run.
-- **Document behaviour changes.** Update rustdoc, `docs/`, and comments when you
-  change behaviour, commands, or assumptions.
-- **Don't preserve backward compatibility** unless explicitly requested — doorman
-  is pre-1.0 and optimises for the best 1.0 surface.
+- **Tests track behaviour.** After any non-docs change, add/revise/remove tests to match and run the relevant suite before considering it done. Do not weaken a test to get a green run.
+- **Document behaviour changes.** Update rustdoc, `docs/`, and comments when you change behaviour, commands, or assumptions.
+- **Don't preserve backward compatibility** unless explicitly requested — doorman is pre-1.0 and optimises for the best 1.0 surface.
 
 ## Commits and pull requests
 
-- Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
-  `<type>(optional-scope): <description>`. Common types: `feat`, `fix`, `docs`,
-  `style`, `refactor`, `test`, `build`, `ci`, `chore`. Example:
-  `fix(cli): handle missing config file`.
+- Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/): `<type>(optional-scope): <description>`. Common types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `build`, `ci`, `chore`. Example: `fix(cli): handle missing config file`.
 - No emojis in commits, issues, or PR comments.
-- Before opening a PR: `cargo fmt`, `cargo clippy --workspace --all-targets`,
-  and `cargo test --workspace` should all pass.
+- Before opening a PR: `cargo fmt`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`, and `dprint check` should all pass.
 - Describe what changed and why; link any relevant issue.
 
 ## License
 
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
-dual licensed under [Apache-2.0](LICENSE-APACHE) and [MIT](LICENSE-MIT) (the
-project's license), without any additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed under [Apache-2.0](LICENSE-APACHE) and [MIT](LICENSE-MIT) (the project's license), without any additional terms or conditions.

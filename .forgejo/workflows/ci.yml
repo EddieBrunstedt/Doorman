@@ -43,6 +43,22 @@ jobs:
       - name: docs
         run: cargo doc --workspace --no-deps --all-features --locked
 
+  format:
+    runs-on: docker
+    container:
+      image: rust:1.96-bookworm
+    steps:
+      - name: install deps (checkout needs node; dprint installer needs curl + unzip)
+        run: apt-get update && apt-get install -y --no-install-recommends nodejs curl unzip
+      - uses: actions/checkout@v4
+      # Prebuilt binary install (no compile). Pin the CLI version for
+      # reproducibility; the plugin versions are pinned in dprint.json.
+      - name: install dprint
+        run: curl -fsSL https://dprint.dev/install.sh | sh -s 0.54.0 > /dev/null
+      # Checks formatting of Markdown, TOML, YAML, and JSON (see dprint.json).
+      - name: dprint check
+        run: ~/.dprint/bin/dprint check
+
   test:
     runs-on: docker
     container:
