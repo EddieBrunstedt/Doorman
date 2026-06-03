@@ -1,10 +1,8 @@
 //! Runs the shared storage-conformance suite against the SQLx + SQLite
-//! adapter. The assertions live in `conformance`; this file only stands up
+//! adapter. The assertions live in `doorman-conformance`; this file only stands up
 //! a fresh in-memory SQLite database and points the suite at it.
 
 #![cfg(feature = "sqlite")]
-
-mod conformance;
 
 use doorman_sqlx::SqliteStorage;
 
@@ -14,6 +12,6 @@ async fn sqlite_storage_conformance() {
         .await
         .expect("connect");
     storage.migrate().await.expect("migrate");
-    conformance::run(&storage.all_stores()).await;
-    conformance::run_db_backed(&storage.all_stores()).await;
+    doorman_conformance::run(&storage.all_stores()).await;
+    doorman_conformance::run_db_backed(&storage.all_stores()).await;
 }

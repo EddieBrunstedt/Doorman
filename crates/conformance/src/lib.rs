@@ -1,20 +1,23 @@
-//! Backend-agnostic storage-conformance suite.
+//! Backend-agnostic storage-conformance suite for doorman storage adapters.
 //!
 //! Every check takes a [`Storage`] and asserts the contract the
 //! `doorman-core` managers rely on, independent of how the rows are stored.
-//! The same [`run`] entry point is executed against the in-memory
-//! reference stores (`tests/in_memory.rs`), SQLite (`tests/sqlite.rs`),
-//! and Postgres (`tests/postgres.rs`, gated on `PG_URL`). Running the
-//! identical assertions everywhere closes the gap that previously let the
-//! two SQLx adapters drift apart, and pins the in-memory stores to the
-//! same contract the docs claim they model.
+//! Depend on this crate under `[dev-dependencies]` and call [`run`] from a
+//! test to validate any adapter against the same assertions the first-party
+//! adapters run: `doorman-sqlx` exercises it against the in-memory reference
+//! stores, SQLite, and Postgres, and `doorman-redis` against Redis/Valkey.
+//! Running the identical assertions everywhere closes the gap that previously
+//! let adapters drift apart, and pins the in-memory stores to the same
+//! contract the docs claim they model.
+//!
+//! [`run_db_backed`] adds the extra assertions that only hold for adapters
+//! which push the expiry predicate into their query layer; call it in addition
+//! to [`run`] from those harnesses.
 //!
 //! Checks share a single `Storage` instance, so each uses freshly minted
 //! ids and token hashes to stay isolated; assertions that touch
 //! whole-table operations (`purge_expired`) target a specific row rather
 //! than an exact count.
-
-#![allow(dead_code)]
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use doorman_core::session::hash_token;

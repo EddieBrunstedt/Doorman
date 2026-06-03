@@ -662,6 +662,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "doorman-conformance"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "doorman-core",
+ "uuid",
+]
+
+[[package]]
 name = "doorman-core"
 version = "0.1.0"
 dependencies = [
@@ -707,6 +716,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "criterion",
+ "doorman-conformance",
  "doorman-core",
  "sqlx",
  "tokio",

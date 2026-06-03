@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "crates/axum",
+  "crates/conformance",
   "crates/core",
   "crates/doorman",
   "crates/sqlx",

@@ -12,8 +12,6 @@
 
 #![cfg(feature = "postgres")]
 
-mod conformance;
-
 use doorman_sqlx::PostgresStorage;
 use sqlx::PgPool;
 
@@ -39,6 +37,6 @@ async fn postgres_storage_conformance() {
 
     let storage = PostgresStorage::from_pool(pool);
     storage.migrate().await.expect("migrate");
-    conformance::run(&storage.all_stores()).await;
-    conformance::run_db_backed(&storage.all_stores()).await;
+    doorman_conformance::run(&storage.all_stores()).await;
+    doorman_conformance::run_db_backed(&storage.all_stores()).await;
 }
