@@ -1,6 +1,6 @@
 //! Wire-shape data-transfer objects.
 //!
-//! These intentionally mirror the [`bauth_core`] types as a thin
+//! These intentionally mirror the [`doorman_core`] types as a thin
 //! conversion layer rather than re-exporting the core types directly:
 //!
 //! - The core types carry a richer surface (e.g. `User::updated_at`,
@@ -15,9 +15,9 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bauth_core::session::IssuedSession;
-use bauth_core::storage::{PasskeySummary, Session, SessionId, StoredPasskey, User, UserId};
 use chrono::{DateTime, Utc};
+use doorman_core::session::IssuedSession;
+use doorman_core::storage::{PasskeySummary, Session, SessionId, StoredPasskey, User, UserId};
 use serde::{Deserialize, Serialize};
 
 /// Public JSON representation of a user.
@@ -324,8 +324,8 @@ pub struct PasskeyAuthenticateFinishRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bauth_core::storage::{Session, SessionId, TokenHash, UserId};
     use chrono::TimeZone;
+    use doorman_core::storage::{Session, SessionId, TokenHash, UserId};
 
     fn session_with_ua(ua: Option<&str>) -> Session {
         let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).single().unwrap();

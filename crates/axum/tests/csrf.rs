@@ -4,9 +4,9 @@ mod common;
 
 use axum::Router;
 use axum::http::StatusCode;
-use bauth_axum::csrf::CsrfConfig;
-use bauth_axum::dto::AuthResponse;
 use common::{SignupClient, TestApp};
+use doorman_axum::csrf::CsrfConfig;
+use doorman_axum::dto::AuthResponse;
 use reqwest::header;
 use url::Url;
 

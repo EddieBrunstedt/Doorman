@@ -1,7 +1,7 @@
-//! Common imports for hosts using `bauth-core` directly.
+//! Common imports for hosts using `doorman-core` directly.
 //!
 //! ```ignore
-//! use bauth_core::prelude::*;
+//! use doorman_core::prelude::*;
 //! ```
 //!
 //! Brings the storage traits, manager types, configs, and the trait-shaped
@@ -17,7 +17,8 @@ pub use crate::clock::{Clock, SystemClock};
 #[cfg(feature = "file-email")]
 pub use crate::email::FileEmailSender;
 pub use crate::email::{
-    BauthEmails, DefaultBauthEmails, Email, EmailSender, SecurityEmailNotifier, TerminalEmailSender,
+    DefaultDoormanEmails, DoormanEmails, Email, EmailSender, SecurityEmailNotifier,
+    TerminalEmailSender,
 };
 pub use crate::error::{Error, Result, StorageError, StorageResult};
 pub use crate::metrics::{MetricEvent, Metrics, NoopMetrics};

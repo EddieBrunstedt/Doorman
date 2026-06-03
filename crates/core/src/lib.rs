@@ -1,6 +1,6 @@
-//! Core authentication primitives for bauth.
+//! Core authentication primitives for doorman.
 //!
-//! `bauth-axum` is the supported user-facing integration. This crate stays
+//! `doorman-axum` is the supported user-facing integration. This crate stays
 //! framework-agnostic so the auth logic can be tested and reasoned about
 //! without an HTTP router attached. It owns the storage, clock, email,
 //! audit, and rate-limiter traits plus the managers that implement each

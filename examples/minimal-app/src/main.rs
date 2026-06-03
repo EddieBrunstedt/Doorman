@@ -1,16 +1,16 @@
-//! Minimal Axum application using bauth with SQLite storage.
+//! Minimal Axum application using doorman with SQLite storage.
 
 use std::{env, net::SocketAddr, sync::Arc};
 
 use axum::{Json, Router, extract::State, response::Html, routing::get};
-use bauth_axum::prelude::*;
-use bauth_core::verification::TOKEN_PLACEHOLDER;
-use bauth_sqlx::SqliteStorage;
+use doorman_axum::prelude::*;
+use doorman_core::verification::TOKEN_PLACEHOLDER;
+use doorman_sqlx::SqliteStorage;
 use url::Url;
 
 #[derive(Clone)]
 struct AppState {
-    auth: BauthState,
+    auth: DoormanState,
 }
 
 #[tokio::main]
@@ -18,7 +18,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let _ = tracing_subscriber::fmt::try_init();
 
     let database_url = env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "sqlite://bauth-minimal-app.db?mode=rwc".to_owned());
+        .unwrap_or_else(|_| "sqlite://doorman-minimal-app.db?mode=rwc".to_owned());
     let external_origin: Url = env::var("EXTERNAL_ORIGIN")
         .unwrap_or_else(|_| "http://localhost:3000".to_owned())
         .parse()?;
@@ -29,7 +29,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let storage = SqliteStorage::connect(&database_url).await?;
     storage.migrate().await?;
 
-    let rp_name = env::var("PASSKEY_RP_NAME").unwrap_or_else(|_| "bauth minimal app".to_owned());
+    let rp_name = env::var("PASSKEY_RP_NAME").unwrap_or_else(|_| "doorman minimal app".to_owned());
     // The common single-origin case derives `rp_id` from the origin host via
     // `from_origin`. Hosts that need a broader registrable suffix (so one
     // credential works across subdomains) set `PASSKEY_RP_ID` and we keep the
@@ -44,7 +44,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     };
     let base = external_origin.as_str().trim_end_matches('/');
 
-    let auth = BauthAxum::builder(storage.storage())
+    let auth = DoormanAxum::builder(storage.storage())
         .email(Arc::new(TerminalEmailSender))
         .passkey(passkey_config)
         .signup(SignupConfig {

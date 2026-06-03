@@ -1,4 +1,4 @@
--- Reference schema for the bauth SQLx+Postgres adapter.
+-- Reference schema for the doorman SQLx+Postgres adapter.
 --
 -- UUIDs and 32-byte token hashes are stored as BYTEA to match what the
 -- shared adapter code binds. Timestamps use TIMESTAMPTZ.

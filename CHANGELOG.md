@@ -13,9 +13,9 @@ versions; breaking changes are called out under **Changed**/**Removed**.
 ### Added
 
 - `file-email` cargo feature gating the bundled `FileEmailSender` (`.eml` file
-  transport). It is the only thing in `bauth-core`'s default build that needs
+  transport). It is the only thing in `doorman-core`'s default build that needs
   `tokio`'s filesystem support, so the default build now pulls no `tokio` at all.
-  `bauth-axum` and the `bauth` umbrella expose passthrough `file-email` features.
+  `doorman-axum` and the `doorman` umbrella expose passthrough `file-email` features.
 - Publishable package metadata (`keywords`, `categories`, `documentation`,
   `homepage`) and `docs.rs` all-features rendering across the published crates.
 - `LICENSE-MIT` and `LICENSE-APACHE`, `CHANGELOG.md`, `RELEASING.md`, and a
@@ -31,7 +31,7 @@ versions; breaking changes are called out under **Changed**/**Removed**.
 
 - License is `MIT OR Apache-2.0` (the Rust ecosystem norm); the Apache-2.0 arm
   adds an explicit patent grant, the MIT arm preserves GPLv2 compatibility.
-- `bauth-core`'s `tokio` dependency is optional; enable `file-email` or
+- `doorman-core`'s `tokio` dependency is optional; enable `file-email` or
   `background-purge` to pull it in.
 
 ## [0.1.0] - Unreleased

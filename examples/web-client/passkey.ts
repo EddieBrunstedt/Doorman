@@ -1,8 +1,8 @@
-// Browser helpers for the bauth-axum passkey-only HTTP surface.
+// Browser helpers for the doorman-axum passkey-only HTTP surface.
 //
 // The server serializes WebAuthn options and responses as base64url JSON.
 // The browser APIs require ArrayBuffer fields, so these helpers translate
-// challenge/user/credential IDs in both directions and then call the bauth
+// challenge/user/credential IDs in both directions and then call the doorman
 // endpoints for signup, sign-in, recovery, passkey management, and sessions.
 
 function base64UrlToBuffer(input: string): ArrayBuffer {
@@ -142,22 +142,22 @@ function encodeAssertion(cred: PublicKeyCredential) {
   };
 }
 
-// bauth returns a stable machine error code in `{ "error": { "code, message } }`.
-// `BauthError` carries that code so the UI can map it to product copy instead of
+// doorman returns a stable machine error code in `{ "error": { "code, message } }`.
+// `DoormanError` carries that code so the UI can map it to product copy instead of
 // showing the raw JSON.
-export class BauthError extends Error {
+export class DoormanError extends Error {
   constructor(
     public code: string | null,
     public status: number,
     public guidance: string,
   ) {
     super(guidance);
-    this.name = "BauthError";
+    this.name = "DoormanError";
   }
 }
 
 // Jargon -> end-user guidance. This is the table a host customises per product
-// (wording, localisation). The keys are the codes bauth-axum emits.
+// (wording, localisation). The keys are the codes doorman-axum emits.
 export const ERROR_GUIDANCE: Record<string, string> = {
   recovery_cooldown_active:
     "This action is blocked during the 24-hour recovery cool-down. You can still add a passkey and sign out of this session.",
@@ -195,7 +195,7 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
     } catch {
       // non-JSON body (e.g. the CSRF layer); fall back to status-based guidance.
     }
-    throw new BauthError(code, res.status, guidanceFor(code, res.status));
+    throw new DoormanError(code, res.status, guidanceFor(code, res.status));
   }
   return text ? (JSON.parse(text) as T) : (undefined as T);
 }

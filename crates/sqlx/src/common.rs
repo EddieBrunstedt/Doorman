@@ -3,8 +3,8 @@
 
 use std::borrow::Cow;
 
-use bauth_core::error::{StorageError, StorageResult};
-use bauth_core::storage::{TokenHash, VerificationPurpose};
+use doorman_core::error::{StorageError, StorageResult};
+use doorman_core::storage::{TokenHash, VerificationPurpose};
 use uuid::Uuid;
 
 pub(crate) fn storage<E: std::fmt::Display>(e: E) -> StorageError {

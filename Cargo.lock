@@ -211,111 +211,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bauth"
-version = "0.1.0"
-dependencies = [
- "bauth-axum",
- "bauth-core",
- "bauth-sqlx",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "bauth-axum"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "base64 0.22.1",
- "bauth-core",
- "bauth-sqlx",
- "bauth-test-support",
- "chrono",
- "cookie",
- "criterion",
- "http",
- "lru",
- "proptest",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tower",
- "tower-layer",
- "tower-service",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "webauthn-authenticator-rs",
- "webauthn-rs",
- "webauthn-rs-proto",
-]
-
-[[package]]
-name = "bauth-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "bauth-test-support",
- "chrono",
- "criterion",
- "proptest",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "subtle",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "url",
- "uuid",
- "webauthn-authenticator-rs",
- "webauthn-rs",
- "webauthn-rs-proto",
-]
-
-[[package]]
-name = "bauth-minimal-app"
-version = "0.1.0"
-dependencies = [
- "axum",
- "bauth-axum",
- "bauth-core",
- "bauth-sqlx",
- "serde_json",
- "tokio",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
-name = "bauth-sqlx"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bauth-core",
- "chrono",
- "criterion",
- "sqlx",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "bauth-test-support"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bauth-core",
- "chrono",
-]
-
-[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -720,6 +615,111 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
 dependencies = [
  "litrs",
+]
+
+[[package]]
+name = "doorman"
+version = "0.1.0"
+dependencies = [
+ "doorman-axum",
+ "doorman-core",
+ "doorman-sqlx",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "doorman-axum"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "cookie",
+ "criterion",
+ "doorman-core",
+ "doorman-sqlx",
+ "doorman-test-support",
+ "http",
+ "lru",
+ "proptest",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "webauthn-authenticator-rs",
+ "webauthn-rs",
+ "webauthn-rs-proto",
+]
+
+[[package]]
+name = "doorman-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "criterion",
+ "doorman-test-support",
+ "proptest",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "webauthn-authenticator-rs",
+ "webauthn-rs",
+ "webauthn-rs-proto",
+]
+
+[[package]]
+name = "doorman-minimal-app"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "doorman-axum",
+ "doorman-core",
+ "doorman-sqlx",
+ "serde_json",
+ "tokio",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "doorman-sqlx"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "criterion",
+ "doorman-core",
+ "sqlx",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "doorman-test-support"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "doorman-core",
 ]
 
 [[package]]

@@ -11,7 +11,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::post;
-use bauth_core::recovery::RecoveryManager;
+use doorman_core::recovery::RecoveryManager;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
 use crate::dto::{
@@ -20,21 +20,21 @@ use crate::dto::{
 use crate::error::ErrorResponse;
 use crate::extractors::RequestContext;
 use crate::routes::{consume_response, enrollment_success, parse_challenge_id};
-use crate::state::BauthState;
+use crate::state::DoormanState;
 
-pub(crate) fn routes() -> Router<BauthState> {
+pub(crate) fn routes() -> Router<DoormanState> {
     Router::new()
         .route("/recovery/request", post(request))
         .route("/recovery/consume", post(consume))
         .route("/recovery/finish", post(finish))
 }
 
-fn manager(state: &BauthState) -> &RecoveryManager {
+fn manager(state: &DoormanState) -> &RecoveryManager {
     &state.recovery
 }
 
 async fn request(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     RequestContext(context): RequestContext,
     Json(body): Json<RecoveryRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
@@ -45,7 +45,7 @@ async fn request(
 }
 
 async fn consume(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     RequestContext(context): RequestContext,
     Json(body): Json<RecoveryConsumeRequest>,
 ) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ErrorResponse> {
@@ -56,7 +56,7 @@ async fn consume(
 }
 
 async fn finish(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     RequestContext(context): RequestContext,
     Json(body): Json<RegistrationFinishRequest>,
 ) -> Result<Response, ErrorResponse> {

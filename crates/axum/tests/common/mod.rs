@@ -1,7 +1,7 @@
 //! Shared test scaffolding.
 //!
 //! [`TestApp`] spins up an axum app backed by in-memory storage and a real
-//! `bauth-axum` router, exposes a base URL for `reqwest`, and tears the
+//! `doorman-axum` router, exposes a base URL for `reqwest`, and tears the
 //! server down on drop. [`login`] mints a session directly via the
 //! in-process `SessionManager` so the session-management tests can grab a
 //! bearer token without driving the full passkey ceremony — tests that
@@ -18,25 +18,25 @@ use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
-use bauth_axum::BauthAxum;
-use bauth_axum::SessionCache;
-use bauth_axum::config::CookieConfig;
-use bauth_axum::dto::{
+use doorman_axum::DoormanAxum;
+use doorman_axum::SessionCache;
+use doorman_axum::config::CookieConfig;
+use doorman_axum::dto::{
     AuthResponse, PasskeyChallenge, PasskeyDto, RegistrationFinishRequest, SignupConsumeRequest,
     SignupRequest, UserDto,
 };
-use bauth_axum::extractors::AuthSession;
-use bauth_core::email::EmailSender;
-use bauth_core::memory::{
+use doorman_axum::extractors::AuthSession;
+use doorman_core::email::EmailSender;
+use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
 };
-use bauth_core::passkey::PasskeyConfig;
-use bauth_core::recovery::{RecoveryConfig, RecoveryRateLimits};
-use bauth_core::session::{SessionContext, SessionManager};
-use bauth_core::signup::{SignupConfig, SignupRateLimits};
-use bauth_core::storage::{PasskeyCredentialStore, Storage, User, UserId, UserStore};
-use bauth_test_support::CapturingEmailSender;
+use doorman_core::passkey::PasskeyConfig;
+use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
+use doorman_core::session::{SessionContext, SessionManager};
+use doorman_core::signup::{SignupConfig, SignupRateLimits};
+use doorman_core::storage::{PasskeyCredentialStore, Storage, User, UserId, UserStore};
+use doorman_test_support::CapturingEmailSender;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use url::Url as ServerUrl;
@@ -62,7 +62,7 @@ pub struct TestApp {
     /// cache-invalidation tests can observe eviction directly.
     pub cache: SessionCache,
     /// The live, invalidation-hooked `SessionManager` the app runs on
-    /// (cloned out of the built `BauthAxum`). `login` mints sessions
+    /// (cloned out of the built `DoormanAxum`). `login` mints sessions
     /// through it, and revoking through it evicts [`Self::cache`].
     pub session_manager: SessionManager,
     user_store: Arc<InMemoryUserStore>,
@@ -71,17 +71,17 @@ pub struct TestApp {
 }
 
 impl TestApp {
-    /// Start an app wired through [`BauthAxum::builder`] with the in-memory
+    /// Start an app wired through [`DoormanAxum::builder`] with the in-memory
     /// stores and the passkey + signup configs needed for full HTTP coverage.
     pub async fn start(host_routes: Router, secure_cookies: bool) -> Self {
         Self::start_with(host_routes, secure_cookies, |b| b).await
     }
 
-    /// Start an app, letting the caller tweak the `BauthBuilder`
+    /// Start an app, letting the caller tweak the `DoormanBuilder`
     /// (e.g. to set an `external_origin` for CSRF coverage).
     pub async fn start_with<F>(host_routes: Router, secure_cookies: bool, customise: F) -> Self
     where
-        F: FnOnce(bauth_axum::BauthBuilder) -> bauth_axum::BauthBuilder,
+        F: FnOnce(doorman_axum::DoormanBuilder) -> doorman_axum::DoormanBuilder,
     {
         let email = Arc::new(CapturingEmailSender::new());
         let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
@@ -102,12 +102,12 @@ impl TestApp {
             passkey_challenges,
         };
 
-        let builder = BauthAxum::builder(storage)
+        let builder = DoormanAxum::builder(storage)
             .email(email.clone() as Arc<dyn EmailSender>)
             .passkey(PasskeyConfig::new(
                 "localhost",
                 rp_origin.clone(),
-                "bauth tests",
+                "doorman tests",
             ))
             .signup(SignupConfig {
                 url_template: SIGNUP_URL.to_string(),
@@ -267,7 +267,7 @@ impl SignupClient {
             consume.json().await.expect("consume body");
 
         // Relax the resident-key flags so SoftPasskey accepts the ceremony.
-        // bauth's server still emitted resident=required earlier; we
+        // doorman's server still emitted resident=required earlier; we
         // verified that elsewhere.
         let mut options = challenge.options;
         let selection = options
@@ -441,10 +441,10 @@ pub fn token_from_email(body: &str) -> String {
 
 /// Locate the raw token in an email body whose URL was rendered from the
 /// given template (signup or recovery). Thin wrapper over the shared
-/// [`bauth_test_support::token_from_email`] so the two suites extract tokens
+/// [`doorman_test_support::token_from_email`] so the two suites extract tokens
 /// the same way.
 pub fn token_from_email_with(body: &str, template: &str) -> String {
-    bauth_test_support::token_from_email(body, template)
+    doorman_test_support::token_from_email(body, template)
 }
 
 async fn me_handler(

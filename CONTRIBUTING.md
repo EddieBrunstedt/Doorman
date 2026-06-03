@@ -1,6 +1,6 @@
-# Contributing to bauth
+# Contributing to doorman
 
-Thanks for your interest. bauth is an opinionated, passkey-only authentication
+Thanks for your interest. doorman is an opinionated, passkey-only authentication
 library for Axum. This guide covers how to build, test, and submit changes.
 
 For the auth model and what the library does, start with the
@@ -22,7 +22,7 @@ public issue for an unfixed security bug.
 crates/core/   framework-agnostic managers, storage/email/audit/rate-limit traits
 crates/axum/   Axum router, extractors, session layer, CSRF layer, high-level builder
 crates/sqlx/   SQLite/Postgres storage adapter (one feature per backend)
-crates/bauth/  umbrella crate re-exporting the above behind features
+crates/doorman/  umbrella crate re-exporting the above behind features
 examples/      runnable minimal-app and the web-client reference
 docs/          the layered documentation tree
 ```
@@ -32,7 +32,7 @@ docs/          the layered documentation tree
 ```sh
 cargo build                                   # build the workspace
 cargo test --workspace                        # run the default test suite
-cargo test -p bauth-sqlx --features sqlite    # SQLite storage conformance (in-memory)
+cargo test -p doorman-sqlx --features sqlite    # SQLite storage conformance (in-memory)
 cargo fmt                                      # format (run before committing)
 cargo clippy --workspace --all-targets        # lints (the workspace denies clippy::all)
 cargo doc --no-deps --workspace               # build the API docs
@@ -47,8 +47,8 @@ The Postgres conformance suite runs only when `PG_URL` points at a disposable
 database (it wipes the `public` schema first):
 
 ```sh
-PG_URL=postgres://postgres:postgres@localhost/bauth_test \
-  cargo test -p bauth-sqlx --features postgres
+PG_URL=postgres://postgres:postgres@localhost/doorman_test \
+  cargo test -p doorman-sqlx --features postgres
 ```
 
 The shared conformance suite (`crates/sqlx/tests/conformance`) is the
@@ -58,7 +58,7 @@ you touch storage.
 ## Running the example
 
 ```sh
-cargo run -p bauth-minimal-app
+cargo run -p doorman-minimal-app
 ```
 
 Open <http://localhost:3000>. It uses `TerminalEmailSender`, so signup and
@@ -81,7 +81,7 @@ contributors also follow:
   a test to get a green run.
 - **Document behaviour changes.** Update rustdoc, `docs/`, and comments when you
   change behaviour, commands, or assumptions.
-- **Don't preserve backward compatibility** unless explicitly requested — bauth
+- **Don't preserve backward compatibility** unless explicitly requested — doorman
   is pre-1.0 and optimises for the best 1.0 surface.
 
 ## Commits and pull requests

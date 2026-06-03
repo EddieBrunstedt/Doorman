@@ -1,23 +1,23 @@
-//! Axum-first HTTP integration for bauth.
+//! Axum-first HTTP integration for doorman.
 //!
-//! Most hosts start with [`BauthAxum::builder`], hand it a
-//! [`bauth_core::storage::Storage`] value from a storage adapter such as
-//! `bauth-sqlx`, configure the passkey relying party and email transport,
-//! and mount the returned [`BauthAxum`] on their application router.
+//! Most hosts start with [`DoormanAxum::builder`], hand it a
+//! [`doorman_core::storage::Storage`] value from a storage adapter such as
+//! `doorman-sqlx`, configure the passkey relying party and email transport,
+//! and mount the returned [`DoormanAxum`] on their application router.
 //!
 //! ```ignore
 //! use std::sync::Arc;
 //!
-//! use bauth_axum::prelude::*;
-//! use bauth_core::verification::TOKEN_PLACEHOLDER;
-//! use bauth_sqlx::SqliteStorage;
+//! use doorman_axum::prelude::*;
+//! use doorman_core::verification::TOKEN_PLACEHOLDER;
+//! use doorman_sqlx::SqliteStorage;
 //!
 //! let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").await?;
 //! storage.migrate().await?;
 //!
 //! let origin = "https://app.example.com".parse()?;
 //! let base = origin.as_str().trim_end_matches('/');
-//! let auth = BauthAxum::builder(storage.storage())
+//! let auth = DoormanAxum::builder(storage.storage())
 //!     .email(Arc::new(TerminalEmailSender))
 //!     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
 //!     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
@@ -33,7 +33,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! [`BauthAxum::from_managers`] remains available for hosts that want to
+//! [`DoormanAxum::from_managers`] remains available for hosts that want to
 //! construct the core managers by hand.
 
 // Every public item in this library carries rustdoc. Scoped to this crate on
@@ -57,9 +57,9 @@ pub mod warnings;
 mod builder;
 mod manager_builder;
 
-pub use bauth_core as core;
+pub use doorman_core as core;
 
-pub use builder::BauthBuilder;
+pub use builder::DoormanBuilder;
 pub use cache::{DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, SessionCache, SessionCacheConfig};
 pub use config::CookieConfig;
 pub use csrf::{CsrfConfig, CsrfLayer};
@@ -67,28 +67,28 @@ pub use error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use extractors::{AuthSession, AuthUser, OptionalAuthUser, RequestContext};
 pub use manager_builder::{BuilderError, ManagerBuilder};
 pub use session::{AuthContext, SessionLayer};
-pub use state::BauthState;
+pub use state::DoormanState;
 
 use axum::Router;
 
-use bauth_core::storage::Storage;
+use doorman_core::storage::Storage;
 
 /// Wired-up authentication HTTP layer. Construct via
-/// [`BauthAxum::builder`], then mount the [`router()`](BauthAxum::router)
-/// into your application and apply the [`session_layer()`](BauthAxum::session_layer)
+/// [`DoormanAxum::builder`], then mount the [`router()`](DoormanAxum::router)
+/// into your application and apply the [`session_layer()`](DoormanAxum::session_layer)
 /// so the extractors see the per-request `AuthContext`.
-pub struct BauthAxum {
-    state: BauthState,
+pub struct DoormanAxum {
+    state: DoormanState,
     session_layer: SessionLayer,
     cache: SessionCache,
 }
 
-impl BauthAxum {
+impl DoormanAxum {
     /// Start the high-level builder from a composite [`Storage`]. This is
     /// the path most hosts want: it constructs the core managers for you
-    /// from sensible defaults. See [`BauthBuilder`].
-    pub fn builder(storage: Storage) -> BauthBuilder {
-        BauthBuilder::new(storage)
+    /// from sensible defaults. See [`DoormanBuilder`].
+    pub fn builder(storage: Storage) -> DoormanBuilder {
+        DoormanBuilder::new(storage)
     }
 
     /// Start the low-level builder that accepts pre-constructed managers.
@@ -96,10 +96,10 @@ impl BauthAxum {
     /// [`SignupManager`], and [`RecoveryManager`] yourself. See
     /// [`ManagerBuilder`].
     ///
-    /// [`SessionManager`]: bauth_core::session::SessionManager
-    /// [`PasskeyManager`]: bauth_core::passkey::PasskeyManager
-    /// [`SignupManager`]: bauth_core::signup::SignupManager
-    /// [`RecoveryManager`]: bauth_core::recovery::RecoveryManager
+    /// [`SessionManager`]: doorman_core::session::SessionManager
+    /// [`PasskeyManager`]: doorman_core::passkey::PasskeyManager
+    /// [`SignupManager`]: doorman_core::signup::SignupManager
+    /// [`RecoveryManager`]: doorman_core::recovery::RecoveryManager
     pub fn from_managers() -> ManagerBuilder {
         ManagerBuilder::default()
     }
@@ -120,7 +120,7 @@ impl BauthAxum {
     }
 
     /// Access the router state backing the auth routes.
-    pub fn state(&self) -> &BauthState {
+    pub fn state(&self) -> &DoormanState {
         &self.state
     }
 

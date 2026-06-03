@@ -1,19 +1,19 @@
 //! Email transport and email-template customization.
 //!
-//! Managers build transactional emails through [`BauthEmails`] and hand
+//! Managers build transactional emails through [`DoormanEmails`] and hand
 //! them to an [`EmailSender`]. The library does not ship a silent
 //! transport — every host wires an explicit sender. First-party
 //! implementations: [`TerminalEmailSender`] (prints rendered messages to
 //! stdout) and `FileEmailSender` (writes RFC 822-shaped `.eml` files
 //! into a directory, behind the `file-email` feature). Tests use
 //! `CapturingEmailSender` from
-//! `bauth-test-support`; hosts plug in real transports (lettre, resend,
+//! `doorman-test-support`; hosts plug in real transports (lettre, resend,
 //! SES, …) through the [`EmailSender`] trait.
 //!
 //! The library uses email purely as a side channel for **signup links**,
 //! **recovery links**, and security notifications for recovery, passkey
 //! lifecycle, and high-risk session revocation events. The default copy
-//! describes a passkey-driven flow; hosts override [`BauthEmails`] to brand it.
+//! describes a passkey-driven flow; hosts override [`DoormanEmails`] to brand it.
 
 use std::any::Any;
 #[cfg(feature = "file-email")]
@@ -74,7 +74,7 @@ pub struct TerminalEmailSender;
 impl EmailSender for TerminalEmailSender {
     async fn send(&self, email: Email) -> EmailResult<()> {
         println!(
-            "\n--- bauth email ---\nTo: {}\nSubject: {}\n\n{}\n--- end bauth email ---\n",
+            "\n--- doorman email ---\nTo: {}\nSubject: {}\n\n{}\n--- end doorman email ---\n",
             email.to, email.subject, email.body_text
         );
         Ok(())
@@ -160,19 +160,19 @@ impl EmailSender for FileEmailSender {
 /// (brand name, language, HTML body, etc.) without rewriting the auth
 /// flows that send them.
 ///
-/// The default impl, [`DefaultBauthEmails`], ships with neutral copy for
+/// The default impl, [`DefaultDoormanEmails`], ships with neutral copy for
 /// the built-in passkey-driven flows. Each method has a default body so a
 /// host can override one method and inherit the rest:
 ///
 /// ```ignore
-/// use bauth_core::email::{BauthEmails, Email};
-/// use bauth_core::storage::User;
+/// use doorman_core::email::{DoormanEmails, Email};
+/// use doorman_core::storage::User;
 ///
 /// struct MyEmails {
 ///     brand: String,
 /// }
 ///
-/// impl BauthEmails for MyEmails {
+/// impl DoormanEmails for MyEmails {
 ///     fn signup_email(&self, user: &User, url: &str) -> Email {
 ///         Email {
 ///             to: user.email.clone().unwrap_or_default(),
@@ -188,7 +188,7 @@ impl EmailSender for FileEmailSender {
 /// guard on that before calling. Default impls populate the `to` field
 /// from `user.email.clone().unwrap_or_default()` for convenience; custom
 /// impls should do the same.
-pub trait BauthEmails: Send + Sync {
+pub trait DoormanEmails: Send + Sync {
     /// The signup link emailed to a new address. The link redeems once and
     /// starts first-passkey registration; it does not create a session.
     fn signup_email(&self, user: &User, url: &str) -> Email {
@@ -401,13 +401,13 @@ fn display_passkey_name(passkey_name: Option<&str>) -> Option<String> {
     Some(name.replace(['\r', '\n'], " "))
 }
 
-/// Stock [`BauthEmails`] impl. Produces neutral copy for the built-in
+/// Stock [`DoormanEmails`] impl. Produces neutral copy for the built-in
 /// passkey-driven flows. Used as the default when a config does not
 /// specify its own.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct DefaultBauthEmails;
+pub struct DefaultDoormanEmails;
 
-impl BauthEmails for DefaultBauthEmails {}
+impl DoormanEmails for DefaultDoormanEmails {}
 
 /// Best-effort sender for security notifications.
 ///
@@ -419,12 +419,12 @@ impl BauthEmails for DefaultBauthEmails {}
 #[derive(Clone)]
 pub struct SecurityEmailNotifier {
     sender: Arc<dyn EmailSender>,
-    emails: Arc<dyn BauthEmails>,
+    emails: Arc<dyn DoormanEmails>,
 }
 
 impl SecurityEmailNotifier {
     /// Build a notifier from a transport and an email renderer.
-    pub fn new(sender: Arc<dyn EmailSender>, emails: Arc<dyn BauthEmails>) -> Self {
+    pub fn new(sender: Arc<dyn EmailSender>, emails: Arc<dyn DoormanEmails>) -> Self {
         Self { sender, emails }
     }
 
@@ -513,10 +513,10 @@ impl SecurityEmailNotifier {
     }
 }
 
-/// Convenience for the default [`Arc<dyn BauthEmails>`] handed to configs
+/// Convenience for the default [`Arc<dyn DoormanEmails>`] handed to configs
 /// that don't otherwise specify a renderer.
-pub(crate) fn default_emails() -> Arc<dyn BauthEmails> {
-    Arc::new(DefaultBauthEmails)
+pub(crate) fn default_emails() -> Arc<dyn DoormanEmails> {
+    Arc::new(DefaultDoormanEmails)
 }
 
 #[cfg(test)]
@@ -541,7 +541,7 @@ mod tests {
     #[tokio::test]
     async fn file_sender_writes_to_dir() {
         let dir = std::env::temp_dir().join(format!(
-            "bauth-file-email-{}-{}",
+            "doorman-file-email-{}-{}",
             std::process::id(),
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));

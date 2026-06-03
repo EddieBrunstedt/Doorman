@@ -13,7 +13,7 @@
 //! Run with:
 //!
 //! ```sh
-//! cargo bench -p bauth-axum --bench request_path
+//! cargo bench -p doorman-axum --bench request_path
 //! ```
 
 use std::sync::Arc;
@@ -24,21 +24,21 @@ use axum::extract::Extension;
 use axum::http::{Request, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
-use bauth_axum::BauthAxum;
-use bauth_axum::SessionCache;
-use bauth_axum::config::CookieConfig;
-use bauth_axum::dto::UserDto;
-use bauth_axum::extractors::AuthSession;
-use bauth_core::email::EmailSender;
-use bauth_core::memory::{
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use doorman_axum::DoormanAxum;
+use doorman_axum::SessionCache;
+use doorman_axum::config::CookieConfig;
+use doorman_axum::dto::UserDto;
+use doorman_axum::extractors::AuthSession;
+use doorman_core::email::EmailSender;
+use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
 };
-use bauth_core::passkey::PasskeyConfig;
-use bauth_core::session::{SessionContext, SessionManager};
-use bauth_core::storage::{PasskeyCredentialStore, Storage, User, UserId, UserStore};
-use bauth_test_support::CapturingEmailSender;
-use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use doorman_core::passkey::PasskeyConfig;
+use doorman_core::session::{SessionContext, SessionManager};
+use doorman_core::storage::{PasskeyCredentialStore, Storage, User, UserId, UserStore};
+use doorman_test_support::CapturingEmailSender;
 use tokio::runtime::Runtime;
 use tower::ServiceExt;
 
@@ -69,9 +69,9 @@ async fn build_scaffold() -> Scaffold {
         passkey_challenges,
     };
 
-    let auth = BauthAxum::builder(storage)
+    let auth = DoormanAxum::builder(storage)
         .email(email as Arc<dyn EmailSender>)
-        .passkey(PasskeyConfig::new("localhost", rp_origin, "bauth bench"))
+        .passkey(PasskeyConfig::new("localhost", rp_origin, "doorman bench"))
         .cookie(CookieConfig {
             secure: false,
             ..CookieConfig::default()

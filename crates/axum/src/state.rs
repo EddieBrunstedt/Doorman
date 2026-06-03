@@ -2,18 +2,18 @@
 //!
 //! Axum requires the state passed to `Router::with_state` to be cheaply
 //! cloneable (it is handed to each handler on every request). All the
-//! managers in [`bauth_core`] hold their dependencies behind `Arc`, so
-//! cloning [`BauthState`] is the cost of cloning a handful of `Arc`s.
+//! managers in [`doorman_core`] hold their dependencies behind `Arc`, so
+//! cloning [`DoormanState`] is the cost of cloning a handful of `Arc`s.
 
 use std::sync::Arc;
 
-use bauth_core::session::SessionManager;
-use bauth_core::storage::UserStore;
+use doorman_core::session::SessionManager;
+use doorman_core::storage::UserStore;
 
-use bauth_core::account::AccountManager;
-use bauth_core::passkey::PasskeyManager;
-use bauth_core::recovery::RecoveryManager;
-use bauth_core::signup::SignupManager;
+use doorman_core::account::AccountManager;
+use doorman_core::passkey::PasskeyManager;
+use doorman_core::recovery::RecoveryManager;
+use doorman_core::signup::SignupManager;
 
 use crate::config::CookieConfig;
 
@@ -23,7 +23,7 @@ use crate::config::CookieConfig;
 /// (which holds the configured notifier), so the state carries no separate
 /// notifier handle — the routes drive the manager and the notice follows.
 #[derive(Clone)]
-pub struct BauthState {
+pub struct DoormanState {
     pub(crate) session_manager: SessionManager,
     pub(crate) user_store: Arc<dyn UserStore>,
     pub(crate) cookie_config: Arc<CookieConfig>,
@@ -33,7 +33,7 @@ pub struct BauthState {
     pub(crate) account: AccountManager,
 }
 
-impl BauthState {
+impl DoormanState {
     /// The session cookie configuration backing the routes.
     pub fn cookie_config(&self) -> &CookieConfig {
         &self.cookie_config

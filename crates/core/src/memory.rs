@@ -5,7 +5,7 @@
 //! The stores and [`InMemoryRateLimiter`] are always available: the limiter is
 //! the high-level builder default and the stores back local experiments. The pure
 //! test doubles (mock clock, in-memory audit sink, capturing email sender)
-//! live in `bauth-test-support` so they never compile into a production build.
+//! live in `doorman-test-support` so they never compile into a production build.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};

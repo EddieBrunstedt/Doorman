@@ -1,5 +1,5 @@
-//! Build-time configuration warnings emitted by `BauthAxum::builder().build()`
-//! and `BauthAxum::from_managers().build()`.
+//! Build-time configuration warnings emitted by `DoormanAxum::builder().build()`
+//! and `DoormanAxum::from_managers().build()`.
 //!
 //! Each test installs its own thread-scoped `tracing` subscriber that
 //! captures warnings into an in-memory buffer, then asserts the messages
@@ -9,29 +9,29 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bauth_axum::config::CookieConfig;
-use bauth_axum::{BauthAxum, BuilderError};
-use bauth_core::account::{AccountConfig, AccountManager};
-use bauth_core::audit::{AuditSink, NoopAuditSink};
-use bauth_core::clock::{Clock, SystemClock};
-use bauth_core::context::CoreDeps;
+use doorman_axum::config::CookieConfig;
+use doorman_axum::{BuilderError, DoormanAxum};
+use doorman_core::account::{AccountConfig, AccountManager};
+use doorman_core::audit::{AuditSink, NoopAuditSink};
+use doorman_core::clock::{Clock, SystemClock};
+use doorman_core::context::CoreDeps;
 #[cfg(feature = "file-email")]
-use bauth_core::email::FileEmailSender;
-use bauth_core::email::{
-    DefaultBauthEmails, EmailSender, SecurityEmailNotifier, TerminalEmailSender,
+use doorman_core::email::FileEmailSender;
+use doorman_core::email::{
+    DefaultDoormanEmails, EmailSender, SecurityEmailNotifier, TerminalEmailSender,
 };
-use bauth_core::memory::{
+use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
 };
-use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
-use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
-use bauth_core::recovery::{RecoveryConfig, RecoveryManager};
-use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
-use bauth_core::signup::{SignupConfig, SignupManager};
-use bauth_core::storage::{Storage, UserId};
-use bauth_core::verification::EnrollmentFlow;
-use bauth_test_support::CapturingEmailSender;
+use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
+use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
+use doorman_core::recovery::{RecoveryConfig, RecoveryManager};
+use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
+use doorman_core::signup::{SignupConfig, SignupManager};
+use doorman_core::storage::{Storage, UserId};
+use doorman_core::verification::EnrollmentFlow;
+use doorman_test_support::CapturingEmailSender;
 use tracing_subscriber::fmt::MakeWriter;
 
 #[derive(Default, Clone)]
@@ -85,7 +85,7 @@ fn passkey_config() -> PasskeyConfig {
     PasskeyConfig::new(
         "localhost",
         "http://localhost:8080".parse().expect("rp origin"),
-        "bauth tests",
+        "doorman tests",
     )
 }
 
@@ -136,7 +136,7 @@ where
 #[test]
 fn quickstart_defaults_warn_about_noop_audit_and_in_memory_limiter() {
     let output = capture(|| {
-        let _ = BauthAxum::builder(fresh_storage())
+        let _ = DoormanAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .cookie(CookieConfig {
@@ -164,7 +164,7 @@ fn quickstart_defaults_warn_about_noop_audit_and_in_memory_limiter() {
 #[test]
 fn explicit_noop_rate_limiter_emits_noop_warning() {
     let output = capture(|| {
-        let _ = BauthAxum::builder(fresh_storage())
+        let _ = DoormanAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .limiter(Arc::new(NoopRateLimiter))
@@ -185,7 +185,7 @@ fn explicit_noop_rate_limiter_emits_noop_warning() {
 #[test]
 fn cookie_secure_false_with_production_domain_warns() {
     let output = capture(|| {
-        let _ = BauthAxum::builder(fresh_storage())
+        let _ = DoormanAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .cookie(CookieConfig {
@@ -208,7 +208,7 @@ fn cookie_secure_false_with_production_domain_warns() {
 #[test]
 fn cookie_warning_fires_when_not_silenced() {
     let output = capture(|| {
-        let _ = BauthAxum::builder(fresh_storage())
+        let _ = DoormanAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .cookie(CookieConfig {
@@ -229,7 +229,7 @@ fn cookie_warning_fires_when_not_silenced() {
 #[test]
 fn quickstart_silence_warnings_suppresses_everything() {
     let output = capture(|| {
-        let _ = BauthAxum::builder(fresh_storage())
+        let _ = DoormanAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .silence_warnings()
@@ -245,7 +245,7 @@ fn quickstart_silence_warnings_suppresses_everything() {
 
 #[test]
 fn missing_email_sender_returns_build_error() {
-    let result = BauthAxum::builder(fresh_storage())
+    let result = DoormanAxum::builder(fresh_storage())
         .silence_warnings()
         .build();
     match result {
@@ -257,7 +257,7 @@ fn missing_email_sender_returns_build_error() {
 
 #[test]
 fn missing_passkey_config_returns_build_error() {
-    let result = BauthAxum::builder(fresh_storage())
+    let result = DoormanAxum::builder(fresh_storage())
         .email(capturing_email())
         .silence_warnings()
         .build();
@@ -278,7 +278,7 @@ fn low_level_builder_rejects_missing_passkey_manager() {
         SessionConfig::default(),
     );
 
-    let result = BauthAxum::from_managers()
+    let result = DoormanAxum::from_managers()
         .session_manager(session_manager)
         .user_store(storage.users.clone())
         .silence_warnings()
@@ -306,7 +306,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
 
     let notifier = SecurityEmailNotifier::new(
         email.clone() as Arc<dyn EmailSender>,
-        Arc::new(DefaultBauthEmails),
+        Arc::new(DefaultDoormanEmails),
     );
     let session_manager = SessionManager::new(
         storage.sessions.clone(),
@@ -333,7 +333,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         RecoveryManager::new(flow, RecoveryConfig::default()).expect("recovery cooldown valid");
     let account = AccountManager::new(&deps, AccountConfig::default());
 
-    let auth = BauthAxum::from_managers()
+    let auth = DoormanAxum::from_managers()
         .session_manager(session_manager)
         .user_store(storage.users.clone())
         .passkey_manager(passkey)
@@ -344,7 +344,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         .build()
         .expect("low-level build should succeed when every manager is supplied");
 
-    // The `BauthState` flow accessors must reach the very managers the
+    // The `DoormanState` flow accessors must reach the very managers the
     // routes drive. Driving signup through `state().signup()` (rather than a
     // separately held handle) proves the accessor returns the wired manager:
     // the request must enqueue a link email on the shared transport.
@@ -374,11 +374,11 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
 #[test]
 fn branding_one_flow_without_shared_renderer_warns() {
     let output = capture(|| {
-        let _ = BauthAxum::builder(fresh_storage())
+        let _ = DoormanAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .signup(SignupConfig {
-                emails: Some(Arc::new(DefaultBauthEmails)),
+                emails: Some(Arc::new(DefaultDoormanEmails)),
                 ..SignupConfig::default()
             })
             .build()
@@ -394,12 +394,12 @@ fn branding_one_flow_without_shared_renderer_warns() {
 #[test]
 fn shared_emails_renderer_does_not_warn_about_partial_branding() {
     let output = capture(|| {
-        let _ = BauthAxum::builder(fresh_storage())
+        let _ = DoormanAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
-            .emails(Arc::new(DefaultBauthEmails))
+            .emails(Arc::new(DefaultDoormanEmails))
             .signup(SignupConfig {
-                emails: Some(Arc::new(DefaultBauthEmails)),
+                emails: Some(Arc::new(DefaultDoormanEmails)),
                 ..SignupConfig::default()
             })
             .build()
@@ -415,7 +415,7 @@ fn shared_emails_renderer_does_not_warn_about_partial_branding() {
 #[test]
 fn terminal_email_transport_emits_dev_email_warning() {
     let output = capture(|| {
-        let _ = BauthAxum::builder(fresh_storage())
+        let _ = DoormanAxum::builder(fresh_storage())
             .email(Arc::new(TerminalEmailSender))
             .passkey(passkey_config())
             .build()
@@ -431,10 +431,10 @@ fn terminal_email_transport_emits_dev_email_warning() {
 #[cfg(feature = "file-email")]
 #[test]
 fn file_email_transport_emits_dev_email_warning() {
-    let dir = std::env::temp_dir().join(format!("bauth-warnings-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("doorman-warnings-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("mkdir");
     let output = capture(|| {
-        let _ = BauthAxum::builder(fresh_storage())
+        let _ = DoormanAxum::builder(fresh_storage())
             .email(Arc::new(FileEmailSender::new(&dir)))
             .passkey(passkey_config())
             .build()
@@ -452,7 +452,7 @@ fn file_email_transport_emits_dev_email_warning() {
 
 #[test]
 fn signup_url_template_without_token_is_rejected() {
-    let err = BauthAxum::builder(fresh_storage())
+    let err = DoormanAxum::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(SignupConfig {
@@ -474,7 +474,7 @@ fn signup_url_template_without_token_is_rejected() {
 
 #[test]
 fn recovery_url_template_without_token_is_rejected() {
-    let err = BauthAxum::builder(fresh_storage())
+    let err = DoormanAxum::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
@@ -500,7 +500,7 @@ fn recovery_url_template_without_token_is_rejected() {
 #[test]
 fn default_example_invalid_url_template_warns() {
     let output = capture(|| {
-        let _ = BauthAxum::builder(fresh_storage())
+        let _ = DoormanAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .build()
@@ -516,7 +516,7 @@ fn default_example_invalid_url_template_warns() {
 #[test]
 fn real_url_templates_do_not_warn_about_placeholder() {
     let output = capture(|| {
-        let _ = BauthAxum::builder(fresh_storage())
+        let _ = DoormanAxum::builder(fresh_storage())
             .email(capturing_email())
             .passkey(passkey_config())
             .signup(real_signup())
@@ -533,7 +533,7 @@ fn real_url_templates_do_not_warn_about_placeholder() {
 
 #[test]
 fn subfloor_recovery_cooldown_is_rejected() {
-    let err = BauthAxum::builder(fresh_storage())
+    let err = DoormanAxum::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
@@ -553,13 +553,13 @@ fn subfloor_recovery_cooldown_is_rejected() {
 
 #[test]
 fn host_prefixed_cookie_without_secure_is_rejected() {
-    let err = BauthAxum::builder(fresh_storage())
+    let err = DoormanAxum::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
         .recovery(real_recovery())
         .cookie(CookieConfig {
-            session_cookie_name: "__Host-bauth".to_string(),
+            session_cookie_name: "__Host-doorman".to_string(),
             secure: false,
             ..CookieConfig::default()
         })
@@ -580,13 +580,13 @@ fn host_prefixed_cookie_without_secure_is_rejected() {
 
 #[test]
 fn host_prefixed_cookie_with_domain_is_rejected() {
-    let err = BauthAxum::builder(fresh_storage())
+    let err = DoormanAxum::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
         .recovery(real_recovery())
         .cookie(CookieConfig {
-            session_cookie_name: "__Host-bauth".to_string(),
+            session_cookie_name: "__Host-doorman".to_string(),
             secure: true,
             domain: Some("app.test".to_string()),
             ..CookieConfig::default()
@@ -608,13 +608,13 @@ fn host_prefixed_cookie_with_domain_is_rejected() {
 
 #[test]
 fn secure_prefixed_cookie_without_secure_is_rejected() {
-    let err = BauthAxum::builder(fresh_storage())
+    let err = DoormanAxum::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
         .recovery(real_recovery())
         .cookie(CookieConfig {
-            session_cookie_name: "__Secure-bauth".to_string(),
+            session_cookie_name: "__Secure-doorman".to_string(),
             secure: false,
             ..CookieConfig::default()
         })
@@ -635,13 +635,13 @@ fn secure_prefixed_cookie_without_secure_is_rejected() {
 
 #[test]
 fn host_prefixed_cookie_with_correct_attributes_builds() {
-    let err = BauthAxum::builder(fresh_storage())
+    let err = DoormanAxum::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
         .recovery(real_recovery())
         .cookie(CookieConfig {
-            session_cookie_name: "__Host-bauth".to_string(),
+            session_cookie_name: "__Host-doorman".to_string(),
             secure: true,
             domain: None,
             path: "/".to_string(),
@@ -658,7 +658,7 @@ fn host_prefixed_cookie_with_correct_attributes_builds() {
 
 #[test]
 fn zero_session_lifetime_is_rejected() {
-    let err = BauthAxum::builder(fresh_storage())
+    let err = DoormanAxum::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())
@@ -684,7 +684,7 @@ fn zero_session_lifetime_is_rejected() {
 
 #[test]
 fn zero_signup_token_lifetime_is_rejected() {
-    let err = BauthAxum::builder(fresh_storage())
+    let err = DoormanAxum::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(SignupConfig {
@@ -710,7 +710,7 @@ fn zero_signup_token_lifetime_is_rejected() {
 
 #[test]
 fn cookie_max_age_exceeding_session_lifetime_is_rejected() {
-    let err = BauthAxum::builder(fresh_storage())
+    let err = DoormanAxum::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
         .signup(real_signup())

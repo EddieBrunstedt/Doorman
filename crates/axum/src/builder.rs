@@ -1,13 +1,13 @@
-//! High-level [`BauthBuilder`] entry point, reached via
-//! [`BauthAxum::builder`].
+//! High-level [`DoormanBuilder`] entry point, reached via
+//! [`DoormanAxum::builder`].
 //!
 //! Most hosts want one wired-up auth surface, not a tour of every manager
-//! they need to construct. [`BauthAxum::builder`] takes the composite
-//! [`bauth_core::storage::Storage`] (typically obtained in one call from a
-//! storage adapter such as `bauth-sqlx`) plus the passkey config,
+//! they need to construct. [`DoormanAxum::builder`] takes the composite
+//! [`doorman_core::storage::Storage`] (typically obtained in one call from a
+//! storage adapter such as `doorman-sqlx`) plus the passkey config,
 //! constructs the `SessionManager`/`PasskeyManager`/`SignupManager`/
 //! `RecoveryManager` internally with sensible defaults, and returns a
-//! fully built [`BauthAxum`].
+//! fully built [`DoormanAxum`].
 //!
 //! Defaults applied when the host does not override them:
 //! - [`Clock`] → [`SystemClock`]
@@ -15,8 +15,8 @@
 //! - [`RateLimiter`] → [`InMemoryRateLimiter`]
 //!
 //! The [`EmailSender`] and [`PasskeyConfig`] have **no defaults**. Hosts
-//! must wire them explicitly via [`BauthBuilder::email`] and
-//! [`BauthBuilder::passkey`]; otherwise [`build`](BauthBuilder::build)
+//! must wire them explicitly via [`DoormanBuilder::email`] and
+//! [`DoormanBuilder::passkey`]; otherwise [`build`](DoormanBuilder::build)
 //! returns [`BuilderError::MissingEmailSender`] or
 //! [`BuilderError::MissingPasskeyConfig`]. First-party email transports:
 //! [`TerminalEmailSender`] (stdout) and [`FileEmailSender`] (`.eml`
@@ -29,41 +29,43 @@
 //! few and the simpler builder is easier to read.
 //!
 //! These defaults are fine for development but not for production.
-//! [`build`](BauthBuilder::build) surfaces the mismatch via the
+//! [`build`](DoormanBuilder::build) surfaces the mismatch via the
 //! [`warnings`](crate::warnings) module — hosts who have made an informed
-//! choice silence them with [`BauthBuilder::silence_warnings`]. The
+//! choice silence them with [`DoormanBuilder::silence_warnings`]. The
 //! host's responsibility is to wire real implementations through
-//! [`BauthBuilder::clock`], [`audit`], etc.
+//! [`DoormanBuilder::clock`], [`audit`], etc.
 //!
-//! [`Clock`]: bauth_core::clock::Clock
-//! [`SystemClock`]: bauth_core::clock::SystemClock
-//! [`AuditSink`]: bauth_core::audit::AuditSink
-//! [`NoopAuditSink`]: bauth_core::audit::NoopAuditSink
-//! [`RateLimiter`]: bauth_core::rate_limit::RateLimiter
-//! [`InMemoryRateLimiter`]: bauth_core::memory::InMemoryRateLimiter
-//! [`EmailSender`]: bauth_core::email::EmailSender
-//! [`PasskeyConfig`]: bauth_core::passkey::PasskeyConfig
-//! [`TerminalEmailSender`]: bauth_core::email::TerminalEmailSender
-//! [`FileEmailSender`]: bauth_core::email::FileEmailSender
-//! [`audit`]: BauthBuilder::audit
+//! [`Clock`]: doorman_core::clock::Clock
+//! [`SystemClock`]: doorman_core::clock::SystemClock
+//! [`AuditSink`]: doorman_core::audit::AuditSink
+//! [`NoopAuditSink`]: doorman_core::audit::NoopAuditSink
+//! [`RateLimiter`]: doorman_core::rate_limit::RateLimiter
+//! [`InMemoryRateLimiter`]: doorman_core::memory::InMemoryRateLimiter
+//! [`EmailSender`]: doorman_core::email::EmailSender
+//! [`PasskeyConfig`]: doorman_core::passkey::PasskeyConfig
+//! [`TerminalEmailSender`]: doorman_core::email::TerminalEmailSender
+//! [`FileEmailSender`]: doorman_core::email::FileEmailSender
+//! [`audit`]: DoormanBuilder::audit
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_core::account::{AccountConfig, AccountManager};
-use bauth_core::audit::{AuditSink, NoopAuditSink};
-use bauth_core::clock::{Clock, SystemClock};
-use bauth_core::context::CoreDeps;
-use bauth_core::email::{BauthEmails, DefaultBauthEmails, EmailSender, SecurityEmailNotifier};
-use bauth_core::memory::InMemoryRateLimiter;
-use bauth_core::metrics::{Metrics, NoopMetrics};
-use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
-use bauth_core::rate_limit::RateLimiter;
-use bauth_core::recovery::{RecoveryConfig, RecoveryManager};
-use bauth_core::session::{SessionConfig, SessionManager};
-use bauth_core::signup::{SignupConfig, SignupManager};
-use bauth_core::storage::Storage;
-use bauth_core::verification::{EnrollmentFlow, TOKEN_PLACEHOLDER};
+use doorman_core::account::{AccountConfig, AccountManager};
+use doorman_core::audit::{AuditSink, NoopAuditSink};
+use doorman_core::clock::{Clock, SystemClock};
+use doorman_core::context::CoreDeps;
+use doorman_core::email::{
+    DefaultDoormanEmails, DoormanEmails, EmailSender, SecurityEmailNotifier,
+};
+use doorman_core::memory::InMemoryRateLimiter;
+use doorman_core::metrics::{Metrics, NoopMetrics};
+use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
+use doorman_core::rate_limit::RateLimiter;
+use doorman_core::recovery::{RecoveryConfig, RecoveryManager};
+use doorman_core::session::{SessionConfig, SessionManager};
+use doorman_core::signup::{SignupConfig, SignupManager};
+use doorman_core::storage::Storage;
+use doorman_core::verification::{EnrollmentFlow, TOKEN_PLACEHOLDER};
 
 use url::Url;
 
@@ -104,7 +106,7 @@ fn validate_url_template(flow: &'static str, template: &str) -> Result<(), Build
     }
 }
 
-use crate::BauthAxum;
+use crate::DoormanAxum;
 use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
@@ -113,22 +115,22 @@ use crate::warnings::{
     RateLimiterFlavor, Warnings, is_dev_email_transport, is_noop_audit, rate_limiter_flavor,
 };
 
-/// High-level builder returned from [`BauthAxum::builder`].
+/// High-level builder returned from [`DoormanAxum::builder`].
 ///
 /// This is the headline path: hand it a composite [`Storage`] (typically
-/// from a storage adapter such as `bauth-sqlx`) plus the passkey config
+/// from a storage adapter such as `doorman-sqlx`) plus the passkey config
 /// and email transport, and it constructs the core managers for you. Hosts
 /// that have already built the managers themselves want the lower-level
-/// [`ManagerBuilder`] via [`BauthAxum::from_managers`] instead.
+/// [`ManagerBuilder`] via [`DoormanAxum::from_managers`] instead.
 ///
 /// See the module-level docs for the full picture. Typical use:
 ///
 /// ```ignore
-/// use bauth_axum::prelude::*;
-/// use bauth_core::verification::TOKEN_PLACEHOLDER;
+/// use doorman_axum::prelude::*;
+/// use doorman_core::verification::TOKEN_PLACEHOLDER;
 ///
 /// let base = origin.as_str().trim_end_matches('/');
-/// let auth = BauthAxum::builder(storage)
+/// let auth = DoormanAxum::builder(storage)
 ///     .email(Arc::new(TerminalEmailSender))
 ///     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
 ///     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
@@ -144,12 +146,12 @@ use crate::warnings::{
 /// configured implicitly; hosts that want to override its defaults call
 /// [`signup`](Self::signup). Construction of the core managers happens in
 /// [`build`](Self::build).
-pub struct BauthBuilder {
+pub struct DoormanBuilder {
     storage: Storage,
     clock: Option<Arc<dyn Clock>>,
     audit: Option<Arc<dyn AuditSink>>,
     email: Option<Arc<dyn EmailSender>>,
-    emails: Option<Arc<dyn BauthEmails>>,
+    emails: Option<Arc<dyn DoormanEmails>>,
     rate_limiter: Option<Arc<dyn RateLimiter>>,
     metrics: Option<Arc<dyn Metrics>>,
     session_config: Option<SessionConfig>,
@@ -166,7 +168,7 @@ pub struct BauthBuilder {
     account: Option<AccountConfig>,
 }
 
-impl BauthBuilder {
+impl DoormanBuilder {
     pub(crate) fn new(storage: Storage) -> Self {
         Self {
             storage,
@@ -200,7 +202,7 @@ impl BauthBuilder {
 
     /// Override the default [`SystemClock`].
     ///
-    /// [`SystemClock`]: bauth_core::clock::SystemClock
+    /// [`SystemClock`]: doorman_core::clock::SystemClock
     pub fn clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.clock = Some(clock);
         self
@@ -209,7 +211,7 @@ impl BauthBuilder {
     /// Override the default [`NoopAuditSink`]. Wire a real sink in
     /// production so security events are not silently dropped.
     ///
-    /// [`NoopAuditSink`]: bauth_core::audit::NoopAuditSink
+    /// [`NoopAuditSink`]: doorman_core::audit::NoopAuditSink
     pub fn audit(mut self, audit: Arc<dyn AuditSink>) -> Self {
         self.audit = Some(audit);
         self
@@ -219,25 +221,25 @@ impl BauthBuilder {
     /// best-effort security notifications. Required — [`build`](Self::build) returns
     /// [`BuilderError::MissingEmailSender`] when not set.
     ///
-    /// [`EmailSender`]: bauth_core::email::EmailSender
+    /// [`EmailSender`]: doorman_core::email::EmailSender
     pub fn email(mut self, email: Arc<dyn EmailSender>) -> Self {
         self.email = Some(email);
         self
     }
 
-    /// Wire one [`BauthEmails`] renderer for every flow at once: the signup
+    /// Wire one [`DoormanEmails`] renderer for every flow at once: the signup
     /// link, the recovery link and notices, and the best-effort security
     /// notices (passkey lifecycle, session revocation). This is the single
     /// place to brand all transactional copy.
     ///
-    /// A renderer set directly on a [`SignupConfig`](bauth_core::signup::SignupConfig)
-    /// or [`RecoveryConfig`](bauth_core::recovery::RecoveryConfig) still wins
+    /// A renderer set directly on a [`SignupConfig`](doorman_core::signup::SignupConfig)
+    /// or [`RecoveryConfig`](doorman_core::recovery::RecoveryConfig) still wins
     /// for that flow. Branding only some flows without calling this — leaving
     /// the rest on the stock copy — trips a startup warning so partial wiring
     /// is never silent.
     ///
-    /// [`BauthEmails`]: bauth_core::email::BauthEmails
-    pub fn emails(mut self, emails: Arc<dyn BauthEmails>) -> Self {
+    /// [`DoormanEmails`]: doorman_core::email::DoormanEmails
+    pub fn emails(mut self, emails: Arc<dyn DoormanEmails>) -> Self {
         self.emails = Some(emails);
         self
     }
@@ -246,7 +248,7 @@ impl BauthBuilder {
     /// is per-process; a multi-replica deployment should swap in a shared
     /// backend.
     ///
-    /// [`InMemoryRateLimiter`]: bauth_core::memory::InMemoryRateLimiter
+    /// [`InMemoryRateLimiter`]: doorman_core::memory::InMemoryRateLimiter
     pub fn limiter(mut self, limiter: Arc<dyn RateLimiter>) -> Self {
         self.rate_limiter = Some(limiter);
         self
@@ -257,8 +259,8 @@ impl BauthBuilder {
     /// latency through it, and the session layer reports cache hit / miss.
     /// Defaults to [`NoopMetrics`], which discards every observation.
     ///
-    /// [`Metrics`]: bauth_core::metrics::Metrics
-    /// [`NoopMetrics`]: bauth_core::metrics::NoopMetrics
+    /// [`Metrics`]: doorman_core::metrics::Metrics
+    /// [`NoopMetrics`]: doorman_core::metrics::NoopMetrics
     pub fn metrics(mut self, metrics: Arc<dyn Metrics>) -> Self {
         self.metrics = Some(metrics);
         self
@@ -332,8 +334,8 @@ impl BauthBuilder {
         self
     }
 
-    /// Construct the managers and return a wired-up [`BauthAxum`].
-    pub fn build(self) -> Result<BauthAxum, BuilderError> {
+    /// Construct the managers and return a wired-up [`DoormanAxum`].
+    pub fn build(self) -> Result<DoormanAxum, BuilderError> {
         let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock));
         let audit: Arc<dyn AuditSink> = self.audit.unwrap_or_else(|| Arc::new(NoopAuditSink));
         let email: Arc<dyn EmailSender> = self.email.ok_or(BuilderError::MissingEmailSender)?;
@@ -411,10 +413,10 @@ impl BauthBuilder {
             recovery_config.emails.get_or_insert_with(|| shared.clone());
             account_config.emails.get_or_insert_with(|| shared.clone());
         }
-        let notifier_renderer: Arc<dyn BauthEmails> = self
+        let notifier_renderer: Arc<dyn DoormanEmails> = self
             .emails
             .clone()
-            .unwrap_or_else(|| Arc::new(DefaultBauthEmails));
+            .unwrap_or_else(|| Arc::new(DefaultDoormanEmails));
         let notifier = SecurityEmailNotifier::new(email.clone(), notifier_renderer);
 
         // Build the cache up-front so its invalidator can be attached to

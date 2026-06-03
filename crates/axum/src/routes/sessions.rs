@@ -10,16 +10,16 @@ use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use bauth_core::storage::SessionId;
+use doorman_core::storage::SessionId;
 use uuid::Uuid;
 
 use crate::cookies::clear_session_cookie;
 use crate::dto::SessionDto;
 use crate::error::ErrorResponse;
 use crate::extractors::AuthSession;
-use crate::state::BauthState;
+use crate::state::DoormanState;
 
-pub(crate) fn routes() -> Router<BauthState> {
+pub(crate) fn routes() -> Router<DoormanState> {
     Router::new()
         .route("/logout", post(logout))
         .route("/logout-all", post(logout_all))
@@ -35,7 +35,7 @@ pub(crate) fn routes() -> Router<BauthState> {
 /// drop the current session during the cool-down window. The session
 /// layer's origin check covers CSRF for cookie-bearing POSTs.
 async fn logout(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     auth: AuthSession,
 ) -> Result<Response, ErrorResponse> {
     state.session_manager.revoke(&auth.token).await?;
@@ -47,14 +47,14 @@ async fn logout(
 
 /// "Log out everywhere": revoke *every* session the caller has, including the
 /// current one, then clear the session cookie. Wired to
-/// [`revoke_all_for_user`](bauth_core::session::SessionManager::revoke_all_for_user).
+/// [`revoke_all_for_user`](doorman_core::session::SessionManager::revoke_all_for_user).
 ///
 /// Not gated by the post-recovery cool-down: this revokes the caller's own
 /// sessions across all devices (the legitimate owner can always re-authenticate
 /// with a passkey), so unlike "sign out everywhere *else*" it cannot be used to
 /// strand the real user.
 async fn logout_all(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     auth: AuthSession,
 ) -> Result<Response, ErrorResponse> {
     state
@@ -68,7 +68,7 @@ async fn logout_all(
 }
 
 async fn list(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     auth: AuthSession,
 ) -> Result<Json<Vec<SessionDto>>, ErrorResponse> {
     let current_id = auth.session.id;
@@ -84,20 +84,20 @@ async fn list(
 }
 
 async fn remove(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     auth: AuthSession,
     Path(raw_id): Path<String>,
 ) -> Result<StatusCode, ErrorResponse> {
     let id = Uuid::parse_str(&raw_id)
         .map(SessionId)
-        .map_err(|_| ErrorResponse(bauth_core::Error::SessionNotFound))?;
+        .map_err(|_| ErrorResponse(doorman_core::Error::SessionNotFound))?;
 
     // The post-recovery cool-down blocks revoking *other* sessions so a
     // phished link cannot kick the legitimate user off their devices. The
     // recovery session itself stays revocable so the user can still sign
     // out of the cool-down session.
     if id != auth.session.id && state.session_manager.is_in_recovery_cooldown(&auth.session) {
-        return Err(ErrorResponse(bauth_core::Error::RecoveryCooldownActive));
+        return Err(ErrorResponse(doorman_core::Error::RecoveryCooldownActive));
     }
 
     // Ownership, revocation, and the best-effort "other session revoked"
@@ -116,11 +116,11 @@ async fn remove(
 /// Powers the "sign out everywhere else" surface. Blocked while the
 /// current session is within the post-recovery cool-down window.
 async fn remove_others(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     auth: AuthSession,
 ) -> Result<StatusCode, ErrorResponse> {
     if state.session_manager.is_in_recovery_cooldown(&auth.session) {
-        return Err(ErrorResponse(bauth_core::Error::RecoveryCooldownActive));
+        return Err(ErrorResponse(doorman_core::Error::RecoveryCooldownActive));
     }
     // The manager fires the "other sessions revoked" notice itself when it
     // revokes anything, so the route only drives it.

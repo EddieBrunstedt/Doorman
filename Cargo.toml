@@ -4,7 +4,7 @@ members = [
   "crates/core",
   "crates/axum",
   "crates/sqlx",
-  "crates/bauth",
+  "crates/doorman",
   "crates/test-support",
   "examples/minimal-app",
 ]
@@ -22,7 +22,7 @@ authors = ["Eddie Brunstedt <eddie.brunstedt@protonmail.com>"]
 rust-version = "1.94"
 
 # Shared lints applied to every crate that opts in with `[lints] workspace = true`.
-# `unsafe_code` is forbidden outright — bauth never uses `unsafe`. `clippy::all`
+# `unsafe_code` is forbidden outright — doorman never uses `unsafe`. `clippy::all`
 # is denied (negative priority so item-level allows still win).
 #
 # `missing_docs` is deliberately NOT here: a workspace lint applies to every

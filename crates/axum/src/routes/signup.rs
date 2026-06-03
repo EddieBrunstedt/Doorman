@@ -11,7 +11,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::post;
-use bauth_core::signup::SignupManager;
+use doorman_core::signup::SignupManager;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
 use crate::dto::{
@@ -20,21 +20,21 @@ use crate::dto::{
 use crate::error::ErrorResponse;
 use crate::extractors::RequestContext;
 use crate::routes::{consume_response, enrollment_success, parse_challenge_id};
-use crate::state::BauthState;
+use crate::state::DoormanState;
 
-pub(crate) fn routes() -> Router<BauthState> {
+pub(crate) fn routes() -> Router<DoormanState> {
     Router::new()
         .route("/signup/request", post(request))
         .route("/signup/consume", post(consume))
         .route("/signup/finish", post(finish))
 }
 
-fn manager(state: &BauthState) -> &SignupManager {
+fn manager(state: &DoormanState) -> &SignupManager {
     &state.signup
 }
 
 async fn request(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     RequestContext(context): RequestContext,
     Json(body): Json<SignupRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
@@ -43,7 +43,7 @@ async fn request(
 }
 
 async fn consume(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     RequestContext(context): RequestContext,
     Json(body): Json<SignupConsumeRequest>,
 ) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ErrorResponse> {
@@ -52,7 +52,7 @@ async fn consume(
 }
 
 async fn finish(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     RequestContext(context): RequestContext,
     Json(body): Json<RegistrationFinishRequest>,
 ) -> Result<Response, ErrorResponse> {

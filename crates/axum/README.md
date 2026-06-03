@@ -1,16 +1,16 @@
-# bauth-axum
+# doorman-axum
 
-Axum HTTP integration for [bauth](../../README.md): the `BauthAxum` router,
+Axum HTTP integration for [doorman](../../README.md): the `DoormanAxum` router,
 session-loading layer, `AuthUser` / `OptionalAuthUser` / `AuthSession`
-extractors, CSRF layer, and the high-level `BauthBuilder` that wires
-[`bauth-core`](../core)'s managers from sensible defaults.
+extractors, CSRF layer, and the high-level `DoormanBuilder` that wires
+[`doorman-core`](../core)'s managers from sensible defaults.
 
-This is the supported user-facing integration. Hand `BauthAxum::builder` a
-`Storage` value (e.g. from [`bauth-sqlx`](../sqlx)), configure the relying party
+This is the supported user-facing integration. Hand `DoormanAxum::builder` a
+`Storage` value (e.g. from [`doorman-sqlx`](../sqlx)), configure the relying party
 and email transport, mount `auth.router()`, and apply `auth.session_layer()`.
 
 ```rust,ignore
-let auth = BauthAxum::builder(storage.storage())
+let auth = DoormanAxum::builder(storage.storage())
     .email(Arc::new(TerminalEmailSender))
     .passkey(PasskeyConfig::from_origin(origin.clone(), "Example")?)
     .signup(SignupConfig { url_template, ..Default::default() })
@@ -24,4 +24,4 @@ let app = Router::new().merge(auth.router()).layer(auth.session_layer());
 - Routes and flows: [`docs/flows.md`](../../docs/flows.md)
 - Security model: [`docs/security.md`](../../docs/security.md)
 
-API reference: `cargo doc -p bauth-axum --open`.
+API reference: `cargo doc -p doorman-axum --open`.

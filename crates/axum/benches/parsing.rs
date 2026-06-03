@@ -17,7 +17,7 @@
 //! Run with:
 //!
 //! ```sh
-//! cargo bench -p bauth-axum --bench parsing
+//! cargo bench -p doorman-axum --bench parsing
 //! ```
 
 use std::convert::Infallible;
@@ -25,19 +25,19 @@ use std::convert::Infallible;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use bauth_axum::{CsrfConfig, CsrfLayer};
 use criterion::{Criterion, criterion_group, criterion_main};
+use doorman_axum::{CsrfConfig, CsrfLayer};
 use tokio::runtime::Runtime;
 use tower::{Layer, ServiceExt, service_fn};
 use url::Url;
 
-const SESSION_COOKIE: &str = "bauth_session";
+const SESSION_COOKIE: &str = "doorman_session";
 const APP_ORIGIN: &str = "https://app.test";
 
 /// A representative `Cookie` header carrying the session plus a couple of
 /// unrelated pairs, so the parse does real splitting work.
 fn cookie_header() -> HeaderValue {
-    HeaderValue::from_static("theme=dark; bauth_session=session-token-value; locale=en-US")
+    HeaderValue::from_static("theme=dark; doorman_session=session-token-value; locale=en-US")
 }
 
 /// Build the header set for one scenario.

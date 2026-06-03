@@ -1,5 +1,5 @@
 [package]
-name = "bauth-minimal-app"
+name = "doorman-minimal-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,9 +10,9 @@ workspace = true
 
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1"] }
-bauth-axum = { path = "../../crates/axum" }
-bauth-core = { path = "../../crates/core" }
-bauth-sqlx = { path = "../../crates/sqlx", features = ["sqlite"] }
+doorman-axum = { path = "../../crates/axum" }
+doorman-core = { path = "../../crates/core" }
+doorman-sqlx = { path = "../../crates/sqlx", features = ["sqlite"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net"] }
 tracing-subscriber = { workspace = true }

@@ -12,8 +12,8 @@ mod common;
 
 use axum::Router;
 use axum::http::StatusCode;
-use bauth_core::session::hash_token;
 use common::{TestApp, login};
+use doorman_core::session::hash_token;
 
 async fn me(client: &reqwest::Client, app: &TestApp, token: &str) -> StatusCode {
     client

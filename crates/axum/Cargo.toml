@@ -1,21 +1,21 @@
 [package]
-name = "bauth-axum"
+name = "doorman-axum"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Axum HTTP integration for the bauth authentication library."
+description = "Axum HTTP integration for the doorman authentication library."
 keywords = ["authentication", "passkey", "webauthn", "axum", "auth"]
 categories = ["authentication", "web-programming::http-server"]
-documentation = "https://docs.rs/bauth-axum"
+documentation = "https://docs.rs/doorman-axum"
 
 [features]
 default = []
 # Re-export of core's bundled `.eml` file transport for local development.
-# Passes through to `bauth-core/file-email` (which pulls tokio's filesystem).
-file-email = ["bauth-core/file-email"]
+# Passes through to `doorman-core/file-email` (which pulls tokio's filesystem).
+file-email = ["doorman-core/file-email"]
 
 [lints]
 workspace = true
@@ -27,7 +27,7 @@ all-features = true
 async-trait.workspace = true
 axum = { version = "0.8", default-features = false, features = ["json", "query", "tokio", "http1"] }
 base64.workspace = true
-bauth-core = { path = "../core", version = "0.1.0" }
+doorman-core = { path = "../core", version = "0.1.0" }
 chrono.workspace = true
 cookie = "0.18"
 http = "1"
@@ -44,8 +44,8 @@ uuid.workspace = true
 webauthn-rs.workspace = true
 
 [dev-dependencies]
-bauth-test-support = { path = "../test-support" }
-bauth-sqlx = { path = "../sqlx", version = "0.1.0", features = ["sqlite"] }
+doorman-test-support = { path = "../test-support" }
+doorman-sqlx = { path = "../sqlx", version = "0.1.0", features = ["sqlite"] }
 criterion.workspace = true
 proptest.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }

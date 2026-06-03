@@ -9,8 +9,8 @@ mod common;
 
 use axum::Router;
 use axum::http::StatusCode;
-use bauth_axum::dto::{AuthResponse, SignupConsumeRequest, SignupRequest};
 use common::{SignupClient, TestApp, token_from_email};
+use doorman_axum::dto::{AuthResponse, SignupConsumeRequest, SignupRequest};
 use reqwest::header;
 
 #[tokio::test]

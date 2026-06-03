@@ -1,12 +1,12 @@
 //! Persistence contracts the managers run against.
 //!
 //! The `*Store` traits in this module are the boundary between
-//! `bauth-core` and the host's database. The managers do not know or
+//! `doorman-core` and the host's database. The managers do not know or
 //! care how rows land on disk — they only call the trait methods.
 //!
 //! ## Picking an adapter
 //!
-//! - **SQLx hosts** (SQLite or Postgres) should depend on `bauth-sqlx`
+//! - **SQLx hosts** (SQLite or Postgres) should depend on `doorman-sqlx`
 //!   and let `SqliteStorage::storage()` / `PostgresStorage::storage()`
 //!   populate the [`Storage`] composite for them.
 //! - **Hosts on other stacks** (Diesel, sea-orm, Redis, a bespoke
@@ -15,7 +15,7 @@
 //!   guarantee — in particular the atomic `take_*` / `consume_*`
 //!   semantics that single-use tokens rely on.
 //!
-//! The trait surface is the contract. Adapter crates (`bauth-sqlx` and
+//! The trait surface is the contract. Adapter crates (`doorman-sqlx` and
 //! any future siblings) are conveniences on top of it, not part of it.
 
 use std::fmt;
@@ -255,7 +255,7 @@ impl fmt::Display for PasskeyChallengeId {
 }
 
 /// A passkey credential bound to a user. The `passkey` field is the
-/// serialised `webauthn-rs` credential as opaque bytes: `bauth-core`
+/// serialised `webauthn-rs` credential as opaque bytes: `doorman-core`
 /// (de)serialises it on the way in and out, and the store persists it
 /// verbatim. A host's store therefore needs no `webauthn-rs` dependency
 /// and must not attempt to interpret the blob.
@@ -268,7 +268,7 @@ pub struct StoredPasskey {
     /// Owner of the credential.
     pub user_id: UserId,
     /// Opaque serialised credential blob. Persist and return it verbatim;
-    /// only `bauth-core` parses it.
+    /// only `doorman-core` parses it.
     pub passkey: Vec<u8>,
     /// Optional friendly device name set by the user at registration time
     /// ("Eddie's iPhone", "Yubikey 5"). The library does not interpret it.
@@ -373,7 +373,7 @@ impl From<StoredPasskey> for PasskeySummary {
 
 /// In-progress passkey registration ceremony state. The `state` field is
 /// the serialised `webauthn-rs` ceremony state as opaque bytes, preserved
-/// verbatim between start and finish; only `bauth-core` parses it.
+/// verbatim between start and finish; only `doorman-core` parses it.
 #[derive(Debug, Clone)]
 pub struct StoredPasskeyRegistration {
     /// Ceremony identifier returned to the client for the `finish` step.
@@ -393,7 +393,7 @@ pub struct StoredPasskeyRegistration {
 
 /// In-progress discoverable passkey authentication ceremony state. The
 /// `state` field is the serialised `webauthn-rs` ceremony state as opaque
-/// bytes, preserved verbatim between start and finish; only `bauth-core`
+/// bytes, preserved verbatim between start and finish; only `doorman-core`
 /// parses it.
 #[derive(Debug, Clone)]
 pub struct StoredPasskeyAuthentication {

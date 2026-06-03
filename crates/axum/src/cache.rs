@@ -7,10 +7,10 @@
 //! never actually look at `AuthUser`. Both reads typically hit the host's
 //! database, so the per-request cost adds up under load.
 //!
-//! The cache lives entirely in `bauth-axum` because it's HTTP-shaped: the
+//! The cache lives entirely in `doorman-axum` because it's HTTP-shaped: the
 //! TTL choice is tied to how long a request handler can tolerate staleness
 //! before noticing a logout, and the trigger is "session layer just ran".
-//! `bauth-core` knows nothing about it; it learns about revocations through
+//! `doorman-core` knows nothing about it; it learns about revocations through
 //! the framework-agnostic [`SessionInvalidationHook`] trait and we plug a
 //! cache-flushing implementation in at builder time.
 //!
@@ -35,18 +35,18 @@
 //! only collisions within a single shard contend. The configured capacity
 //! is divided evenly across the shards.
 //!
-//! [`SessionManager::revoke`]: bauth_core::session::SessionManager::revoke
-//! [`revoke_by_id`]: bauth_core::session::SessionManager::revoke_by_id
-//! [`SessionManager::revoke_all_for_user`]: bauth_core::session::SessionManager::revoke_all_for_user
-//! [`SessionInvalidationHook`]: bauth_core::session::SessionInvalidationHook
+//! [`SessionManager::revoke`]: doorman_core::session::SessionManager::revoke
+//! [`revoke_by_id`]: doorman_core::session::SessionManager::revoke_by_id
+//! [`SessionManager::revoke_all_for_user`]: doorman_core::session::SessionManager::revoke_all_for_user
+//! [`SessionInvalidationHook`]: doorman_core::session::SessionInvalidationHook
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use bauth_core::session::SessionInvalidationHook;
-use bauth_core::storage::{Session, SessionId, TokenHash, User, UserId};
+use doorman_core::session::SessionInvalidationHook;
+use doorman_core::storage::{Session, SessionId, TokenHash, User, UserId};
 use lru::LruCache;
 
 /// Number of independent lock-striped shards the cache is split across.
@@ -240,9 +240,9 @@ impl SessionCache {
     /// dependent managers (passkey / signup) does not matter — every clone
     /// evicts the cache when it invalidates a session.
     ///
-    /// [`SessionManager`]: bauth_core::session::SessionManager
-    /// [`SessionManager::with_invalidation_hook`]: bauth_core::session::SessionManager::with_invalidation_hook
-    /// [`set_invalidation_hook`]: bauth_core::session::SessionManager::set_invalidation_hook
+    /// [`SessionManager`]: doorman_core::session::SessionManager
+    /// [`SessionManager::with_invalidation_hook`]: doorman_core::session::SessionManager::with_invalidation_hook
+    /// [`set_invalidation_hook`]: doorman_core::session::SessionManager::set_invalidation_hook
     pub fn invalidator(&self) -> Arc<dyn SessionInvalidationHook> {
         Arc::new(CacheInvalidator::new(self.clone()))
     }
@@ -296,8 +296,8 @@ impl SessionInvalidationHook for CacheInvalidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bauth_core::storage::{SessionId, TokenHash, UserId};
     use chrono::{TimeZone, Utc};
+    use doorman_core::storage::{SessionId, TokenHash, UserId};
 
     fn token_hash(byte: u8) -> TokenHash {
         TokenHash([byte; 32])

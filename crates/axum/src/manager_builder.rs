@@ -1,35 +1,35 @@
-//! Low-level [`ManagerBuilder`] for [`BauthAxum`].
+//! Low-level [`ManagerBuilder`] for [`DoormanAxum`].
 //!
-//! The host wires the framework-agnostic managers from [`bauth_core`]
+//! The host wires the framework-agnostic managers from [`doorman_core`]
 //! (each constructed against its storage traits, clock, email sender,
 //! etc.) into the builder, then calls [`ManagerBuilder::build`] to get
 //! back a value that exposes a mountable [`axum::Router`] plus the
 //! [`SessionLayer`] needed for the extractors.
 //!
-//! Reach this builder via [`BauthAxum::from_managers`]. Most hosts want
+//! Reach this builder via [`DoormanAxum::from_managers`]. Most hosts want
 //! the higher-level storage-in path instead — see
-//! [`BauthAxum::builder`](crate::BauthAxum::builder) and
-//! [`BauthBuilder`](crate::BauthBuilder).
+//! [`DoormanAxum::builder`](crate::DoormanAxum::builder) and
+//! [`DoormanBuilder`](crate::DoormanBuilder).
 
 use std::sync::Arc;
 
-use bauth_core::metrics::{Metrics, NoopMetrics};
-use bauth_core::session::SessionManager;
-use bauth_core::storage::UserStore;
+use doorman_core::metrics::{Metrics, NoopMetrics};
+use doorman_core::session::SessionManager;
+use doorman_core::storage::UserStore;
 use url::Url;
 
-use crate::BauthAxum;
+use crate::DoormanAxum;
 use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
 use crate::session::{SessionLayer, SessionLayerState};
-use crate::state::BauthState;
+use crate::state::DoormanState;
 use crate::warnings::{self, Warnings};
 
-use bauth_core::account::AccountManager;
-use bauth_core::passkey::PasskeyManager;
-use bauth_core::recovery::RecoveryManager;
-use bauth_core::signup::SignupManager;
+use doorman_core::account::AccountManager;
+use doorman_core::passkey::PasskeyManager;
+use doorman_core::recovery::RecoveryManager;
+use doorman_core::signup::SignupManager;
 
 /// Errors returned when the Axum auth surface is incompletely configured.
 #[derive(Debug, thiserror::Error)]
@@ -40,7 +40,7 @@ pub enum BuilderError {
     /// No `UserStore` was supplied to the low-level builder.
     #[error("user_store is required")]
     MissingUserStore,
-    /// The [`BauthBuilder`](crate::BauthBuilder) high-level builder, which
+    /// The [`DoormanBuilder`](crate::DoormanBuilder) high-level builder, which
     /// constructs the signup / recovery managers itself, was not given an
     /// [`EmailSender`]. There is no silent default; pick a real transport
     /// (lettre, resend, …) for production, or use [`TerminalEmailSender`] /
@@ -48,13 +48,13 @@ pub enum BuilderError {
     /// [`ManagerBuilder`] takes pre-built managers that already own their
     /// sender, so it never returns this error.
     ///
-    /// [`EmailSender`]: bauth_core::email::EmailSender
-    /// [`TerminalEmailSender`]: bauth_core::email::TerminalEmailSender
+    /// [`EmailSender`]: doorman_core::email::EmailSender
+    /// [`TerminalEmailSender`]: doorman_core::email::TerminalEmailSender
     #[error("email_sender is required")]
     MissingEmailSender,
     /// The high-level builder cannot construct the passkey manager until
     /// the host supplies the WebAuthn relying-party configuration via
-    /// [`BauthBuilder::passkey`](crate::BauthBuilder::passkey).
+    /// [`DoormanBuilder::passkey`](crate::DoormanBuilder::passkey).
     #[error("passkey config is required")]
     MissingPasskeyConfig,
     /// No `PasskeyManager` was supplied to the low-level builder.
@@ -69,16 +69,16 @@ pub enum BuilderError {
     /// No `AccountManager` was supplied to the low-level builder.
     #[error("account_manager is required")]
     MissingAccountManager,
-    /// Returned through [`BauthBuilder`](crate::BauthBuilder), which has to
+    /// Returned through [`DoormanBuilder`](crate::DoormanBuilder), which has to
     /// construct the passkey manager itself. The direct `ManagerBuilder`
     /// path takes a pre-built [`PasskeyManager`] and surfaces the same
     /// error to the host at construction time.
     ///
-    /// [`PasskeyManager`]: bauth_core::passkey::PasskeyManager
+    /// [`PasskeyManager`]: doorman_core::passkey::PasskeyManager
     #[error("passkey manager construction failed: {0}")]
-    Passkey(bauth_core::error::Error),
+    Passkey(doorman_core::error::Error),
     /// A flow's `url_template` does not contain the
-    /// [`TOKEN_PLACEHOLDER`](bauth_core::verification::TOKEN_PLACEHOLDER)
+    /// [`TOKEN_PLACEHOLDER`](doorman_core::verification::TOKEN_PLACEHOLDER)
     /// substring, so the rendered link would not carry the verification
     /// token. The build fails closed rather than emailing a dead link.
     #[error(
@@ -92,9 +92,9 @@ pub enum BuilderError {
         placeholder: &'static str,
     },
     /// The recovery cool-down is below the documented floor. Surfaced from
-    /// [`RecoveryManager::new`](bauth_core::recovery::RecoveryManager::new).
+    /// [`RecoveryManager::new`](doorman_core::recovery::RecoveryManager::new).
     #[error("recovery cooldown is misconfigured: {0}")]
-    RecoveryCooldownTooShort(#[from] bauth_core::recovery::RecoveryConfigError),
+    RecoveryCooldownTooShort(#[from] doorman_core::recovery::RecoveryConfigError),
     /// The session cookie name carries a `__Host-` or `__Secure-` prefix but
     /// the cookie attributes do not satisfy what that prefix requires (per
     /// the cookie-prefix spec). A browser would silently reject the cookie,
@@ -140,14 +140,14 @@ pub enum BuilderError {
 /// [`SignupManager`], and [`RecoveryManager`] yourself (wiring your own
 /// clock, audit sink, rate limiter, email transport, etc.) and just need
 /// the HTTP presentation layer bolted on. Each manager already owns its
-/// [`EmailSender`](bauth_core::email::EmailSender), so this builder does not
+/// [`EmailSender`](doorman_core::email::EmailSender), so this builder does not
 /// take a separate sender. The dev-transport startup warning is emitted only
-/// on the high-level [`BauthBuilder`](crate::BauthBuilder) path, which holds
+/// on the high-level [`DoormanBuilder`](crate::DoormanBuilder) path, which holds
 /// the raw transport and can inspect it.
 ///
-/// If you would rather hand over a [`Storage`](bauth_core::storage::Storage)
+/// If you would rather hand over a [`Storage`](doorman_core::storage::Storage)
 /// plus passkey / email config and let the managers be constructed for you,
-/// use [`BauthAxum::builder`](crate::BauthAxum::builder) instead.
+/// use [`DoormanAxum::builder`](crate::DoormanAxum::builder) instead.
 #[derive(Default)]
 pub struct ManagerBuilder {
     session_manager: Option<SessionManager>,
@@ -156,7 +156,7 @@ pub struct ManagerBuilder {
     cache_config: Option<SessionCacheConfig>,
     session_cache: Option<SessionCache>,
     /// Pre-computed warning conditions from a parent builder (the
-    /// high-level [`BauthBuilder`](crate::BauthBuilder) entry point) that
+    /// high-level [`DoormanBuilder`](crate::DoormanBuilder) entry point) that
     /// already inspected audit / rate-limiter / linking state the low-level
     /// builder does not see. Merged with the builder's own cookie-config
     /// check at [`Self::build`] time. Set through
@@ -215,11 +215,11 @@ impl ManagerBuilder {
     ///
     /// If the host neither supplies a cache nor wires an invalidator,
     /// revocations will only be cleared by the cache TTL. The
-    /// [`BauthAxum::builder`](crate::BauthAxum::builder) entry point handles
+    /// [`DoormanAxum::builder`](crate::DoormanAxum::builder) entry point handles
     /// all of this automatically.
     ///
-    /// [`SessionManager`]: bauth_core::session::SessionManager
-    /// [`SessionManager::with_invalidation_hook`]: bauth_core::session::SessionManager::with_invalidation_hook
+    /// [`SessionManager`]: doorman_core::session::SessionManager
+    /// [`SessionManager::with_invalidation_hook`]: doorman_core::session::SessionManager::with_invalidation_hook
     pub fn session_cache(mut self, cache: SessionCache) -> Self {
         self.session_cache = Some(cache);
         self
@@ -289,15 +289,15 @@ impl ManagerBuilder {
     /// Seed the warning conditions a parent builder has already computed
     /// (audit / rate-limiter / email-transport / partial-branding state the
     /// low-level builder cannot see). Crate-internal: only the high-level
-    /// [`BauthBuilder`](crate::BauthBuilder) supplies these.
+    /// [`DoormanBuilder`](crate::DoormanBuilder) supplies these.
     pub(crate) fn inherited_warnings(mut self, warnings: Warnings) -> Self {
         self.inherited_warnings = warnings;
         self
     }
 
-    /// Validate the configuration and assemble the [`BauthAxum`] surface, or
+    /// Validate the configuration and assemble the [`DoormanAxum`] surface, or
     /// return a [`BuilderError`] describing the first missing/invalid input.
-    pub fn build(self) -> Result<BauthAxum, BuilderError> {
+    pub fn build(self) -> Result<DoormanAxum, BuilderError> {
         let session_manager = self
             .session_manager
             .ok_or(BuilderError::MissingSessionManager)?;
@@ -314,7 +314,7 @@ impl ManagerBuilder {
             let mut warnings = self.inherited_warnings.clone();
             warnings.cookie_insecure_in_production = warnings::check_cookie(&cookie_config);
             // Email-transport and audit/limiter diagnostics are decided by the
-            // high-level `BauthBuilder` (which holds the raw collaborators) and
+            // high-level `DoormanBuilder` (which holds the raw collaborators) and
             // arrive via `inherited_warnings`. The low-level path takes pre-built
             // managers that already own their transport, so it adds only the
             // cookie check here.
@@ -338,7 +338,7 @@ impl ManagerBuilder {
         // session manager is the host's responsibility on this path
         // because the `SessionManager` is immutable after construction —
         // see [`session_cache`](Self::session_cache) and
-        // [`BauthAxum::builder`](crate::BauthAxum::builder).
+        // [`DoormanAxum::builder`](crate::DoormanAxum::builder).
         let cache = self
             .session_cache
             .unwrap_or_else(|| SessionCache::new(self.cache_config.unwrap_or_default()));
@@ -356,7 +356,7 @@ impl ManagerBuilder {
             metrics,
         });
 
-        let state = BauthState {
+        let state = DoormanState {
             session_manager,
             user_store,
             cookie_config,
@@ -366,7 +366,7 @@ impl ManagerBuilder {
             account,
         };
 
-        Ok(BauthAxum {
+        Ok(DoormanAxum {
             state,
             session_layer: SessionLayer::new(layer_state),
             cache,

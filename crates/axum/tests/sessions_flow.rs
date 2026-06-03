@@ -4,8 +4,8 @@ mod common;
 
 use axum::Router;
 use axum::http::StatusCode;
-use bauth_axum::dto::{AuthResponse, SessionDto};
 use common::TestApp;
+use doorman_axum::dto::{AuthResponse, SessionDto};
 
 const OTHER_SESSION_REVOKED_NOTIFICATION_SUBJECT: &str = "Security notice: session revoked";
 const OTHER_SESSIONS_REVOKED_NOTIFICATION_SUBJECT: &str = "Security notice: other sessions revoked";
@@ -237,7 +237,7 @@ async fn logout_revokes_current_session_and_clears_cookie() {
         .expect("Set-Cookie present")
         .to_str()
         .expect("ascii cookie");
-    assert!(set_cookie.contains("bauth_session="));
+    assert!(set_cookie.contains("doorman_session="));
     assert!(set_cookie.contains("Max-Age=0"));
     assert_eq!(
         app.email.sent().len(),

@@ -1,7 +1,7 @@
 //! Backend-agnostic storage-conformance suite.
 //!
 //! Every check takes a [`Storage`] and asserts the contract the
-//! `bauth-core` managers rely on, independent of how the rows are stored.
+//! `doorman-core` managers rely on, independent of how the rows are stored.
 //! The same [`run`] entry point is executed against the in-memory
 //! reference stores (`tests/in_memory.rs`), SQLite (`tests/sqlite.rs`),
 //! and Postgres (`tests/postgres.rs`, gated on `PG_URL`). Running the
@@ -16,12 +16,12 @@
 
 #![allow(dead_code)]
 
-use bauth_core::session::hash_token;
-use bauth_core::storage::{
+use chrono::{DateTime, Duration, TimeZone, Utc};
+use doorman_core::session::hash_token;
+use doorman_core::storage::{
     PasskeyChallengeId, PasskeySummary, Session, SessionId, Storage, StoredPasskey,
     StoredPasskeyRegistration, User, UserId, VerificationPurpose, VerificationToken,
 };
-use chrono::{DateTime, Duration, TimeZone, Utc};
 
 fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
@@ -540,7 +540,7 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
         .expect("user");
 
     // The store treats both the credential id and the credential blob as
-    // opaque bytes: it persists whatever bauth-core hands it and returns it
+    // opaque bytes: it persists whatever doorman-core hands it and returns it
     // verbatim, with no webauthn-rs knowledge of its own.
     let credential_id = b"conformance-credential-id".to_vec();
     let passkey_blob = b"opaque-serialised-passkey-blob".to_vec();

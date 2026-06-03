@@ -32,7 +32,7 @@ use std::time::Duration;
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
 use crate::audit::AuditEventKind;
-use crate::email::{BauthEmails, default_emails};
+use crate::email::{DoormanEmails, default_emails};
 use crate::error::Result;
 use crate::rate_limit::RateLimitPolicy;
 use crate::session::SessionContext;
@@ -58,13 +58,13 @@ pub struct SignupConfig {
     /// for the request to proceed.
     pub rate_limits: SignupRateLimits,
     /// Renderer for the signup email. `None` falls back to the renderer the
-    /// composition root threads in (see [`BauthBuilder::emails`]), and to
-    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails) if none was
+    /// composition root threads in (see [`DoormanBuilder::emails`]), and to
+    /// [`DefaultDoormanEmails`](crate::email::DefaultDoormanEmails) if none was
     /// set. Set `Some(..)` to brand this flow specifically, overriding the
     /// shared renderer.
     ///
-    /// [`BauthBuilder::emails`]: https://docs.rs/bauth-axum
-    pub emails: Option<Arc<dyn BauthEmails>>,
+    /// [`DoormanBuilder::emails`]: https://docs.rs/doorman-axum
+    pub emails: Option<Arc<dyn DoormanEmails>>,
 }
 
 /// Rate-limit policies for the signup request endpoint.
@@ -119,8 +119,8 @@ pub struct SignupManager {
     flow: EnrollmentFlow,
     config: SignupConfig,
     /// Renderer resolved from [`SignupConfig::emails`], falling back to
-    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails) when unset.
-    emails: Arc<dyn BauthEmails>,
+    /// [`DefaultDoormanEmails`](crate::email::DefaultDoormanEmails) when unset.
+    emails: Arc<dyn DoormanEmails>,
 }
 
 impl SignupManager {

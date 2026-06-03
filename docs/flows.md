@@ -1,6 +1,6 @@
 # Flows
 
-The three first-class flows are **signup**, **login**, and **recovery**, plus the account-management operations. Each diagram shows the browser, the bauth router, and the email transport. Route paths are relative to the `/auth` prefix the router mounts under.
+The three first-class flows are **signup**, **login**, and **recovery**, plus the account-management operations. Each diagram shows the browser, the doorman router, and the email transport. Route paths are relative to the `/auth` prefix the router mounts under.
 
 Read [concepts.md](concepts.md) first for the vocabulary (discoverable passkeys, opaque tokens, recovery cool-down).
 
@@ -9,7 +9,7 @@ Read [concepts.md](concepts.md) first for the vocabulary (discoverable passkeys,
 A new account is bootstrapped by proving control of an email address and then registering the first passkey. The session is issued only after the passkey is registered — the email link alone never logs anyone in.
 
 ```
-Browser                         bauth router                    Email
+Browser                         doorman router                    Email
    |                                 |                             |
    |  POST /auth/signup/request      |                             |
    |  { email }                      |                             |
@@ -44,7 +44,7 @@ Browser                         bauth router                    Email
 Steady-state login is a single discoverable-passkey ceremony with no email and no username.
 
 ```
-Browser                         bauth router
+Browser                         doorman router
    |                                 |
    |  POST /auth/passkey/             |
    |       authenticate/start         |
@@ -77,7 +77,7 @@ If the credential or session is still inside a recovery cool-down, the minted se
 Recovery is for a user who lost every passkey. It deliberately requires enrolling a _new, visible_ passkey before any session is issued, and the resulting session is restricted by the cool-down.
 
 ```
-Browser                         bauth router                    Email
+Browser                         doorman router                    Email
    |                                 |                             |
    |  POST /auth/recovery/request    |                             |
    |  { email }                      |                             |
@@ -146,4 +146,4 @@ Email change reuses the verification-token machinery: a single-use confirmation 
 
 ## Security notifications
 
-bauth sends best-effort security-notice emails (after the protected action has already succeeded) for: a registered-address recovery request, a completed recovery, every successful passkey registration, a passkey removal, an email-change request, revoking another session, and "sign out everywhere else". It does **not** send mail for unknown-address recovery, already-registered signup, or ordinary self-logout.
+doorman sends best-effort security-notice emails (after the protected action has already succeeded) for: a registered-address recovery request, a completed recovery, every successful passkey registration, a passkey removal, an email-change request, revoking another session, and "sign out everywhere else". It does **not** send mail for unknown-address recovery, already-registered signup, or ordinary self-logout.

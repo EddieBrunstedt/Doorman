@@ -1,6 +1,6 @@
-# bauth
+# doorman
 
-bauth is an opinionated passkey-only Axum auth library, with email magic links for recovery only.
+doorman is an opinionated passkey-only Axum auth library, with email magic links for recovery only.
 
 It gives an Axum app one steady-state login method — discoverable passkeys/WebAuthn — plus email-gated signup and recovery flows that force a passkey registration before any session is issued. There are no passwords, OAuth providers, TOTP codes, or general-purpose email login links.
 
@@ -11,23 +11,23 @@ This crate is pre-1.0; breaking changes can still land before the public surface
 ```toml
 [dependencies]
 axum = "0.8"
-bauth = { version = "0.1", features = ["axum", "sqlite"] }
+doorman = { version = "0.1", features = ["axum", "sqlite"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-`bauth` is the umbrella crate: one dependency, one version to bump. It re-exports `bauth-core`, `bauth-axum`, and `bauth-sqlx` behind features as `bauth::core`, `bauth::axum`, and `bauth::sqlx`. Hosts that want only a subset can still depend on the individual crates directly.
+`doorman` is the umbrella crate: one dependency, one version to bump. It re-exports `doorman-core`, `doorman-axum`, and `doorman-sqlx` behind features as `doorman::core`, `doorman::axum`, and `doorman::sqlx`. Hosts that want only a subset can still depend on the individual crates directly.
 
 ```rust
 use std::sync::Arc;
 use axum::{routing::get, Router};
-use bauth::prelude::*;
-use bauth::core::verification::TOKEN_PLACEHOLDER;
+use doorman::prelude::*;
+use doorman::core::verification::TOKEN_PLACEHOLDER;
 
 let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").await?;
 storage.migrate().await?;
 let origin = "https://app.example.com".parse()?;
 let base = origin.as_str().trim_end_matches('/');
-let auth = BauthAxum::builder(storage.storage())
+let auth = DoormanAxum::builder(storage.storage())
     .email(Arc::new(TerminalEmailSender))
     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
@@ -55,7 +55,7 @@ Encourage every user to register at least two passkeys: for example a platform p
 ## Run the minimal app
 
 ```sh
-cargo run -p bauth-minimal-app
+cargo run -p doorman-minimal-app
 ```
 
 Open <http://localhost:3000>. Signup and recovery emails are printed to the terminal, so copy the link from stdout and complete the flow in the browser. The example uses SQLite, Axum, the bundled router, and a static HTML page with no frontend build step.
@@ -75,7 +75,7 @@ Open <http://localhost:3000>. Signup and recovery emails are printed to the term
 
 ## Production checklist
 
-Review the startup warnings emitted by `BauthAxum::builder().build()` or `BauthAxum::from_managers().build()` and make explicit choices before silencing them.
+Review the startup warnings emitted by `DoormanAxum::builder().build()` or `DoormanAxum::from_managers().build()` and make explicit choices before silencing them.
 
 - Replace `TerminalEmailSender` / `FileEmailSender` with a real `EmailSender` for signup/recovery links and security notifications.
 - Wire a durable `AuditSink`; `NoopAuditSink` discards security events.
@@ -101,14 +101,14 @@ examples/web-client/   browser-side WebAuthn helper reference
 Criterion benches cover the hot auth paths at the manager, HTTP, and storage layers. See [`BENCHMARKS.md`](BENCHMARKS.md) for what is measured and how to read the numbers. Quick start:
 
 ```sh
-cargo bench -p bauth-core
-cargo bench -p bauth-axum
-cargo bench -p bauth-sqlx --features sqlite
+cargo bench -p doorman-core
+cargo bench -p doorman-axum
+cargo bench -p doorman-sqlx --features sqlite
 ```
 
 ## Custom storage or HTTP surface
 
-The quickest path is `bauth-sqlx` plus `BauthAxum::builder(...)`. Hosts on another database stack implement the `bauth-core` storage traits: `UserStore`, `SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`, and `PasskeyChallengeStore`.
+The quickest path is `doorman-sqlx` plus `DoormanAxum::builder(...)`. Hosts on another database stack implement the `doorman-core` storage traits: `UserStore`, `SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`, and `PasskeyChallengeStore`.
 
 If you want a custom HTTP API, call the core managers directly: `SessionManager`, `PasskeyManager`, `SignupManager`, and `RecoveryManager`.
 

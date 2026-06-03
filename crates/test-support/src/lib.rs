@@ -1,32 +1,32 @@
-//! Test-only collaborators shared across the bauth test suites.
+//! Test-only collaborators shared across the doorman test suites.
 //!
-//! These are deliberately kept out of `bauth-core` so they never compile
+//! These are deliberately kept out of `doorman-core` so they never compile
 //! into a production build: [`MockClock`] makes expiry and rate-limit
 //! behaviour deterministic, [`InMemoryAuditSink`] records emitted events
 //! for assertions, and [`CapturingEmailSender`] captures sent mail instead
-//! of delivering it. They implement the `bauth-core` collaborator traits
+//! of delivering it. They implement the `doorman-core` collaborator traits
 //! ([`Clock`], [`AuditSink`], [`EmailSender`]).
 //!
 //! The in-memory storage adapters and [`InMemoryRateLimiter`] are *not*
-//! here — those live in [`bauth_core::memory`] because they back local
+//! here — those live in [`doorman_core::memory`] because they back local
 //! experiments and the high-level builder default, not just tests.
 //!
-//! [`Clock`]: bauth_core::clock::Clock
-//! [`AuditSink`]: bauth_core::audit::AuditSink
-//! [`EmailSender`]: bauth_core::email::EmailSender
-//! [`InMemoryRateLimiter`]: bauth_core::memory::InMemoryRateLimiter
+//! [`Clock`]: doorman_core::clock::Clock
+//! [`AuditSink`]: doorman_core::audit::AuditSink
+//! [`EmailSender`]: doorman_core::email::EmailSender
+//! [`InMemoryRateLimiter`]: doorman_core::memory::InMemoryRateLimiter
 
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 
-use bauth_core::audit::{AuditEvent, AuditSink};
-use bauth_core::clock::Clock;
-use bauth_core::email::{Email, EmailSender};
-use bauth_core::error::{EmailError, EmailResult};
-use bauth_core::metrics::{MetricEvent, Metrics};
-use bauth_core::verification::TOKEN_PLACEHOLDER;
+use doorman_core::audit::{AuditEvent, AuditSink};
+use doorman_core::clock::Clock;
+use doorman_core::email::{Email, EmailSender};
+use doorman_core::error::{EmailError, EmailResult};
+use doorman_core::metrics::{MetricEvent, Metrics};
+use doorman_core::verification::TOKEN_PLACEHOLDER;
 
 /// Recover the raw verification token from an email body whose link was
 /// rendered from `template` (a URL containing [`TOKEN_PLACEHOLDER`], e.g. the

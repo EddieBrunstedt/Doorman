@@ -800,7 +800,7 @@ impl PasskeyManager {
     }
 }
 
-/// The label shown in the platform passkey UI. bauth uses the email when set
+/// The label shown in the platform passkey UI. doorman uses the email when set
 /// (the user id otherwise) for both the WebAuthn user name and display name —
 /// the two are intentionally identical, so one value feeds both parameters.
 fn display_name_for(user: &User) -> String {
@@ -837,7 +837,7 @@ impl Drop for AuthLatencyGuard {
 /// Device metadata read out of a freshly finished or updated [`Passkey`].
 ///
 /// `webauthn-rs` keeps these on the credential internals, reachable via the
-/// `danger-credential-internals` feature; `bauth-core` is the only layer that
+/// `danger-credential-internals` feature; `doorman-core` is the only layer that
 /// touches the `webauthn-rs` types, lowering them to the primitive fields the
 /// storage traits persist so a host's store stays `webauthn-rs`-free.
 struct PasskeyMetadata {
@@ -899,7 +899,7 @@ fn user_id_from_handle(response: &PublicKeyCredential) -> Result<Option<UserId>>
 }
 
 // Opaque-blob (de)serialisation. The storage traits deal in `Vec<u8>` so a
-// host's store needs no `webauthn-rs` dependency; `bauth-core` is the only
+// host's store needs no `webauthn-rs` dependency; `doorman-core` is the only
 // layer that knows the blob is JSON-serialised `webauthn-rs` state.
 
 fn encode_credential(passkey: &Passkey) -> Result<Vec<u8>> {

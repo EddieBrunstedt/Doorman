@@ -4,7 +4,7 @@
 //! Skipped unless the `PG_URL` environment variable points at a
 //! disposable test database. CI provides this via a containerised
 //! Postgres; locally you can set
-//! `PG_URL=postgres://postgres:postgres@localhost/bauth_test`.
+//! `PG_URL=postgres://postgres:postgres@localhost/doorman_test`.
 //!
 //! The test wipes the database's `public` schema before running so the
 //! migration state is fresh on every invocation. Do not point `PG_URL`
@@ -14,7 +14,7 @@
 
 mod conformance;
 
-use bauth_sqlx::PostgresStorage;
+use doorman_sqlx::PostgresStorage;
 use sqlx::PgPool;
 
 #[tokio::test]

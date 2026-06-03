@@ -13,18 +13,18 @@
 //! Run with:
 //!
 //! ```sh
-//! cargo bench -p bauth-core --bench session
+//! cargo bench -p doorman-core --bench session
 //! ```
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_core::audit::{AuditSink, NoopAuditSink};
-use bauth_core::clock::{Clock, SystemClock};
-use bauth_core::memory::InMemorySessionStore;
-use bauth_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
-use bauth_core::storage::{SessionStore, UserId};
 use criterion::{Criterion, criterion_group, criterion_main};
+use doorman_core::audit::{AuditSink, NoopAuditSink};
+use doorman_core::clock::{Clock, SystemClock};
+use doorman_core::memory::InMemorySessionStore;
+use doorman_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
+use doorman_core::storage::{SessionStore, UserId};
 use tokio::runtime::Runtime;
 
 fn session_manager() -> SessionManager {

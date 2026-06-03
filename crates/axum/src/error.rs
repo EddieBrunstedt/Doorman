@@ -1,4 +1,4 @@
-//! Canonical mapping from [`bauth_core::Error`] to HTTP responses.
+//! Canonical mapping from [`doorman_core::Error`] to HTTP responses.
 //!
 //! Every variant is assigned a stable string code so a frontend can switch
 //! on it without scraping the human-readable message. [`Error::RateLimited`]
@@ -8,7 +8,7 @@
 use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use bauth_core::Error;
+use doorman_core::Error;
 use serde::Serialize;
 
 /// JSON body returned with every error response.
@@ -28,7 +28,7 @@ pub struct ErrorPayload {
 }
 
 /// Wrapper type so we can `impl IntoResponse for ErrorResponse` without
-/// orphan-rule trouble — `bauth_core::Error` lives in another crate, but
+/// orphan-rule trouble — `doorman_core::Error` lives in another crate, but
 /// callers can still use `?` thanks to the `From<Error>` impl below.
 #[derive(Debug)]
 pub struct ErrorResponse(pub Error);
@@ -54,7 +54,7 @@ pub(crate) fn error_response(err: &Error) -> Response {
     // category. Client errors (4xx) carry domain messages that are safe to
     // surface.
     let message = if status.is_server_error() {
-        tracing::error!(error = %err, code, "bauth request failed with internal error");
+        tracing::error!(error = %err, code, "doorman request failed with internal error");
         "internal server error".to_owned()
     } else {
         err.to_string()
@@ -104,7 +104,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bauth_core::error::{EmailError, StorageError};
+    use doorman_core::error::{EmailError, StorageError};
     use std::time::Duration;
 
     fn retry_after_secs(retry_after: Duration) -> String {

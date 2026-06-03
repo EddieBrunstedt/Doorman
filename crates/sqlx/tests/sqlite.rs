@@ -6,7 +6,7 @@
 
 mod conformance;
 
-use bauth_sqlx::SqliteStorage;
+use doorman_sqlx::SqliteStorage;
 
 #[tokio::test]
 async fn sqlite_storage_conformance() {

@@ -1,6 +1,6 @@
-# bauth-sqlx
+# doorman-sqlx
 
-SQLx-backed storage adapter for [`bauth-core`](../core). Two backends
+SQLx-backed storage adapter for [`doorman-core`](../core). Two backends
 ship behind cargo features:
 
 - `sqlite` — `SqliteStorage` for SQLite databases.
@@ -14,16 +14,16 @@ Both implement every storage trait the library defines: `UserStore`,
 
 ```toml
 [dependencies]
-bauth-sqlx = { version = "0.1", features = ["sqlite"] }
+doorman-sqlx = { version = "0.1", features = ["sqlite"] }
 ```
 
 ```rust
-use bauth_sqlx::SqliteStorage;
+use doorman_sqlx::SqliteStorage;
 
 let storage = SqliteStorage::connect("sqlite:///var/lib/myapp/auth.db?mode=rwc").await?;
 storage.migrate().await?;
 
-let composite = storage.storage();   // bauth_core::storage::Storage — hand to BauthAxum::builder
+let composite = storage.storage();   // doorman_core::storage::Storage — hand to DoormanAxum::builder
 ```
 
 For an ephemeral in-memory database (handy in tests), use
@@ -33,11 +33,11 @@ For Postgres, swap the feature and the type:
 
 ```toml
 [dependencies]
-bauth-sqlx = { version = "0.1", features = ["postgres"] }
+doorman-sqlx = { version = "0.1", features = ["postgres"] }
 ```
 
 ```rust
-use bauth_sqlx::PostgresStorage;
+use doorman_sqlx::PostgresStorage;
 
 let storage = PostgresStorage::connect("postgres://user:pass@host/db").await?;
 storage.migrate().await?;
@@ -59,7 +59,7 @@ production tuning, build your own pool and use `from_pool`:
 
 ```rust
 use sqlx::sqlite::SqlitePoolOptions;
-use bauth_sqlx::SqliteStorage;
+use doorman_sqlx::SqliteStorage;
 
 let pool = SqlitePoolOptions::new()
     .max_connections(32)
@@ -73,11 +73,11 @@ share it with the rest of your app.
 
 ## Testing
 
-`cargo test -p bauth-sqlx --features sqlite` runs the SQLite suite in
+`cargo test -p doorman-sqlx --features sqlite` runs the SQLite suite in
 memory; no external services needed.
 
-`cargo test -p bauth-sqlx --features postgres` runs the Postgres suite
+`cargo test -p doorman-sqlx --features postgres` runs the Postgres suite
 **if** `PG_URL` is set, e.g.
-`PG_URL=postgres://postgres:postgres@localhost/bauth_test`. The test
+`PG_URL=postgres://postgres:postgres@localhost/doorman_test`. The test
 wipes the `public` schema of the target database before running, so
 point it at a disposable test DB only.

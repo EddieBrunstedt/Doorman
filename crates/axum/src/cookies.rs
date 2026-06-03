@@ -177,7 +177,7 @@ mod tests {
     fn session_cookie_has_expected_attributes() {
         let value = session_cookie(&cfg(), "tok");
         let s = value.to_str().unwrap();
-        assert!(s.contains("bauth_session=tok"));
+        assert!(s.contains("doorman_session=tok"));
         assert!(s.contains("HttpOnly"));
         assert!(s.contains("Path=/"));
         assert!(s.contains("SameSite=Lax"));
@@ -188,7 +188,7 @@ mod tests {
     fn clear_session_cookie_sets_zero_max_age() {
         let value = clear_session_cookie(&cfg());
         let s = value.to_str().unwrap();
-        assert!(s.contains("bauth_session="));
+        assert!(s.contains("doorman_session="));
         assert!(s.contains("Max-Age=0"));
     }
 
@@ -197,10 +197,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
-            HeaderValue::from_static("foo=bar; bauth_session=tok-123; baz=qux"),
+            HeaderValue::from_static("foo=bar; doorman_session=tok-123; baz=qux"),
         );
         assert_eq!(
-            read_cookie(&headers, "bauth_session").as_deref(),
+            read_cookie(&headers, "doorman_session").as_deref(),
             Some("tok-123")
         );
         assert_eq!(read_cookie(&headers, "missing"), None);

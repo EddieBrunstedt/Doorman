@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>bauth web-client reference</title>
+    <title>doorman web-client reference</title>
     <style>
       :focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
       label { display: block; margin: .25rem 0; }
     </style>
   </head>
   <body>
-    <h1>bauth web-client reference</h1>
+    <h1>doorman web-client reference</h1>
 
     <section aria-labelledby="signup-h">
       <h2 id="signup-h">Sign up</h2>
@@ -78,7 +78,7 @@
         try {
           log(await fn());
         } catch (e) {
-          // BauthError carries `.guidance` (human copy) and `.code` (for logs).
+          // DoormanError carries `.guidance` (human copy) and `.code` (for logs).
           errorEl.textContent = e.guidance ?? e.message;
           log(`${label} error: ${e.code ?? e.message}`);
         }

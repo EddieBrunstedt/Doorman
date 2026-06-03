@@ -14,7 +14,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-/// Errors returned by bauth managers.
+/// Errors returned by doorman managers.
 #[derive(Debug, Error)]
 pub enum Error {
     /// A storage backend operation failed.

@@ -18,9 +18,9 @@ use crate::cookies::clear_session_cookie;
 use crate::dto::{EmailChangeConfirmRequest, EmailChangeRequest, UserDto};
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, RequestContext};
-use crate::state::BauthState;
+use crate::state::DoormanState;
 
-pub(crate) fn routes() -> Router<BauthState> {
+pub(crate) fn routes() -> Router<DoormanState> {
     Router::new()
         .route("/account/email", post(request_email_change))
         .route("/account/email/confirm", post(confirm_email_change))
@@ -31,13 +31,13 @@ pub(crate) fn routes() -> Router<BauthState> {
 /// address and notifies the current one; the account's email is not changed
 /// until the link is confirmed.
 async fn request_email_change(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     auth: AuthSession,
     RequestContext(context): RequestContext,
     Json(body): Json<EmailChangeRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
     if state.session_manager.is_in_recovery_cooldown(&auth.session) {
-        return Err(ErrorResponse(bauth_core::Error::RecoveryCooldownActive));
+        return Err(ErrorResponse(doorman_core::Error::RecoveryCooldownActive));
     }
     state
         .account
@@ -50,7 +50,7 @@ async fn request_email_change(
 /// session is required — possession of the single-use token (delivered to the
 /// new address) authorises the change. Returns the updated user.
 async fn confirm_email_change(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     RequestContext(context): RequestContext,
     Json(body): Json<EmailChangeConfirmRequest>,
 ) -> Result<Json<UserDto>, ErrorResponse> {
@@ -65,12 +65,12 @@ async fn confirm_email_change(
 /// Irreversibly delete the caller's account and every row tied to it, then
 /// clear the session cookie so the browser stops replaying the now-dead token.
 async fn delete_account(
-    State(state): State<BauthState>,
+    State(state): State<DoormanState>,
     auth: AuthSession,
     RequestContext(context): RequestContext,
 ) -> Result<Response, ErrorResponse> {
     if state.session_manager.is_in_recovery_cooldown(&auth.session) {
-        return Err(ErrorResponse(bauth_core::Error::RecoveryCooldownActive));
+        return Err(ErrorResponse(doorman_core::Error::RecoveryCooldownActive));
     }
     state.account.delete_account(&auth.user, context).await?;
     let cookie = clear_session_cookie(&state.cookie_config);

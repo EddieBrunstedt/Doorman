@@ -4,16 +4,16 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_core::audit::{AuditEventKind, AuthFailureReason};
-use bauth_core::clock::Clock;
-use bauth_core::error::Error;
-use bauth_core::memory::InMemoryRateLimiter;
-use bauth_core::passkey::{PasskeyConfig, PasskeyRateLimits};
-use bauth_core::rate_limit::{RateLimitPolicy, RateLimiter};
-use bauth_core::session::SessionContext;
-use bauth_core::storage::{PasskeyChallengeStore, PasskeyCredentialStore, UserId};
-use bauth_test_support::MockClock;
 use chrono::Duration as ChronoDuration;
+use doorman_core::audit::{AuditEventKind, AuthFailureReason};
+use doorman_core::clock::Clock;
+use doorman_core::error::Error;
+use doorman_core::memory::InMemoryRateLimiter;
+use doorman_core::passkey::{PasskeyConfig, PasskeyRateLimits};
+use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
+use doorman_core::session::SessionContext;
+use doorman_core::storage::{PasskeyChallengeStore, PasskeyCredentialStore, UserId};
+use doorman_test_support::MockClock;
 
 use common::{
     Harness, RP_ID, RP_NAME, assert_discoverable_request_options,
@@ -942,7 +942,7 @@ async fn authenticate_finish_is_rate_limited_per_credential() {
 
 #[tokio::test]
 async fn successful_login_records_login_and_latency_metrics() {
-    use bauth_core::metrics::MetricEvent;
+    use doorman_core::metrics::MetricEvent;
 
     let h = Harness::fresh();
     let user = make_user(&h, "metrics@example.com").await;
@@ -980,7 +980,7 @@ async fn successful_login_records_login_and_latency_metrics() {
 
 #[tokio::test]
 async fn failed_login_records_auth_failure_and_latency_metrics() {
-    use bauth_core::metrics::MetricEvent;
+    use doorman_core::metrics::MetricEvent;
 
     let h = Harness::fresh();
     let user = make_user(&h, "gone@example.com").await;

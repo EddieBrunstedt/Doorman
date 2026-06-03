@@ -13,28 +13,28 @@
 //! Run with:
 //!
 //! ```sh
-//! cargo bench -p bauth-core --bench enrollment
+//! cargo bench -p doorman-core --bench enrollment
 //! ```
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_core::audit::{AuditSink, NoopAuditSink};
-use bauth_core::clock::{Clock, SystemClock};
-use bauth_core::context::CoreDeps;
-use bauth_core::email::{DefaultBauthEmails, EmailSender, SecurityEmailNotifier};
-use bauth_core::memory::{
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use doorman_core::audit::{AuditSink, NoopAuditSink};
+use doorman_core::clock::{Clock, SystemClock};
+use doorman_core::context::CoreDeps;
+use doorman_core::email::{DefaultDoormanEmails, EmailSender, SecurityEmailNotifier};
+use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
 };
-use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
-use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
-use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
-use bauth_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
-use bauth_core::storage::{SessionStore, Storage};
-use bauth_core::verification::EnrollmentFlow;
-use bauth_test_support::CapturingEmailSender;
-use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
+use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
+use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
+use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
+use doorman_core::storage::{SessionStore, Storage};
+use doorman_core::verification::EnrollmentFlow;
+use doorman_test_support::CapturingEmailSender;
 use tokio::runtime::Runtime;
 use url::Url;
 
@@ -69,7 +69,7 @@ fn signup_manager() -> SignupManager {
         passkey_challenges: challenges,
     };
     let email = email as Arc<dyn EmailSender>;
-    let notifier = SecurityEmailNotifier::new(email.clone(), Arc::new(DefaultBauthEmails));
+    let notifier = SecurityEmailNotifier::new(email.clone(), Arc::new(DefaultDoormanEmails));
     let deps = CoreDeps::new(
         clock,
         audit,
@@ -85,7 +85,7 @@ fn signup_manager() -> SignupManager {
         PasskeyConfig::new(
             "localhost",
             Url::parse("http://localhost:8080").expect("rp origin"),
-            "bauth bench",
+            "doorman bench",
         ),
     )
     .expect("build passkey manager");

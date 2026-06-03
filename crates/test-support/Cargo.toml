@@ -1,12 +1,12 @@
 [package]
-name = "bauth-test-support"
+name = "doorman-test-support"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Test-only collaborators (mock clock, in-memory audit sink, capturing email sender) shared by the bauth test suites. Not published."
+description = "Test-only collaborators (mock clock, in-memory audit sink, capturing email sender) shared by the doorman test suites. Not published."
 publish = false
 
 [lints]
@@ -14,5 +14,5 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
-bauth-core = { path = "../core", version = "0.1.0" }
+doorman-core = { path = "../core", version = "0.1.0" }
 chrono.workspace = true

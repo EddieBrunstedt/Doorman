@@ -1,7 +1,7 @@
 //! Clock abstraction used by managers and tests.
 //!
 //! Production code usually uses [`SystemClock`]. Tests use the `MockClock`
-//! from `bauth-test-support` to make expiry and rate-limit behaviour
+//! from `doorman-test-support` to make expiry and rate-limit behaviour
 //! deterministic.
 
 use chrono::{DateTime, Utc};

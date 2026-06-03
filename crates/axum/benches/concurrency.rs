@@ -18,21 +18,21 @@
 //! Run with:
 //!
 //! ```sh
-//! cargo bench -p bauth-axum --bench concurrency
+//! cargo bench -p doorman-axum --bench concurrency
 //! ```
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_axum::{SessionCache, SessionCacheConfig};
-use bauth_core::audit::{AuditSink, NoopAuditSink};
-use bauth_core::clock::{Clock, SystemClock};
-use bauth_core::memory::{InMemorySessionStore, InMemoryUserStore};
-use bauth_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
-use bauth_core::storage::{SessionStore, TokenHash, User, UserId, UserStore};
 use chrono::Utc;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use doorman_axum::{SessionCache, SessionCacheConfig};
+use doorman_core::audit::{AuditSink, NoopAuditSink};
+use doorman_core::clock::{Clock, SystemClock};
+use doorman_core::memory::{InMemorySessionStore, InMemoryUserStore};
+use doorman_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
+use doorman_core::storage::{SessionStore, TokenHash, User, UserId, UserStore};
 use tokio::runtime::Builder;
 use tokio::task::JoinSet;
 

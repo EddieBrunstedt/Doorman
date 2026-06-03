@@ -12,34 +12,34 @@
 //!   check, user-handle binding, session issue) is timed.
 //!
 //! `SoftPasskey` cannot mint resident keys, so registration relaxes the
-//! resident-key flags locally (bauth still issues `residentKey=required`)
+//! resident-key flags locally (doorman still issues `residentKey=required`)
 //! and the bench records the user handle to replay it on authentication,
 //! mirroring the test harness's `ResidentTestAuthenticator`.
 //!
 //! Run with:
 //!
 //! ```sh
-//! cargo bench -p bauth-core --bench passkey_auth
+//! cargo bench -p doorman-core --bench passkey_auth
 //! ```
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use bauth_core::audit::{AuditSink, NoopAuditSink};
-use bauth_core::clock::{Clock, SystemClock};
-use bauth_core::context::CoreDeps;
-use bauth_core::email::{DefaultBauthEmails, EmailSender, SecurityEmailNotifier};
-use bauth_core::memory::{
+use chrono::Utc;
+use criterion::{Criterion, criterion_group, criterion_main};
+use doorman_core::audit::{AuditSink, NoopAuditSink};
+use doorman_core::clock::{Clock, SystemClock};
+use doorman_core::context::CoreDeps;
+use doorman_core::email::{DefaultDoormanEmails, EmailSender, SecurityEmailNotifier};
+use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
 };
-use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
-use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
-use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
-use bauth_core::storage::{SessionStore, Storage, User, UserId, UserStore};
-use bauth_test_support::CapturingEmailSender;
-use chrono::Utc;
-use criterion::{Criterion, criterion_group, criterion_main};
+use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
+use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
+use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
+use doorman_core::storage::{SessionStore, Storage, User, UserId, UserStore};
+use doorman_test_support::CapturingEmailSender;
 use tokio::runtime::Runtime;
 use url::Url;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
@@ -97,7 +97,7 @@ async fn build_scaffold() -> Scaffold {
         passkey_challenges: challenges,
     };
     let email = email as Arc<dyn EmailSender>;
-    let notifier = SecurityEmailNotifier::new(email.clone(), Arc::new(DefaultBauthEmails));
+    let notifier = SecurityEmailNotifier::new(email.clone(), Arc::new(DefaultDoormanEmails));
     let deps = CoreDeps::new(
         clock,
         audit,
@@ -112,7 +112,7 @@ async fn build_scaffold() -> Scaffold {
         PasskeyConfig::new(
             "localhost",
             Url::parse("http://localhost:8080").expect("rp origin"),
-            "bauth bench",
+            "doorman bench",
         ),
     )
     .expect("build passkey manager");

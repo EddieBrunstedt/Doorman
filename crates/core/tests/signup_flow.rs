@@ -3,17 +3,17 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_core::audit::AuditEventKind;
-use bauth_core::clock::Clock;
-use bauth_core::email::{BauthEmails, Email};
-use bauth_core::error::Error;
-use bauth_core::memory::InMemoryRateLimiter;
-use bauth_core::rate_limit::{RateLimitPolicy, RateLimiter};
-use bauth_core::session::SessionContext;
-use bauth_core::signup::{SignupConfig, SignupRateLimits};
-use bauth_core::storage::{User, UserStore};
-use bauth_test_support::MockClock;
 use chrono::Duration as ChronoDuration;
+use doorman_core::audit::AuditEventKind;
+use doorman_core::clock::Clock;
+use doorman_core::email::{DoormanEmails, Email};
+use doorman_core::error::Error;
+use doorman_core::memory::InMemoryRateLimiter;
+use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
+use doorman_core::session::SessionContext;
+use doorman_core::signup::{SignupConfig, SignupRateLimits};
+use doorman_core::storage::{User, UserStore};
+use doorman_test_support::MockClock;
 
 use common::{
     Harness, RECOVERY_URL, SIGNUP_URL, authenticator, kinds, provision_user, signup_config,
@@ -457,7 +457,7 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
 
 struct BrandedEmails;
 
-impl BauthEmails for BrandedEmails {
+impl DoormanEmails for BrandedEmails {
     fn signup_email(&self, user: &User, url: &str) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),

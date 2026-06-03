@@ -9,16 +9,16 @@ mod common;
 
 use axum::Router;
 use axum::http::StatusCode;
-use bauth_axum::dto::{
-    AuthResponse, PasskeyChallenge, RecoveryConsumeRequest, RecoveryRequest,
-    RegistrationFinishRequest, SignupRequest,
-};
-use bauth_core::storage::PasskeyCredentialStore;
 use chrono::Duration as ChronoDuration;
 use common::{
     RECOVERY_URL, ResidentHttpAuthenticator, SignupClient, TestApp, token_from_email,
     token_from_email_with,
 };
+use doorman_axum::dto::{
+    AuthResponse, PasskeyChallenge, RecoveryConsumeRequest, RecoveryRequest,
+    RegistrationFinishRequest, SignupRequest,
+};
+use doorman_core::storage::PasskeyCredentialStore;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::prelude::Url as AuthUrl;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
@@ -447,7 +447,7 @@ async fn delete_passkey_during_cooldown_returns_409() {
         .await
         .expect("list");
     assert_eq!(list.status(), StatusCode::OK);
-    let passkeys: Vec<bauth_axum::dto::PasskeyDto> = list.json().await.expect("list body");
+    let passkeys: Vec<doorman_axum::dto::PasskeyDto> = list.json().await.expect("list body");
     let first = passkeys.first().expect("at least one passkey").clone();
 
     let mail_before_delete = app.email.sent().len();
@@ -572,7 +572,7 @@ async fn recovery_passkey_login_during_cooldown_cannot_delete_passkeys_or_revoke
         .await
         .expect("list passkeys");
     assert_eq!(list.status(), StatusCode::OK);
-    let passkeys: Vec<bauth_axum::dto::PasskeyDto> = list.json().await.expect("list body");
+    let passkeys: Vec<doorman_axum::dto::PasskeyDto> = list.json().await.expect("list body");
     let first = passkeys.first().expect("at least one passkey").clone();
 
     let delete_passkey = plain

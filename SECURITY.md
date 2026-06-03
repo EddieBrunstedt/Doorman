@@ -22,7 +22,7 @@ for an unfixed vulnerability.
 
 ## Supported versions
 
-bauth is pre-1.0. Only the latest published `0.x` release receives security
+doorman is pre-1.0. Only the latest published `0.x` release receives security
 fixes; there are no long-term-support branches before 1.0. Pin a version and
 upgrade forward to pick up fixes.
 

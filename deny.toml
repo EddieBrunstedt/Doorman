@@ -12,7 +12,7 @@ ignore = []
 
 [licenses]
 version = 2
-# bauth is dual-licensed MIT OR Apache-2.0; its dependencies must carry an
+# doorman is dual-licensed MIT OR Apache-2.0; its dependencies must carry an
 # OSI-approved permissive license.
 allow = [
     "MIT",

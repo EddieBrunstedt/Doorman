@@ -28,7 +28,7 @@ macro_rules! sqlx_stores {
         placeholders: $ph:path $(,)?
     ) => {
         impl $storage {
-            /// Build a [`Storage`](bauth_core::storage::Storage) populated with
+            /// Build a [`Storage`](doorman_core::storage::Storage) populated with
             /// every per-concern store backed by this pool.
             pub fn storage(&self) -> $crate::stores::__reexport::Storage {
                 $crate::stores::__reexport::Storage {
@@ -856,12 +856,12 @@ pub(crate) use sqlx_stores;
 /// Items the generated store bodies reference, re-exported under one path so
 /// the macro can name them without each dialect module importing them.
 pub(crate) mod __reexport {
-    pub use bauth_core::error::{StorageError, StorageResult};
-    pub use bauth_core::storage::{
+    pub use chrono::{DateTime, Utc};
+    pub use doorman_core::error::{StorageError, StorageResult};
+    pub use doorman_core::storage::{
         PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,
         SessionId, SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication,
         StoredPasskeyRegistration, TokenHash, User, UserId, UserStore, VerificationPurpose,
         VerificationToken, VerificationTokenStore,
     };
-    pub use chrono::{DateTime, Utc};
 }

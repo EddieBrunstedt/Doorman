@@ -1,15 +1,15 @@
 [package]
-name = "bauth-sqlx"
+name = "doorman-sqlx"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "SQLx-backed storage adapter for the bauth authentication library (SQLite and Postgres)."
+description = "SQLx-backed storage adapter for the doorman authentication library (SQLite and Postgres)."
 keywords = ["authentication", "passkey", "sqlx", "sqlite", "postgres"]
 categories = ["authentication", "database"]
-documentation = "https://docs.rs/bauth-sqlx"
+documentation = "https://docs.rs/doorman-sqlx"
 readme = "README.md"
 
 [features]
@@ -25,7 +25,7 @@ all-features = true
 
 [dependencies]
 async-trait.workspace = true
-bauth-core = { path = "../core", version = "0.1.0" }
+doorman-core = { path = "../core", version = "0.1.0" }
 chrono.workspace = true
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "chrono", "uuid", "macros", "migrate"] }
 uuid.workspace = true

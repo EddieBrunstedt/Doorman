@@ -8,7 +8,7 @@
 //! per-flow rate limiters); everything else is fixed test defaults.
 //!
 //! [`ResidentTestAuthenticator`] is the one shared WebAuthn test client:
-//! `SoftPasskey` cannot mint resident keys, so it verifies bauth's
+//! `SoftPasskey` cannot mint resident keys, so it verifies doorman's
 //! server-issued options, then relaxes only the local input and records
 //! the credential as if it were discoverable.
 //!
@@ -21,28 +21,28 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_core::account::{AccountConfig, AccountManager};
-use bauth_core::audit::{AuditEvent, AuditEventKind, AuditSink};
-use bauth_core::clock::Clock;
-use bauth_core::context::CoreDeps;
-use bauth_core::email::{DefaultBauthEmails, EmailSender, SecurityEmailNotifier};
-use bauth_core::memory::{
+use doorman_core::account::{AccountConfig, AccountManager};
+use doorman_core::audit::{AuditEvent, AuditEventKind, AuditSink};
+use doorman_core::clock::Clock;
+use doorman_core::context::CoreDeps;
+use doorman_core::email::{DefaultDoormanEmails, EmailSender, SecurityEmailNotifier};
+use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
 };
-use bauth_core::metrics::Metrics;
-use bauth_core::passkey::{PasskeyConfig, PasskeyManager};
-use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
-use bauth_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
-use bauth_core::session::{SessionConfig, SessionContext, SessionManager};
-use bauth_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
-use bauth_core::storage::{SessionStore, Storage, StoredPasskey, User, UserId, UserStore};
-use bauth_core::verification::EnrollmentFlow;
-use bauth_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
+use doorman_core::metrics::Metrics;
+use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
+use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
+use doorman_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
+use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
+use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
+use doorman_core::storage::{SessionStore, Storage, StoredPasskey, User, UserId, UserStore};
+use doorman_core::verification::EnrollmentFlow;
+use doorman_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
 // Re-export the shared token extractor so the flow suites can keep importing
-// it from `common` while the one implementation lives in `bauth-test-support`.
-pub use bauth_test_support::token_from_email;
+// it from `common` while the one implementation lives in `doorman-test-support`.
 use chrono::{DateTime, TimeZone, Utc};
+pub use doorman_test_support::token_from_email;
 use url::Url;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::prelude::Url as AuthUrl;
@@ -57,7 +57,7 @@ pub const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 pub const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
 pub const ACCOUNT_URL: &str = "https://app.test/email-change?token={token}";
 pub const RP_ID: &str = "localhost";
-pub const RP_NAME: &str = "bauth tests";
+pub const RP_NAME: &str = "doorman tests";
 
 pub fn rp_origin() -> Url {
     Url::parse("http://localhost:8080").expect("valid url")
@@ -211,7 +211,7 @@ impl HarnessBuilder {
 
         let notifier = SecurityEmailNotifier::new(
             email.clone() as Arc<dyn EmailSender>,
-            Arc::new(DefaultBauthEmails),
+            Arc::new(DefaultDoormanEmails),
         );
         let session_manager = SessionManager::new(
             sessions.clone() as Arc<dyn SessionStore>,
@@ -376,7 +376,7 @@ struct ResidentCredential {
 }
 
 /// Test authenticator wrapping a `SoftPasskey`. `SoftPasskey` cannot create
-/// resident keys, so on registration it verifies bauth's server-issued
+/// resident keys, so on registration it verifies doorman's server-issued
 /// options, relaxes only the local input, and records the credential's
 /// user handle as if it had been stored discoverably.
 pub struct ResidentTestAuthenticator {

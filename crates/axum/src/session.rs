@@ -20,11 +20,11 @@ use std::task::{Context, Poll};
 use axum::body::Body;
 use axum::http::{HeaderMap, Request};
 use axum::response::Response;
-use bauth_core::clock::Clock;
-use bauth_core::metrics::{MetricEvent, Metrics};
-use bauth_core::session::SessionManager;
-use bauth_core::storage::{Session, User, UserStore};
-use bauth_core::token::hash_token;
+use doorman_core::clock::Clock;
+use doorman_core::metrics::{MetricEvent, Metrics};
+use doorman_core::session::SessionManager;
+use doorman_core::storage::{Session, User, UserStore};
+use doorman_core::token::hash_token;
 use tower_layer::Layer;
 use tower_service::Service;
 use tracing::Instrument;
@@ -69,7 +69,7 @@ pub(crate) struct SessionLayerState {
 }
 
 /// Tower layer constructed via
-/// [`BauthAxum::session_layer`](crate::BauthAxum::session_layer) and applied
+/// [`DoormanAxum::session_layer`](crate::DoormanAxum::session_layer) and applied
 /// once to the router that mounts the auth routes (and any application
 /// routes that want `AuthUser` extraction to work).
 #[derive(Clone)]
@@ -124,7 +124,7 @@ where
         let mut inner = std::mem::replace(&mut self.inner, clone);
         let state = self.state.clone();
         let span = tracing::info_span!(
-            "bauth.session",
+            "doorman.session",
             session_id = tracing::field::Empty,
             user_id = tracing::field::Empty,
         );
@@ -212,10 +212,10 @@ mod tests {
         );
         headers.insert(
             header::COOKIE,
-            HeaderValue::from_static("bauth_session=cookie-token"),
+            HeaderValue::from_static("doorman_session=cookie-token"),
         );
         assert_eq!(
-            extract_token(&headers, "bauth_session"),
+            extract_token(&headers, "doorman_session"),
             Some("header-token".into())
         );
     }
@@ -225,10 +225,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
-            HeaderValue::from_static("bauth_session=cookie-token"),
+            HeaderValue::from_static("doorman_session=cookie-token"),
         );
         assert_eq!(
-            extract_token(&headers, "bauth_session"),
+            extract_token(&headers, "doorman_session"),
             Some("cookie-token".into())
         );
     }
@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn no_token_returns_none() {
         let headers = HeaderMap::new();
-        assert_eq!(extract_token(&headers, "bauth_session"), None);
+        assert_eq!(extract_token(&headers, "doorman_session"), None);
     }
 
     #[test]
@@ -245,10 +245,10 @@ mod tests {
         headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer  "));
         headers.insert(
             header::COOKIE,
-            HeaderValue::from_static("bauth_session=cookie-token"),
+            HeaderValue::from_static("doorman_session=cookie-token"),
         );
         assert_eq!(
-            extract_token(&headers, "bauth_session"),
+            extract_token(&headers, "doorman_session"),
             Some("cookie-token".into())
         );
     }

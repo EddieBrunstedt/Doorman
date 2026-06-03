@@ -15,15 +15,15 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use axum::{Router, routing::get};
-use bauth_axum::dto::{
+use common::ResidentHttpAuthenticator;
+use doorman_axum::dto::{
     AuthResponse, PasskeyChallenge, RecoveryConsumeRequest, RecoveryRequest,
     RegistrationFinishRequest, SignupConsumeRequest, SignupRequest,
 };
-use bauth_axum::prelude::*;
-use bauth_core::verification::TOKEN_PLACEHOLDER;
-use bauth_sqlx::SqliteStorage;
-use bauth_test_support::CapturingEmailSender;
-use common::ResidentHttpAuthenticator;
+use doorman_axum::prelude::*;
+use doorman_core::verification::TOKEN_PLACEHOLDER;
+use doorman_sqlx::SqliteStorage;
+use doorman_test_support::CapturingEmailSender;
 use tokio::net::TcpListener;
 use url::Url;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
@@ -42,7 +42,7 @@ async fn readme_quickstart_snippet_compiles() -> std::result::Result<(), Box<dyn
     storage.migrate().await?;
     let origin: Url = "http://localhost:3000".parse()?;
     let base = origin.as_str().trim_end_matches('/');
-    let auth = BauthAxum::builder(storage.storage())
+    let auth = DoormanAxum::builder(storage.storage())
         .email(Arc::new(TerminalEmailSender))
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
         .signup(SignupConfig {
@@ -87,8 +87,8 @@ async fn readme_quickstart_drives_signup_login_recovery() {
     let email = Arc::new(CapturingEmailSender::new());
     let origin: Url = ORIGIN.parse().expect("origin");
     let base = origin.as_str().trim_end_matches('/');
-    let auth = BauthAxum::builder(storage.storage())
-        .email(email.clone() as Arc<dyn bauth_core::email::EmailSender>)
+    let auth = DoormanAxum::builder(storage.storage())
+        .email(email.clone() as Arc<dyn doorman_core::email::EmailSender>)
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
         .signup(SignupConfig {
             url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"),
@@ -147,7 +147,7 @@ async fn readme_quickstart_drives_signup_login_recovery() {
     let signup_token = {
         let sent = email.sent();
         let body = &sent.last().expect("signup email queued").body_text;
-        bauth_test_support::token_from_email(body, SIGNUP_TEMPLATE)
+        doorman_test_support::token_from_email(body, SIGNUP_TEMPLATE)
     };
 
     let consume = client
@@ -231,7 +231,7 @@ async fn readme_quickstart_drives_signup_login_recovery() {
             .expect("recovery link queued")
             .body_text
             .clone();
-        bauth_test_support::token_from_email(&body, RECOVERY_TEMPLATE)
+        doorman_test_support::token_from_email(&body, RECOVERY_TEMPLATE)
     };
 
     let consume = client

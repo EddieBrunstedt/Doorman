@@ -1,4 +1,4 @@
--- Reference schema for the bauth SQLx+SQLite adapter.
+-- Reference schema for the doorman SQLx+SQLite adapter.
 --
 -- All UUIDs and 32-byte token hashes are stored as BLOB. Timestamps are
 -- stored as TEXT in RFC3339, matching what `sqlx`'s `chrono::DateTime<Utc>`

@@ -1,4 +1,4 @@
-//! Session-cache microbenchmarks for the real `bauth-axum` request cache.
+//! Session-cache microbenchmarks for the real `doorman-axum` request cache.
 //!
 //! These benches intentionally do **not** drive the full `SessionLayer` or
 //! router. They isolate the cache component that the layer uses on real
@@ -18,20 +18,20 @@
 //! Run with:
 //!
 //! ```sh
-//! cargo bench -p bauth-axum --bench session_cache
+//! cargo bench -p doorman-axum --bench session_cache
 //! ```
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_axum::{SessionCache, SessionCacheConfig};
-use bauth_core::audit::{AuditSink, NoopAuditSink};
-use bauth_core::clock::{Clock, SystemClock};
-use bauth_core::memory::{InMemorySessionStore, InMemoryUserStore};
-use bauth_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
-use bauth_core::storage::{SessionStore, User, UserId, UserStore};
 use chrono::Utc;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use doorman_axum::{SessionCache, SessionCacheConfig};
+use doorman_core::audit::{AuditSink, NoopAuditSink};
+use doorman_core::clock::{Clock, SystemClock};
+use doorman_core::memory::{InMemorySessionStore, InMemoryUserStore};
+use doorman_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
+use doorman_core::storage::{SessionStore, User, UserId, UserStore};
 use tokio::runtime::Runtime;
 
 struct Scaffold {

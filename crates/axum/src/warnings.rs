@@ -1,7 +1,7 @@
 //! Startup sanity checks.
 //!
 //! Both [`ManagerBuilder::build`](crate::manager_builder::ManagerBuilder::build)
-//! and [`BauthBuilder::build`](crate::builder::BauthBuilder::build)
+//! and [`DoormanBuilder::build`](crate::builder::DoormanBuilder::build)
 //! produce a [`Warnings`] snapshot describing apparent misconfigurations
 //! (insecure cookies in apparent production, a [`NoopAuditSink`], an
 //! [`InMemoryRateLimiter`] in a multi-replica-friendly deployment, etc.)
@@ -12,17 +12,17 @@
 //! Hosts that have made an informed choice silence the warnings via
 //! `.silence_warnings()` on either builder.
 //!
-//! [`NoopAuditSink`]: bauth_core::audit::NoopAuditSink
-//! [`InMemoryRateLimiter`]: bauth_core::memory::InMemoryRateLimiter
+//! [`NoopAuditSink`]: doorman_core::audit::NoopAuditSink
+//! [`InMemoryRateLimiter`]: doorman_core::memory::InMemoryRateLimiter
 
 use std::any::Any;
 
-use bauth_core::audit::{AuditSink, NoopAuditSink};
+use doorman_core::audit::{AuditSink, NoopAuditSink};
 #[cfg(feature = "file-email")]
-use bauth_core::email::FileEmailSender;
-use bauth_core::email::{EmailSender, TerminalEmailSender};
-use bauth_core::memory::InMemoryRateLimiter;
-use bauth_core::rate_limit::{NoopRateLimiter, RateLimiter};
+use doorman_core::email::FileEmailSender;
+use doorman_core::email::{EmailSender, TerminalEmailSender};
+use doorman_core::memory::InMemoryRateLimiter;
+use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 
 use crate::config::CookieConfig;
 
@@ -97,9 +97,9 @@ pub struct Warnings {
     /// is being printed to stdout or written to disk, not delivered to
     /// users.
     pub dev_email_transport: bool,
-    /// A custom [`BauthEmails`](bauth_core::email::BauthEmails) renderer was
+    /// A custom [`DoormanEmails`](doorman_core::email::DoormanEmails) renderer was
     /// set on one flow (signup or recovery) but no shared renderer was wired
-    /// via [`BauthBuilder::emails`](crate::BauthBuilder::emails), so the other
+    /// via [`DoormanBuilder::emails`](crate::DoormanBuilder::emails), so the other
     /// flow and the security notices still send the stock copy. Branding is
     /// partial; use `.emails(..)` for one consistent renderer.
     pub partial_email_branding: bool,
@@ -155,7 +155,7 @@ impl Warnings {
             out.push(
                 "A custom email renderer was set on only one flow. The other flow and the \
                  security notices still use the stock copy. Wire one renderer for every flow \
-                 with BauthBuilder::emails(..), or silence this with .silence_warnings() once \
+                 with DoormanBuilder::emails(..), or silence this with .silence_warnings() once \
                  you have made an informed choice.",
             );
         }
@@ -194,9 +194,9 @@ impl Warnings {
             tracing::dispatcher::get_default(|d| !d.is::<tracing::subscriber::NoSubscriber>());
         for msg in self.messages() {
             if has_subscriber {
-                tracing::warn!(target: "bauth", "{msg}");
+                tracing::warn!(target: "doorman", "{msg}");
             } else {
-                eprintln!("bauth: warning: {msg}");
+                eprintln!("doorman: warning: {msg}");
             }
         }
     }

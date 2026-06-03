@@ -27,7 +27,7 @@ use chrono::{DateTime, Utc};
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
-use crate::email::{BauthEmails, Email, EmailSender, default_emails};
+use crate::email::{DoormanEmails, Email, EmailSender, default_emails};
 use crate::error::{Error, Result};
 use crate::session::{SessionContext, SessionManager};
 use crate::storage::{
@@ -56,9 +56,9 @@ pub struct AccountConfig {
     /// `{token}` is replaced with the generated token at send time.
     pub url_template: String,
     /// Renderer for the email-change emails. `None` falls back to the renderer
-    /// the composition root threads in (see `BauthBuilder::emails`), and to
-    /// [`DefaultBauthEmails`](crate::email::DefaultBauthEmails) if none was set.
-    pub emails: Option<Arc<dyn BauthEmails>>,
+    /// the composition root threads in (see `DoormanBuilder::emails`), and to
+    /// [`DefaultDoormanEmails`](crate::email::DefaultDoormanEmails) if none was set.
+    pub emails: Option<Arc<dyn DoormanEmails>>,
 }
 
 impl Default for AccountConfig {
@@ -82,7 +82,7 @@ pub struct AccountManager {
     clock: Arc<dyn Clock>,
     audit: Arc<dyn AuditSink>,
     email: Arc<dyn EmailSender>,
-    emails: Arc<dyn BauthEmails>,
+    emails: Arc<dyn DoormanEmails>,
     config: AccountConfig,
 }
 

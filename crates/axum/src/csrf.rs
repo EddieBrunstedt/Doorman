@@ -3,7 +3,7 @@
 //! Cookie-backed sessions are ambient authority: a browser will attach the
 //! session cookie to a cross-site form POST unless the application rejects
 //! the request. [`CsrfLayer`] implements the simple, storage-free defence
-//! bauth recommends for Axum hosts: state-changing requests that carry the
+//! doorman recommends for Axum hosts: state-changing requests that carry the
 //! configured session cookie must present a same-origin `Origin` header, or
 //! a same-origin `Referer` when `Origin` is absent. Requests authenticated
 //! with `Authorization: Bearer ...` are not in CSRF scope.
@@ -65,10 +65,10 @@ impl CsrfConfig {
 }
 
 /// Tower layer that rejects cross-site state-changing requests carrying a
-/// bauth session cookie.
+/// doorman session cookie.
 ///
-/// [`BauthAxum`](crate::BauthAxum) wires the same check into
-/// [`session_layer`](crate::BauthAxum::session_layer) automatically when
+/// [`DoormanAxum`](crate::DoormanAxum) wires the same check into
+/// [`session_layer`](crate::DoormanAxum::session_layer) automatically when
 /// an external origin is configured. Use this standalone layer only when
 /// composing your own middleware stack.
 #[derive(Clone)]
@@ -248,7 +248,7 @@ mod tests {
         if cookie {
             headers.insert(
                 header::COOKIE,
-                HeaderValue::from_static("bauth_session=tok"),
+                HeaderValue::from_static("doorman_session=tok"),
             );
         }
         if let Some(origin) = origin {
@@ -266,7 +266,7 @@ mod tests {
         assert!(!should_reject(
             &Method::POST,
             &headers,
-            "bauth_session",
+            "doorman_session",
             &config()
         ));
     }
@@ -277,7 +277,7 @@ mod tests {
         assert!(should_reject(
             &Method::POST,
             &headers,
-            "bauth_session",
+            "doorman_session",
             &config()
         ));
     }
@@ -288,7 +288,7 @@ mod tests {
         assert!(!should_reject(
             &Method::DELETE,
             &headers,
-            "bauth_session",
+            "doorman_session",
             &config()
         ));
     }
@@ -303,7 +303,7 @@ mod tests {
         assert!(should_reject(
             &Method::POST,
             &headers,
-            "bauth_session",
+            "doorman_session",
             &config()
         ));
     }
@@ -318,7 +318,7 @@ mod tests {
         assert!(!should_reject(
             &Method::POST,
             &headers,
-            "bauth_session",
+            "doorman_session",
             &config()
         ));
     }
@@ -332,7 +332,7 @@ mod tests {
         assert!(should_reject(
             &Method::POST,
             &headers,
-            "bauth_session",
+            "doorman_session",
             &config()
         ));
     }
@@ -344,7 +344,7 @@ mod tests {
         assert!(!should_reject(
             &Method::POST,
             &headers,
-            "bauth_session",
+            "doorman_session",
             &config()
         ));
     }
@@ -355,7 +355,7 @@ mod tests {
         assert!(!should_reject(
             &Method::GET,
             &headers,
-            "bauth_session",
+            "doorman_session",
             &config()
         ));
     }
@@ -366,7 +366,7 @@ mod tests {
         assert!(!should_reject(
             &Method::POST,
             &headers,
-            "bauth_session",
+            "doorman_session",
             &CsrfConfig::disabled()
         ));
     }

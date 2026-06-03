@@ -10,10 +10,10 @@ use axum::extract::FromRequestParts;
 use axum::http::HeaderMap;
 use axum::http::header::USER_AGENT;
 use axum::http::request::Parts;
-use bauth_core::Error;
-use bauth_core::clock::Clock;
-use bauth_core::session::SessionContext;
-use bauth_core::storage::{Session, User};
+use doorman_core::Error;
+use doorman_core::clock::Clock;
+use doorman_core::session::SessionContext;
+use doorman_core::storage::{Session, User};
 
 use crate::error::ErrorResponse;
 use crate::session::AuthContext;
@@ -91,7 +91,7 @@ impl AuthSession {
     /// `true` if the underlying session is still within the post-recovery
     /// cool-down window, judged by the same clock the session layer resolved
     /// the request through. Handlers gate destructive actions on this and
-    /// return [`bauth_core::Error::RecoveryCooldownActive`] when it holds.
+    /// return [`doorman_core::Error::RecoveryCooldownActive`] when it holds.
     pub fn is_in_recovery_cooldown(&self) -> bool {
         self.session.is_in_recovery_cooldown(self.clock.now())
     }
@@ -191,10 +191,10 @@ mod tests {
 
     #[test]
     fn auth_session_cooldown_answers_through_injected_clock() {
-        use bauth_core::storage::{Session, SessionId, UserId};
-        use bauth_core::token::hash_token;
-        use bauth_test_support::MockClock;
         use chrono::{Duration, TimeZone, Utc};
+        use doorman_core::storage::{Session, SessionId, UserId};
+        use doorman_core::token::hash_token;
+        use doorman_test_support::MockClock;
 
         let start = Utc
             .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)

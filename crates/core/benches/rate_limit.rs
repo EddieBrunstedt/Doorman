@@ -8,16 +8,16 @@
 //! Run with:
 //!
 //! ```sh
-//! cargo bench -p bauth-core --bench rate_limit
+//! cargo bench -p doorman-core --bench rate_limit
 //! ```
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use bauth_core::clock::{Clock, SystemClock};
-use bauth_core::memory::InMemoryRateLimiter;
-use bauth_core::rate_limit::{RateLimitKey, RateLimitPolicy, RateLimiter};
 use criterion::{Criterion, criterion_group, criterion_main};
+use doorman_core::clock::{Clock, SystemClock};
+use doorman_core::memory::InMemoryRateLimiter;
+use doorman_core::rate_limit::{RateLimitKey, RateLimitPolicy, RateLimiter};
 use tokio::runtime::Runtime;
 
 fn rate_limit(c: &mut Criterion) {

@@ -1,4 +1,4 @@
-//! SQLx-backed storage adapter for `bauth-core`.
+//! SQLx-backed storage adapter for `doorman-core`.
 //!
 //! Two adapters ship behind cargo features:
 //!
@@ -6,12 +6,12 @@
 //! - `postgres` — `PostgresStorage` for Postgres databases.
 //!
 //! Both expose `connect`, `from_pool`, `pool`, `migrate`, and `storage`.
-//! `storage()` returns a [`bauth_core::storage::Storage`] populated with
-//! every store implementation, ready to hand to `BauthAxum::builder` in
-//! `bauth-axum`.
+//! `storage()` returns a [`doorman_core::storage::Storage`] populated with
+//! every store implementation, ready to hand to `DoormanAxum::builder` in
+//! `doorman-axum`.
 //!
 //! ```ignore
-//! use bauth_sqlx::SqliteStorage;
+//! use doorman_sqlx::SqliteStorage;
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! let storage = SqliteStorage::connect("sqlite::memory:").await?;

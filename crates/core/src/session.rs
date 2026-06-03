@@ -30,7 +30,7 @@ pub struct IssuedSession {
 }
 
 /// Default session lifetime (30 days). The single source for the figure:
-/// the cookie `Max-Age` default in `bauth-axum` derives from this so the
+/// the cookie `Max-Age` default in `doorman-axum` derives from this so the
 /// two cannot drift apart.
 pub const DEFAULT_SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 
@@ -68,7 +68,7 @@ pub struct SessionContext {
 
 /// Observer that is notified whenever the [`SessionManager`] invalidates
 /// a session out-of-band of a fresh `validate()` call. Implementations
-/// live outside `bauth-core`; the canonical user is `bauth-axum`'s
+/// live outside `doorman-core`; the canonical user is `doorman-axum`'s
 /// session-resolution cache, which needs to evict stale entries when a
 /// session is revoked or a user is logged out everywhere.
 ///

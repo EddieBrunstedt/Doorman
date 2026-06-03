@@ -1,6 +1,6 @@
 //! Mountable HTTP router.
 //!
-//! [`router`] is called by [`BauthAxum::router`](crate::BauthAxum::router)
+//! [`router`] is called by [`DoormanAxum::router`](crate::DoormanAxum::router)
 //! to assemble the always-on passkey, signup, recovery, session, and account
 //! route trees.
 
@@ -8,8 +8,8 @@ use axum::Json;
 use axum::Router;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use bauth_core::storage::PasskeyChallengeId;
-use bauth_core::verification::{EnrollmentOutcome, VerificationConsumeOutcome};
+use doorman_core::storage::PasskeyChallengeId;
+use doorman_core::verification::{EnrollmentOutcome, VerificationConsumeOutcome};
 use uuid::Uuid;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
@@ -17,7 +17,7 @@ use crate::config::CookieConfig;
 use crate::cookies::session_cookie;
 use crate::dto::{AuthResponse, PasskeyChallenge};
 use crate::error::ErrorResponse;
-use crate::state::BauthState;
+use crate::state::DoormanState;
 
 pub(crate) mod account;
 pub(crate) mod passkey;
@@ -40,12 +40,12 @@ pub(crate) fn auth_success(
 
 /// Parse a client-supplied challenge id string into a
 /// [`PasskeyChallengeId`], mapping a malformed value to
-/// [`Error::InvalidPasskeyChallenge`](bauth_core::Error::InvalidPasskeyChallenge).
+/// [`Error::InvalidPasskeyChallenge`](doorman_core::Error::InvalidPasskeyChallenge).
 /// Shared by every route that echoes a challenge id back at finish time.
 pub(crate) fn parse_challenge_id(raw: &str) -> Result<PasskeyChallengeId, ErrorResponse> {
     Uuid::parse_str(raw)
         .map(PasskeyChallengeId)
-        .map_err(|_| ErrorResponse(bauth_core::Error::InvalidPasskeyChallenge))
+        .map_err(|_| ErrorResponse(doorman_core::Error::InvalidPasskeyChallenge))
 }
 
 /// Build the challenge payload returned by the signup/recovery `consume`
@@ -64,7 +64,7 @@ pub(crate) fn consume_response(
 /// issuing response. Shared by the signup/recovery `finish` steps, which
 /// differ only in which manager produced the outcome.
 pub(crate) async fn enrollment_success(
-    state: &BauthState,
+    state: &DoormanState,
     outcome: EnrollmentOutcome,
 ) -> Result<Response, ErrorResponse> {
     let passkey_count = state
@@ -79,7 +79,7 @@ pub(crate) async fn enrollment_success(
     ))
 }
 
-pub(crate) fn router(state: BauthState) -> Router {
+pub(crate) fn router(state: DoormanState) -> Router {
     Router::new()
         .merge(passkey::routes())
         .merge(signup::routes())

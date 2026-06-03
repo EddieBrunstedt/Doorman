@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>bauth minimal app</title>
+    <title>doorman minimal app</title>
     <style>
       body { font-family: system-ui, sans-serif; max-width: 920px; margin: 2rem auto; padding: 0 1rem; }
       form, section { border: 1px solid #ddd; border-radius: 8px; margin: 1rem 0; padding: 1rem; }
@@ -22,7 +22,7 @@
     </style>
   </head>
   <body>
-    <h1>bauth minimal app</h1>
+    <h1>doorman minimal app</h1>
     <p>
       Passkey-only auth with email-gated signup and recovery. Email bodies are
       printed to the server terminal; copy a link from stdout to complete a
@@ -90,7 +90,7 @@
         "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
       }[c]));
 
-      // bauth returns stable machine error codes; the host maps them to copy.
+      // doorman returns stable machine error codes; the host maps them to copy.
       // This is the jargon -> guidance table you would customise per product.
       const ERROR_GUIDANCE = {
         recovery_cooldown_active: "This action is blocked during the 24-hour recovery cool-down. You can still add a passkey and sign out of this session.",

@@ -1,4 +1,4 @@
-//! `BauthBuilder::emails` threads one renderer into every transactional
+//! `DoormanBuilder::emails` threads one renderer into every transactional
 //! email the app sends — the signup link, the recovery link, and the
 //! best-effort security notices — without the host having to brand each
 //! flow's config individually.
@@ -8,9 +8,9 @@ mod common;
 use std::sync::Arc;
 
 use axum::Router;
-use bauth_core::email::{BauthEmails, Email};
-use bauth_core::storage::User;
 use common::TestApp;
+use doorman_core::email::{DoormanEmails, Email};
+use doorman_core::storage::User;
 
 const SIGNUP_SUBJECT: &str = "Acme: finish signing up";
 const RECOVERY_SUBJECT: &str = "Acme: recover your account";
@@ -20,7 +20,7 @@ const SESSION_REVOKED_SUBJECT: &str = "Acme: a session was signed out";
 /// subjects so the test can tell branded copy from the stock default.
 struct AcmeEmails;
 
-impl BauthEmails for AcmeEmails {
+impl DoormanEmails for AcmeEmails {
     fn signup_email(&self, user: &User, url: &str) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),

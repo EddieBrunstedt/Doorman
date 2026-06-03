@@ -1,6 +1,6 @@
-# bauth minimal app
+# doorman minimal app
 
-Runnable Axum + SQLite app for the final passkey-only bauth surface.
+Runnable Axum + SQLite app for the final passkey-only doorman surface.
 
 It demonstrates:
 
@@ -17,7 +17,7 @@ It demonstrates:
 ## Run
 
 ```sh
-cargo run -p bauth-minimal-app
+cargo run -p doorman-minimal-app
 ```
 
 Open <http://localhost:3000>. The app uses `TerminalEmailSender`, so signup,
@@ -29,15 +29,15 @@ register a passkey.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | `sqlite://bauth-minimal-app.db?mode=rwc` | SQLite database URL. |
+| `DATABASE_URL` | `sqlite://doorman-minimal-app.db?mode=rwc` | SQLite database URL. |
 | `EXTERNAL_ORIGIN` | `http://localhost:3000` | Public origin used for passkeys, CSRF, and email links. |
 | `BIND_ADDR` | `127.0.0.1:3000` | Socket address to bind. |
 | `PASSKEY_RP_ID` | host from `EXTERNAL_ORIGIN` | WebAuthn relying-party id. |
-| `PASSKEY_RP_NAME` | `bauth minimal app` | WebAuthn display name. |
+| `PASSKEY_RP_NAME` | `doorman minimal app` | WebAuthn display name. |
 
 ## User-facing messages
 
-bauth returns stable machine error codes (e.g. `recovery_cooldown_active`),
+doorman returns stable machine error codes (e.g. `recovery_cooldown_active`),
 not end-user prose. The static page maps them to guidance in its
 `ERROR_GUIDANCE` table and shows the friendly text in an `role="alert"` region
 while keeping the raw code in the activity log. Edit that table to rebrand or

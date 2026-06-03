@@ -1,5 +1,5 @@
 //! Storage-adapter benches: the cost of the SQLx adapters, to compare
-//! against the in-memory reference baseline (`bauth-core`'s `session` bench).
+//! against the in-memory reference baseline (`doorman-core`'s `session` bench).
 //!
 //! Every benchmark is registered under a per-dialect criterion group so the
 //! ids read `sqlite/...` and (when enabled) `postgres/...`:
@@ -26,20 +26,20 @@
 //!
 //! ```sh
 //! # SQLite only
-//! cargo bench -p bauth-sqlx --features sqlite --bench storage
+//! cargo bench -p doorman-sqlx --features sqlite --bench storage
 //!
 //! # SQLite + Postgres
-//! PG_URL=postgres://postgres:postgres@localhost/bauth_bench \
-//!     cargo bench -p bauth-sqlx --features "sqlite postgres" --bench storage
+//! PG_URL=postgres://postgres:postgres@localhost/doorman_bench \
+//!     cargo bench -p doorman-sqlx --features "sqlite postgres" --bench storage
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use bauth_core::session::hash_token;
-use bauth_core::storage::{Session, SessionId, Storage, TokenHash, User, UserId};
 use chrono::Utc;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use doorman_core::session::hash_token;
+use doorman_core::storage::{Session, SessionId, Storage, TokenHash, User, UserId};
 use tokio::runtime::Runtime;
 
 /// Table sizes used by the scaling benches.
@@ -286,7 +286,7 @@ fn run_backend(c: &mut Criterion, runtime: &Runtime, label: &str, make: &dyn Fn(
 #[cfg(feature = "sqlite")]
 fn sqlite_storage(runtime: &Runtime) -> Storage {
     runtime.block_on(async {
-        let storage = bauth_sqlx::SqliteStorage::connect("sqlite::memory:")
+        let storage = doorman_sqlx::SqliteStorage::connect("sqlite::memory:")
             .await
             .expect("connect sqlite");
         storage.migrate().await.expect("migrate sqlite");
@@ -320,7 +320,7 @@ fn storage(c: &mut Criterion) {
                         .execute(&pool)
                         .await
                         .expect("create schema");
-                    let storage = bauth_sqlx::PostgresStorage::from_pool(pool.clone());
+                    let storage = doorman_sqlx::PostgresStorage::from_pool(pool.clone());
                     storage.migrate().await.expect("migrate postgres");
                     storage.storage()
                 })

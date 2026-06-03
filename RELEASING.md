@@ -1,13 +1,13 @@
 # Releasing
 
-This document describes how bauth is versioned and how a release is cut.
+This document describes how doorman is versioned and how a release is cut.
 
 ## Versioning policy
 
-bauth follows [Semantic Versioning](https://semver.org/). All crates in the
+doorman follows [Semantic Versioning](https://semver.org/). All crates in the
 workspace share a single version (set once in `[workspace.package]`) and are
-released together, so a given `bauth` version always pairs with the matching
-`bauth-core`, `bauth-axum`, and `bauth-sqlx`.
+released together, so a given `doorman` version always pairs with the matching
+`doorman-core`, `doorman-axum`, and `doorman-sqlx`.
 
 While the version is `0.y.z` (pre-1.0):
 
@@ -33,10 +33,10 @@ in the changelog. Treat an MSRV bump as at least a minor version change.
 3. Bump `version` in `[workspace.package]` in the root `Cargo.toml`.
 4. Run `cargo publish --dry-run` for each published crate to confirm packaging.
 5. Commit (`chore(release): vX.Y.Z`) and tag (`vX.Y.Z`).
-6. Publish the crates in dependency order: `bauth-core`, then `bauth-sqlx` and
-   `bauth-axum`, then the `bauth` umbrella.
+6. Publish the crates in dependency order: `doorman-core`, then `doorman-sqlx` and
+   `doorman-axum`, then the `doorman` umbrella.
 7. Push the tag.
 
-The published crates are `bauth-core`, `bauth-axum`, `bauth-sqlx`, and `bauth`.
-The `bauth-test-support` crate and the examples are marked `publish = false` and
+The published crates are `doorman-core`, `doorman-axum`, `doorman-sqlx`, and `doorman`.
+The `doorman-test-support` crate and the examples are marked `publish = false` and
 are never released.

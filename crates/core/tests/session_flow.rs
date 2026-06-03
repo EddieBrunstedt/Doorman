@@ -3,19 +3,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bauth_core::audit::{AuditEventKind, AuditSink};
-use bauth_core::clock::{Clock, SystemClock};
-use bauth_core::email::{DefaultBauthEmails, Email, EmailSender, SecurityEmailNotifier};
-use bauth_core::error::Error;
-use bauth_core::memory::{InMemorySessionStore, InMemoryUserStore};
-use bauth_core::session::{
+use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
+use doorman_core::audit::{AuditEventKind, AuditSink};
+use doorman_core::clock::{Clock, SystemClock};
+use doorman_core::email::{DefaultDoormanEmails, Email, EmailSender, SecurityEmailNotifier};
+use doorman_core::error::Error;
+use doorman_core::memory::{InMemorySessionStore, InMemoryUserStore};
+use doorman_core::session::{
     SessionConfig, SessionContext, SessionInvalidationHook, SessionManager, hash_token,
 };
-use bauth_core::storage::{
+use doorman_core::storage::{
     Session, SessionId, SessionStore, StoredPasskey, User, UserId, UserStore,
 };
-use bauth_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
-use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
+use doorman_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
 use std::sync::Mutex;
 
 fn fresh_manager() -> (
@@ -518,7 +518,7 @@ async fn revoke_others_for_user_sends_notice_in_core() {
     let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
     let notifier = SecurityEmailNotifier::new(
         email.clone() as Arc<dyn EmailSender>,
-        Arc::new(DefaultBauthEmails),
+        Arc::new(DefaultDoormanEmails),
     );
     let manager = SessionManager::new(
         sessions as Arc<dyn SessionStore>,
@@ -559,7 +559,7 @@ async fn revoke_owned_session_notifies_only_for_other_sessions() {
     let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
     let notifier = SecurityEmailNotifier::new(
         email.clone() as Arc<dyn EmailSender>,
-        Arc::new(DefaultBauthEmails),
+        Arc::new(DefaultDoormanEmails),
     );
     let manager = SessionManager::new(
         sessions as Arc<dyn SessionStore>,

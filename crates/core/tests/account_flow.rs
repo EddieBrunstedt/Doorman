@@ -3,10 +3,10 @@
 
 mod common;
 
-use bauth_core::Error;
-use bauth_core::audit::AuditEventKind;
-use bauth_core::session::SessionContext;
-use bauth_core::storage::UserStore;
+use doorman_core::Error;
+use doorman_core::audit::AuditEventKind;
+use doorman_core::session::SessionContext;
+use doorman_core::storage::UserStore;
 
 use common::{ACCOUNT_URL, Harness, kinds, make_user, provision_user, token_from_email};
 

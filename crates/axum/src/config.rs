@@ -15,7 +15,7 @@ use cookie::SameSite;
 #[derive(Debug, Clone)]
 pub struct CookieConfig {
     /// Name of the session cookie set by login endpoints and read by the
-    /// session layer. Defaults to `"bauth_session"`.
+    /// session layer. Defaults to `"doorman_session"`.
     pub session_cookie_name: String,
     /// `Domain` attribute. `None` means the cookie is scoped to the exact
     /// host that served the response (no subdomains).
@@ -29,11 +29,11 @@ pub struct CookieConfig {
     /// navigations but not on cross-site sub-requests.
     pub same_site: SameSite,
     /// `Max-Age` for the session cookie. Should typically match the
-    /// configured [`SessionConfig::lifetime`](bauth_core::session::SessionConfig).
+    /// configured [`SessionConfig::lifetime`](doorman_core::session::SessionConfig).
     /// Defaults to the
-    /// [`SessionConfig`](bauth_core::session::SessionConfig) default lifetime
+    /// [`SessionConfig`](doorman_core::session::SessionConfig) default lifetime
     /// (30 days) — the figure is named once in
-    /// [`DEFAULT_SESSION_LIFETIME`](bauth_core::session::DEFAULT_SESSION_LIFETIME)
+    /// [`DEFAULT_SESSION_LIFETIME`](doorman_core::session::DEFAULT_SESSION_LIFETIME)
     /// and derived here so the cookie and session defaults cannot drift apart.
     pub session_max_age: Duration,
 }
@@ -41,12 +41,12 @@ pub struct CookieConfig {
 impl Default for CookieConfig {
     fn default() -> Self {
         Self {
-            session_cookie_name: "bauth_session".to_string(),
+            session_cookie_name: "doorman_session".to_string(),
             domain: None,
             path: "/".to_string(),
             secure: true,
             same_site: SameSite::Lax,
-            session_max_age: bauth_core::session::DEFAULT_SESSION_LIFETIME,
+            session_max_age: doorman_core::session::DEFAULT_SESSION_LIFETIME,
         }
     }
 }

@@ -1,6 +1,6 @@
 # Benchmarks
 
-bauth ships [criterion](https://github.com/bheisler/criterion.rs) benches covering the hot auth paths at three layers: the framework-agnostic managers (`bauth-core`), the HTTP request path (`bauth-axum`), and the storage adapters (`bauth-sqlx`).
+doorman ships [criterion](https://github.com/bheisler/criterion.rs) benches covering the hot auth paths at three layers: the framework-agnostic managers (`doorman-core`), the HTTP request path (`doorman-axum`), and the storage adapters (`doorman-sqlx`).
 
 Absolute numbers are machine-specific and not meaningful on their own. The value is in **relative** comparison: cached vs uncached, allowed vs limited, in-memory vs SQLite vs Postgres, with vs without crypto, and one table size vs another. Run a baseline, change something, and compare — criterion reports the delta automatically.
 
@@ -8,24 +8,24 @@ Absolute numbers are machine-specific and not meaningful on their own. The value
 
 ```sh
 # Everything in a crate
-cargo bench -p bauth-core
-cargo bench -p bauth-axum
-cargo bench -p bauth-sqlx --features sqlite
+cargo bench -p doorman-core
+cargo bench -p doorman-axum
+cargo bench -p doorman-sqlx --features sqlite
 
 # Storage benches with the optional Postgres path (see below)
-PG_URL=postgres://postgres:postgres@localhost/bauth_bench \
-    cargo bench -p bauth-sqlx --features "sqlite postgres" --bench storage
+PG_URL=postgres://postgres:postgres@localhost/doorman_bench \
+    cargo bench -p doorman-sqlx --features "sqlite postgres" --bench storage
 
 # A single bench target
-cargo bench -p bauth-core --bench passkey_auth
-cargo bench -p bauth-axum --bench concurrency
+cargo bench -p doorman-core --bench passkey_auth
+cargo bench -p doorman-axum --bench concurrency
 
 # A single function within a target (substring filter)
-cargo bench -p bauth-core --bench session -- token_hash
-cargo bench -p bauth-sqlx --features sqlite --bench storage -- list_for_user
+cargo bench -p doorman-core --bench session -- token_hash
+cargo bench -p doorman-sqlx --features sqlite --bench storage -- list_for_user
 
 # Quick smoke run (rough numbers, much faster)
-cargo bench -p bauth-core --bench session -- \
+cargo bench -p doorman-core --bench session -- \
     --warm-up-time 0.2 --measurement-time 0.3 --sample-size 10
 ```
 
@@ -69,7 +69,7 @@ Fill this in alongside any published numbers:
 | RAM        | _e.g._ `64 GiB`                        |
 | OS/kernel  | _e.g._ `Arch Linux, 7.0.10`            |
 | Governor   | _e.g._ `performance, boost off`        |
-| bauth rev  | _e.g._ `git rev-parse --short HEAD`    |
+| doorman rev  | _e.g._ `git rev-parse --short HEAD`    |
 
 ## Saved baselines and regression comparison
 
@@ -77,30 +77,30 @@ Criterion can persist a named baseline and compare a later run against it — th
 
 ```sh
 # Record a baseline named "main"
-cargo bench -p bauth-core --bench session -- --save-baseline main
+cargo bench -p doorman-core --bench session -- --save-baseline main
 
 # Later, compare the working tree against it (does not overwrite "main")
-cargo bench -p bauth-core --bench session -- --baseline main
+cargo bench -p doorman-core --bench session -- --baseline main
 ```
 
 A typical local flow: `--save-baseline before`, make a change, `--baseline before`. Criterion prints the percentage change and whether it considers the difference significant. Baselines live under `target/criterion/` and are keyed by benchmark id, so renaming a bench function starts a fresh baseline.
 
 ## What is measured
 
-### `bauth-core` — manager level, no HTTP
+### `doorman-core` — manager level, no HTTP
 
 | Bench (`--bench`) | Function               | Path measured                                                                                                                                                     |
 | ----------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `session`         | `session_create`       | `SessionManager::create` against the in-memory store (token gen + hash + insert + audit emit).                                                                    |
-| `session`         | `session_validate`     | Manager-level `validate` against the in-memory store (no cache in front — `bauth-axum` measures cache behavior separately).                                       |
-| `session`         | `token_hash`           | `hash_token` throughput. Runs on every authenticated request; the end-to-end request benches (`bauth-axum` `request_path`) fold this cost into the full path.     |
+| `session`         | `session_validate`     | Manager-level `validate` against the in-memory store (no cache in front — `doorman-axum` measures cache behavior separately).                                       |
+| `session`         | `token_hash`           | `hash_token` throughput. Runs on every authenticated request; the end-to-end request benches (`doorman-axum` `request_path`) fold this cost into the full path.     |
 | `rate_limit`      | `rate_limit_allowed`   | `InMemoryRateLimiter::check` on a within-budget attempt.                                                                                                          |
 | `rate_limit`      | `rate_limit_limited`   | `check` on a saturated bucket (the hot path under an active attack).                                                                                              |
 | `enrollment`      | `signup_request`       | `SignupManager::request_signup` — normalize/validate, rate-limit, user provisioning, token issuance, link render, captured email send.                            |
 | `passkey_auth`    | `passkey_authenticate` | Full discoverable auth ceremony: `start_authentication` → `SoftPasskey` signs → `finish_authentication` + session issue. The headline login-throughput number.    |
 | `passkey_auth`    | `passkey_finish`       | Just `finish_authentication` (assertion verify, counter check, user-handle binding, session issue); the start + signing happen in untimed `iter_custom` setup.    |
 
-### `bauth-axum` — HTTP path via `tower::ServiceExt::oneshot`
+### `doorman-axum` — HTTP path via `tower::ServiceExt::oneshot`
 
 | Bench           | Function                | Path measured                                                                                                                                                              |
 | --------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -115,7 +115,7 @@ A typical local flow: `--save-baseline before`, make a change, `--baseline befor
 | `parsing`       | `csrf/cross_origin_reject` | The CSRF decision on a cross-origin cookie POST: parse and short-circuit with a rejection.                                                                              |
 | `parsing`       | `csrf/bearer_bypass`    | The CSRF decision when an `Authorization: Bearer` header is present: the bearer parse skips the origin check.                                                              |
 
-### `bauth-sqlx` — storage adapters
+### `doorman-sqlx` — storage adapters
 
 All storage benches are registered under a per-dialect group, so ids read `sqlite/...` and (with the Postgres path enabled) `postgres/...`.
 
@@ -128,7 +128,7 @@ All storage benches are registered under a per-dialect group, so ids read `sqlit
 | `{dialect}/list_for_user/{1,100,10000}`      | Listing a user's active sessions as the per-user row count grows (throughput reported per row).    |
 | `{dialect}/purge_expired`         | The indexed `DELETE ... WHERE expires_at <= ?` over a table of expired rows, re-seeded before each pass (throughput reported per row removed). |
 
-SQLite runs against an ephemeral `sqlite::memory:` database and is always enabled. The Postgres path is optional: compile with the `postgres` feature **and** set `PG_URL` to a disposable database. It drops and recreates the `public` schema for a clean migration state — exactly like the conformance suite — so do not point it at data you want to keep. Compare the `sqlite/...` and `postgres/...` groups against the `bauth-core` `session` numbers (the in-memory reference) to see adapter overhead.
+SQLite runs against an ephemeral `sqlite::memory:` database and is always enabled. The Postgres path is optional: compile with the `postgres` feature **and** set `PG_URL` to a disposable database. It drops and recreates the `public` schema for a clean migration state — exactly like the conformance suite — so do not point it at data you want to keep. Compare the `sqlite/...` and `postgres/...` groups against the `doorman-core` `session` numbers (the in-memory reference) to see adapter overhead.
 
 ## Reading the results
 
@@ -136,5 +136,5 @@ SQLite runs against an ephemeral `sqlite::memory:` database and is always enable
 - **Contention** (`concurrency`) shows how cache and store locking hold up under concurrent fan-out; compare its per-element throughput against the single-threaded `session_cache`/`session` latencies.
 - **Allowed vs limited** (`rate_limit`) shows the limiter's cost in both regimes.
 - **With vs without crypto**: `passkey_authenticate`/`passkey_finish` dwarf the other core paths — WebAuthn signature verification dominates login latency. `passkey_finish` isolates the server-side verify from the ceremony setup.
-- **In-memory vs SQLite vs Postgres**: compare the `bauth-sqlx` dialect groups against the `bauth-core` `session` baseline for adapter overhead, and read the scaling ids to see how lookups and listing grow with table size.
+- **In-memory vs SQLite vs Postgres**: compare the `doorman-sqlx` dialect groups against the `doorman-core` `session` baseline for adapter overhead, and read the scaling ids to see how lookups and listing grow with table size.
 - **Parsing overhead** (`parsing`) shows the fixed per-request cookie/header parsing cost the CSRF layer adds to state-changing requests.

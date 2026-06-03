@@ -1,18 +1,18 @@
 # Security
 
-This page is bauth's security model and threat model. It describes the guarantees the library **actually implements** today — there are no aspirational claims here. If a paragraph says bauth does something, the code does it and a test guards it. Read [concepts.md](concepts.md) for the vocabulary.
+This page is doorman's security model and threat model. It describes the guarantees the library **actually implements** today — there are no aspirational claims here. If a paragraph says doorman does something, the code does it and a test guards it. Read [concepts.md](concepts.md) for the vocabulary.
 
 For coordinated vulnerability disclosure, jump to [Reporting a vulnerability](#reporting-a-vulnerability).
 
 ## Supported surface
 
-bauth has one steady-state login method: passkeys/WebAuthn using the discoverable-credential ceremony. Email is used only to start signup or recovery, and an email link never creates a session by itself.
+doorman has one steady-state login method: passkeys/WebAuthn using the discoverable-credential ceremony. Email is used only to start signup or recovery, and an email link never creates a session by itself.
 
 Out of scope by design: password authentication, OAuth, TOTP, recovery codes, admin impersonation, roles/permissions, multi-tenancy, and general-purpose email login.
 
 ## Threat model
 
-bauth is designed to defend against:
+doorman is designed to defend against:
 
 - **Phishing of steady-state logins**, by relying on origin-bound WebAuthn signatures — a credential only signs for its registered relying-party origin.
 - **User enumeration** in signup, recovery, and passkey authentication: the response shape and the work performed are identical for known and unknown addresses, including when the email transport fails.
@@ -22,7 +22,7 @@ bauth is designed to defend against:
 - **CSRF** against cookie-authenticated state-changing endpoints.
 - **Cloned authenticators**, by checking the WebAuthn signature counter for regression on each assertion.
 
-bauth cannot defend against:
+doorman cannot defend against:
 
 - a compromised host process;
 - a database attacker with both read and write access;
@@ -33,10 +33,10 @@ bauth cannot defend against:
 ## Passkeys
 
 - Authentication starts with no email or username. Every caller receives the same discoverable challenge shape, and the server learns the user at finish time from the WebAuthn response.
-- Registration forces resident/discoverable credentials so the username-less ceremony works for every passkey bauth creates.
+- Registration forces resident/discoverable credentials so the username-less ceremony works for every passkey doorman creates.
 - Ceremony state is persisted server-side and atomically removed on finish. A challenge cannot be replayed after a successful or failed consume path.
 - WebAuthn verification is performed by [`webauthn-rs`](https://crates.io/crates/webauthn-rs); signatures are bound to the configured relying-party ID and origin.
-- **User-handle binding:** on discoverable authentication, bauth requires the authenticator to assert a user handle that parses to a known user and equals the credential's stored owner. A missing, malformed, or mismatched handle is rejected and no session is minted.
+- **User-handle binding:** on discoverable authentication, doorman requires the authenticator to assert a user handle that parses to a known user and equals the credential's stored owner. A missing, malformed, or mismatched handle is rejected and no session is minted.
 - **Counter regression:** the asserted signature counter is compared against the stored credential (regression detection inside `webauthn-rs`). A non-advancing counter is treated as a possible clone — the assertion is rejected with a security audit event. Authenticators that always report 0 are exempted, per the WebAuthn spec.
 - **Failure auditing:** every authentication rejection emits an `AuthenticationFailed` audit event tagged with a reason (invalid/expired challenge, unknown credential, user-handle mismatch, counter regression, bad assertion). No secrets are included.
 - Passkeys registered by recovery, or from a session still in recovery cool-down, store the active `recovery_cooldown_until` deadline.
@@ -45,7 +45,7 @@ bauth cannot defend against:
 
 ## Signup
 
-`/auth/signup/request` returns the same response whether the address is new or already registered. For a new address, bauth stores a single-use token hash and sends a signup email. Consuming the token marks the email verified and starts passkey registration. The session is issued only after `/auth/signup/finish` successfully registers that passkey.
+`/auth/signup/request` returns the same response whether the address is new or already registered. For a new address, doorman stores a single-use token hash and sends a signup email. Consuming the token marks the email verified and starts passkey registration. The session is issued only after `/auth/signup/finish` successfully registers that passkey.
 
 A leaked signup link cannot be redeemed as a recovery link: token purposes are distinct and re-checked at consumption.
 
@@ -60,7 +60,7 @@ Recovery exists for users who lost every passkey. It deliberately requires the v
 - The recovery-created passkey stores the same cool-down deadline as the recovery-issued session. The deadline is stored absolutely (recovery-completion instant + cool-down) and never re-derived from a later `created_at`. Authenticating with that passkey before the deadline creates another restricted session. Passkeys added from a restricted session inherit the active deadline. Pre-existing passkeys and pre-existing sessions remain unrestricted.
 - A passkey registration ceremony started _before_ recovery completed cannot be used to attach a credential that escapes the cool-down: recovery invalidates the user's other outstanding registration challenges on completion.
 
-During the cool-down, bauth blocks actions that could lock out the legitimate user: deleting passkeys, revoking other sessions, and "sign out everywhere else". The session may still add another passkey and may revoke or log out itself. Once the deadline has passed, checks treat that cool-down as inactive; no cleanup job is required. The cool-down is evaluated through the configured `Clock`, so all entry points agree and tests can drive it deterministically.
+During the cool-down, doorman blocks actions that could lock out the legitimate user: deleting passkeys, revoking other sessions, and "sign out everywhere else". The session may still add another passkey and may revoke or log out itself. Once the deadline has passed, checks treat that cool-down as inactive; no cleanup job is required. The cool-down is evaluated through the configured `Clock`, so all entry points agree and tests can drive it deterministically.
 
 ## Sessions
 
@@ -121,7 +121,7 @@ Please include the affected version, a description of the impact, and steps to r
 
 ### Supported versions
 
-bauth is pre-1.0. Only the latest published `0.x` release line receives security fixes; there are no long-term-support branches before 1.0. Pin a version and upgrade forward to pick up fixes.
+doorman is pre-1.0. Only the latest published `0.x` release line receives security fixes; there are no long-term-support branches before 1.0. Pin a version and upgrade forward to pick up fixes.
 
 | Version      | Supported    |
 | ------------ | ------------ |

@@ -1,4 +1,4 @@
-# Continuous integration for bauth, written for Forgejo Actions (Codeberg).
+# Continuous integration for doorman, written for Forgejo Actions (Codeberg).
 #
 # Codeberg runs Forgejo, whose Actions use GitHub-Actions-compatible syntax but
 # need a runner enabled for the repository (Settings -> Actions) and execute on
@@ -65,22 +65,22 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: bauth_test
+          POSTGRES_DB: doorman_test
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
     env:
-      PG_URL: postgres://postgres:postgres@postgres:5432/bauth_test
+      PG_URL: postgres://postgres:postgres@postgres:5432/doorman_test
     steps:
       - name: install Node.js (required by JS actions like checkout)
         run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - name: SQLite storage conformance
-        run: cargo test -p bauth-sqlx --features sqlite --locked
+        run: cargo test -p doorman-sqlx --features sqlite --locked
       - name: Postgres storage conformance
-        run: cargo test -p bauth-sqlx --features postgres --locked
+        run: cargo test -p doorman-sqlx --features postgres --locked
 
   features:
     runs-on: docker
@@ -91,21 +91,21 @@ jobs:
         run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - name: core (default — no tokio)
-        run: cargo check -p bauth-core --locked
+        run: cargo check -p doorman-core --locked
       - name: core (file-email)
-        run: cargo check -p bauth-core --features file-email --locked
+        run: cargo check -p doorman-core --features file-email --locked
       - name: core (background-purge)
-        run: cargo check -p bauth-core --features background-purge --locked
+        run: cargo check -p doorman-core --features background-purge --locked
       - name: core (all features)
-        run: cargo check -p bauth-core --all-features --locked
+        run: cargo check -p doorman-core --all-features --locked
       - name: sqlx (sqlite)
-        run: cargo check -p bauth-sqlx --features sqlite --locked
+        run: cargo check -p doorman-sqlx --features sqlite --locked
       - name: sqlx (postgres)
-        run: cargo check -p bauth-sqlx --features postgres --locked
+        run: cargo check -p doorman-sqlx --features postgres --locked
       - name: umbrella (axum + sqlite)
-        run: cargo check -p bauth --features axum,sqlite --locked
+        run: cargo check -p doorman --features axum,sqlite --locked
       - name: umbrella (axum + postgres + file-email)
-        run: cargo check -p bauth --features axum,postgres,file-email --locked
+        run: cargo check -p doorman --features axum,postgres,file-email --locked
       - name: benches compile
         run: cargo bench --workspace --all-features --no-run --locked
 

@@ -4,8 +4,8 @@ mod common;
 
 use axum::Router;
 use axum::http::StatusCode;
-use bauth_axum::dto::{AuthResponse, UserDto};
 use common::{TestApp, token_from_email_with};
+use doorman_axum::dto::{AuthResponse, UserDto};
 
 /// The default `AccountConfig` url_template (the TestApp does not override it),
 /// used to recover the confirmation token from the email body.
