@@ -2,7 +2,7 @@
 
 This page is doorman's security model and threat model. It describes the guarantees the library **actually implements** today — there are no aspirational claims here. If a paragraph says doorman does something, the code does it and a test guards it. Read [concepts.md](concepts.md) for the vocabulary.
 
-For coordinated vulnerability disclosure, jump to [Reporting a vulnerability](#reporting-a-vulnerability).
+For coordinated vulnerability disclosure and supported-version policy, see [`SECURITY.md`](../SECURITY.md).
 
 ## Supported surface
 
@@ -114,18 +114,4 @@ Security notifications are best-effort after the protected action has already su
 
 ## Reporting a vulnerability
 
-Please report security issues **privately** and give the maintainer a chance to ship a fix before any public disclosure.
-
-- **Preferred:** open a private security advisory on the repository (<https://codeberg.org/EddieBrunstedt/bauth>) if the platform exposes the advisory workflow.
-- **Otherwise:** email the maintainer at `eddie.brunstedt@protonmail.com` with the details and a reproduction. Use a subject line that makes the security nature obvious.
-
-Please include the affected version, a description of the impact, and steps to reproduce. You will get an acknowledgement; once a fix is available it will be released and the reporter credited unless they ask otherwise. Do not open a public issue or pull request for an unfixed vulnerability.
-
-### Supported versions
-
-doorman is pre-1.0. Only the latest published `0.x` release line receives security fixes; there are no long-term-support branches before 1.0. Pin a version and upgrade forward to pick up fixes.
-
-| Version      | Supported    |
-| ------------ | ------------ |
-| latest `0.x` | yes          |
-| older `0.x`  | no — upgrade |
+Coordinated disclosure and the supported-version policy live in [`SECURITY.md`](../SECURITY.md) at the repository root.
