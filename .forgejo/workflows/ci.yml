@@ -12,6 +12,8 @@
 name: ci
 
 on:
+  # Manual trigger: adds a "Run workflow" button in the Actions tab.
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
