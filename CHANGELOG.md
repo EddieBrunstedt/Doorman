@@ -18,8 +18,8 @@ versions; breaking changes are called out under **Changed**/**Removed**.
   `bauth-axum` and the `bauth` umbrella expose passthrough `file-email` features.
 - Publishable package metadata (`keywords`, `categories`, `documentation`,
   `homepage`) and `docs.rs` all-features rendering across the published crates.
-- `LICENSE` (MIT), `CHANGELOG.md`, `RELEASING.md`, and a `cargo-deny`
-  configuration (`deny.toml`).
+- `LICENSE-MIT` and `LICENSE-APACHE`, `CHANGELOG.md`, `RELEASING.md`, and a
+  `cargo-deny` configuration (`deny.toml`).
 - Continuous integration (Forgejo Actions): formatting, clippy, the test
   matrix, SQLite + Postgres storage conformance, doc build, feature-combination
   builds, an MSRV check, and a `cargo-deny` advisory/license scan.
@@ -29,7 +29,8 @@ versions; breaking changes are called out under **Changed**/**Removed**.
 
 ### Changed
 
-- License is now `MIT` (previously the dual `MIT OR Apache-2.0`).
+- License is `MIT OR Apache-2.0` (the Rust ecosystem norm); the Apache-2.0 arm
+  adds an explicit patent grant, the MIT arm preserves GPLv2 compatibility.
 - `bauth-core`'s `tokio` dependency is optional; enable `file-email` or
   `background-purge` to pull it in.
 

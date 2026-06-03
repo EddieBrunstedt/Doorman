@@ -97,5 +97,7 @@ contributors also follow:
 
 ## License
 
-By contributing you agree that your contributions are licensed under the
-project's [MIT License](LICENSE).
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed under [Apache-2.0](LICENSE-APACHE) and [MIT](LICENSE-MIT) (the
+project's license), without any additional terms or conditions.

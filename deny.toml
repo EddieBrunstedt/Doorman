@@ -12,7 +12,8 @@ ignore = []
 
 [licenses]
 version = 2
-# bauth is MIT; its dependencies must carry an OSI-approved permissive license.
+# bauth is dual-licensed MIT OR Apache-2.0; its dependencies must carry an
+# OSI-approved permissive license.
 allow = [
     "MIT",
     "Apache-2.0",
