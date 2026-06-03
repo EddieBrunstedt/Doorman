@@ -30,7 +30,10 @@ pub enum MetricEvent {
     LoginSucceeded,
     /// A passkey authentication ceremony was rejected. Carries the same
     /// [`AuthFailureReason`] as the matching audit event.
-    AuthFailed { reason: AuthFailureReason },
+    AuthFailed {
+        /// Why the authentication was rejected.
+        reason: AuthFailureReason,
+    },
     /// Wall-clock duration of a `finish_authentication` call, recorded on
     /// every outcome (success, rejection, or rate-limit). Feeds an
     /// auth-latency histogram.

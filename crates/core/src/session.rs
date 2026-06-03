@@ -23,7 +23,9 @@ pub use crate::token::hash_token;
 /// hand back to the client. The token is never persisted in plaintext.
 #[derive(Debug, Clone)]
 pub struct IssuedSession {
+    /// The persisted session row.
     pub session: Session,
+    /// The plaintext bearer token to return to the client once. Never stored.
     pub token: String,
 }
 
@@ -35,6 +37,7 @@ pub const DEFAULT_SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 
 /// Configuration for session issuance.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
+    /// How long a freshly-issued session stays valid.
     pub lifetime: Duration,
     /// Cap on concurrent active sessions per user. When issuing a session
     /// would exceed it, the user's oldest active session(s) are revoked first
@@ -57,7 +60,9 @@ impl Default for SessionConfig {
 /// Request metadata captured when an auth flow creates or audits a session.
 #[derive(Debug, Clone, Default)]
 pub struct SessionContext {
+    /// Client IP, if the host captured one.
     pub ip: Option<String>,
+    /// Client user-agent, if the host captured one.
     pub user_agent: Option<String>,
 }
 
@@ -71,7 +76,10 @@ pub struct SessionContext {
 /// must not propagate, so the trait returns `()` rather than `Result`.
 #[async_trait]
 pub trait SessionInvalidationHook: Send + Sync {
+    /// Called when a single session is invalidated (revoked or deleted).
     async fn on_session_invalidated(&self, session_id: SessionId);
+    /// Called when every session for a user is invalidated at once
+    /// (log-out-everywhere, account deletion).
     async fn on_user_sessions_invalidated(&self, user_id: UserId);
 }
 
@@ -107,6 +115,10 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    /// Build a session manager from the session store, clock, audit sink, and
+    /// config. No notifier or invalidation hook is wired yet; add them with
+    /// [`with_security_notifier`](Self::with_security_notifier) and the
+    /// invalidation-hook setter before cloning the manager into dependents.
     pub fn new(
         sessions: Arc<dyn SessionStore>,
         clock: Arc<dyn Clock>,
@@ -172,6 +184,8 @@ impl SessionManager {
             .clone()
     }
 
+    /// Issue an ordinary (non-cool-down) session for `user_id`, returning the
+    /// row and its plaintext token.
     #[tracing::instrument(skip(self, context), fields(user_id = %user_id))]
     pub async fn create(&self, user_id: UserId, context: SessionContext) -> Result<IssuedSession> {
         self.issue(user_id, context, None).await
@@ -267,6 +281,9 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Resolve and validate a plaintext session token, returning the live
+    /// session or a not-found/expired error. Hashes once and delegates to
+    /// [`validate_by_hash`](Self::validate_by_hash).
     pub async fn validate(&self, token: &str) -> Result<Session> {
         self.validate_by_hash(&hash_token(token)).await
     }
@@ -304,6 +321,8 @@ impl SessionManager {
         Ok(session)
     }
 
+    /// Revoke the session identified by a plaintext token. No-op if it does
+    /// not resolve.
     #[tracing::instrument(skip(self, token))]
     pub async fn revoke(&self, token: &str) -> Result<()> {
         let hash = hash_token(token);
@@ -314,6 +333,8 @@ impl SessionManager {
         self.revoke_session(session).await
     }
 
+    /// Revoke a session by its id, firing the invalidation hook. No-op if the
+    /// id does not resolve.
     #[tracing::instrument(skip(self), fields(session_id = %session_id))]
     pub async fn revoke_by_id(&self, session_id: SessionId) -> Result<()> {
         let Some(session) = self.sessions.find_session_by_id(session_id).await? else {
@@ -323,6 +344,8 @@ impl SessionManager {
         self.revoke_session(session).await
     }
 
+    /// Revoke every session belonging to a user, firing the
+    /// user-sessions-invalidated hook when any were removed. Returns the count.
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn revoke_all_for_user(&self, user_id: UserId) -> Result<u64> {
         let count = self.sessions.delete_sessions_for_user(user_id).await?;
@@ -433,6 +456,7 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Delete every session past its expiry, returning the number removed.
     #[tracing::instrument(skip(self))]
     pub async fn purge_expired(&self) -> Result<u64> {
         let now = self.clock.now();

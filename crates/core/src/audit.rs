@@ -15,9 +15,13 @@ use crate::storage::{SessionId, UserId};
 /// One audit record emitted by an auth flow.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEvent {
+    /// When the event occurred.
     pub timestamp: DateTime<Utc>,
+    /// Client IP associated with the event, if known.
     pub ip: Option<String>,
+    /// Client user-agent associated with the event, if known.
     pub user_agent: Option<String>,
+    /// The specific event and its payload.
     pub kind: AuditEventKind,
 }
 
@@ -25,19 +29,30 @@ pub struct AuditEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuditEventKind {
+    /// A new session was minted for a user.
     SessionCreated {
+        /// The user the session belongs to.
         user_id: UserId,
+        /// The newly-created session.
         session_id: SessionId,
     },
+    /// A session was explicitly revoked.
     SessionRevoked {
+        /// The user the session belonged to.
         user_id: UserId,
+        /// The revoked session.
         session_id: SessionId,
     },
+    /// A session was rejected at resolution time because it had expired.
     SessionExpired {
+        /// The user the session belonged to.
         user_id: UserId,
+        /// The expired session.
         session_id: SessionId,
     },
+    /// A passkey authentication succeeded and a session was minted.
     LoginSucceeded {
+        /// The user that logged in.
         user_id: UserId,
     },
     /// Emitted on any passkey authentication failure — unknown or expired
@@ -49,19 +64,30 @@ pub enum AuditEventKind {
     /// modes (counter regression, user-handle mismatch) without leaking which
     /// credential or secret was involved.
     AuthenticationFailed {
+        /// The user, once the credential resolves; `None` for pre-resolution
+        /// failures (bad/expired challenge).
         user_id: Option<UserId>,
+        /// Why the attempt failed.
         reason: AuthFailureReason,
     },
+    /// A passkey credential was registered for a user.
     CredentialAdded {
+        /// The user the credential was added to.
         user_id: UserId,
     },
+    /// A passkey credential was removed from a user.
     CredentialRemoved {
+        /// The user the credential was removed from.
         user_id: UserId,
     },
+    /// A signup link was requested for an address.
     SignupRequested {
+        /// The provisioned user the link is bound to.
         user_id: UserId,
     },
+    /// A signup token was consumed, starting first-passkey registration.
     SignupConsumed {
+        /// The user whose signup token was consumed.
         user_id: UserId,
     },
     /// Emitted every time the recovery request endpoint is hit, including
@@ -70,33 +96,40 @@ pub enum AuditEventKind {
     /// enumeration probe visible even though the wire response is
     /// identical for known and unknown emails.
     RecoveryRequested {
+        /// The matched user, or `None` when the address is unregistered.
         user_id: Option<UserId>,
     },
     /// Emitted when a recovery token is successfully consumed and a passkey
     /// registration ceremony is started against the user it identifies.
     RecoveryConsumed {
+        /// The user whose recovery token was consumed.
         user_id: UserId,
     },
     /// Emitted on any recovery failure path — unknown email, rate-limit
     /// rejection, invalid token, expired token. Pairs with the
     /// [`RecoveryFailureReason`] for after-the-fact triage.
     RecoveryFailed {
+        /// The matched user, when one was resolved before the failure.
         user_id: Option<UserId>,
+        /// Why the recovery attempt failed.
         reason: RecoveryFailureReason,
     },
     /// Emitted when a verified email-change is requested: a confirmation link
     /// has been issued to the new address and the old address notified.
     EmailChangeRequested {
+        /// The user requesting the change.
         user_id: UserId,
     },
     /// Emitted when an email-change confirmation token is redeemed and the
     /// account's address is updated.
     EmailChangeCompleted {
+        /// The user whose address changed.
         user_id: UserId,
     },
     /// Emitted when an account and all of its sessions, credentials, tokens,
     /// and pending ceremonies are deleted.
     AccountDeleted {
+        /// The deleted user.
         user_id: UserId,
     },
 }
@@ -153,6 +186,8 @@ pub enum RecoveryFailureReason {
 /// free and never have to think about it.
 #[async_trait]
 pub trait AuditSink: Send + Sync + Any {
+    /// Persist or forward one audit event. Implementations should not block
+    /// the auth flow on slow I/O; buffer or hand off as needed.
     async fn emit(&self, event: AuditEvent);
 }
 

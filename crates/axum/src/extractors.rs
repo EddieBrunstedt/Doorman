@@ -64,8 +64,11 @@ impl<S: Send + Sync> FromRequestParts<S> for OptionalAuthUser {
 /// the *current* session (e.g. logout).
 #[derive(Clone)]
 pub struct AuthSession {
+    /// The authenticated user.
     pub user: Arc<User>,
+    /// The resolved session row.
     pub session: Arc<Session>,
+    /// The plaintext token the request presented (for self-logout/revoke).
     pub token: String,
     /// The clock the session layer resolved this request through; the
     /// recovery-cool-down helper answers through it so a host's custom or

@@ -28,8 +28,8 @@ macro_rules! sqlx_stores {
         placeholders: $ph:path $(,)?
     ) => {
         impl $storage {
-            /// Build a [`Storage`] populated with every per-concern store
-            /// backed by this pool.
+            /// Build a [`Storage`](bauth_core::storage::Storage) populated with
+            /// every per-concern store backed by this pool.
             pub fn storage(&self) -> $crate::stores::__reexport::Storage {
                 $crate::stores::__reexport::Storage {
                     users: self.user_store(),
@@ -40,6 +40,7 @@ macro_rules! sqlx_stores {
                 }
             }
 
+            /// The user store backed by this pool.
             pub fn user_store(
                 &self,
             ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::UserStore> {
@@ -48,6 +49,7 @@ macro_rules! sqlx_stores {
                 })
             }
 
+            /// The session store backed by this pool.
             pub fn session_store(
                 &self,
             ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::SessionStore> {
@@ -56,6 +58,7 @@ macro_rules! sqlx_stores {
                 })
             }
 
+            /// The verification-token store backed by this pool.
             pub fn verification_token_store(
                 &self,
             ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::VerificationTokenStore> {
@@ -64,6 +67,7 @@ macro_rules! sqlx_stores {
                 })
             }
 
+            /// The passkey-credential store backed by this pool.
             pub fn passkey_credential_store(
                 &self,
             ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::PasskeyCredentialStore> {
@@ -72,6 +76,7 @@ macro_rules! sqlx_stores {
                 })
             }
 
+            /// The passkey-challenge store backed by this pool.
             pub fn passkey_challenge_store(
                 &self,
             ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::PasskeyChallengeStore> {

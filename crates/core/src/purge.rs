@@ -2,7 +2,7 @@
 //!
 //! [`Storage::purge_all_expired`] runs every store's `purge_expired` in one
 //! call so a host need not reimplement the per-table sweep by hand. With the
-//! `background-purge` feature enabled, [`spawn_purge_task`] spawns a tokio
+//! `background-purge` feature enabled, `spawn_purge_task` spawns a tokio
 //! task that calls it on a fixed interval.
 
 use chrono::{DateTime, Utc};

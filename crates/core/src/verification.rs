@@ -45,7 +45,9 @@ pub const TOKEN_PLACEHOLDER: &str = "{token}";
 /// back at finish time.
 #[derive(Debug)]
 pub struct VerificationConsumeOutcome {
+    /// Identifier the client echoes back at finish time.
     pub challenge_id: PasskeyChallengeId,
+    /// WebAuthn creation options to start registration in the browser.
     pub options: CreationChallengeResponse,
 }
 
@@ -53,8 +55,11 @@ pub struct VerificationConsumeOutcome {
 /// enrolled and a session is issued for the user.
 #[derive(Debug, Clone)]
 pub struct EnrollmentOutcome {
+    /// The user the passkey was enrolled for.
     pub user: User,
+    /// The freshly-issued session.
     pub session: IssuedSession,
+    /// The newly-registered credential.
     pub passkey: StoredPasskey,
 }
 

@@ -41,10 +41,15 @@ pub use crate::token::TokenHash;
 /// directly and swap individual fields.
 #[derive(Clone)]
 pub struct Storage {
+    /// Local user records.
     pub users: Arc<dyn UserStore>,
+    /// Server-side session rows.
     pub sessions: Arc<dyn SessionStore>,
+    /// Single-use verification tokens (signup, recovery, email change).
     pub verification_tokens: Arc<dyn VerificationTokenStore>,
+    /// Registered passkey credentials.
     pub passkey_credentials: Arc<dyn PasskeyCredentialStore>,
+    /// In-progress passkey ceremony state.
     pub passkey_challenges: Arc<dyn PasskeyChallengeStore>,
 }
 
@@ -54,6 +59,7 @@ pub struct Storage {
 pub struct UserId(pub Uuid);
 
 impl UserId {
+    /// Generate a fresh random identifier (UUIDv4).
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -77,6 +83,7 @@ impl fmt::Display for UserId {
 pub struct SessionId(pub Uuid);
 
 impl SessionId {
+    /// Generate a fresh random identifier (UUIDv4).
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -97,22 +104,34 @@ impl fmt::Display for SessionId {
 /// Local user record shared by all auth methods.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
+    /// Stable user identifier.
     pub id: UserId,
+    /// Verified email address, or `None` before the address is set.
     pub email: Option<String>,
+    /// When the email address was verified, if it has been.
     pub email_verified_at: Option<DateTime<Utc>>,
+    /// When the user record was created.
     pub created_at: DateTime<Utc>,
+    /// When the user record was last modified.
     pub updated_at: DateTime<Utc>,
 }
 
 /// Persisted session row keyed by a hashed bearer token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
+    /// Stable session identifier.
     pub id: SessionId,
+    /// Owner of the session.
     pub user_id: UserId,
+    /// SHA-256 hash of the bearer token; the plaintext is never stored.
     pub token_hash: TokenHash,
+    /// When the session was created.
     pub created_at: DateTime<Utc>,
+    /// When the session expires; enforced on read.
     pub expires_at: DateTime<Utc>,
+    /// Client IP captured at creation, if available.
     pub ip: Option<String>,
+    /// Client user-agent captured at creation, if available.
     pub user_agent: Option<String>,
     /// When set, the session was issued via the recovery flow and any
     /// destructive action (delete passkey, revoke other sessions, etc.) must
@@ -144,24 +163,35 @@ impl Session {
 /// Persistence contract for local user records.
 #[async_trait]
 pub trait UserStore: Send + Sync {
+    /// Insert a new user row.
     async fn create_user(&self, user: User) -> StorageResult<()>;
 
+    /// Look up a user by id, or `None` if absent.
     async fn find_user_by_id(&self, id: UserId) -> StorageResult<Option<User>>;
 
+    /// Look up a user by email, or `None` if absent. The lookup is on the
+    /// normalized address the managers store.
     async fn find_user_by_email(&self, email: &str) -> StorageResult<Option<User>>;
 
+    /// Overwrite an existing user row (matched by id).
     async fn update_user(&self, user: User) -> StorageResult<()>;
 
+    /// Remove a user row. Callers cascade related rows first; this only
+    /// removes the user record.
     async fn delete_user(&self, id: UserId) -> StorageResult<()>;
 }
 
 /// Persistence contract for server-side sessions.
 #[async_trait]
 pub trait SessionStore: Send + Sync {
+    /// Insert a new session row.
     async fn create_session(&self, session: Session) -> StorageResult<()>;
 
+    /// Resolve a session by its token hash, or `None` if absent. The hot
+    /// per-request lookup.
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>>;
 
+    /// Resolve a session by id, or `None` if absent.
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>>;
 
     /// Return the sessions belonging to a user. `now` is the caller's clock
@@ -177,8 +207,11 @@ pub trait SessionStore: Send + Sync {
         now: DateTime<Utc>,
     ) -> StorageResult<Vec<Session>>;
 
+    /// Delete a single session by id.
     async fn delete_session(&self, id: SessionId) -> StorageResult<()>;
 
+    /// Delete every session belonging to `user_id`, returning the number
+    /// removed. Backs "log out everywhere" and account deletion.
     async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64>;
 
     /// Delete every session belonging to `user_id` *except* the one with
@@ -189,6 +222,8 @@ pub trait SessionStore: Send + Sync {
         except: SessionId,
     ) -> StorageResult<u64>;
 
+    /// Delete every session whose `expires_at` is at or before `now`,
+    /// returning the number removed.
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }
 
@@ -201,6 +236,7 @@ pub trait SessionStore: Send + Sync {
 pub struct PasskeyChallengeId(pub Uuid);
 
 impl PasskeyChallengeId {
+    /// Generate a fresh random identifier (UUIDv4).
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -229,6 +265,7 @@ pub struct StoredPasskey {
     /// backends can index on it without having to inspect the opaque
     /// `passkey` blob.
     pub credential_id: Vec<u8>,
+    /// Owner of the credential.
     pub user_id: UserId,
     /// Opaque serialised credential blob. Persist and return it verbatim;
     /// only `bauth-core` parses it.
@@ -236,7 +273,9 @@ pub struct StoredPasskey {
     /// Optional friendly device name set by the user at registration time
     /// ("Eddie's iPhone", "Yubikey 5"). The library does not interpret it.
     pub name: Option<String>,
+    /// When the credential was registered.
     pub created_at: DateTime<Utc>,
+    /// When the credential was last used to authenticate, if ever.
     pub last_used_at: Option<DateTime<Utc>>,
     /// Authenticator Attestation GUID identifying the make/model of the
     /// authenticator, when the ceremony produced one. Passkey registration
@@ -286,8 +325,7 @@ impl StoredPasskey {
 ///
 /// Carries every field a management UI needs to list a user's credentials
 /// (id, friendly name, timestamps, device metadata, cool-down) *without* the
-/// `webauthn-rs`
-/// [`Passkey`] credential blob. The listing path
+/// `webauthn-rs` `Passkey` credential blob. The listing path
 /// ([`PasskeyCredentialStore::list_passkey_summaries_for_user`]) returns
 /// this so an adapter never has to deserialise the blob just to render the
 /// "your passkeys" view.
@@ -295,10 +333,13 @@ impl StoredPasskey {
 pub struct PasskeySummary {
     /// Raw credential id, matching [`StoredPasskey::credential_id`].
     pub credential_id: Vec<u8>,
+    /// Owner of the credential.
     pub user_id: UserId,
     /// Friendly device name set at registration, if any.
     pub name: Option<String>,
+    /// When the credential was registered.
     pub created_at: DateTime<Utc>,
+    /// When the credential was last used to authenticate, if ever.
     pub last_used_at: Option<DateTime<Utc>>,
     /// Authenticator AAGUID, mirroring [`StoredPasskey::aaguid`].
     pub aaguid: Option<Uuid>,
@@ -308,6 +349,8 @@ pub struct PasskeySummary {
     pub backup_eligible: bool,
     /// Backup-state flag, mirroring [`StoredPasskey::backup_state`].
     pub backup_state: bool,
+    /// Active recovery cool-down deadline, mirroring
+    /// [`StoredPasskey::recovery_cooldown_until`].
     pub recovery_cooldown_until: Option<DateTime<Utc>>,
 }
 
@@ -333,11 +376,15 @@ impl From<StoredPasskey> for PasskeySummary {
 /// verbatim between start and finish; only `bauth-core` parses it.
 #[derive(Debug, Clone)]
 pub struct StoredPasskeyRegistration {
+    /// Ceremony identifier returned to the client for the `finish` step.
     pub id: PasskeyChallengeId,
+    /// User the registration is for.
     pub user_id: UserId,
     /// Opaque serialised ceremony state. Persist and return it verbatim.
     pub state: Vec<u8>,
+    /// When the ceremony started.
     pub created_at: DateTime<Utc>,
+    /// When the ceremony state expires; a `finish` after this is rejected.
     pub expires_at: DateTime<Utc>,
     /// Optional recovery cool-down metadata associated with this in-progress
     /// registration ceremony.
@@ -350,22 +397,29 @@ pub struct StoredPasskeyRegistration {
 /// parses it.
 #[derive(Debug, Clone)]
 pub struct StoredPasskeyAuthentication {
+    /// Ceremony identifier returned to the client for the `finish` step.
     pub id: PasskeyChallengeId,
     /// Opaque serialised ceremony state. Persist and return it verbatim.
     pub state: Vec<u8>,
+    /// When the ceremony started.
     pub created_at: DateTime<Utc>,
+    /// When the ceremony state expires; a `finish` after this is rejected.
     pub expires_at: DateTime<Utc>,
 }
 
 /// Persistence contract for registered passkey credentials.
 #[async_trait]
 pub trait PasskeyCredentialStore: Send + Sync {
+    /// Persist a newly-registered credential.
     async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()>;
 
     /// Update an existing passkey, typically to advance its signature
     /// counter or backup-state flags after a successful authentication.
     async fn update_passkey(&self, credential: StoredPasskey) -> StorageResult<()>;
 
+    /// List the user's credentials, including the credential blob. Prefer
+    /// [`list_passkey_summaries_for_user`](Self::list_passkey_summaries_for_user)
+    /// for UI listings that do not need the blob.
     async fn list_passkeys_for_user(&self, user_id: UserId) -> StorageResult<Vec<StoredPasskey>>;
 
     /// List the user's credentials as metadata-only [`PasskeySummary`]
@@ -377,17 +431,21 @@ pub trait PasskeyCredentialStore: Send + Sync {
         user_id: UserId,
     ) -> StorageResult<Vec<PasskeySummary>>;
 
+    /// Resolve a credential by its raw credential id, or `None` if absent.
     async fn find_passkey_by_credential_id(
         &self,
         credential_id: &[u8],
     ) -> StorageResult<Option<StoredPasskey>>;
 
+    /// Delete a credential by its raw credential id. Callers verify
+    /// ownership before calling.
     async fn delete_passkey(&self, credential_id: &[u8]) -> StorageResult<()>;
 }
 
 /// Persistence contract for in-progress passkey ceremony state.
 #[async_trait]
 pub trait PasskeyChallengeStore: Send + Sync {
+    /// Persist a new registration ceremony's state.
     async fn put_registration(&self, value: StoredPasskeyRegistration) -> StorageResult<()>;
 
     /// Atomically look up and remove a registration challenge. MUST
@@ -413,6 +471,7 @@ pub trait PasskeyChallengeStore: Send + Sync {
     /// resource bound, not an exact live count).
     async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64>;
 
+    /// Persist a new authentication ceremony's state.
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()>;
 
     /// Atomically look up and remove an authentication challenge.
@@ -421,6 +480,8 @@ pub trait PasskeyChallengeStore: Send + Sync {
         id: PasskeyChallengeId,
     ) -> StorageResult<Option<StoredPasskeyAuthentication>>;
 
+    /// Delete every ceremony (registration or authentication) whose
+    /// `expires_at` is at or before `now`, returning the number removed.
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }
 
@@ -430,7 +491,10 @@ pub trait PasskeyChallengeStore: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationPurpose {
+    /// Bootstraps a new account: the link starts first-passkey registration.
     Signup,
+    /// Re-enrols a user who lost every passkey: the link starts a new
+    /// passkey registration under the recovery cool-down.
     Recovery,
     /// Confirms a verified email-change request. The token is emailed to the
     /// *new* address (proving the user controls it) and, when redeemed,
@@ -444,21 +508,28 @@ pub enum VerificationPurpose {
 /// hash so that a database breach does not yield usable tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationToken {
+    /// SHA-256 hash of the token; the plaintext is never stored.
     pub token_hash: TokenHash,
+    /// User the token is bound to.
     pub user_id: UserId,
+    /// What the token authorises. Re-checked at consumption so a token of
+    /// one purpose cannot be redeemed on another flow.
     pub purpose: VerificationPurpose,
     /// Target address for an [`EmailChange`](VerificationPurpose::EmailChange)
     /// token: the already-normalized address the account moves to when the
     /// token is redeemed. `None` for signup and recovery tokens, which carry
     /// no payload beyond the user binding.
     pub new_email: Option<String>,
+    /// When the token was issued.
     pub created_at: DateTime<Utc>,
+    /// When the token expires; a consume after this is rejected.
     pub expires_at: DateTime<Utc>,
 }
 
 /// Persistence contract for single-use verification tokens.
 #[async_trait]
 pub trait VerificationTokenStore: Send + Sync {
+    /// Persist a freshly-issued token (stored by hash).
     async fn create_token(&self, token: VerificationToken) -> StorageResult<()>;
 
     /// Atomically look up and remove a token matching `(hash, purpose)`.
@@ -478,5 +549,7 @@ pub trait VerificationTokenStore: Send + Sync {
         purpose: VerificationPurpose,
     ) -> StorageResult<u64>;
 
+    /// Delete every token whose `expires_at` is at or before `now`,
+    /// returning the number removed.
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }

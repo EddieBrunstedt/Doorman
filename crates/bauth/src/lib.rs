@@ -54,10 +54,10 @@
 //! # Ok(()) }
 //! ```
 
-// TODO(Phase 23): flip to `#![deny(missing_docs)]` once every public item is
-// documented. Scoped to this library's public API on purpose — kept out of the
-// workspace lints so the requirement never fires on test/bench helpers.
-#![allow(missing_docs)]
+// Every public item in this crate carries rustdoc. Scoped to this crate on
+// purpose — kept out of the workspace lints so the requirement never fires on
+// test/bench helpers.
+#![deny(missing_docs)]
 
 /// Framework-agnostic authentication primitives. Always available.
 pub use bauth_core as core;

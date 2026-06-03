@@ -34,21 +34,22 @@ use bauth_core::signup::SignupManager;
 /// Errors returned when the Axum auth surface is incompletely configured.
 #[derive(Debug, thiserror::Error)]
 pub enum BuilderError {
+    /// No `SessionManager` was supplied to the low-level builder.
     #[error("session_manager is required")]
     MissingSessionManager,
+    /// No `UserStore` was supplied to the low-level builder.
     #[error("user_store is required")]
     MissingUserStore,
     /// The [`BauthBuilder`](crate::BauthBuilder) high-level builder, which
     /// constructs the signup / recovery managers itself, was not given an
     /// [`EmailSender`]. There is no silent default; pick a real transport
     /// (lettre, resend, …) for production, or use [`TerminalEmailSender`] /
-    /// [`FileEmailSender`] for local development. The low-level
+    /// `FileEmailSender` for local development. The low-level
     /// [`ManagerBuilder`] takes pre-built managers that already own their
     /// sender, so it never returns this error.
     ///
     /// [`EmailSender`]: bauth_core::email::EmailSender
     /// [`TerminalEmailSender`]: bauth_core::email::TerminalEmailSender
-    /// [`FileEmailSender`]: bauth_core::email::FileEmailSender
     #[error("email_sender is required")]
     MissingEmailSender,
     /// The high-level builder cannot construct the passkey manager until
@@ -56,12 +57,16 @@ pub enum BuilderError {
     /// [`BauthBuilder::passkey`](crate::BauthBuilder::passkey).
     #[error("passkey config is required")]
     MissingPasskeyConfig,
+    /// No `PasskeyManager` was supplied to the low-level builder.
     #[error("passkey_manager is required")]
     MissingPasskeyManager,
+    /// No `SignupManager` was supplied to the low-level builder.
     #[error("signup_manager is required")]
     MissingSignupManager,
+    /// No `RecoveryManager` was supplied to the low-level builder.
     #[error("recovery_manager is required")]
     MissingRecoveryManager,
+    /// No `AccountManager` was supplied to the low-level builder.
     #[error("account_manager is required")]
     MissingAccountManager,
     /// Returned through [`BauthBuilder`](crate::BauthBuilder), which has to
@@ -80,7 +85,10 @@ pub enum BuilderError {
         "{flow} url_template must contain the `{placeholder}` placeholder so the link carries the token"
     )]
     InvalidUrlTemplate {
+        /// The flow whose template is invalid (`"signup"`, `"recovery"`,
+        /// `"account"`).
         flow: &'static str,
+        /// The placeholder substring that was expected but missing.
         placeholder: &'static str,
     },
     /// The recovery cool-down is below the documented floor. Surfaced from
@@ -93,8 +101,11 @@ pub enum BuilderError {
     /// so the build fails closed instead.
     #[error("cookie name `{name}` carries a {prefix} prefix but {requirement}")]
     InvalidCookiePrefix {
+        /// The configured cookie name.
         name: String,
+        /// The prefix that imposed the requirement (`__Host-`/`__Secure-`).
         prefix: &'static str,
+        /// The attribute requirement that was not met.
         requirement: &'static str,
     },
     /// A configured lifetime (session, signup token, or recovery token) is
@@ -102,8 +113,11 @@ pub enum BuilderError {
     /// panicking later when converted to a `chrono::Duration`.
     #[error("{field} ({value:?}) must be greater than zero and at most {max:?}")]
     InvalidLifetime {
+        /// Which lifetime field is out of bounds.
         field: &'static str,
+        /// The rejected value.
         value: std::time::Duration,
+        /// The maximum permitted value.
         max: std::time::Duration,
     },
     /// The session cookie `Max-Age` outlives the session lifetime, so the
@@ -112,7 +126,9 @@ pub enum BuilderError {
         "cookie Max-Age ({cookie_max_age:?}) exceeds the session lifetime ({session_lifetime:?})"
     )]
     CookieMaxAgeExceedsSessionLifetime {
+        /// The configured cookie `Max-Age`.
         cookie_max_age: std::time::Duration,
+        /// The session lifetime it exceeds.
         session_lifetime: std::time::Duration,
     },
 }
@@ -159,16 +175,19 @@ pub struct ManagerBuilder {
 }
 
 impl ManagerBuilder {
+    /// Supply the pre-built session manager. Required.
     pub fn session_manager(mut self, manager: SessionManager) -> Self {
         self.session_manager = Some(manager);
         self
     }
 
+    /// Supply the user store. Required.
     pub fn user_store(mut self, store: Arc<dyn UserStore>) -> Self {
         self.user_store = Some(store);
         self
     }
 
+    /// Set the session cookie configuration.
     pub fn cookie(mut self, config: CookieConfig) -> Self {
         self.cookie_config = Some(config);
         self
@@ -234,21 +253,25 @@ impl ManagerBuilder {
         self
     }
 
+    /// Supply the pre-built passkey manager. Required.
     pub fn passkey_manager(mut self, manager: PasskeyManager) -> Self {
         self.passkey = Some(manager);
         self
     }
 
+    /// Supply the pre-built signup manager. Required.
     pub fn signup_manager(mut self, manager: SignupManager) -> Self {
         self.signup = Some(manager);
         self
     }
 
+    /// Supply the pre-built recovery manager. Required.
     pub fn recovery_manager(mut self, manager: RecoveryManager) -> Self {
         self.recovery = Some(manager);
         self
     }
 
+    /// Supply the pre-built account manager. Required.
     pub fn account_manager(mut self, manager: AccountManager) -> Self {
         self.account = Some(manager);
         self
@@ -272,6 +295,8 @@ impl ManagerBuilder {
         self
     }
 
+    /// Validate the configuration and assemble the [`BauthAxum`] surface, or
+    /// return a [`BuilderError`] describing the first missing/invalid input.
     pub fn build(self) -> Result<BauthAxum, BuilderError> {
         let session_manager = self
             .session_manager

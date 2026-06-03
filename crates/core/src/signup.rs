@@ -70,7 +70,9 @@ pub struct SignupConfig {
 /// Rate-limit policies for the signup request endpoint.
 #[derive(Debug, Clone, Copy)]
 pub struct SignupRateLimits {
+    /// Limit on signup requests per client IP, or `None` to disable.
     pub request_per_ip: Option<RateLimitPolicy>,
+    /// Limit on signup requests per email identifier, or `None` to disable.
     pub request_per_identifier: Option<RateLimitPolicy>,
 }
 
@@ -122,6 +124,7 @@ pub struct SignupManager {
 }
 
 impl SignupManager {
+    /// Build the signup manager from an enrollment flow and its config.
     pub fn new(flow: EnrollmentFlow, config: SignupConfig) -> Self {
         let emails = config.emails.clone().unwrap_or_else(default_emails);
         Self {

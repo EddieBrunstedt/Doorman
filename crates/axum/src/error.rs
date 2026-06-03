@@ -14,13 +14,16 @@ use serde::Serialize;
 /// JSON body returned with every error response.
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorBody {
+    /// The error payload, nested under the `error` key.
     pub error: ErrorPayload,
 }
 
 /// Stable machine-readable error payload nested under `error`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorPayload {
+    /// Stable machine-readable code clients map to user-facing copy.
     pub code: &'static str,
+    /// Human-readable English description; not a stable API.
     pub message: String,
 }
 

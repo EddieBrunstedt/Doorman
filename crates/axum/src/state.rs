@@ -34,14 +34,17 @@ pub struct BauthState {
 }
 
 impl BauthState {
+    /// The session cookie configuration backing the routes.
     pub fn cookie_config(&self) -> &CookieConfig {
         &self.cookie_config
     }
 
+    /// The session manager the routes mint and resolve sessions through.
     pub fn session_manager(&self) -> &SessionManager {
         &self.session_manager
     }
 
+    /// The user store backing the routes.
     pub fn user_store(&self) -> &Arc<dyn UserStore> {
         &self.user_store
     }

@@ -96,7 +96,9 @@ pub enum RecoveryConfigError {
     /// weakening the property.
     #[error("recovery cooldown ({configured:?}) is below the floor of {minimum:?}")]
     CooldownTooShort {
+        /// The cool-down the host configured.
         configured: Duration,
+        /// The minimum cool-down bauth enforces.
         minimum: Duration,
     },
 }

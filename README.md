@@ -112,9 +112,19 @@ The quickest path is `bauth-sqlx` plus `BauthAxum::builder(...)`. Hosts on anoth
 
 If you want a custom HTTP API, call the core managers directly: `SessionManager`, `PasskeyManager`, `SignupManager`, and `RecoveryManager`.
 
+## Documentation
+
+- [`docs/concepts.md`](docs/concepts.md) — the auth model, passkey-only rationale, sessions, opaque tokens, recovery cool-down.
+- [`docs/flows.md`](docs/flows.md) — signup, login, recovery, and account management with sequence diagrams.
+- [`docs/security.md`](docs/security.md) — threat model, implemented guarantees, defaults, and vulnerability disclosure.
+- [`docs/integration.md`](docs/integration.md) — wiring into Axum, custom stores, custom email/branding.
+- [`docs/operations.md`](docs/operations.md) — purging, config, rate limiting, observability, single-tenant assumption.
+
+API reference: `cargo doc --open`.
+
 ## Security
 
-See [`SECURITY.md`](SECURITY.md) for the threat model, recovery design, defaults, and host hardening requirements.
+See [`docs/security.md`](docs/security.md) for the threat model, implemented guarantees, defaults, and host hardening requirements, and [`SECURITY.md`](SECURITY.md) for the vulnerability-disclosure policy.
 
 ## License
 

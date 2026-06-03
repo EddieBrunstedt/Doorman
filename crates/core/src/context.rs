@@ -57,7 +57,7 @@ pub struct CoreDeps {
     pub rate_limiter: Arc<dyn RateLimiter>,
     /// Optional metrics sink for the auth hot-path counters (login success,
     /// auth failure, auth latency). Defaults to
-    /// [`NoopMetrics`](crate::metrics::NoopMetrics); set a host backend with
+    /// [`NoopMetrics`]; set a host backend with
     /// [`with_metrics`](Self::with_metrics).
     pub metrics: Arc<dyn Metrics>,
     /// Session manager the passkey and enrollment flows mint sessions
@@ -106,7 +106,7 @@ impl CoreDeps {
 
     /// Attach a metrics sink for the auth hot-path counters. Returns the
     /// updated context so it can be chained after [`new`](Self::new); the
-    /// default is [`NoopMetrics`](crate::metrics::NoopMetrics).
+    /// default is [`NoopMetrics`].
     pub fn with_metrics(mut self, metrics: Arc<dyn Metrics>) -> Self {
         self.metrics = metrics;
         self

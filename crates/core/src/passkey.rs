@@ -123,6 +123,9 @@ pub struct PasskeyConfig {
 }
 
 impl PasskeyConfig {
+    /// Build a config from an explicit relying-party id, origin, and display
+    /// name. Use [`from_origin`](Self::from_origin) when the rp_id is just the
+    /// origin host; the rp_id must be a registrable suffix of that host.
     pub fn new(rp_id: impl Into<String>, rp_origin: Url, rp_name: impl Into<String>) -> Self {
         Self {
             rp_id: rp_id.into(),
@@ -721,6 +724,8 @@ impl PasskeyManager {
         }
     }
 
+    /// List a user's credentials, including the credential blob. Prefer the
+    /// summary listing for UI that does not need the blob.
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn list_passkeys(&self, user_id: UserId) -> Result<Vec<StoredPasskey>> {
         Ok(self.credentials.list_passkeys_for_user(user_id).await?)

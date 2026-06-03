@@ -82,22 +82,18 @@ pub struct Warnings {
     /// explicit non-`localhost` domain — suggests the host is running in
     /// apparent production over plaintext HTTP.
     pub cookie_insecure_in_production: bool,
-    /// The wired-up [`AuditSink`](bauth_core::audit::AuditSink) is a
-    /// [`NoopAuditSink`](bauth_core::audit::NoopAuditSink) — security
+    /// The wired-up [`AuditSink`] is a [`NoopAuditSink`] — security
     /// events are being discarded.
     pub noop_audit: bool,
-    /// The wired-up [`RateLimiter`](bauth_core::rate_limit::RateLimiter)
-    /// is a [`NoopRateLimiter`](bauth_core::rate_limit::NoopRateLimiter)
+    /// The wired-up [`RateLimiter`] is a [`NoopRateLimiter`]
     /// — enforcement is disabled.
     pub noop_rate_limiter: bool,
-    /// The wired-up [`RateLimiter`](bauth_core::rate_limit::RateLimiter)
-    /// is the per-process
-    /// [`InMemoryRateLimiter`](bauth_core::memory::InMemoryRateLimiter).
+    /// The wired-up [`RateLimiter`] is the per-process
+    /// [`InMemoryRateLimiter`].
     pub in_memory_rate_limiter: bool,
-    /// The wired-up [`EmailSender`](bauth_core::email::EmailSender) is a
-    /// dev-only transport
-    /// ([`TerminalEmailSender`](bauth_core::email::TerminalEmailSender)
-    /// or [`FileEmailSender`](bauth_core::email::FileEmailSender)) — mail
+    /// The wired-up [`EmailSender`] is a dev-only transport
+    /// ([`TerminalEmailSender`]
+    /// or `FileEmailSender`) — mail
     /// is being printed to stdout or written to disk, not delivered to
     /// users.
     pub dev_email_transport: bool,

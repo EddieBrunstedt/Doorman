@@ -4,8 +4,9 @@
 //! them to an [`EmailSender`]. The library does not ship a silent
 //! transport — every host wires an explicit sender. First-party
 //! implementations: [`TerminalEmailSender`] (prints rendered messages to
-//! stdout) and [`FileEmailSender`] (writes RFC 822-shaped `.eml` files
-//! into a directory). Tests use `CapturingEmailSender` from
+//! stdout) and `FileEmailSender` (writes RFC 822-shaped `.eml` files
+//! into a directory, behind the `file-email` feature). Tests use
+//! `CapturingEmailSender` from
 //! `bauth-test-support`; hosts plug in real transports (lettre, resend,
 //! SES, …) through the [`EmailSender`] trait.
 //!
@@ -37,9 +38,13 @@ use crate::storage::User;
 /// Transactional email ready to hand to a transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Email {
+    /// Recipient address.
     pub to: String,
+    /// Subject line.
     pub subject: String,
+    /// Plain-text body (always present).
     pub body_text: String,
+    /// Optional HTML body for clients that render it.
     pub body_html: Option<String>,
 }
 
@@ -51,6 +56,9 @@ pub struct Email {
 /// get the blanket `Any` impl for free.
 #[async_trait]
 pub trait EmailSender: Send + Sync + Any {
+    /// Deliver one rendered email. Link-delivery sends are awaited and their
+    /// errors propagate; security-notice sends are best-effort (see
+    /// [`SecurityEmailNotifier`]).
     async fn send(&self, email: Email) -> EmailResult<()>;
 }
 
@@ -92,6 +100,8 @@ pub struct FileEmailSender {
 
 #[cfg(feature = "file-email")]
 impl FileEmailSender {
+    /// Create a sender writing `.eml` files into `dir`. The directory must
+    /// already exist.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
             dir: dir.into(),
@@ -99,6 +109,7 @@ impl FileEmailSender {
         }
     }
 
+    /// The directory `.eml` files are written into.
     pub fn dir(&self) -> &std::path::Path {
         &self.dir
     }
@@ -169,6 +180,8 @@ impl EmailSender for FileEmailSender {
 /// from `user.email.clone().unwrap_or_default()` for convenience; custom
 /// impls should do the same.
 pub trait BauthEmails: Send + Sync {
+    /// The signup link emailed to a new address. The link redeems once and
+    /// starts first-passkey registration; it does not create a session.
     fn signup_email(&self, user: &User, url: &str) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
@@ -401,10 +414,12 @@ pub struct SecurityEmailNotifier {
 }
 
 impl SecurityEmailNotifier {
+    /// Build a notifier from a transport and an email renderer.
     pub fn new(sender: Arc<dyn EmailSender>, emails: Arc<dyn BauthEmails>) -> Self {
         Self { sender, emails }
     }
 
+    /// Send the best-effort "passkey registered" notification.
     pub async fn passkey_registered(&self, user: &User, passkey_name: Option<&str>) {
         if user.email.is_none() {
             tracing::debug!(
@@ -426,6 +441,7 @@ impl SecurityEmailNotifier {
         }
     }
 
+    /// Send the best-effort "passkey removed" notification.
     pub async fn passkey_removed(&self, user: &User, passkey_name: Option<&str>) {
         if user.email.is_none() {
             tracing::debug!(

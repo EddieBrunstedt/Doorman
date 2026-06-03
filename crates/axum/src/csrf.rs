@@ -164,14 +164,22 @@ pub(crate) fn should_reject(
         return false;
     }
 
+    // Origin is the stronger signal, so it wins when present: a matching
+    // Origin allows, a mismatched one rejects.
     if let Some(matches) = origin_matches(headers, expected_origin) {
         return !matches;
     }
 
+    // Fall back to Referer only when Origin is absent (some same-origin
+    // navigations omit Origin).
     if let Some(matches) = referer_matches(headers, expected_origin) {
         return !matches;
     }
 
+    // Fail closed: a state-changing cookie request that presents neither a
+    // usable Origin nor Referer gives us no same-origin proof, so we must
+    // reject rather than wave it through. Reaching here means a cookie session
+    // is in play and the safe-method / bearer escape hatches did not apply.
     true
 }
 

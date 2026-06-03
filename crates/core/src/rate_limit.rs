@@ -96,10 +96,14 @@ pub enum RateLimitDecision {
     Allowed,
     /// Budget exhausted; the caller must wait at least `retry_after`
     /// before another attempt is likely to succeed.
-    Limited { retry_after: Duration },
+    Limited {
+        /// How long the caller should wait before retrying.
+        retry_after: Duration,
+    },
 }
 
 impl RateLimitDecision {
+    /// `true` when the decision is [`Allowed`](Self::Allowed).
     pub fn is_allowed(&self) -> bool {
         matches!(self, Self::Allowed)
     }
@@ -108,11 +112,14 @@ impl RateLimitDecision {
 /// A "no more than `max_attempts` events per `window`" rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateLimitPolicy {
+    /// Maximum number of charged attempts permitted within `window`.
     pub max_attempts: u32,
+    /// Rolling window the `max_attempts` budget applies over.
     pub window: Duration,
 }
 
 impl RateLimitPolicy {
+    /// Build a policy of `max_attempts` per `window`.
     pub const fn new(max_attempts: u32, window: Duration) -> Self {
         Self {
             max_attempts,

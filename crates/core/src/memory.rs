@@ -57,6 +57,7 @@ struct UserStoreState {
 }
 
 impl InMemoryUserStore {
+    /// Create an empty in-memory store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -150,6 +151,7 @@ struct SessionStoreState {
 }
 
 impl InMemorySessionStore {
+    /// Create an empty in-memory store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -162,10 +164,12 @@ impl InMemorySessionStore {
         self.inner.write().expect("session store rwlock poisoned")
     }
 
+    /// Number of entries currently held.
     pub fn len(&self) -> usize {
         self.read().by_id.len()
     }
 
+    /// Whether the store currently holds no entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -284,6 +288,7 @@ pub struct InMemoryVerificationTokenStore {
 }
 
 impl InMemoryVerificationTokenStore {
+    /// Create an empty in-memory store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -294,10 +299,12 @@ impl InMemoryVerificationTokenStore {
             .expect("verification token store mutex poisoned")
     }
 
+    /// Number of entries currently held.
     pub fn len(&self) -> usize {
         self.lock().len()
     }
 
+    /// Whether the store currently holds no entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -355,6 +362,7 @@ pub struct InMemoryPasskeyCredentialStore {
 }
 
 impl InMemoryPasskeyCredentialStore {
+    /// Create an empty in-memory store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -365,10 +373,12 @@ impl InMemoryPasskeyCredentialStore {
             .expect("passkey credential store mutex poisoned")
     }
 
+    /// Number of entries currently held.
     pub fn len(&self) -> usize {
         self.lock().len()
     }
 
+    /// Whether the store currently holds no entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -467,6 +477,7 @@ struct PasskeyChallengeState {
 }
 
 impl InMemoryPasskeyChallengeStore {
+    /// Create an empty in-memory store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -477,11 +488,13 @@ impl InMemoryPasskeyChallengeStore {
             .expect("passkey challenge store mutex poisoned")
     }
 
+    /// Number of entries currently held.
     pub fn len(&self) -> usize {
         let s = self.lock();
         s.registrations.len() + s.authentications.len()
     }
 
+    /// Whether the store currently holds no entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -574,6 +587,8 @@ struct BucketKey {
 }
 
 impl InMemoryRateLimiter {
+    /// Create a per-process rate limiter driven by `clock`. Correct only
+    /// within one process; multi-node deployments need a shared backend.
     pub fn new(clock: Arc<dyn Clock>) -> Self {
         Self {
             clock,

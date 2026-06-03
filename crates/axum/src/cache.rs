@@ -65,7 +65,9 @@ pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(60);
 /// Capacity and freshness configuration for [`SessionCache`].
 #[derive(Debug, Clone, Copy)]
 pub struct SessionCacheConfig {
+    /// Maximum number of resolved sessions to keep cached (across all shards).
     pub capacity: NonZeroUsize,
+    /// How long a cached entry stays fresh before it is re-resolved.
     pub ttl: Duration,
 }
 
@@ -86,7 +88,9 @@ impl Default for SessionCacheConfig {
 /// `CachedAuth` is itself shared as an `Arc` and threaded straight into the
 /// per-request `AuthContext`.
 pub struct CachedAuth {
+    /// The resolved session.
     pub session: Arc<Session>,
+    /// The resolved user.
     pub user: Arc<User>,
 }
 
@@ -112,6 +116,7 @@ pub struct SessionCache {
 }
 
 impl SessionCache {
+    /// Build a sharded session cache from the given capacity/TTL config.
     pub fn new(config: SessionCacheConfig) -> Self {
         // Divide the configured capacity across the shards, keeping at least
         // one slot per shard so a tiny configured capacity still functions.
@@ -154,6 +159,7 @@ impl SessionCache {
         }
     }
 
+    /// Cache a freshly-resolved session/user pair under its token hash.
     pub fn insert(&self, token_hash: TokenHash, session: Arc<Session>, user: Arc<User>) {
         let entry = Entry {
             cached: Arc::new(CachedAuth { session, user }),
@@ -241,6 +247,7 @@ impl SessionCache {
         Arc::new(CacheInvalidator::new(self.clone()))
     }
 
+    /// Total number of cached entries across all shards. Test-only.
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.shards
@@ -255,6 +262,7 @@ impl SessionCache {
             .sum()
     }
 
+    /// Whether the cache holds no entries. Test-only.
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0

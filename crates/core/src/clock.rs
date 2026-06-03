@@ -8,6 +8,8 @@ use chrono::{DateTime, Utc};
 
 /// Source of the current UTC time.
 pub trait Clock: Send + Sync {
+    /// Return the current UTC instant. A mock implementation drives
+    /// deterministic time in tests.
     fn now(&self) -> DateTime<Utc>;
 }
 

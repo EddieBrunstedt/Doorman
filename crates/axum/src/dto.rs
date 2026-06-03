@@ -28,14 +28,20 @@ use serde::{Deserialize, Serialize};
 /// signup or recovery).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserDto {
+    /// Stable user identifier.
     pub id: UserId,
+    /// The user's email address, if set.
     pub email: Option<String>,
+    /// Whether the email address has been verified.
     pub email_verified: bool,
+    /// When the account was created.
     pub created_at: DateTime<Utc>,
+    /// Number of passkeys currently registered to the user.
     pub passkey_count: usize,
 }
 
 impl UserDto {
+    /// Build the DTO from a core [`User`] and a known passkey count.
     pub fn from_user(user: &User, passkey_count: usize) -> Self {
         Self {
             id: user.id,
@@ -50,8 +56,11 @@ impl UserDto {
 /// Public JSON representation of a session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionDto {
+    /// Stable session identifier.
     pub id: SessionId,
+    /// When the session was created.
     pub created_at: DateTime<Utc>,
+    /// When the session expires.
     pub expires_at: DateTime<Utc>,
     /// Best-effort client IP captured at session-issue time, mirroring the
     /// value the audit log records. `None` when the proxy chain stripped
@@ -70,6 +79,8 @@ pub struct SessionDto {
 }
 
 impl SessionDto {
+    /// Build the DTO from a core [`Session`], flagging whether it is the
+    /// session the current request was made on.
     pub fn from_session(value: &Session, is_current: bool) -> Self {
         Self {
             id: value.id,
@@ -137,12 +148,17 @@ fn device_label(ua: &str) -> Option<String> {
 /// of trying to manage cookies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthResponse {
+    /// The authenticated user.
     pub user: UserDto,
+    /// The newly-issued session.
     pub session: SessionDto,
+    /// Raw bearer token, also set as an HttpOnly cookie on the same response.
     pub token: String,
 }
 
 impl AuthResponse {
+    /// Build the response from the user, the issued session, and the user's
+    /// passkey count.
     pub fn from_issued(user: User, issued: IssuedSession, passkey_count: usize) -> Self {
         Self {
             user: UserDto::from_user(&user, passkey_count),
@@ -164,8 +180,11 @@ pub struct PasskeyDto {
     /// the encoding the browser uses for `PublicKeyCredential.rawId` when
     /// serialised to JSON.
     pub credential_id: String,
+    /// Friendly device name set at registration, if any.
     pub name: Option<String>,
+    /// When the credential was registered.
     pub created_at: DateTime<Utc>,
+    /// When the credential was last used to authenticate, if ever.
     pub last_used_at: Option<DateTime<Utc>>,
     /// Authenticator AAGUID, when the ceremony produced one. Usually `null`
     /// for passkeys, which request no attestation.
@@ -218,6 +237,7 @@ impl From<PasskeySummary> for PasskeyDto {
 /// is not an enumeration oracle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignupRequest {
+    /// Email address to send the signup link to.
     pub email: String,
 }
 
@@ -225,6 +245,7 @@ pub struct SignupRequest {
 /// signup email link.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignupConsumeRequest {
+    /// Single-use signup token from the email link.
     pub token: String,
 }
 
@@ -236,8 +257,11 @@ pub struct SignupConsumeRequest {
 /// shape is identical across all three, so they share one type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistrationFinishRequest {
+    /// The challenge id the matching `start`/`consume` endpoint returned.
     pub challenge_id: String,
+    /// The WebAuthn attestation the browser produced.
     pub response: webauthn_rs::prelude::RegisterPublicKeyCredential,
+    /// Optional friendly name for the new credential.
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -247,6 +271,7 @@ pub struct RegistrationFinishRequest {
 /// endpoint is not an enumeration oracle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecoveryRequest {
+    /// Email address to send the recovery link to.
     pub email: String,
 }
 
@@ -254,6 +279,7 @@ pub struct RecoveryRequest {
 /// recovery email link.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecoveryConsumeRequest {
+    /// Single-use recovery token from the email link.
     pub token: String,
 }
 
@@ -262,6 +288,7 @@ pub struct RecoveryConsumeRequest {
 /// notified. The change only takes effect once the link is confirmed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailChangeRequest {
+    /// The address to move the account to once confirmed.
     pub new_email: String,
 }
 
@@ -269,6 +296,7 @@ pub struct EmailChangeRequest {
 /// confirmation link sent to the new address.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailChangeConfirmRequest {
+    /// Single-use confirmation token from the new address's email link.
     pub token: String,
 }
 
@@ -278,14 +306,18 @@ pub struct EmailChangeConfirmRequest {
 /// carries the `challenge_id` the client must echo back at `finish` time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PasskeyChallenge<T> {
+    /// The challenge id the client must echo back at `finish` time.
     pub challenge_id: String,
+    /// The `webauthn-rs` options to pass to the browser ceremony.
     pub options: T,
 }
 
 /// Request body for completing passkey authentication.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PasskeyAuthenticateFinishRequest {
+    /// The challenge id the `start` endpoint returned.
     pub challenge_id: String,
+    /// The WebAuthn assertion the browser produced.
     pub response: webauthn_rs::prelude::PublicKeyCredential,
 }
 

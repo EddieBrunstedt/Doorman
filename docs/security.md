@@ -1,0 +1,129 @@
+# Security
+
+This page is bauth's security model and threat model. It describes the guarantees the library **actually implements** today — there are no aspirational claims here. If a paragraph says bauth does something, the code does it and a test guards it. Read [concepts.md](concepts.md) for the vocabulary.
+
+For coordinated vulnerability disclosure, jump to [Reporting a vulnerability](#reporting-a-vulnerability).
+
+## Supported surface
+
+bauth has one steady-state login method: passkeys/WebAuthn using the discoverable-credential ceremony. Email is used only to start signup or recovery, and an email link never creates a session by itself.
+
+Out of scope by design: password authentication, OAuth, TOTP, recovery codes, admin impersonation, roles/permissions, multi-tenancy, and general-purpose email login.
+
+## Threat model
+
+bauth is designed to defend against:
+
+- **Phishing of steady-state logins**, by relying on origin-bound WebAuthn signatures — a credential only signs for its registered relying-party origin.
+- **User enumeration** in signup, recovery, and passkey authentication: the response shape and the work performed are identical for known and unknown addresses, including when the email transport fails.
+- **Immediate account lockout after email recovery**, by binding the post-recovery cool-down to recovery-created passkeys and sessions.
+- **Replay** of session tokens, verification tokens, and passkey ceremony state from normal HTTP flows — ceremony state is single-use and removed on consume.
+- **Database reads yielding usable bearer tokens**, because tokens are stored only as SHA-256 hashes.
+- **CSRF** against cookie-authenticated state-changing endpoints.
+- **Cloned authenticators**, by checking the WebAuthn signature counter for regression on each assertion.
+
+bauth cannot defend against:
+
+- a compromised host process;
+- a database attacker with both read and write access;
+- a compromised user email inbox exercising the recovery flow (the cool-down limits immediate lockout but cannot prove ownership);
+- social engineering that convinces a user to approve recovery;
+- users with no passkey-capable authenticator or no recoverable email address.
+
+## Passkeys
+
+- Authentication starts with no email or username. Every caller receives the same discoverable challenge shape, and the server learns the user at finish time from the WebAuthn response.
+- Registration forces resident/discoverable credentials so the username-less ceremony works for every passkey bauth creates.
+- Ceremony state is persisted server-side and atomically removed on finish. A challenge cannot be replayed after a successful or failed consume path.
+- WebAuthn verification is performed by [`webauthn-rs`](https://crates.io/crates/webauthn-rs); signatures are bound to the configured relying-party ID and origin.
+- **User-handle binding:** on discoverable authentication, bauth requires the authenticator to assert a user handle that parses to a known user and equals the credential's stored owner. A missing, malformed, or mismatched handle is rejected and no session is minted.
+- **Counter regression:** the asserted signature counter is compared against the stored credential (regression detection inside `webauthn-rs`). A non-advancing counter is treated as a possible clone — the assertion is rejected with a security audit event. Authenticators that always report 0 are exempted, per the WebAuthn spec.
+- **Failure auditing:** every authentication rejection emits an `AuthenticationFailed` audit event tagged with a reason (invalid/expired challenge, unknown credential, user-handle mismatch, counter regression, bad assertion). No secrets are included.
+- Passkeys registered by recovery, or from a session still in recovery cool-down, store the active `recovery_cooldown_until` deadline.
+- Authenticating with a cool-down-bound passkey before that deadline issues a restricted session; after the deadline the same passkey is treated as unrestricted with no cleanup job. Pre-existing passkeys remain unrestricted.
+- Passkey credential IDs are checked against the authenticated user before deletion, so one account cannot remove another account's credential by guessing an ID.
+
+## Signup
+
+`/auth/signup/request` returns the same response whether the address is new or already registered. For a new address, bauth stores a single-use token hash and sends a signup email. Consuming the token marks the email verified and starts passkey registration. The session is issued only after `/auth/signup/finish` successfully registers that passkey.
+
+A leaked signup link cannot be redeemed as a recovery link: token purposes are distinct and re-checked at consumption.
+
+## Recovery
+
+Recovery exists for users who lost every passkey. It deliberately requires the visitor to enrol a new visible passkey before any session is issued.
+
+- `/auth/recovery/request` is enumeration-resistant. Registered addresses receive a recovery link and a separate recovery-requested notification email. Unknown addresses receive no email, because sending one would create an enumeration side channel.
+- Recovery tokens are single-use, short-lived, hashed at rest, and scoped only to starting a passkey registration ceremony.
+- Expired-token clicks are audited but do not send another notification.
+- `/auth/recovery/finish` registers the new passkey, sends passkey-registered and recovery-completed notifications, and issues a session with a default 24h cool-down.
+- The recovery-created passkey stores the same cool-down deadline as the recovery-issued session. The deadline is stored absolutely (recovery-completion instant + cool-down) and never re-derived from a later `created_at`. Authenticating with that passkey before the deadline creates another restricted session. Passkeys added from a restricted session inherit the active deadline. Pre-existing passkeys and pre-existing sessions remain unrestricted.
+- A passkey registration ceremony started _before_ recovery completed cannot be used to attach a credential that escapes the cool-down: recovery invalidates the user's other outstanding registration challenges on completion.
+
+During the cool-down, bauth blocks actions that could lock out the legitimate user: deleting passkeys, revoking other sessions, and "sign out everywhere else". The session may still add another passkey and may revoke or log out itself. Once the deadline has passed, checks treat that cool-down as inactive; no cleanup job is required. The cool-down is evaluated through the configured `Clock`, so all entry points agree and tests can drive it deterministically.
+
+## Sessions
+
+- Session tokens are 256 bits of OS-CSPRNG output, URL-safe base64 encoded.
+- Only SHA-256 token hashes are persisted.
+- In-process token-hash equality is constant-time (`subtle`).
+- Expiry is enforced server-side.
+- Revocation is immediate because sessions are opaque server-side rows, not self-contained bearer claims.
+- The Axum layer accepts either the HttpOnly cookie or an `Authorization: Bearer` token, parsed through one shared bearer-token helper so the session and CSRF layers agree on what counts as bearer auth.
+
+## CSRF and cookies
+
+For browser cookie flows, keep the default CSRF layer enabled. When `external_origin` is configured, mutating requests that carry the session cookie must present a matching `Origin` header or, if `Origin` is absent, a matching `Referer` origin. The check **fails closed**: an unsafe-method cookie request with neither header is rejected.
+
+Set session cookies with `HttpOnly`, `Secure` outside local HTTP development, `SameSite=Lax`, and `Path=/` unless you intentionally scope them tighter. Avoid a `Domain` attribute unless cross-subdomain sessions are required. A `__Host-`/`__Secure-` cookie name is validated at build time to imply the matching `Secure`/path/domain attributes.
+
+Bearer-token clients are not in CSRF scope, but they must protect the raw token as a credential.
+
+## Audit and rate limiting
+
+Security-significant events are emitted to `AuditSink`: signup request and consume, recovery request/consume/failure, login success/failure, credential add/remove, session create/revoke/expire, email-change request/complete, and account deletion. Production hosts should ship these events to durable, queryable storage; `NoopAuditSink` discards them.
+
+Managers consult `RateLimiter` before sensitive endpoints, including the passkey authentication start/finish endpoints (per-IP and per-credential). The limiter key is structured (operation + ordered dimensions) so layered limits are expressible. The built-in in-memory limiter is correct only inside one process; multi-node deployments need a shared backend.
+
+Configurable per-user resource caps are available (all opt-in): maximum active sessions (evicts oldest), maximum credentials, and maximum outstanding registration challenges (both reject at the limit rather than evicting, so a relied-on authenticator is never silently dropped).
+
+## Email transport
+
+`TerminalEmailSender` and `FileEmailSender` are development transports. They expose signup/recovery links and security notices locally and do not deliver mail to users. Production hosts must implement `EmailSender` using their email provider and operate SPF, DKIM, DMARC, bounce handling, and provider-side abuse controls.
+
+Link-delivery emails are best-effort from the caller's perspective: signup, recovery, and recovery-requested sends all route through one best-effort helper, so a forced bounce on a _registered_ address cannot surface as a distinct error response — that parity is what closes the enumeration oracle. A residual raw-send-latency signal (a real address triggers a send, an unknown one does not) is a transport-layer concern the host can address by decoupling delivery (queue/spawn) at its own layer; the runtime-agnostic core does not spawn.
+
+Security notifications are best-effort after the protected action has already succeeded; send failures are logged and do not roll back passkey or session changes.
+
+## Defaults
+
+| Knob                                                    | Default                                                                 | Notes                                                         |
+| ------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Session lifetime                                        | 30 days                                                                 | Server-side revocable                                         |
+| Passkey challenge lifetime                              | 5 minutes                                                               | Registration and authentication ceremonies                    |
+| Signup token lifetime                                   | 15 minutes                                                              | Email link can only start first-passkey registration          |
+| Signup request limits                                   | 5/hour per IP, 3/hour per email                                         | Enumeration-resistant response                                |
+| Recovery token lifetime                                 | 15 minutes                                                              | Email link can only start recovery passkey registration       |
+| Recovery request limits                                 | 20/hour per IP, 5/hour per email, 10/day per email                      | Global ceiling off by default                                 |
+| Passkey auth limits                                     | 60/min start-per-IP, 60/min finish-per-IP, 30/min finish-per-credential | Charged before the challenge is consumed                      |
+| Recovery cool-down                                      | 24 hours                                                                | Configurable, minimum 1 hour                                  |
+| Per-user caps (sessions/credentials/pending challenges) | off                                                                     | Opt-in; sessions evict oldest, the others reject at the limit |
+| Cookie `secure`                                         | `true`                                                                  | Disable only for local plain-HTTP development                 |
+
+## Reporting a vulnerability
+
+Please report security issues **privately** and give the maintainer a chance to ship a fix before any public disclosure.
+
+- **Preferred:** open a private security advisory on the repository (<https://codeberg.org/EddieBrunstedt/bauth>) if the platform exposes the advisory workflow.
+- **Otherwise:** email the maintainer at `eddie.brunstedt@protonmail.com` with the details and a reproduction. Use a subject line that makes the security nature obvious.
+
+Please include the affected version, a description of the impact, and steps to reproduce. You will get an acknowledgement; once a fix is available it will be released and the reporter credited unless they ask otherwise. Do not open a public issue or pull request for an unfixed vulnerability.
+
+### Supported versions
+
+bauth is pre-1.0. Only the latest published `0.x` release line receives security fixes; there are no long-term-support branches before 1.0. Pin a version and upgrade forward to pick up fixes.
+
+| Version      | Supported    |
+| ------------ | ------------ |
+| latest `0.x` | yes          |
+| older `0.x`  | no — upgrade |
