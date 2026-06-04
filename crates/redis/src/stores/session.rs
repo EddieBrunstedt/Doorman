@@ -9,6 +9,11 @@
 //! instants and Redis SETs have no per-member TTL), so its hygiene is kept by
 //! read-time cleanup and the [`purge_expired`](RedisSessionStore::purge_expired)
 //! backstop.
+//!
+//! `create_session` writes with a plain `SET`, so it is an upsert: a repeated
+//! id or token hash overwrites rather than erroring, which the trait permits for
+//! key-value adapters. The ids and 256-bit hashes are random, so a collision is
+//! not a real-world case.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

@@ -81,6 +81,12 @@ Valkey is a fork of Redis (from 7.2.4) under the Linux Foundation. They share th
 
 **Minimum server version: Redis 6.2 / Valkey 7.2** (for the atomic `GETDEL` that backs single-use token consumption; sorted sets and Lua are available far earlier).
 
+## Operational notes
+
+**Single node, not Cluster.** The adapter targets a single logical Redis/Valkey (optionally replicated), not Redis Cluster. Several operations span multiple keys in one round trip — the `MULTI/EXEC` writes, the `MGET` batch reads, and the multi-key `DEL` — and assume those keys share a node. On a clustered deployment whose keys hash to different slots, these raise `CROSSSLOT` errors at runtime rather than failing cleanly at startup, so point the adapter at a non-clustered endpoint.
+
+**Purge scans the keyspace.** `purge_expired` walks the server with `SCAN`, so its cost scales with the _total_ number of keys present, not just doorman's. On a server shared with unrelated data, give doorman its own logical database (`redis://host:6379/<n>`) or instance, or run the purge on a cadence that accounts for the wider keyspace.
+
 ## Testing
 
 `cargo test -p doorman-redis` runs the shared storage-conformance suite plus the rate-limiter and single-use concurrency tests **if** `REDIS_URL` / `VALKEY_URL` point at disposable servers (each suite skips with a message when its variable is unset). The repo's `just up` starts a local Redis (`:6379`) and Valkey (`:6380`) and exports both URLs:

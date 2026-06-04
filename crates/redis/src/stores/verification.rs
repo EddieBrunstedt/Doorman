@@ -6,6 +6,11 @@
 //! never be redeemed under another. Redemption is the atomic `GETDEL` primitive
 //! (§5.5): exactly one concurrent caller observes the value, giving the
 //! single-use guarantee; the index `SREM` is a best-effort follow-up.
+//!
+//! `create_token` writes with a plain `SET`, so it is an upsert: a repeated
+//! `(purpose, hash)` overwrites rather than erroring, which the trait permits
+//! for key-value adapters. The 256-bit hashes are random, so a collision is not
+//! a real-world case.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

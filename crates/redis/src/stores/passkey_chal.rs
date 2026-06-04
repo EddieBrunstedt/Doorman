@@ -7,6 +7,11 @@
 //! nothing queries authentications by user — so it is pure TTL, and its purge
 //! scans the rows directly. Both `take_*` use the atomic `GETDEL` primitive
 //! (§5.5) so a challenge can never be replayed.
+//!
+//! `put_registration` and `put_authentication` write with a plain `SET`, so
+//! they are upserts: a repeated ceremony id overwrites rather than erroring,
+//! which the trait permits for key-value adapters. The ids are random, so a
+//! collision is not a real-world case.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
