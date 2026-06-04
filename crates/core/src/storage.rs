@@ -51,8 +51,15 @@
 //!   being pristine.
 //! - **`purge_expired` is a real reclamation pass, not a no-op.** TTL evicts the
 //!   value keys, but dangling index members for users who never return are
-//!   reclaimed only by `purge_expired`. It returns the count reclaimed; the
-//!   conformance suite asserts a non-zero count.
+//!   reclaimed only by `purge_expired`. It returns the count reclaimed (expired
+//!   rows plus any dangling index members it drops, so the count MAY exceed the
+//!   rows deleted); the conformance suite asserts a non-zero count.
+//! - **`create_*` MAY be an upsert.** The reference stores reject a duplicate id
+//!   or token hash; a key-value adapter keyed directly on those (random UUIDs,
+//!   256-bit hashes) MAY instead overwrite with a plain `SET`. The managers
+//!   never issue two creates under one id, so the distinction is unobservable in
+//!   practice — do not rely on `create_session`, `create_token`, or
+//!   `put_registration` returning an error on a collision.
 //!
 //! The trait surface is the contract. Adapter crates (`doorman-sqlx`,
 //! `doorman-redis`, and any future siblings) are conveniences on top of it, not
@@ -264,7 +271,11 @@ pub trait SessionStore: Send + Sync {
     ) -> StorageResult<u64>;
 
     /// Delete every session whose `expires_at` is at or before `now`,
-    /// returning the number removed.
+    /// returning the number of entries reclaimed. For a key-value adapter whose
+    /// rows are TTL-evicted behind a best-effort secondary index, this also
+    /// reclaims dangling index members (see the "Implementing a key-value
+    /// adapter" notes above), so the count is expired rows plus reclaimed
+    /// dangling members and MAY exceed the number of rows deleted.
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }
 
@@ -522,7 +533,10 @@ pub trait PasskeyChallengeStore: Send + Sync {
     ) -> StorageResult<Option<StoredPasskeyAuthentication>>;
 
     /// Delete every ceremony (registration or authentication) whose
-    /// `expires_at` is at or before `now`, returning the number removed.
+    /// `expires_at` is at or before `now`, returning the number of entries
+    /// reclaimed. As with the other ephemeral stores, a key-value adapter MAY
+    /// also reclaim dangling index members here, so the count MAY exceed the
+    /// number of rows deleted.
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }
 
@@ -590,8 +604,10 @@ pub trait VerificationTokenStore: Send + Sync {
         purpose: VerificationPurpose,
     ) -> StorageResult<u64>;
 
-    /// Delete every token whose `expires_at` is at or before `now`,
-    /// returning the number removed.
+    /// Delete every token whose `expires_at` is at or before `now`, returning
+    /// the number of entries reclaimed. As with the other ephemeral stores, a
+    /// key-value adapter MAY also reclaim dangling index members here, so the
+    /// count MAY exceed the number of rows deleted.
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }
 
