@@ -23,7 +23,8 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
     PasskeyChallengeId, PasskeySummary, Session, SessionId, Storage, StoredPasskey,
-    StoredPasskeyRegistration, User, UserId, VerificationPurpose, VerificationToken,
+    StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, VerificationPurpose,
+    VerificationToken,
 };
 
 fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
@@ -53,6 +54,9 @@ pub async fn run(storage: &Storage) {
     passkey_credentials_cooldown_round_trip(storage).await;
     passkey_registration_cooldown_round_trip(storage).await;
     passkey_registration_delete_for_user(storage).await;
+    passkey_authentication_single_use(storage).await;
+    passkey_challenge_purge_expired(storage).await;
+    absent_lookups_return_none(storage).await;
 }
 
 /// Extra assertions that only hold for database-backed adapters, which push
@@ -809,4 +813,173 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
         .await
         .expect("second delete");
     assert_eq!(dropped_again, 0);
+}
+
+/// An authentication ceremony round-trips its opaque state through
+/// `put`/`take` and is single-use: `take_authentication` removes the challenge
+/// before returning it, so a second take observes nothing. Authentications are
+/// not user-scoped, so unlike registrations they carry no secondary index.
+async fn passkey_authentication_single_use(storage: &Storage) {
+    let now = ts(2026, 1, 1);
+    let challenge_id = PasskeyChallengeId::new();
+    let state_blob = b"opaque-serialised-authentication-state".to_vec();
+    storage
+        .passkey_challenges
+        .put_authentication(StoredPasskeyAuthentication {
+            id: challenge_id,
+            state: state_blob.clone(),
+            created_at: now,
+            expires_at: now + Duration::minutes(5),
+        })
+        .await
+        .expect("put authentication");
+
+    let taken = storage
+        .passkey_challenges
+        .take_authentication(challenge_id)
+        .await
+        .expect("take authentication")
+        .expect("authentication present");
+    assert_eq!(taken.id, challenge_id);
+    assert_eq!(taken.created_at, now);
+    assert_eq!(taken.expires_at, now + Duration::minutes(5));
+    assert_eq!(
+        taken.state, state_blob,
+        "ceremony blob round-trips verbatim"
+    );
+    assert!(
+        storage
+            .passkey_challenges
+            .take_authentication(challenge_id)
+            .await
+            .expect("second take")
+            .is_none(),
+        "authentication challenges are single-use",
+    );
+}
+
+/// `PasskeyChallengeStore::purge_expired` drops expired ceremonies and spares
+/// live ones, across both ceremony kinds: a registration (reached through its
+/// per-user index) and an authentication (no index, reached by row scan).
+async fn passkey_challenge_purge_expired(storage: &Storage) {
+    let now = ts(2026, 1, 1);
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "purge-challenges@example.com"))
+        .await
+        .expect("user");
+
+    let challenges = &storage.passkey_challenges;
+    let expired_registration = PasskeyChallengeId::new();
+    challenges
+        .put_registration(StoredPasskeyRegistration {
+            id: expired_registration,
+            user_id,
+            state: b"expired-registration".to_vec(),
+            created_at: ts(2020, 1, 1),
+            expires_at: ts(2020, 1, 2),
+            recovery_cooldown_until: None,
+        })
+        .await
+        .expect("put expired registration");
+    let expired_authentication = PasskeyChallengeId::new();
+    challenges
+        .put_authentication(StoredPasskeyAuthentication {
+            id: expired_authentication,
+            state: b"expired-authentication".to_vec(),
+            created_at: ts(2020, 1, 1),
+            expires_at: ts(2020, 1, 2),
+        })
+        .await
+        .expect("put expired authentication");
+    let live_registration = PasskeyChallengeId::new();
+    challenges
+        .put_registration(StoredPasskeyRegistration {
+            id: live_registration,
+            user_id,
+            state: b"live-registration".to_vec(),
+            created_at: now,
+            expires_at: ts(2099, 1, 1),
+            recovery_cooldown_until: None,
+        })
+        .await
+        .expect("put live registration");
+
+    let purged = challenges.purge_expired(now).await.expect("purge");
+    assert!(purged >= 2, "both expired challenges were purged");
+    assert!(
+        challenges
+            .take_registration(expired_registration)
+            .await
+            .expect("take expired registration")
+            .is_none(),
+        "the expired registration was removed by purge_expired",
+    );
+    assert!(
+        challenges
+            .take_authentication(expired_authentication)
+            .await
+            .expect("take expired authentication")
+            .is_none(),
+        "the expired authentication was removed by purge_expired",
+    );
+    assert!(
+        challenges
+            .take_registration(live_registration)
+            .await
+            .expect("take live registration")
+            .is_some(),
+        "the live registration survived the purge",
+    );
+}
+
+/// Looking up an id or token that was never stored resolves to `None` rather
+/// than erroring, on every read and take path the managers depend on.
+async fn absent_lookups_return_none(storage: &Storage) {
+    assert!(
+        storage
+            .sessions
+            .find_session_by_id(SessionId::new())
+            .await
+            .expect("absent session by id")
+            .is_none(),
+        "an unknown session id resolves to None",
+    );
+    assert!(
+        storage
+            .sessions
+            .find_session_by_token_hash(&hash_token("no-such-session"))
+            .await
+            .expect("absent session by hash")
+            .is_none(),
+        "an unknown session token hash resolves to None",
+    );
+    assert!(
+        storage
+            .verification_tokens
+            .consume_token(&hash_token("no-such-token"), VerificationPurpose::Signup)
+            .await
+            .expect("absent token consume")
+            .is_none(),
+        "consuming an unknown token resolves to None",
+    );
+    assert!(
+        storage
+            .passkey_challenges
+            .take_registration(PasskeyChallengeId::new())
+            .await
+            .expect("absent take registration")
+            .is_none(),
+        "taking an unknown registration resolves to None",
+    );
+    assert!(
+        storage
+            .passkey_challenges
+            .take_authentication(PasskeyChallengeId::new())
+            .await
+            .expect("absent take authentication")
+            .is_none(),
+        "taking an unknown authentication resolves to None",
+    );
 }
