@@ -41,10 +41,6 @@
 // purpose — kept out of the workspace lints so the requirement never fires on
 // test helpers.
 #![deny(missing_docs)]
-// Scaffolding: the key schema and JSON helpers are exercised by the store
-// implementations, which land in the next workstream. Removed once the stores
-// are filled in.
-#![allow(dead_code)]
 
 mod client;
 mod keys;

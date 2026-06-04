@@ -37,12 +37,19 @@ impl KeySchema {
 
     /// Primary key for a session row.
     pub(crate) fn session(&self, id: SessionId) -> String {
-        format!("{}session:{}", self.prefix, id.0)
+        self.session_key_for(&id.0.to_string())
+    }
+
+    /// Primary key for a session row from its id rendered as a string. Lets a
+    /// caller rebuild the key from a user-set member without re-parsing the
+    /// UUID, while guaranteeing the same shape as [`session`](Self::session).
+    pub(crate) fn session_key_for(&self, id: &str) -> String {
+        format!("{}session:{}", self.prefix, id)
     }
 
     /// Token-hash index mapping a session's hashed bearer token to its id.
     pub(crate) fn session_hash_index(&self, hash: &TokenHash) -> String {
-        format!("{}session:hash:{}", self.prefix, hex(hash))
+        format!("{}session:hash:{}", self.prefix, token_hash_hex(hash))
     }
 
     /// Per-user SET of session ids.
@@ -50,14 +57,26 @@ impl KeySchema {
         format!("{}user:{}:sessions", self.prefix, user_id.0)
     }
 
+    /// `SCAN` pattern matching every per-user session SET, for the purge pass.
+    pub(crate) fn user_sessions_pattern(&self) -> String {
+        format!("{}user:*:sessions", self.prefix)
+    }
+
     /// Primary key for a verification token, scoped by purpose so a hash can
     /// never be redeemed under the wrong flow.
     pub(crate) fn vtoken(&self, purpose: VerificationPurpose, hash: &TokenHash) -> String {
+        self.vtoken_key_for(purpose, &token_hash_hex(hash))
+    }
+
+    /// Primary key for a verification token from its purpose and the hex hash
+    /// stored as a user-set member; the member-driven counterpart of
+    /// [`vtoken`](Self::vtoken).
+    pub(crate) fn vtoken_key_for(&self, purpose: VerificationPurpose, hex_hash: &str) -> String {
         format!(
             "{}vtoken:{}:{}",
             self.prefix,
             purpose_str(purpose),
-            hex(hash)
+            hex_hash
         )
     }
 
@@ -71,9 +90,22 @@ impl KeySchema {
         )
     }
 
+    /// `SCAN` pattern matching every per-user verification-token SET of a given
+    /// purpose. The purpose is fixed in the pattern (rather than parsed back
+    /// out of each matched key) so the purge can rebuild value keys precisely.
+    pub(crate) fn user_vtokens_pattern(&self, purpose: VerificationPurpose) -> String {
+        format!("{}user:*:vtokens:{}", self.prefix, purpose_str(purpose))
+    }
+
     /// Primary key for an in-progress passkey registration ceremony.
     pub(crate) fn pkreg(&self, id: PasskeyChallengeId) -> String {
-        format!("{}pkreg:{}", self.prefix, id.0)
+        self.pkreg_key_for(&id.0.to_string())
+    }
+
+    /// Primary key for a registration ceremony from its id rendered as a
+    /// string; the member-driven counterpart of [`pkreg`](Self::pkreg).
+    pub(crate) fn pkreg_key_for(&self, id: &str) -> String {
+        format!("{}pkreg:{}", self.prefix, id)
     }
 
     /// Per-user SET of pending registration-ceremony ids.
@@ -81,11 +113,31 @@ impl KeySchema {
         format!("{}user:{}:pkregs", self.prefix, user_id.0)
     }
 
+    /// `SCAN` pattern matching every per-user registration-ceremony SET.
+    pub(crate) fn user_pkregs_pattern(&self) -> String {
+        format!("{}user:*:pkregs", self.prefix)
+    }
+
     /// Primary key for an in-progress passkey authentication ceremony.
     pub(crate) fn pkauth(&self, id: PasskeyChallengeId) -> String {
         format!("{}pkauth:{}", self.prefix, id.0)
     }
+
+    /// `SCAN` pattern matching every authentication-ceremony key. These carry
+    /// no secondary index (§5.6), so the purge scans them directly.
+    pub(crate) fn pkauth_pattern(&self) -> String {
+        format!("{}pkauth:*", self.prefix)
+    }
 }
+
+/// The verification purposes, enumerated so a prefix-scoped purge can iterate
+/// every per-purpose index. The compiler keeps this in step with
+/// [`VerificationPurpose`] through the exhaustive match in [`purpose_str`].
+pub(crate) const ALL_PURPOSES: [VerificationPurpose; 3] = [
+    VerificationPurpose::Signup,
+    VerificationPurpose::Recovery,
+    VerificationPurpose::EmailChange,
+];
 
 /// Stable lowercase string for a verification purpose, used in key names.
 /// Matches the `snake_case` serde rename on [`VerificationPurpose`] so a key
@@ -98,8 +150,9 @@ pub(crate) fn purpose_str(purpose: VerificationPurpose) -> &'static str {
     }
 }
 
-/// Lowercase hex rendering of a token hash, for use as a key component.
-fn hex(hash: &TokenHash) -> String {
+/// Lowercase hex rendering of a token hash, used both as a key component and as
+/// the member stored in the per-user token SETs (so the two always agree).
+pub(crate) fn token_hash_hex(hash: &TokenHash) -> String {
     let mut out = String::with_capacity(hash.0.len() * 2);
     for byte in &hash.0 {
         // Writing to a String is infallible.
@@ -129,7 +182,7 @@ mod tests {
         let signup = keys.vtoken(VerificationPurpose::Signup, &hash);
         let recovery = keys.vtoken(VerificationPurpose::Recovery, &hash);
         assert_ne!(signup, recovery);
-        assert!(signup.ends_with(&hex(&hash)));
+        assert!(signup.ends_with(&token_hash_hex(&hash)));
 
         assert_eq!(
             keys.user_vtokens(user, VerificationPurpose::EmailChange),
@@ -140,7 +193,7 @@ mod tests {
     #[test]
     fn hex_is_64_lowercase_chars() {
         let hash = hash_token("x");
-        let h = hex(&hash);
+        let h = token_hash_hex(&hash);
         assert_eq!(h.len(), 64);
         assert!(
             h.chars()
