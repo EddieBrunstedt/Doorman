@@ -61,6 +61,25 @@ Every collaborator and config has a bare-noun setter on `AuthServiceBuilder` (an
 
 For SQLite/Postgres, depend on `doorman-sqlx` and call `storage.all_stores()` to get the composite `Storage` value. For an in-memory store (tests, ephemeral deployments) use `InMemoryStorage::new().all_stores()`.
 
+`Storage` is a struct of per-trait `Arc<dyn>` fields, so backends can be mixed by naming each one in the literal. The common production split is SQL for the system-of-record stores plus `doorman-redis` for the ephemeral stores and a shared rate limiter — the latter being the only way a multi-replica deployment gets instant cross-process session revoke and one rate-limit budget:
+
+```rust,ignore
+let pg = PostgresStorage::connect(pg_url).await?;
+pg.migrate().await?;
+let redis = RedisStorage::connect("redis://localhost:6379").await?;
+
+let storage = Storage {
+    users:               pg.user_store(),
+    passkey_credentials: pg.passkey_credential_store(),
+    sessions:            redis.session_store(),
+    verification_tokens: redis.verification_token_store(),
+    passkey_challenges:  redis.passkey_challenge_store(),
+};
+let auth = AuthService::builder(storage).limiter(redis.rate_limiter()) /* … */ ;
+```
+
+Redis cannot hold the system-of-record stores, so it has no `all_stores()` and is always paired with a SQL backend like this. See [`crates/redis/README.md`](../crates/redis/README.md).
+
 To back doorman with another database, implement the five storage traits from `doorman_core::storage`:
 
 - `UserStore`
@@ -69,7 +88,7 @@ To back doorman with another database, implement the five storage traits from `d
 - `PasskeyCredentialStore`
 - `PasskeyChallengeStore`
 
-The traits deal in **opaque bytes and primitives** — they have no `webauthn-rs` dependency. doorman-core serializes the WebAuthn ceremony and credential blobs before they cross the store boundary, and keeps the `credential_id` as a top-level `Vec<u8>` for indexing. Each trait's rustdoc documents its invariants: error semantics, idempotency, and the meaning of "expired rows may still be returned" (the manager re-filters by `now`). The `doorman-sqlx` conformance suite is the executable contract; run it against a new adapter.
+The traits deal in **opaque bytes and primitives** — they have no `webauthn-rs` dependency. doorman-core serializes the WebAuthn ceremony and credential blobs before they cross the store boundary, and keeps the `credential_id` as a top-level `Vec<u8>` for indexing. Each trait's rustdoc documents its invariants: error semantics, idempotency, and the meaning of "expired rows may still be returned" (the manager re-filters by `now`). The published `doorman-conformance` crate is the executable contract; add it under `[dev-dependencies]` and run `doorman_conformance::run(&storage)` against a new adapter. Key-value adapters have three extra expectations (atomic take, best-effort secondary indexes, a real `purge_expired`) spelled out in the `doorman_core::storage` module docs.
 
 Assemble the five into a `Storage`:
 

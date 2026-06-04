@@ -46,6 +46,8 @@ The default build does not pull this in, keeping the dependency surface lean. Ho
 
 The SQLx adapters ship `expires_at` indexes on the sessions, verification-token, and passkey-challenge tables, so the purge and the on-read expiry filters stay cheap as tables grow.
 
+The Redis/Valkey adapter (`doorman-redis`) sets a per-key TTL, so the server evicts the value keys on its own. `purge_all_expired` still has work to do there: it reclaims the user-scoped secondary-index members that a TTL eviction leaves dangling (Redis sets have no per-member TTL). Keep calling it — or run the background sweeper — so those indexes stay bounded for users who never return.
+
 ## Configuration
 
 All tunables flow through the builder configs; see the defaults table in [security.md](security.md#defaults). The values most deployments touch:
@@ -59,7 +61,7 @@ All tunables flow through the builder configs; see the defaults table in [securi
 
 Managers consult the `RateLimiter` before sensitive endpoints: signup request, recovery request, and passkey authentication start/finish (keyed per-IP and per-credential). The limiter key is structured — an operation plus ordered `(dimension, value)` pairs — so a single-string backend can flatten it via `RateLimitKey::canonical()` while a structured backend reads the dimensions directly.
 
-The bundled `InMemoryRateLimiter` is correct only within one process. A multi-node deployment must supply a shared backend (e.g. Redis) implementing `RateLimiter`, or the limits are per-instance and trivially bypassed by spreading requests across instances.
+The bundled `InMemoryRateLimiter` is correct only within one process. A multi-node deployment must supply a shared backend, or the limits are per-instance and trivially bypassed by spreading requests across instances. The first-party `doorman-redis` adapter provides one — a cross-replica sliding-window limiter wired with `AuthService::builder(storage).limiter(redis.rate_limiter())`. Hosts on another stack implement `RateLimiter` themselves.
 
 To put a host-side bot check (CAPTCHA, allow/deny lists) in front of signup, add it as Axum middleware on the signup route before it reaches doorman — doorman does not ship a CAPTCHA hook.
 

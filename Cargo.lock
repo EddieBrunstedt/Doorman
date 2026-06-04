@@ -682,6 +682,7 @@ version = "0.1.0"
 dependencies = [
  "doorman-axum",
  "doorman-core",
+ "doorman-redis",
  "doorman-sqlx",
  "tokio",
  "url",

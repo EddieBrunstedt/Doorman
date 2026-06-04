@@ -15,7 +15,7 @@ doorman = { version = "0.1", features = ["axum", "sqlite"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-`doorman` is the umbrella crate: one dependency, one version to bump. It re-exports `doorman-core`, `doorman-axum`, and `doorman-sqlx` behind features as `doorman::core`, `doorman::axum`, and `doorman::sqlx`. Hosts that want only a subset can still depend on the individual crates directly.
+`doorman` is the umbrella crate: one dependency, one version to bump. It re-exports `doorman-core`, `doorman-axum`, `doorman-sqlx`, and `doorman-redis` behind features as `doorman::core`, `doorman::axum`, `doorman::sqlx`, and `doorman::redis`. Hosts that want only a subset can still depend on the individual crates directly.
 
 ```rust
 use std::sync::Arc;
@@ -71,6 +71,7 @@ Open <http://localhost:3000>. Signup and recovery emails are printed to the term
 - CSRF origin checks for cookie-authenticated state-changing requests.
 - Audit and rate-limiter traits, with development defaults.
 - First-party SQLx storage for SQLite and Postgres.
+- First-party Redis/Valkey adapter for the ephemeral stores (sessions, verification tokens, passkey challenges) and a shared cross-replica rate limiter, paired with a SQL backend for the system-of-record stores.
 - Development email transports: terminal output, and `.eml` file output behind the `file-email` feature.
 
 ## Production checklist
@@ -89,9 +90,11 @@ Review the startup warnings emitted by `AuthService::builder().build()` or `Auth
 ## Workspace layout
 
 ```text
-crates/core/   framework-agnostic managers, storage traits, email/audit/rate-limit traits
-crates/axum/   Axum router, extractors, session layer, CSRF layer
-crates/sqlx/   SQLite/Postgres storage adapter
+crates/core/        framework-agnostic managers, storage traits, email/audit/rate-limit traits
+crates/axum/        Axum router, extractors, session layer, CSRF layer
+crates/sqlx/        SQLite/Postgres storage adapter
+crates/redis/       Redis/Valkey ephemeral stores + shared rate limiter
+crates/conformance/ shared storage-adapter conformance suite
 examples/minimal-app/  runnable Axum + SQLite app
 examples/web-client/   browser-side WebAuthn helper reference
 ```
@@ -135,7 +138,7 @@ cargo bench -p doorman-sqlx --features sqlite
 
 ## Custom storage or HTTP surface
 
-The quickest path is `doorman-sqlx` plus `AuthService::builder(...)`. Hosts on another database stack implement the `doorman-core` storage traits: `UserStore`, `SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`, and `PasskeyChallengeStore`.
+The quickest path is `doorman-sqlx` plus `AuthService::builder(...)`. Hosts on another database stack implement the `doorman-core` storage traits: `UserStore`, `SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`, and `PasskeyChallengeStore`. Backends are chosen per trait via the `Storage` struct literal, so you can mix them — for example a SQL backend for the system-of-record stores with `doorman-redis` for the ephemeral stores and a shared rate limiter (`features = ["postgres", "redis"]`). See [`crates/redis/README.md`](crates/redis/README.md). The published `doorman-conformance` crate holds the contract tests every adapter is verified against.
 
 If you want a custom HTTP API, call the core managers directly: `SessionManager`, `PasskeyManager`, `SignupManager`, and `RecoveryManager`.
 

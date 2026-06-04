@@ -9,14 +9,55 @@
 //! - **SQLx hosts** (SQLite or Postgres) should depend on `doorman-sqlx`
 //!   and let `SqliteStorage::all_stores()` / `PostgresStorage::all_stores()`
 //!   populate the [`Storage`] composite for them.
-//! - **Hosts on other stacks** (Diesel, sea-orm, Redis, a bespoke
-//!   driver) implement these traits directly. The in-memory stores in
+//! - **Multi-replica deployments** can move the ephemeral, TTL-bearing
+//!   stores ([`SessionStore`], [`VerificationTokenStore`],
+//!   [`PasskeyChallengeStore`]) and the rate limiter onto Redis or Valkey
+//!   with `doorman-redis`, paired with a SQL backend for the
+//!   system-of-record stores. Assemble a [`Storage`] literal naming each
+//!   backend per trait (see below); Redis cannot fill `users` /
+//!   `passkey_credentials`, so it offers no `all_stores()`.
+//! - **Hosts on other stacks** (Diesel, sea-orm, a bespoke driver)
+//!   implement these traits directly. The in-memory stores in
 //!   [`crate::memory`] are a worked reference for what each method must
 //!   guarantee — in particular the atomic `take_*` / `consume_*`
 //!   semantics that single-use tokens rely on.
 //!
-//! The trait surface is the contract. Adapter crates (`doorman-sqlx` and
-//! any future siblings) are conveniences on top of it, not part of it.
+//! ## Choosing where each store lives
+//!
+//! Backends are chosen per trait. The system-of-record stores ([`UserStore`],
+//! [`PasskeyCredentialStore`]) hold data that never expires and wants
+//! relational guarantees, so they belong in SQL. The ephemeral stores carry a
+//! TTL and benefit from a shared, fast backend in a multi-replica deployment.
+//! The canonical wiring is an explicit [`Storage`] struct literal — one line
+//! per trait, the compiler enforcing that all five are set — with the
+//! single-backend `all_stores()` shortcut for hosts that keep everything in one
+//! place. The rate limiter is a separate collaborator wired on the builder, not
+//! part of [`Storage`].
+//!
+//! ## Implementing a key-value adapter
+//!
+//! Adapters on a key-value store (Redis/Valkey, or similar) without
+//! per-member-TTL collections must honour three expectations the SQL adapters
+//! get for free:
+//!
+//! - **Atomic take.** `consume_token`, `take_registration`, and
+//!   `take_authentication` must delete-before-return so that under concurrency
+//!   exactly one caller observes the value (Redis's `GETDEL` is one way).
+//! - **Secondary indexes are best-effort.** A user-scoped index of ids/hashes
+//!   may briefly point at a row whose TTL already evicted it. Reads that resolve
+//!   members ([`SessionStore::list_for_user`] and friends) must skip and
+//!   opportunistically drop such dangling members, and the manager re-applies
+//!   the `expires_at > now` filter, so correctness never depends on the index
+//!   being pristine.
+//! - **`purge_expired` is a real reclamation pass, not a no-op.** TTL evicts the
+//!   value keys, but dangling index members for users who never return are
+//!   reclaimed only by `purge_expired`. It returns the count reclaimed; the
+//!   conformance suite asserts a non-zero count.
+//!
+//! The trait surface is the contract. Adapter crates (`doorman-sqlx`,
+//! `doorman-redis`, and any future siblings) are conveniences on top of it, not
+//! part of it. The published `doorman-conformance` crate exercises the contract
+//! against any adapter.
 
 use std::fmt;
 use std::sync::Arc;

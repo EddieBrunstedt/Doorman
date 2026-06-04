@@ -72,8 +72,10 @@ jobs:
       - name: test (all features)
         run: cargo test --workspace --all-features --locked
 
-  # Storage-backend conformance tests, run against SQLite and a live Postgres
-  # service so both implementations are held to the same contract.
+  # Storage-backend conformance tests, run against SQLite plus live Postgres,
+  # Redis, and Valkey services so every implementation is held to the same
+  # contract. Running both Redis and Valkey is what catches Redis/Valkey drift
+  # mechanically rather than by inspection.
   conformance:
     runs-on: docker
     container:
@@ -89,8 +91,24 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      valkey:
+        image: valkey/valkey:8-alpine
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       PG_URL: postgres://postgres:postgres@postgres:5432/doorman_test
+      REDIS_URL: redis://redis:6379
+      VALKEY_URL: redis://valkey:6379
     steps:
       - name: install Node.js (required by actions/checkout@v4)
         run: apt-get update && apt-get install -y --no-install-recommends nodejs
@@ -99,6 +117,8 @@ jobs:
         run: cargo test -p doorman-sqlx --features sqlite --locked
       - name: postgres storage conformance
         run: cargo test -p doorman-sqlx --features postgres --locked
+      - name: redis + valkey storage conformance
+        run: cargo test -p doorman-redis --locked
 
   # Compile-only check of each feature combination, so a feature gate that only
   # breaks under a specific mix of features is caught without running tests.
@@ -122,10 +142,14 @@ jobs:
         run: cargo check -p doorman-sqlx --features sqlite --locked
       - name: sqlx (postgres)
         run: cargo check -p doorman-sqlx --features postgres --locked
+      - name: redis
+        run: cargo check -p doorman-redis --locked
       - name: umbrella (axum + sqlite)
         run: cargo check -p doorman --features axum,sqlite --locked
       - name: umbrella (axum + postgres + file-email)
         run: cargo check -p doorman --features axum,postgres,file-email --locked
+      - name: umbrella (axum + postgres + redis — the mixed-backend path)
+        run: cargo check -p doorman --features axum,postgres,redis --locked
       - name: benches compile
         run: cargo bench --workspace --all-features --no-run --locked
 

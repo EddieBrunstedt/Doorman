@@ -7,10 +7,12 @@
 //!   managers, clock/email/audit/rate-limiter collaborators.
 //! - `doorman_axum` — the supported HTTP integration for Axum.
 //! - `doorman_sqlx` — SQLx storage adapters (SQLite and Postgres).
+//! - `doorman_redis` — Redis/Valkey adapter for the ephemeral stores and the
+//!   shared rate limiter.
 //!
 //! This crate is the front door: depend on it once and pull the pieces you
-//! need in behind features instead of tracking three separate dependencies
-//! and keeping their versions in lock-step.
+//! need in behind features instead of tracking the underlying crates
+//! separately and keeping their versions in lock-step.
 //!
 //! ```toml
 //! [dependencies]
@@ -22,11 +24,19 @@
 //! - `axum` — re-export `doorman-axum` at `doorman::axum`.
 //! - `sqlite` — re-export `doorman-sqlx` (SQLite adapter) at `doorman::sqlx`.
 //! - `postgres` — re-export `doorman-sqlx` (Postgres adapter) at `doorman::sqlx`.
+//! - `redis` — re-export `doorman-redis` at `doorman::redis`.
+//! - `valkey` — alias for `redis`; the same adapter addresses either server, so
+//!   this just lets a host name the one it runs.
 //! - `file-email` — bundled `.eml` file email transport for local development.
 //!
 //! [`doorman::core`](core) is always available. The [`prelude`] re-exports the
 //! richest available prelude (axum's when the `axum` feature is on, core's
-//! otherwise) plus the storage adapters when a sqlx feature is enabled.
+//! otherwise) plus the storage adapters when a sqlx or redis feature is enabled.
+//!
+//! Redis holds only the ephemeral, TTL-bearing stores plus the rate limiter, so
+//! it is paired with a SQL backend rather than used alone — the documented
+//! mixed-backend path is a SQL feature **and** `redis`. See `doorman::redis` for
+//! the per-trait `Storage` wiring.
 //!
 //! ## Example
 //!
@@ -70,12 +80,16 @@ pub use doorman_axum as axum;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub use doorman_sqlx as sqlx;
 
+/// Redis/Valkey adapter. Requires the `redis` (or `valkey`) feature.
+#[cfg(feature = "redis")]
+pub use doorman_redis as redis;
+
 /// One-line import for hosts wiring doorman into their app.
 ///
 /// Re-exports the most complete prelude available — `doorman_axum::prelude`
 /// when the `axum` feature is enabled (it already folds in the core
 /// prelude), or [`doorman_core::prelude`] otherwise — plus the SQLx storage
-/// adapters when a sqlx feature is on.
+/// adapters when a sqlx feature is on and the Redis adapter when `redis` is on.
 pub mod prelude {
     #[cfg(feature = "axum")]
     pub use doorman_axum::prelude::*;
@@ -85,4 +99,7 @@ pub mod prelude {
 
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     pub use doorman_sqlx::*;
+
+    #[cfg(feature = "redis")]
+    pub use doorman_redis::*;
 }
