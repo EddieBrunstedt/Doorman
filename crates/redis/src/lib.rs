@@ -44,11 +44,15 @@
 
 mod client;
 mod keys;
+mod rate_limit;
+mod scripts;
 mod stores;
 
 use std::sync::Arc;
 
+use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::error::StorageResult;
+use doorman_core::rate_limit::RateLimiter;
 use doorman_core::storage::{PasskeyChallengeStore, SessionStore, VerificationTokenStore};
 use redis::aio::ConnectionManager;
 
@@ -137,6 +141,31 @@ impl RedisStorage {
     pub fn passkey_challenge_store(&self) -> Arc<dyn PasskeyChallengeStore> {
         Arc::new(stores::passkey_chal::RedisPasskeyChallengeStore::new(
             self.client.clone(),
+        ))
+    }
+
+    /// A shared, cross-replica [`RateLimiter`] backed by this connection.
+    ///
+    /// The limiter is not a store, so it is wired separately from the `Storage`
+    /// literal — pass it to the builder via
+    /// `AuthService::builder(storage).limiter(redis.rate_limiter())`. It uses a
+    /// sliding-window log matching the in-memory limiter's semantics, sourcing
+    /// `now` from a [`SystemClock`]. Use
+    /// [`rate_limiter_with_clock`](Self::rate_limiter_with_clock) to inject a
+    /// different clock (e.g. a mock clock in tests).
+    pub fn rate_limiter(&self) -> Arc<dyn RateLimiter> {
+        self.rate_limiter_with_clock(Arc::new(SystemClock))
+    }
+
+    /// A shared [`RateLimiter`] sourcing `now` from `clock`.
+    ///
+    /// The same value the rest of doorman would supply (a [`SystemClock`] in
+    /// production, a mock clock under test) so the limiter's rolling window
+    /// agrees with the managers' notion of time.
+    pub fn rate_limiter_with_clock(&self, clock: Arc<dyn Clock>) -> Arc<dyn RateLimiter> {
+        Arc::new(rate_limit::RedisRateLimiter::new(
+            self.client.clone(),
+            clock,
         ))
     }
 }

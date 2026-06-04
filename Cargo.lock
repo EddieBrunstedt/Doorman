@@ -776,6 +776,7 @@ dependencies = [
  "chrono",
  "doorman-conformance",
  "doorman-core",
+ "doorman-test-support",
  "redis",
  "serde",
  "serde_json",

@@ -128,6 +128,15 @@ impl KeySchema {
     pub(crate) fn pkauth_pattern(&self) -> String {
         format!("{}pkauth:*", self.prefix)
     }
+
+    /// Key for a rate-limit bucket: a sorted set of recent attempt timestamps.
+    ///
+    /// Scoped by `window_ms` as well as the canonical key so the same operation
+    /// under two different window policies never shares a bucket, matching the
+    /// in-memory limiter's `(key, window)` bucketing.
+    pub(crate) fn rate_limit(&self, canonical: &str, window_ms: u128) -> String {
+        format!("{}ratelimit:{}:{}", self.prefix, window_ms, canonical)
+    }
 }
 
 /// The verification purposes, enumerated so a prefix-scoped purge can iterate
