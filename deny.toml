@@ -23,6 +23,8 @@ allow = [
   "ISC",
   "Zlib",
   "MPL-2.0",
+  # Boost Software License, permissive; pulled in by xxhash-rust (via redis).
+  "BSL-1.0",
   "Unicode-3.0",
   "Unicode-DFS-2016",
   "CC0-1.0",
