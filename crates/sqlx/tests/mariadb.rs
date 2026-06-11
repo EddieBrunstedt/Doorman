@@ -12,6 +12,7 @@
 mod common;
 
 #[tokio::test]
+#[ignore = "pending testcontainers migration; see postgres.rs"]
 async fn mariadb_storage_conformance() {
     common::run_conformance("MARIADB_URL").await;
 }

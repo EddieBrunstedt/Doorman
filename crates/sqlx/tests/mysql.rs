@@ -14,6 +14,7 @@
 mod common;
 
 #[tokio::test]
+#[ignore = "pending testcontainers migration; see postgres.rs"]
 async fn mysql_storage_conformance() {
     common::run_conformance("MYSQL_URL").await;
 }

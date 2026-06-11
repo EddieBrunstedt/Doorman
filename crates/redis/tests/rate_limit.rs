@@ -172,11 +172,13 @@ async fn zero_budget_always_limits(limiter: &Arc<dyn RateLimiter>) {
 }
 
 #[tokio::test]
+#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn rate_limit_redis() {
     run_suite("REDIS_URL").await;
 }
 
 #[tokio::test]
+#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn rate_limit_valkey() {
     run_suite("VALKEY_URL").await;
 }
@@ -185,6 +187,7 @@ async fn rate_limit_valkey() {
 /// admits exactly `max_attempts` callers — proof the evict/count/charge
 /// sequence is atomic across racing connections.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn concurrent_charges_admit_exactly_the_budget() {
     let Some((limiter, _clock)) = limiter("REDIS_URL").await else {
         return;

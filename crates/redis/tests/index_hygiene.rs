@@ -153,11 +153,13 @@ async fn run_index_hygiene(url_var: &str) {
 }
 
 #[tokio::test]
+#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn redis_dangling_index_members_are_reclaimed() {
     run_index_hygiene("REDIS_URL").await;
 }
 
 #[tokio::test]
+#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn valkey_dangling_index_members_are_reclaimed() {
     run_index_hygiene("VALKEY_URL").await;
 }

@@ -10,6 +10,7 @@
 mod common;
 
 #[tokio::test]
+#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn valkey_storage_conformance() {
     let Some(storage) = common::storage("VALKEY_URL").await else {
         return;

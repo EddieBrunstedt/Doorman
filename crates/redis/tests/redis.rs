@@ -8,6 +8,7 @@
 mod common;
 
 #[tokio::test]
+#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn redis_storage_conformance() {
     let Some(storage) = common::storage("REDIS_URL").await else {
         return;

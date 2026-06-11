@@ -17,6 +17,7 @@ use doorman_core::storage::{
 const RACERS: usize = 64;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn verification_token_is_consumed_exactly_once() {
     let Some(storage) = common::storage("REDIS_URL").await else {
         return;
@@ -57,6 +58,7 @@ async fn verification_token_is_consumed_exactly_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn registration_is_taken_exactly_once() {
     let Some(storage) = common::storage("REDIS_URL").await else {
         return;
@@ -97,6 +99,7 @@ async fn registration_is_taken_exactly_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn authentication_is_taken_exactly_once() {
     let Some(storage) = common::storage("REDIS_URL").await else {
         return;

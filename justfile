@@ -46,6 +46,11 @@ test-redis *args:
 test-mysql *args:
     cargo test -p doorman-sqlx --features mysql {{ args }}
 
+# Run the doorman-sqlx postgres suite. Starts a throwaway Postgres via
+# testcontainers (needs a Docker daemon); set PG_URL to use an existing one.
+test-postgres *args:
+    cargo test -p doorman-sqlx --features postgres {{ args }}
+
 # Format the workspace.
 fmt:
     cargo fmt --all
