@@ -18,19 +18,18 @@
 //!   `DELETE ... WHERE expires_at <= ?`), re-seeded before each timed pass.
 //!
 //! SQLite always runs against an ephemeral `sqlite::memory:` database.
-//! Postgres is optional: compile with the `postgres` feature and point
-//! `PG_URL` at a disposable database to add a mirrored `postgres/...` group.
-//! The Postgres path drops and recreates the `public` schema for a clean
-//! migration state, exactly like the conformance suite — do not point it at
-//! data you want to keep.
+//! Postgres runs against a throwaway container started via `testcontainers`,
+//! so enabling it just needs the `postgres` feature and a running Docker
+//! daemon — no external server or connection string. Each store resets the
+//! container's `public` schema for a clean migration state, exactly like the
+//! conformance suite. The container is removed when the bench process exits.
 //!
 //! ```sh
 //! # SQLite only
 //! cargo bench -p doorman-sqlx --features sqlite --bench storage
 //!
-//! # SQLite + Postgres
-//! PG_URL=postgres://postgres:postgres@localhost/doorman_bench \
-//!     cargo bench -p doorman-sqlx --features "sqlite postgres" --bench storage
+//! # SQLite + Postgres (needs a running Docker daemon)
+//! cargo bench -p doorman-sqlx --features "sqlite postgres" --bench storage
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -305,31 +304,48 @@ fn storage(c: &mut Criterion) {
     // ever wipes a store whose benches have already completed. This gives each
     // scaling size an exact row count, mirroring SQLite's fresh databases.
     #[cfg(feature = "postgres")]
-    match std::env::var("PG_URL").ok() {
-        Some(url) => {
-            let pool = runtime
-                .block_on(sqlx::PgPool::connect(&url))
-                .expect("pg connect");
-            let make = || {
-                runtime.block_on(async {
-                    sqlx::query("DROP SCHEMA IF EXISTS public CASCADE")
-                        .execute(&pool)
-                        .await
-                        .expect("drop schema");
-                    sqlx::query("CREATE SCHEMA public")
-                        .execute(&pool)
-                        .await
-                        .expect("create schema");
-                    let storage = doorman_sqlx::PostgresStorage::from_pool(pool.clone());
-                    storage.migrate().await.expect("migrate postgres");
-                    storage.all_stores()
-                })
-            };
-            run_backend(c, &runtime, "postgres", &make);
-        }
-        None => {
-            eprintln!("PG_URL not set; skipping Postgres storage benches");
-        }
+    {
+        use testcontainers_modules::postgres::Postgres;
+        use testcontainers_modules::testcontainers::runners::AsyncRunner;
+
+        // Start one throwaway Postgres container for the whole Postgres group,
+        // mirroring the conformance test.
+        let (node, pool) = runtime.block_on(async {
+            let node = Postgres::default()
+                .start()
+                .await
+                .expect("start postgres container");
+            let host = node.get_host().await.expect("container host");
+            let port = node.get_host_port_ipv4(5432).await.expect("container port");
+            let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+            let pool = sqlx::PgPool::connect(&url).await.expect("pg connect");
+            (node, pool)
+        });
+        let make = || {
+            runtime.block_on(async {
+                sqlx::query("DROP SCHEMA IF EXISTS public CASCADE")
+                    .execute(&pool)
+                    .await
+                    .expect("drop schema");
+                sqlx::query("CREATE SCHEMA public")
+                    .execute(&pool)
+                    .await
+                    .expect("create schema");
+                let storage = doorman_sqlx::PostgresStorage::from_pool(pool.clone());
+                storage.migrate().await.expect("migrate postgres");
+                storage.all_stores()
+            })
+        };
+        run_backend(c, &runtime, "postgres", &make);
+
+        // Remove the container explicitly inside the runtime: `ContainerAsync`'s
+        // async `Drop` calls `Handle::current()`, which panics if it runs
+        // outside a runtime context (here the bench drives the runtime with
+        // `block_on`, so there is no ambient one at drop time). `rm` marks the
+        // container dropped, making the later `Drop` a no-op.
+        runtime
+            .block_on(node.rm())
+            .expect("remove postgres container");
     }
 }
 

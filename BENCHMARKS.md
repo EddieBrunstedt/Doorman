@@ -12,9 +12,8 @@ cargo bench -p doorman-core
 cargo bench -p doorman-axum
 cargo bench -p doorman-sqlx --features sqlite
 
-# Storage benches with the optional Postgres path (see below)
-PG_URL=postgres://postgres:postgres@localhost/doorman_bench \
-    cargo bench -p doorman-sqlx --features "sqlite postgres" --bench storage
+# Storage benches with the optional Postgres path (needs a running Docker daemon; see below)
+cargo bench -p doorman-sqlx --features "sqlite postgres" --bench storage
 
 # A single bench target
 cargo bench -p doorman-core --bench passkey_auth
@@ -128,7 +127,7 @@ All storage benches are registered under a per-dialect group, so ids read `sqlit
 | `{dialect}/list_for_user/{1,100,10000}`      | Listing a user's active sessions as the per-user row count grows (throughput reported per row).                                                |
 | `{dialect}/purge_expired`                    | The indexed `DELETE ... WHERE expires_at <= ?` over a table of expired rows, re-seeded before each pass (throughput reported per row removed). |
 
-SQLite runs against an ephemeral `sqlite::memory:` database and is always enabled. The Postgres path is optional: compile with the `postgres` feature **and** set `PG_URL` to a disposable database. It drops and recreates the `public` schema for a clean migration state — exactly like the conformance suite — so do not point it at data you want to keep. Compare the `sqlite/...` and `postgres/...` groups against the `doorman-core` `session` numbers (the in-memory reference) to see adapter overhead.
+SQLite runs against an ephemeral `sqlite::memory:` database and is always enabled. The Postgres path is optional: compile with the `postgres` feature and have a Docker daemon running. It starts a throwaway Postgres container via [testcontainers](https://docs.rs/testcontainers) — no external server or connection string — and resets the `public` schema for a clean migration state, exactly like the conformance suite. A pinned container image also makes the numbers reproducible across machines. Compare the `sqlite/...` and `postgres/...` groups against the `doorman-core` `session` numbers (the in-memory reference) to see adapter overhead.
 
 ## Reading the results
 
