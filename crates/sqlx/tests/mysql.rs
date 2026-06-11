@@ -1,20 +1,34 @@
 //! Runs the shared storage-conformance suite against the SQLx + MySQL adapter.
 //!
-//! Skipped unless the `MYSQL_URL` environment variable points at a disposable
-//! test database. CI provides this via a containerised MySQL; locally you can
-//! set `MYSQL_URL=mysql://root:root@localhost:3306/doorman_test` (`just up`
-//! starts a server on that port).
+//! Self-contained: it starts a throwaway MySQL container via `testcontainers`,
+//! so it needs a running Docker daemon and nothing else. There is no
+//! environment-variable branch and no external database — every run gets a
+//! fresh, empty server that is removed when the test ends.
 //!
-//! The test drops the adapter's tables before running so the migration state is
-//! fresh on every invocation. Do not point `MYSQL_URL` at a database whose
-//! tables hold data you want to keep.
+//! It is `#[ignore]`d so the plain `cargo test` / `--all-features` run (which
+//! also executes inside the containerised CI jobs that have no Docker socket)
+//! does not invoke it. Run it explicitly where Docker is available — the CI
+//! `conformance` job and `just test-mysql` pass `--include-ignored`.
 
 #![cfg(feature = "mysql")]
 
 mod common;
 
+use testcontainers_modules::mysql::Mysql;
+use testcontainers_modules::testcontainers::runners::AsyncRunner;
+
 #[tokio::test]
-#[ignore = "pending testcontainers migration; see postgres.rs"]
+#[ignore = "requires Docker (testcontainers); run via the conformance job or --include-ignored"]
 async fn mysql_storage_conformance() {
-    common::run_conformance("MYSQL_URL").await;
+    // The container is removed when this guard drops at the end of the test. The
+    // image starts the root user with no password and a `test` database.
+    let node = Mysql::default()
+        .start()
+        .await
+        .expect("start mysql container");
+    let host = node.get_host().await.expect("container host");
+    let port = node.get_host_port_ipv4(3306).await.expect("container port");
+    let url = format!("mysql://root@{host}:{port}/test");
+
+    common::run_conformance(&url).await;
 }

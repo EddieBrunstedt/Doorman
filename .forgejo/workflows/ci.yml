@@ -78,7 +78,7 @@ jobs:
   # `testcontainers`, talking to the host's Docker daemon. Requires the runner
   # to expose a host-backend label (`native:host`) and Docker access.
   #
-  # Postgres is migrated; SQLite needs no server. MySQL/MariaDB and Redis/Valkey
+  # Postgres and MySQL/MariaDB are migrated; SQLite needs no server. Redis/Valkey
   # are temporarily `#[ignore]`d (run as no-ops) until they are migrated to the
   # same testcontainers model — see crates/sqlx/tests/postgres.rs.
   conformance:
@@ -90,7 +90,7 @@ jobs:
       - name: postgres storage conformance
         run: cargo test -p doorman-sqlx --features postgres --locked -- --include-ignored
       - name: mysql + mariadb storage conformance
-        run: cargo test -p doorman-sqlx --features mysql --locked
+        run: cargo test -p doorman-sqlx --features mysql --locked -- --include-ignored
       - name: redis + valkey storage conformance
         run: cargo test -p doorman-redis --locked
 

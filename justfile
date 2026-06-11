@@ -42,9 +42,11 @@ test *args:
 test-redis *args:
     cargo test -p doorman-redis --all-features {{ args }}
 
-# Run the doorman-sqlx mysql suite against the live MySQL + MariaDB servers.
+# Run the doorman-sqlx mysql + mariadb conformance tests. They are #[ignore]d
+# (they start their own MySQL/MariaDB containers via testcontainers, needing a
+# Docker daemon), so run them explicitly with --include-ignored.
 test-mysql *args:
-    cargo test -p doorman-sqlx --features mysql {{ args }}
+    cargo test -p doorman-sqlx --features mysql {{ args }} -- --include-ignored
 
 # Run the doorman-sqlx postgres conformance test. It is #[ignore]d (it needs a
 # Docker daemon for testcontainers), so run it explicitly with --include-ignored.
