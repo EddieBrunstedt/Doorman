@@ -1,12 +1,14 @@
 # doorman developer tasks. Run `just` (or `just --list`) to see them.
 #
-# The Redis/Valkey URLs are exported into every recipe's environment, so
-# `just test` and friends pick up the live servers started by `just up`.
-# Override on the command line if your servers live elsewhere, e.g.
+# The Redis/Valkey and MySQL/MariaDB URLs are exported into every recipe's
+# environment, so `just test` and friends pick up the live servers started by
+# `just up`. Override on the command line if your servers live elsewhere, e.g.
 #   just test REDIS_URL=redis://other:6379
 
 export REDIS_URL := env_var_or_default("REDIS_URL", "redis://127.0.0.1:6379")
 export VALKEY_URL := env_var_or_default("VALKEY_URL", "redis://127.0.0.1:6380")
+export MYSQL_URL := env_var_or_default("MYSQL_URL", "mysql://root:root@127.0.0.1:3306/doorman_test")
+export MARIADB_URL := env_var_or_default("MARIADB_URL", "mysql://root:root@127.0.0.1:3307/doorman_test")
 
 # Show the recipe list.
 default:
@@ -39,6 +41,10 @@ test *args:
 # Run only the doorman-redis suite against the live servers.
 test-redis *args:
     cargo test -p doorman-redis --all-features {{ args }}
+
+# Run the doorman-sqlx mysql suite against the live MySQL + MariaDB servers.
+test-mysql *args:
+    cargo test -p doorman-sqlx --features mysql {{ args }}
 
 # Format the workspace.
 fmt:

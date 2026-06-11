@@ -61,4 +61,5 @@ crate::stores::sqlx_stores! {
     pool: PgPool,
     row: sqlx::postgres::PgRow,
     placeholders: crate::common::ph_postgres,
+    take: returning,
 }

@@ -6,7 +6,8 @@
 //! - [`doorman_core`] — framework-agnostic primitives: storage traits,
 //!   managers, clock/email/audit/rate-limiter collaborators.
 //! - `doorman_axum` — the supported HTTP integration for Axum.
-//! - `doorman_sqlx` — SQLx storage adapters (SQLite and Postgres).
+//! - `doorman_sqlx` — SQLx storage adapters (SQLite, Postgres, and
+//!   MySQL/MariaDB).
 //! - `doorman_redis` — Redis/Valkey adapter for the ephemeral stores and the
 //!   shared rate limiter.
 //!
@@ -24,6 +25,7 @@
 //! - `axum` — re-export `doorman-axum` at `doorman::axum`.
 //! - `sqlite` — re-export `doorman-sqlx` (SQLite adapter) at `doorman::sqlx`.
 //! - `postgres` — re-export `doorman-sqlx` (Postgres adapter) at `doorman::sqlx`.
+//! - `mysql` — re-export `doorman-sqlx` (MySQL/MariaDB adapter) at `doorman::sqlx`.
 //! - `redis` — re-export `doorman-redis` at `doorman::redis`.
 //! - `valkey` — alias for `redis`; the same adapter addresses either server, so
 //!   this just lets a host name the one it runs.
@@ -77,7 +79,7 @@ pub use doorman_core as core;
 pub use doorman_axum as axum;
 
 /// SQLx storage adapters. Requires the `sqlite` or `postgres` feature.
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
+#[cfg(any(feature = "sqlite", feature = "postgres", feature = "mysql"))]
 pub use doorman_sqlx as sqlx;
 
 /// Redis/Valkey adapter. Requires the `redis` (or `valkey`) feature.
@@ -97,7 +99,7 @@ pub mod prelude {
     #[cfg(not(feature = "axum"))]
     pub use doorman_core::prelude::*;
 
-    #[cfg(any(feature = "sqlite", feature = "postgres"))]
+    #[cfg(any(feature = "sqlite", feature = "postgres", feature = "mysql"))]
     pub use doorman_sqlx::*;
 
     #[cfg(feature = "redis")]

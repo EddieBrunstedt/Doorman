@@ -73,9 +73,9 @@ jobs:
         run: cargo test --workspace --all-features --locked
 
   # Storage-backend conformance tests, run against SQLite plus live Postgres,
-  # Redis, and Valkey services so every implementation is held to the same
-  # contract. Running both Redis and Valkey is what catches Redis/Valkey drift
-  # mechanically rather than by inspection.
+  # MySQL, MariaDB, Redis, and Valkey services so every implementation is held
+  # to the same contract. Running both MySQL and MariaDB (like both Redis and
+  # Valkey) is what catches dialect drift mechanically rather than by inspection.
   conformance:
     runs-on: docker
     container:
@@ -91,6 +91,26 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: doorman_test
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: doorman_test
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
       redis:
         image: redis:7-alpine
         options: >-
@@ -107,6 +127,8 @@ jobs:
           --health-retries 5
     env:
       PG_URL: postgres://postgres:postgres@postgres:5432/doorman_test
+      MYSQL_URL: mysql://root:root@mysql:3306/doorman_test
+      MARIADB_URL: mysql://root:root@mariadb:3306/doorman_test
       REDIS_URL: redis://redis:6379
       VALKEY_URL: redis://valkey:6379
     steps:
@@ -117,6 +139,8 @@ jobs:
         run: cargo test -p doorman-sqlx --features sqlite --locked
       - name: postgres storage conformance
         run: cargo test -p doorman-sqlx --features postgres --locked
+      - name: mysql + mariadb storage conformance
+        run: cargo test -p doorman-sqlx --features mysql --locked
       - name: redis + valkey storage conformance
         run: cargo test -p doorman-redis --locked
 
@@ -142,10 +166,14 @@ jobs:
         run: cargo check -p doorman-sqlx --features sqlite --locked
       - name: sqlx (postgres)
         run: cargo check -p doorman-sqlx --features postgres --locked
+      - name: sqlx (mysql)
+        run: cargo check -p doorman-sqlx --features mysql --locked
       - name: redis
         run: cargo check -p doorman-redis --locked
       - name: umbrella (axum + sqlite)
         run: cargo check -p doorman --features axum,sqlite --locked
+      - name: umbrella (axum + mysql)
+        run: cargo check -p doorman --features axum,mysql --locked
       - name: umbrella (axum + postgres + file-email)
         run: cargo check -p doorman --features axum,postgres,file-email --locked
       - name: umbrella (axum + postgres + redis — the mixed-backend path)

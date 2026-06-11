@@ -61,4 +61,5 @@ crate::stores::sqlx_stores! {
     pool: SqlitePool,
     row: sqlx::sqlite::SqliteRow,
     placeholders: crate::common::ph_sqlite,
+    take: returning,
 }

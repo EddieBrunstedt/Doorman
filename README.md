@@ -70,7 +70,7 @@ Open <http://localhost:3000>. Signup and recovery emails are printed to the term
 - Cookie and bearer-token session presentation.
 - CSRF origin checks for cookie-authenticated state-changing requests.
 - Audit and rate-limiter traits, with development defaults.
-- First-party SQLx storage for SQLite and Postgres.
+- First-party SQLx storage for SQLite, Postgres, and MySQL/MariaDB.
 - First-party Redis/Valkey adapter for the ephemeral stores (sessions, verification tokens, passkey challenges) and a shared cross-replica rate limiter, paired with a SQL backend for the system-of-record stores.
 - Development email transports: terminal output, and `.eml` file output behind the `file-email` feature.
 

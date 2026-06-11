@@ -9,23 +9,33 @@
 //!
 //! Placeholders are written once as `?`; the `$placeholders` rewriter passed
 //! by each dialect turns them into the syntax that dialect wants (`?` stays
-//! for SQLite, `$1`/`$2`/… for Postgres). The shared conformance suite runs
-//! the same assertions against both expansions.
+//! for SQLite and MySQL, `$1`/`$2`/… for Postgres). The shared conformance
+//! suite runs the same assertions against every expansion.
+//!
+//! The one place the dialects genuinely diverge is the atomic delete-and-return
+//! used by `consume_token` / `take_registration` / `take_authentication`.
+//! Postgres and SQLite express it as a single `DELETE … RETURNING`; MySQL has
+//! no `RETURNING`, so it runs `SELECT … FOR UPDATE` then `DELETE` inside a
+//! transaction. Each dialect selects its strategy via the `take` parameter,
+//! which dispatches to [`sqlx_take`]; everything else is shared.
 
 /// Generate the per-concern store implementations and accessors for a SQLx
 /// dialect.
 ///
 /// Parameters:
 /// - `storage`: the dialect's public storage wrapper type (e.g. `SqliteStorage`).
-/// - `pool`: the dialect's pool type (`SqlitePool` / `PgPool`).
-/// - `row`: the dialect's row type (`SqliteRow` / `PgRow`).
+/// - `pool`: the dialect's pool type (`SqlitePool` / `PgPool` / `MySqlPool`).
+/// - `row`: the dialect's row type (`SqliteRow` / `PgRow` / `MySqlRow`).
 /// - `placeholders`: a `fn(&str) -> Cow<str>` rewriting `?` placeholders.
+/// - `take`: the atomic delete-and-return strategy, `returning` (Postgres,
+///   SQLite) or `txn` (MySQL). See [`sqlx_take`].
 macro_rules! sqlx_stores {
     (
         storage: $storage:ident,
         pool: $pool:ty,
         row: $row:ty,
-        placeholders: $ph:path $(,)?
+        placeholders: $ph:path,
+        take: $take:tt $(,)?
     ) => {
         impl $storage {
             /// Build a [`Storage`](doorman_core::storage::Storage) populated with
@@ -416,18 +426,19 @@ macro_rules! sqlx_stores {
             ) -> $crate::stores::__reexport::StorageResult<
                 Option<$crate::stores::__reexport::VerificationToken>,
             > {
-                let sql = $ph(
-                    "DELETE FROM verification_tokens
-                     WHERE token_hash = ? AND purpose = ?
-                     RETURNING token_hash, purpose, user_id, new_email, created_at, expires_at",
-                );
-                let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind($crate::common::token_hash_bytes(hash))
-                    .bind($crate::common::purpose_to_str(purpose))
-                    .fetch_optional(&self.pool)
-                    .await
-                    .map_err($crate::common::storage)?;
-                row.map(row_to_verification_token).transpose()
+                $crate::stores::sqlx_take! {
+                    $take,
+                    pool: self.pool,
+                    ph: $ph,
+                    table: "verification_tokens",
+                    cols: "token_hash, purpose, user_id, new_email, created_at, expires_at",
+                    filter: "token_hash = ? AND purpose = ?",
+                    binds: [
+                        $crate::common::token_hash_bytes(hash),
+                        $crate::common::purpose_to_str(purpose),
+                    ],
+                    map: row_to_verification_token,
+                }
             }
 
             async fn delete_tokens_for_user(
@@ -725,35 +736,16 @@ macro_rules! sqlx_stores {
             ) -> $crate::stores::__reexport::StorageResult<
                 Option<$crate::stores::__reexport::StoredPasskeyRegistration>,
             > {
-                use ::sqlx::Row as _;
-                let sql = $ph(
-                    "DELETE FROM passkey_registrations WHERE id = ?
-                     RETURNING id, user_id, state, created_at, expires_at, recovery_cooldown_until",
-                );
-                let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind($crate::common::uuid_to_bytes(id.0))
-                    .fetch_optional(&self.pool)
-                    .await
-                    .map_err($crate::common::storage)?;
-                let Some(row) = row else { return Ok(None) };
-                let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage)?;
-                let user_id_bytes: Vec<u8> =
-                    row.try_get("user_id").map_err($crate::common::storage)?;
-                let state: Vec<u8> = row.try_get("state").map_err($crate::common::storage)?;
-                Ok(Some($crate::stores::__reexport::StoredPasskeyRegistration {
-                    id: $crate::stores::__reexport::PasskeyChallengeId(
-                        $crate::common::uuid_from_row(id_bytes)?,
-                    ),
-                    user_id: $crate::stores::__reexport::UserId(
-                        $crate::common::uuid_from_row(user_id_bytes)?,
-                    ),
-                    state,
-                    created_at: row.try_get("created_at").map_err($crate::common::storage)?,
-                    expires_at: row.try_get("expires_at").map_err($crate::common::storage)?,
-                    recovery_cooldown_until: row
-                        .try_get("recovery_cooldown_until")
-                        .map_err($crate::common::storage)?,
-                }))
+                $crate::stores::sqlx_take! {
+                    $take,
+                    pool: self.pool,
+                    ph: $ph,
+                    table: "passkey_registrations",
+                    cols: "id, user_id, state, created_at, expires_at, recovery_cooldown_until",
+                    filter: "id = ?",
+                    binds: [$crate::common::uuid_to_bytes(id.0)],
+                    map: row_to_registration,
+                }
             }
 
             async fn delete_registrations_for_user(
@@ -808,27 +800,16 @@ macro_rules! sqlx_stores {
             ) -> $crate::stores::__reexport::StorageResult<
                 Option<$crate::stores::__reexport::StoredPasskeyAuthentication>,
             > {
-                use ::sqlx::Row as _;
-                let sql = $ph(
-                    "DELETE FROM passkey_authentications WHERE id = ?
-                     RETURNING id, state, created_at, expires_at",
-                );
-                let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind($crate::common::uuid_to_bytes(id.0))
-                    .fetch_optional(&self.pool)
-                    .await
-                    .map_err($crate::common::storage)?;
-                let Some(row) = row else { return Ok(None) };
-                let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage)?;
-                let state: Vec<u8> = row.try_get("state").map_err($crate::common::storage)?;
-                Ok(Some($crate::stores::__reexport::StoredPasskeyAuthentication {
-                    id: $crate::stores::__reexport::PasskeyChallengeId(
-                        $crate::common::uuid_from_row(id_bytes)?,
-                    ),
-                    state,
-                    created_at: row.try_get("created_at").map_err($crate::common::storage)?,
-                    expires_at: row.try_get("expires_at").map_err($crate::common::storage)?,
-                }))
+                $crate::stores::sqlx_take! {
+                    $take,
+                    pool: self.pool,
+                    ph: $ph,
+                    table: "passkey_authentications",
+                    cols: "id, state, created_at, expires_at",
+                    filter: "id = ?",
+                    binds: [$crate::common::uuid_to_bytes(id.0)],
+                    map: row_to_authentication,
+                }
             }
 
             async fn purge_expired(
@@ -852,10 +833,129 @@ macro_rules! sqlx_stores {
                 Ok(reg.rows_affected() + auth.rows_affected())
             }
         }
+
+        fn row_to_registration(
+            row: $row,
+        ) -> $crate::stores::__reexport::StorageResult<
+            $crate::stores::__reexport::StoredPasskeyRegistration,
+        > {
+            use ::sqlx::Row as _;
+            let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage)?;
+            let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage)?;
+            let state: Vec<u8> = row.try_get("state").map_err($crate::common::storage)?;
+            Ok($crate::stores::__reexport::StoredPasskeyRegistration {
+                id: $crate::stores::__reexport::PasskeyChallengeId(
+                    $crate::common::uuid_from_row(id_bytes)?,
+                ),
+                user_id: $crate::stores::__reexport::UserId(
+                    $crate::common::uuid_from_row(user_id_bytes)?,
+                ),
+                state,
+                created_at: row.try_get("created_at").map_err($crate::common::storage)?,
+                expires_at: row.try_get("expires_at").map_err($crate::common::storage)?,
+                recovery_cooldown_until: row
+                    .try_get("recovery_cooldown_until")
+                    .map_err($crate::common::storage)?,
+            })
+        }
+
+        fn row_to_authentication(
+            row: $row,
+        ) -> $crate::stores::__reexport::StorageResult<
+            $crate::stores::__reexport::StoredPasskeyAuthentication,
+        > {
+            use ::sqlx::Row as _;
+            let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage)?;
+            let state: Vec<u8> = row.try_get("state").map_err($crate::common::storage)?;
+            Ok($crate::stores::__reexport::StoredPasskeyAuthentication {
+                id: $crate::stores::__reexport::PasskeyChallengeId(
+                    $crate::common::uuid_from_row(id_bytes)?,
+                ),
+                state,
+                created_at: row.try_get("created_at").map_err($crate::common::storage)?,
+                expires_at: row.try_get("expires_at").map_err($crate::common::storage)?,
+            })
+        }
     };
 }
 
 pub(crate) use sqlx_stores;
+
+/// The atomic delete-and-return behind `consume_token`, `take_registration`,
+/// and `take_authentication`, in the two shapes the dialects need.
+///
+/// Both arms take the same named inputs and evaluate to
+/// `StorageResult<Option<T>>`, so a store method body is just the macro call:
+/// - `pool`: an expression for the dialect pool (`self.pool`).
+/// - `ph`: the dialect placeholder rewriter.
+/// - `table`/`cols`/`filter`: the table, the projected columns, and the `WHERE`
+///   predicate (with `?` placeholders).
+/// - `binds`: the values bound to the predicate, in order. The `txn` arm binds
+///   them twice (the `SELECT` and the `DELETE`), so each must be a cheap,
+///   side-effect-free expression.
+/// - `map`: the `fn($row) -> StorageResult<T>` row mapper.
+///
+/// `returning` (Postgres, SQLite) issues a single `DELETE … RETURNING`. `txn`
+/// (MySQL, which has no `RETURNING`) opens a transaction, locks the row with
+/// `SELECT … FOR UPDATE`, deletes it, and commits — so two racing takers
+/// serialize on the lock and exactly one observes the row.
+macro_rules! sqlx_take {
+    (
+        returning,
+        pool: $pool:expr,
+        ph: $ph:path,
+        table: $table:literal,
+        cols: $cols:literal,
+        filter: $filter:literal,
+        binds: [$($bind:expr),* $(,)?],
+        map: $map:path $(,)?
+    ) => {{
+        let sql = $ph(concat!(
+            "DELETE FROM ", $table, " WHERE ", $filter, " RETURNING ", $cols,
+        ));
+        let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+            $(.bind($bind))*
+            .fetch_optional(&$pool)
+            .await
+            .map_err($crate::common::storage)?;
+        row.map($map).transpose()
+    }};
+    (
+        txn,
+        pool: $pool:expr,
+        ph: $ph:path,
+        table: $table:literal,
+        cols: $cols:literal,
+        filter: $filter:literal,
+        binds: [$($bind:expr),* $(,)?],
+        map: $map:path $(,)?
+    ) => {{
+        let mut tx = $pool.begin().await.map_err($crate::common::storage)?;
+        let select_sql = $ph(concat!(
+            "SELECT ", $cols, " FROM ", $table, " WHERE ", $filter, " FOR UPDATE",
+        ));
+        let row = ::sqlx::query(::sqlx::AssertSqlSafe(select_sql))
+            $(.bind($bind))*
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err($crate::common::storage)?;
+        let Some(row) = row else {
+            tx.rollback().await.map_err($crate::common::storage)?;
+            return Ok(None);
+        };
+        let parsed = $map(row)?;
+        let delete_sql = $ph(concat!("DELETE FROM ", $table, " WHERE ", $filter));
+        ::sqlx::query(::sqlx::AssertSqlSafe(delete_sql))
+            $(.bind($bind))*
+            .execute(&mut *tx)
+            .await
+            .map_err($crate::common::storage)?;
+        tx.commit().await.map_err($crate::common::storage)?;
+        Ok(Some(parsed))
+    }};
+}
+
+pub(crate) use sqlx_take;
 
 /// Items the generated store bodies reference, re-exported under one path so
 /// the macro can name them without each dialect module importing them.

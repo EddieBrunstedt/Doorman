@@ -21,6 +21,15 @@ pub(crate) fn ph_sqlite(sql: &'static str) -> Cow<'static, str> {
     Cow::Borrowed(sql)
 }
 
+/// Placeholder rewriter for the MySQL/MariaDB dialect: a no-op, like
+/// [`ph_sqlite`]. MySQL's positional placeholder is `?`, which is exactly what
+/// the shared store bodies in [`crate::stores`] already write, so the borrowed
+/// `&'static str` threads straight through without a copy.
+#[cfg(feature = "mysql")]
+pub(crate) fn ph_mysql(sql: &'static str) -> Cow<'static, str> {
+    Cow::Borrowed(sql)
+}
+
 /// Placeholder rewriter for the Postgres dialect: rewrites each positional
 /// `?` into the `$1`, `$2`, … form Postgres expects, in order. No SQL the
 /// shared store bodies emit contains a literal `?` outside a placeholder, so

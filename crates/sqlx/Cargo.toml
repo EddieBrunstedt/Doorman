@@ -10,12 +10,14 @@ license.workspace = true
 readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
-description = "SQLx-backed storage adapter for the doorman authentication library (SQLite and Postgres)."
+description = "SQLx-backed storage adapter for the doorman authentication library (SQLite, Postgres, and MySQL/MariaDB)."
 
 [features]
 default = []
 sqlite = ["sqlx/sqlite"]
 postgres = ["sqlx/postgres"]
+# Covers both MySQL and MariaDB: they share the one sqlx MySql driver.
+mysql = ["sqlx/mysql"]
 
 [lints]
 workspace = true

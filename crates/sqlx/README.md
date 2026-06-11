@@ -1,11 +1,12 @@
 # doorman-sqlx
 
-SQLx-backed storage adapter for [`doorman-core`](../core). Two backends ship behind cargo features:
+SQLx-backed storage adapter for [`doorman-core`](../core). Three backends ship behind cargo features:
 
 - `sqlite` — `SqliteStorage` for SQLite databases.
 - `postgres` — `PostgresStorage` for Postgres databases.
+- `mysql` — `MySqlStorage` for MySQL and MariaDB databases (one driver serves both).
 
-Both implement every storage trait the library defines: `UserStore`, `SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`, `PasskeyChallengeStore`.
+All implement every storage trait the library defines: `UserStore`, `SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`, `PasskeyChallengeStore`.
 
 ## Usage
 
@@ -40,9 +41,24 @@ storage.migrate().await?;
 let composite = storage.all_stores();
 ```
 
+For MySQL or MariaDB, use the `mysql` feature and `MySqlStorage`:
+
+```toml
+[dependencies]
+doorman-sqlx = { version = "0.1", features = ["mysql"] }
+```
+
+```rust
+use doorman_sqlx::MySqlStorage;
+
+let storage = MySqlStorage::connect("mysql://user:pass@host:3306/db").await?;
+storage.migrate().await?;
+let composite = storage.all_stores();
+```
+
 ## Schemas and migrations
 
-One migration file per backend lives under `migrations/sqlite/` and `migrations/postgres/`. They are embedded into the binary at compile time via `sqlx::migrate!` and applied by `migrate()`. The schemas are the same shape; only column-type names differ (`BLOB` vs `BYTEA`, `TEXT` vs `TIMESTAMPTZ` for timestamps).
+The migrations live under `migrations/sqlite/`, `migrations/postgres/`, and `migrations/mysql/`. They are embedded into the binary at compile time via `sqlx::migrate!` and applied by `migrate()`. The schemas are the same shape; only dialect details differ — column types (`BLOB`/`BINARY` vs `BYTEA`, `TEXT`/`DATETIME(6)` vs `TIMESTAMPTZ`) and, on MySQL, the absence of `DELETE … RETURNING` (the atomic single-use take runs as `SELECT … FOR UPDATE` + `DELETE` in a transaction instead). MySQL timestamps use `DATETIME(6)` rather than `TIMESTAMP` to keep sub-second TTL precision and span years outside `TIMESTAMP`'s 1970–2038 range.
 
 ## Connection pool tuning
 
@@ -59,10 +75,12 @@ let pool = SqlitePoolOptions::new()
 let storage = SqliteStorage::from_pool(pool);
 ```
 
-`pool()` returns the underlying `SqlitePool` / `PgPool` if you want to share it with the rest of your app.
+`pool()` returns the underlying `SqlitePool` / `PgPool` / `MySqlPool` if you want to share it with the rest of your app.
 
 ## Testing
 
 `cargo test -p doorman-sqlx --features sqlite` runs the SQLite suite in memory; no external services needed.
 
 `cargo test -p doorman-sqlx --features postgres` runs the Postgres suite **if** `PG_URL` is set, e.g. `PG_URL=postgres://postgres:postgres@localhost/doorman_test`. The test wipes the `public` schema of the target database before running, so point it at a disposable test DB only.
+
+`cargo test -p doorman-sqlx --features mysql` runs the MySQL suite **if** `MYSQL_URL` is set and the MariaDB suite **if** `MARIADB_URL` is set, e.g. `MYSQL_URL=mysql://root:root@localhost:3306/doorman_test`. Each test drops the adapter's tables before running, so point them at disposable test DBs only. Running both suites is what catches MySQL/MariaDB drift mechanically.

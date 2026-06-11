@@ -1,10 +1,14 @@
-# Local Redis + Valkey for developing and testing `doorman-redis`.
+# Local databases for developing and testing the storage adapters: Redis +
+# Valkey for `doorman-redis`, MySQL + MariaDB for the `doorman-sqlx` mysql
+# adapter.
 #
 # Brought up with `just up` (or `docker compose up -d --wait`). The test suite
-# reads REDIS_URL / VALKEY_URL; the `justfile` points those at these services.
+# reads REDIS_URL / VALKEY_URL / MYSQL_URL / MARIADB_URL; the `justfile` points
+# those at these services.
 #
-# Persistence is disabled (`--save "" --appendonly no`): these are throwaway
-# test servers, so there is no point writing snapshots or an AOF to disk.
+# Persistence is disabled for Redis/Valkey (`--save "" --appendonly no`): these
+# are throwaway test servers, so there is no point writing snapshots or an AOF
+# to disk.
 services:
   redis:
     image: redis:7-alpine
@@ -29,3 +33,31 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  mysql:
+    image: mysql:8
+    container_name: doorman-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: doorman_test
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mariadb:
+    image: mariadb:11
+    container_name: doorman-mariadb
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: doorman_test
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
