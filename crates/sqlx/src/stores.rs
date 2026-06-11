@@ -27,6 +27,11 @@
 /// - `pool`: the dialect's pool type (`SqlitePool` / `PgPool` / `MySqlPool`).
 /// - `row`: the dialect's row type (`SqliteRow` / `PgRow` / `MySqlRow`).
 /// - `placeholders`: a `fn(&str) -> Cow<str>` rewriting `?` placeholders.
+/// - `timestamp`: a `fn` every timestamp bind is routed through before binding.
+///   Identity (`common::ts_passthrough`) for SQLite and Postgres, which store
+///   `DateTime<Utc>` directly; `common::ts_mysql` for MySQL/MariaDB, which must
+///   bind the naive UTC datetime so the parameter is typed `DATETIME` rather
+///   than the 2038-capped `TIMESTAMP`. See those helpers for the full rationale.
 /// - `take`: the atomic delete-and-return strategy, `returning` (Postgres,
 ///   SQLite) or `txn` (MySQL). See [`sqlx_take`].
 macro_rules! sqlx_stores {
@@ -35,6 +40,7 @@ macro_rules! sqlx_stores {
         pool: $pool:ty,
         row: $row:ty,
         placeholders: $ph:path,
+        timestamp: $ts:path,
         take: $take:tt $(,)?
     ) => {
         impl $storage {
@@ -121,9 +127,9 @@ macro_rules! sqlx_stores {
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(user.id.0))
                     .bind(&user.email)
-                    .bind(user.email_verified_at)
-                    .bind(user.created_at)
-                    .bind(user.updated_at)
+                    .bind($ts(user.email_verified_at))
+                    .bind($ts(user.created_at))
+                    .bind($ts(user.updated_at))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage)?;
@@ -177,8 +183,8 @@ macro_rules! sqlx_stores {
                 );
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind(&user.email)
-                    .bind(user.email_verified_at)
-                    .bind(user.updated_at)
+                    .bind($ts(user.email_verified_at))
+                    .bind($ts(user.updated_at))
                     .bind($crate::common::uuid_to_bytes(user.id.0))
                     .execute(&self.pool)
                     .await
@@ -241,11 +247,11 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(session.id.0))
                     .bind($crate::common::uuid_to_bytes(session.user_id.0))
                     .bind($crate::common::token_hash_bytes(&session.token_hash))
-                    .bind(session.created_at)
-                    .bind(session.expires_at)
+                    .bind($ts(session.created_at))
+                    .bind($ts(session.expires_at))
                     .bind(&session.ip)
                     .bind(&session.user_agent)
-                    .bind(session.recovery_cooldown_until)
+                    .bind($ts(session.recovery_cooldown_until))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage)?;
@@ -301,7 +307,7 @@ macro_rules! sqlx_stores {
                 );
                 let rows = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(user_id.0))
-                    .bind(now)
+                    .bind($ts(now))
                     .fetch_all(&self.pool)
                     .await
                     .map_err($crate::common::storage)?;
@@ -355,7 +361,7 @@ macro_rules! sqlx_stores {
             ) -> $crate::stores::__reexport::StorageResult<u64> {
                 let sql = $ph("DELETE FROM sessions WHERE expires_at <= ?");
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind(now)
+                    .bind($ts(now))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage)?;
@@ -411,8 +417,8 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::purpose_to_str(token.purpose))
                     .bind($crate::common::uuid_to_bytes(token.user_id.0))
                     .bind(&token.new_email)
-                    .bind(token.created_at)
-                    .bind(token.expires_at)
+                    .bind($ts(token.created_at))
+                    .bind($ts(token.expires_at))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage)?;
@@ -463,7 +469,7 @@ macro_rules! sqlx_stores {
             ) -> $crate::stores::__reexport::StorageResult<u64> {
                 let sql = $ph("DELETE FROM verification_tokens WHERE expires_at <= ?");
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind(now)
+                    .bind($ts(now))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage)?;
@@ -517,13 +523,13 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(credential.user_id.0))
                     .bind(&credential.passkey)
                     .bind(&credential.name)
-                    .bind(credential.created_at)
-                    .bind(credential.last_used_at)
+                    .bind($ts(credential.created_at))
+                    .bind($ts(credential.last_used_at))
                     .bind($crate::common::aaguid_to_str(credential.aaguid))
                     .bind($crate::common::transports_to_str(&credential.transports))
                     .bind(credential.backup_eligible)
                     .bind(credential.backup_state)
-                    .bind(credential.recovery_cooldown_until)
+                    .bind($ts(credential.recovery_cooldown_until))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage)?;
@@ -545,13 +551,13 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(credential.user_id.0))
                     .bind(&credential.passkey)
                     .bind(&credential.name)
-                    .bind(credential.created_at)
-                    .bind(credential.last_used_at)
+                    .bind($ts(credential.created_at))
+                    .bind($ts(credential.last_used_at))
                     .bind($crate::common::aaguid_to_str(credential.aaguid))
                     .bind($crate::common::transports_to_str(&credential.transports))
                     .bind(credential.backup_eligible)
                     .bind(credential.backup_state)
-                    .bind(credential.recovery_cooldown_until)
+                    .bind($ts(credential.recovery_cooldown_until))
                     .bind(&credential.credential_id)
                     .execute(&self.pool)
                     .await
@@ -721,9 +727,9 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(value.id.0))
                     .bind($crate::common::uuid_to_bytes(value.user_id.0))
                     .bind(&value.state)
-                    .bind(value.created_at)
-                    .bind(value.expires_at)
-                    .bind(value.recovery_cooldown_until)
+                    .bind($ts(value.created_at))
+                    .bind($ts(value.expires_at))
+                    .bind($ts(value.recovery_cooldown_until))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage)?;
@@ -786,8 +792,8 @@ macro_rules! sqlx_stores {
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(value.id.0))
                     .bind(&value.state)
-                    .bind(value.created_at)
-                    .bind(value.expires_at)
+                    .bind($ts(value.created_at))
+                    .bind($ts(value.expires_at))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage)?;
@@ -819,13 +825,13 @@ macro_rules! sqlx_stores {
                 let mut tx = self.pool.begin().await.map_err($crate::common::storage)?;
                 let reg_sql = $ph("DELETE FROM passkey_registrations WHERE expires_at <= ?");
                 let reg = ::sqlx::query(::sqlx::AssertSqlSafe(reg_sql))
-                    .bind(now)
+                    .bind($ts(now))
                     .execute(&mut *tx)
                     .await
                     .map_err($crate::common::storage)?;
                 let auth_sql = $ph("DELETE FROM passkey_authentications WHERE expires_at <= ?");
                 let auth = ::sqlx::query(::sqlx::AssertSqlSafe(auth_sql))
-                    .bind(now)
+                    .bind($ts(now))
                     .execute(&mut *tx)
                     .await
                     .map_err($crate::common::storage)?;

@@ -1,5 +1,6 @@
-//! Helpers shared between the SQLite and Postgres adapters: type
-//! conversions for stored values and a uniform error mapper.
+//! Helpers shared between the SQLite, Postgres, and MySQL/MariaDB adapters:
+//! placeholder rewriting, timestamp bind adapters, type conversions for stored
+//! values, and a uniform error mapper.
 
 use std::borrow::Cow;
 
@@ -48,6 +49,56 @@ pub(crate) fn ph_postgres(sql: &'static str) -> Cow<'static, str> {
         }
     }
     Cow::Owned(out)
+}
+
+/// Timestamp bind adapter for the SQLite and Postgres dialects: identity.
+/// Both store `DateTime<Utc>` directly — SQLite as a text/`TIMESTAMP` column,
+/// Postgres as `TIMESTAMPTZ` — so the value binds unchanged. The MySQL adapter
+/// uses [`ts_mysql`] instead; the shared store bodies route every timestamp
+/// bind through whichever adapter their dialect supplies.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn ts_passthrough<T>(t: T) -> T {
+    t
+}
+
+/// Timestamp bind adapter for the MySQL/MariaDB dialect: bind the naive UTC
+/// datetime rather than the `DateTime<Utc>`.
+///
+/// sqlx tags `DateTime<Utc>` as MySQL `TIMESTAMP`. MariaDB then applies
+/// `TIMESTAMP` range semantics to the incoming parameter — even when the target
+/// column is `DATETIME` — and silently turns any value past the 2038-01-19
+/// epoch ceiling into NULL, which a `NOT NULL` column then rejects (error
+/// 1048). The conformance suite's year-2099 expiries trip exactly this; MySQL 8
+/// happens to tolerate it, MariaDB does not. Binding the naive datetime instead
+/// tags the parameter as `DATETIME`, so the full `DATETIME` range stores
+/// faithfully. The session runs at UTC, so the naive wall-clock is correct.
+#[cfg(feature = "mysql")]
+pub(crate) fn ts_mysql<T: MysqlDatetime>(t: T) -> T::Bind {
+    t.into_datetime()
+}
+
+/// Maps the timestamp types the stores bind (`DateTime<Utc>` and its `Option`)
+/// to the naive-UTC counterparts [`ts_mysql`] hands to the driver.
+#[cfg(feature = "mysql")]
+pub(crate) trait MysqlDatetime {
+    type Bind;
+    fn into_datetime(self) -> Self::Bind;
+}
+
+#[cfg(feature = "mysql")]
+impl MysqlDatetime for chrono::DateTime<chrono::Utc> {
+    type Bind = chrono::NaiveDateTime;
+    fn into_datetime(self) -> Self::Bind {
+        self.naive_utc()
+    }
+}
+
+#[cfg(feature = "mysql")]
+impl MysqlDatetime for Option<chrono::DateTime<chrono::Utc>> {
+    type Bind = Option<chrono::NaiveDateTime>;
+    fn into_datetime(self) -> Self::Bind {
+        self.map(|d| d.naive_utc())
+    }
 }
 
 pub(crate) fn token_hash_bytes(h: &TokenHash) -> &[u8] {

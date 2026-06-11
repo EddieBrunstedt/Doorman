@@ -11,10 +11,14 @@
 //! followed by `DELETE` inside a transaction (`take: txn`); see the
 //! `sqlx_take` macro in `stores`. Timestamps are stored as `DATETIME(6)` rather
 //! than `TIMESTAMP` so sub-second TTLs survive and the column spans years
-//! outside `TIMESTAMP`'s 1970–2038 epoch range. sqlx pins the session
-//! `time_zone` to `+00:00` by default, so `DateTime<Utc>` round-trips as UTC.
-//! The shared storage-conformance suite (`tests/mysql`) runs the same
-//! assertions against this expansion as against the Postgres and SQLite ones.
+//! outside `TIMESTAMP`'s 1970–2038 epoch range. To match that, the shared store
+//! bodies bind every timestamp through `common::ts_mysql`, which hands the
+//! driver a naive UTC datetime so the parameter is typed `DATETIME`; binding a
+//! `DateTime<Utc>` directly tags it `TIMESTAMP`, and MariaDB then nulls any
+//! value past the 2038 epoch ceiling (see `ts_mysql` for the full story). The
+//! shared storage-conformance suite (`tests/mysql`, `tests/mariadb`) runs the
+//! same assertions against this expansion as against the Postgres and SQLite
+//! ones — and against both servers, which is what catches MySQL/MariaDB drift.
 
 use sqlx::MySqlPool;
 use sqlx::mysql::MySqlPoolOptions;
@@ -69,5 +73,6 @@ crate::stores::sqlx_stores! {
     pool: MySqlPool,
     row: sqlx::mysql::MySqlRow,
     placeholders: crate::common::ph_mysql,
+    timestamp: crate::common::ts_mysql,
     take: txn,
 }

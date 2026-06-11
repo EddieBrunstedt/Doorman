@@ -61,5 +61,6 @@ crate::stores::sqlx_stores! {
     pool: SqlitePool,
     row: sqlx::sqlite::SqliteRow,
     placeholders: crate::common::ph_sqlite,
+    timestamp: crate::common::ts_passthrough,
     take: returning,
 }
