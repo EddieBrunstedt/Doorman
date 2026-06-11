@@ -81,6 +81,11 @@ let storage = SqliteStorage::from_pool(pool);
 
 `cargo test -p doorman-sqlx --features sqlite` runs the SQLite suite in memory; no external services needed.
 
-`cargo test -p doorman-sqlx --features postgres` runs the Postgres suite **if** `PG_URL` is set, e.g. `PG_URL=postgres://postgres:postgres@localhost/doorman_test`. The test wipes the `public` schema of the target database before running, so point it at a disposable test DB only.
+The Postgres and MySQL/MariaDB suites are self-contained: each starts its own throwaway database container via [testcontainers](https://docs.rs/testcontainers), so they need only a running Docker daemon — no external server or connection-string env var. Every run gets a fresh, empty database that is removed when the test ends. A running Docker daemon is therefore a prerequisite:
 
-`cargo test -p doorman-sqlx --features mysql` runs the MySQL suite **if** `MYSQL_URL` is set and the MariaDB suite **if** `MARIADB_URL` is set, e.g. `MYSQL_URL=mysql://root:root@localhost:3306/doorman_test`. Each test drops the adapter's tables before running, so point them at disposable test DBs only. Running both suites is what catches MySQL/MariaDB drift mechanically.
+```sh
+cargo test -p doorman-sqlx --features postgres
+cargo test -p doorman-sqlx --features mysql   # MySQL + MariaDB
+```
+
+Running both the MySQL and MariaDB suites is what catches MySQL/MariaDB drift mechanically. `just test-postgres` and `just test-mysql` wrap these commands.

@@ -1,6 +1,9 @@
 # Continuous integration for doorman on Forgejo Actions (Codeberg).
 #
-# Jobs run on the `docker` label.
+# Most jobs run on the `docker` label (containerised). The `test` job is the
+# exception: it runs on `native` because the storage-conformance tests start
+# throwaway database containers via testcontainers, which need the host's
+# Docker daemon — a containerised job has no Docker socket.
 
 name: ci
 
@@ -58,41 +61,19 @@ jobs:
       - name: dprint check
         run: ~/.dprint/bin/dprint check
 
-  # The test suite, run twice to cover both the default and the full feature set.
+  # The full test suite, including the storage-backend conformance tests. Runs
+  # on the host (`runs-on: native`) because those tests start throwaway database
+  # containers via testcontainers, which need the host's Docker daemon — so the
+  # runner must expose the `native` label with Docker access. Run twice to cover
+  # both the default and the full feature set.
   test:
-    runs-on: docker
-    container:
-      image: rust:1.96-bookworm
+    runs-on: native
     steps:
-      - name: install Node.js (required by actions/checkout@v4)
-        run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
       - name: test (default features)
         run: cargo test --workspace --locked
       - name: test (all features)
         run: cargo test --workspace --all-features --locked
-
-  # Storage-backend conformance tests. Self-contained: this job runs directly on
-  # the runner host (no job container, no service containers) and the adapters
-  # that have been migrated start their own throwaway databases via
-  # `testcontainers`, talking to the host's Docker daemon. Requires the runner
-  # to expose a host-backend label (`native:host`) and Docker access.
-  #
-  # Postgres and MySQL/MariaDB are migrated; SQLite needs no server. Redis/Valkey
-  # are temporarily `#[ignore]`d (run as no-ops) until they are migrated to the
-  # same testcontainers model — see crates/sqlx/tests/postgres.rs.
-  conformance:
-    runs-on: native
-    steps:
-      - uses: actions/checkout@v4
-      - name: sqlite storage conformance
-        run: cargo test -p doorman-sqlx --features sqlite --locked
-      - name: postgres storage conformance
-        run: cargo test -p doorman-sqlx --features postgres --locked -- --include-ignored
-      - name: mysql + mariadb storage conformance
-        run: cargo test -p doorman-sqlx --features mysql --locked -- --include-ignored
-      - name: redis + valkey storage conformance
-        run: cargo test -p doorman-redis --locked
 
   # Compile-only check of each feature combination, so a feature gate that only
   # breaks under a specific mix of features is caught without running tests.

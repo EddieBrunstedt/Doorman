@@ -1,18 +1,20 @@
 //! Runs the shared storage-conformance suite against the Redis adapter.
 //!
-//! Skipped unless `REDIS_URL` points at a disposable server (e.g.
-//! `REDIS_URL=redis://127.0.0.1:6379`); `just up` provides one locally and CI
-//! supplies a containerised Redis. The suite uses a unique key prefix per run,
-//! so it does not disturb unrelated keys.
+//! Self-contained: it starts a throwaway Redis container via `testcontainers`,
+//! so it needs a running Docker daemon and nothing else. There is no
+//! environment-variable branch and no external server — every run gets a fresh,
+//! empty server that is removed when the test ends. The suite uses a unique key
+//! prefix per run. A running Docker daemon is therefore a prerequisite for the
+//! workspace test run.
 
 mod common;
 
+use common::Backend;
+
 #[tokio::test]
-#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn redis_storage_conformance() {
-    let Some(storage) = common::storage("REDIS_URL").await else {
-        return;
-    };
+    // `_node` keeps the container alive until the end of the test.
+    let (_node, storage) = common::storage(Backend::Redis).await;
     doorman_conformance::run(&storage).await;
     // The Redis adapter pushes the `expires_at > now` predicate into
     // `list_for_user`, so it satisfies the database-backed assertions too.

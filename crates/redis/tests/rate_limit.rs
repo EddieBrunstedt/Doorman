@@ -5,36 +5,36 @@
 //! and single-script atomicity under concurrency. A mock clock makes the
 //! window-rollover assertions deterministic without sleeping.
 //!
-//! The full suite runs against both Redis and Valkey (gated on `REDIS_URL` /
-//! `VALKEY_URL`) so any Lua/sorted-set drift between the two servers is caught
-//! mechanically. Skipped with a message when the relevant URL is unset.
+//! The full suite runs against both Redis and Valkey so any Lua/sorted-set
+//! drift between the two servers is caught mechanically.
+//!
+//! Self-contained: each test starts its own throwaway container via
+//! `testcontainers`, so it needs a running Docker daemon.
+
+mod common;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Utc};
+use common::{Backend, ContainerGuard};
 use doorman_core::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use doorman_redis::RedisStorage;
 use doorman_test_support::MockClock;
 use uuid::Uuid;
 
-/// Build a limiter with a mock clock against `url_var`, or `None` (with a skip
-/// message) when it is unset. A unique key prefix isolates each run.
-async fn limiter(url_var: &str) -> Option<(Arc<dyn RateLimiter>, Arc<MockClock>)> {
-    let url = match std::env::var(url_var) {
-        Ok(url) => url,
-        Err(_) => {
-            eprintln!("{url_var} not set; skipping rate-limit suite");
-            return None;
-        }
-    };
+/// Start a throwaway `backend` container and build a limiter with a mock clock
+/// against it. The returned guard keeps the container alive; a unique key prefix
+/// isolates each run.
+async fn limiter(backend: Backend) -> (ContainerGuard, Arc<dyn RateLimiter>, Arc<MockClock>) {
+    let (guard, url) = common::start(backend).await;
     let clock = Arc::new(MockClock::new(Utc::now()));
     let redis = RedisStorage::connect(&url)
         .await
         .expect("connect to redis/valkey")
         .with_prefix(format!("doorman-test:{}:", Uuid::new_v4()));
     let limiter = redis.rate_limiter_with_clock(clock.clone());
-    Some((limiter, clock))
+    (guard, limiter, clock)
 }
 
 /// A fresh key on a distinct operation so each sub-check starts from an empty
@@ -55,10 +55,9 @@ async fn charge(
 }
 
 /// The complete behaviour suite, run against one server.
-async fn run_suite(url_var: &str) {
-    let Some((limiter, clock)) = limiter(url_var).await else {
-        return;
-    };
+async fn run_suite(backend: Backend) {
+    // `_node` keeps the container alive until the end of the suite.
+    let (_node, limiter, clock) = limiter(backend).await;
 
     charges_up_to_budget_then_rejects(&limiter, &clock).await;
     window_rollover_refills_budget(&limiter, &clock).await;
@@ -172,26 +171,22 @@ async fn zero_budget_always_limits(limiter: &Arc<dyn RateLimiter>) {
 }
 
 #[tokio::test]
-#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn rate_limit_redis() {
-    run_suite("REDIS_URL").await;
+    run_suite(Backend::Redis).await;
 }
 
 #[tokio::test]
-#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn rate_limit_valkey() {
-    run_suite("VALKEY_URL").await;
+    run_suite(Backend::Valkey).await;
 }
 
 /// Under concurrent load against one key, the single-script check-and-charge
 /// admits exactly `max_attempts` callers — proof the evict/count/charge
 /// sequence is atomic across racing connections.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn concurrent_charges_admit_exactly_the_budget() {
-    let Some((limiter, _clock)) = limiter("REDIS_URL").await else {
-        return;
-    };
+    // `_node` keeps the container alive until the end of the test.
+    let (_node, limiter, _clock) = limiter(Backend::Redis).await;
     const RACERS: usize = 64;
     const BUDGET: u32 = 10;
     let policy = RateLimitPolicy::new(BUDGET, Duration::from_secs(60));

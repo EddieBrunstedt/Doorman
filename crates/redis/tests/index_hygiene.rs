@@ -8,13 +8,17 @@
 //! `DEL`eted directly over a raw connection while its hash index and user-set
 //! membership are left behind, then the store API is driven over the resulting
 //! orphan. They assert the read-time hygiene and the `purge_expired` backstop
-//! the §5.6 design relies on. Skipped unless the backend's URL var is set.
+//! the §5.6 design relies on.
+//!
+//! Self-contained: each test starts its own throwaway container via
+//! `testcontainers`, so it needs a running Docker daemon and nothing else.
 
 mod common;
 
 use std::fmt::Write as _;
 
 use chrono::{DateTime, Duration, Utc};
+use common::Backend;
 use doorman_core::session::hash_token;
 use doorman_core::storage::{Session, SessionId, UserId};
 use redis::aio::MultiplexedConnection;
@@ -76,11 +80,10 @@ async fn exists(conn: &mut MultiplexedConnection, key: String) -> i64 {
         .expect("EXISTS")
 }
 
-/// Drive every dangling-member reclamation path against `url_var`'s backend.
-async fn run_index_hygiene(url_var: &str) {
-    let Some((storage, mut raw, prefix)) = common::storage_with_raw(url_var).await else {
-        return;
-    };
+/// Drive every dangling-member reclamation path against `backend`.
+async fn run_index_hygiene(backend: Backend) {
+    // `_node` keeps the container alive until the end of the test.
+    let (_node, storage, mut raw, prefix) = common::storage_with_raw(backend).await;
     let sessions = &storage.sessions;
     let now = Utc::now();
 
@@ -153,13 +156,11 @@ async fn run_index_hygiene(url_var: &str) {
 }
 
 #[tokio::test]
-#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn redis_dangling_index_members_are_reclaimed() {
-    run_index_hygiene("REDIS_URL").await;
+    run_index_hygiene(Backend::Redis).await;
 }
 
 #[tokio::test]
-#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn valkey_dangling_index_members_are_reclaimed() {
-    run_index_hygiene("VALKEY_URL").await;
+    run_index_hygiene(Backend::Valkey).await;
 }

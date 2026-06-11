@@ -2,11 +2,15 @@
 //!
 //! Each test creates one challenge, then spawns many concurrent redeemers and
 //! asserts that exactly one succeeds — the guarantee `GETDEL` provides under
-//! concurrency (§5.5). Skipped unless `REDIS_URL` is set.
+//! concurrency (§5.5).
+//!
+//! Self-contained: each test starts its own throwaway Redis container via
+//! `testcontainers`, so it needs a running Docker daemon.
 
 mod common;
 
 use chrono::{Duration, Utc};
+use common::Backend;
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
     PasskeyChallengeId, StoredPasskeyAuthentication, StoredPasskeyRegistration, UserId,
@@ -17,11 +21,8 @@ use doorman_core::storage::{
 const RACERS: usize = 64;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn verification_token_is_consumed_exactly_once() {
-    let Some(storage) = common::storage("REDIS_URL").await else {
-        return;
-    };
+    let (_node, storage) = common::storage(Backend::Redis).await;
     let tokens = storage.verification_tokens.clone();
     let hash = hash_token("race-consume-token");
     tokens
@@ -58,11 +59,8 @@ async fn verification_token_is_consumed_exactly_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn registration_is_taken_exactly_once() {
-    let Some(storage) = common::storage("REDIS_URL").await else {
-        return;
-    };
+    let (_node, storage) = common::storage(Backend::Redis).await;
     let challenges = storage.passkey_challenges.clone();
     let id = PasskeyChallengeId::new();
     challenges
@@ -99,11 +97,8 @@ async fn registration_is_taken_exactly_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "pending testcontainers migration; see crates/sqlx/tests/postgres.rs"]
 async fn authentication_is_taken_exactly_once() {
-    let Some(storage) = common::storage("REDIS_URL").await else {
-        return;
-    };
+    let (_node, storage) = common::storage(Backend::Redis).await;
     let challenges = storage.passkey_challenges.clone();
     let id = PasskeyChallengeId::new();
     challenges

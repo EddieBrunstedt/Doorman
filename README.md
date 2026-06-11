@@ -101,30 +101,27 @@ examples/web-client/   browser-side WebAuthn helper reference
 
 ## Development
 
-The repo ships a [`justfile`](justfile) and a [`compose.yaml`](compose.yaml) so the inner loop needs no manual setup. Install [`just`](https://github.com/casey/just) and Docker, then:
+The repo ships a [`justfile`](justfile) so the inner loop needs no manual setup. Install [`just`](https://github.com/casey/just) and Docker, then:
 
 ```sh
-just up        # start local Redis (:6379) + Valkey (:6380), wait for health
-just test      # run the whole workspace suite against them
+just test      # run the whole workspace suite
 just verify    # the full local gate: fmt-check, clippy, doc, test (mirrors CI)
-just down      # stop the containers when you are done
 ```
 
-`just` exports `REDIS_URL` / `VALKEY_URL` into every recipe, so the `doorman-redis` conformance suite finds the servers automatically. Run `just` with no arguments to list every recipe.
+Run `just` with no arguments to list every recipe.
 
 ### Running the tests by hand
 
-Most of the suite needs no services. The database- and Redis-backed conformance suites are gated on environment variables and **skip with a message** when those are unset, so a bare `cargo test` still passes:
+**A running Docker daemon is a prerequisite for the test suite.** The storage-conformance suites are self-contained: each starts its own throwaway database container via [testcontainers](https://docs.rs/testcontainers) — no external server or connection-string env var — and runs as a normal part of `cargo test`. Each test gets its own fresh, empty container that is removed when the test ends.
 
 ```sh
-cargo test --workspace                     # everything that needs no server
-PG_URL=postgres://postgres:postgres@localhost/doorman_test \
-  cargo test -p doorman-sqlx --features postgres
-REDIS_URL=redis://127.0.0.1:6379 VALKEY_URL=redis://127.0.0.1:6380 \
-  cargo test -p doorman-redis
+cargo test --workspace --all-features            # everything, incl. all storage backends
+cargo test -p doorman-sqlx --features postgres   # just Postgres
+cargo test -p doorman-sqlx --features mysql       # just MySQL + MariaDB
+cargo test -p doorman-redis                       # just Redis + Valkey
 ```
 
-The Redis/Valkey suites flush their database at the start of each run, so point `REDIS_URL` / `VALKEY_URL` only at disposable servers.
+The `just test-postgres`, `just test-mysql`, and `just test-redis` recipes wrap the per-backend commands. Only SQLite (`--features sqlite`) needs no Docker — it runs in memory.
 
 ## Benchmarks
 

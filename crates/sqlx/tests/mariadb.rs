@@ -8,12 +8,8 @@
 //! Self-contained: it starts a throwaway MariaDB container via `testcontainers`,
 //! so it needs a running Docker daemon and nothing else. There is no
 //! environment-variable branch and no external database — every run gets a
-//! fresh, empty server that is removed when the test ends.
-//!
-//! It is `#[ignore]`d so the plain `cargo test` / `--all-features` run (which
-//! also executes inside the containerised CI jobs that have no Docker socket)
-//! does not invoke it. Run it explicitly where Docker is available — the CI
-//! `conformance` job and `just test-mysql` pass `--include-ignored`.
+//! fresh, empty server that is removed when the test ends. A running Docker
+//! daemon is therefore a prerequisite for the workspace test run.
 
 #![cfg(feature = "mysql")]
 
@@ -23,7 +19,6 @@ use testcontainers_modules::mariadb::Mariadb;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
 #[tokio::test]
-#[ignore = "requires Docker (testcontainers); run via the conformance job or --include-ignored"]
 async fn mariadb_storage_conformance() {
     // The container is removed when this guard drops at the end of the test. The
     // image starts the root user with no password and a `test` database.

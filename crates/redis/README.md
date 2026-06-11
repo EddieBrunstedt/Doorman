@@ -89,14 +89,15 @@ Valkey is a fork of Redis (from 7.2.4) under the Linux Foundation. They share th
 
 ## Testing
 
-`cargo test -p doorman-redis` runs the shared storage-conformance suite plus the rate-limiter and single-use concurrency tests **if** `REDIS_URL` / `VALKEY_URL` point at disposable servers (each suite skips with a message when its variable is unset). The repo's `just up` starts a local Redis (`:6379`) and Valkey (`:6380`) and exports both URLs:
+`cargo test -p doorman-redis` runs the shared storage-conformance suite plus the rate-limiter and single-use concurrency tests. They are self-contained: each starts its own throwaway Redis or Valkey container via [testcontainers](https://docs.rs/testcontainers), so they need only a running Docker daemon — no external server or `*_URL` env var. Running both the Redis and Valkey suites is what catches Redis/Valkey drift mechanically.
+
+A running Docker daemon is therefore a prerequisite:
 
 ```sh
-just up
-just test-redis
+cargo test -p doorman-redis
 ```
 
-Each test run uses a unique key prefix, so concurrent test binaries on one server never collide — there is no destructive `FLUSHDB`.
+`just test-redis` wraps this command. Each test gets its own fresh container, so there is no shared state and no destructive `FLUSHDB`.
 
 ## License
 

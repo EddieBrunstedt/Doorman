@@ -1,57 +1,30 @@
 # doorman developer tasks. Run `just` (or `just --list`) to see them.
 #
-# The Redis/Valkey and MySQL/MariaDB URLs are exported into every recipe's
-# environment, so `just test` and friends pick up the live servers started by
-# `just up`. Override on the command line if your servers live elsewhere, e.g.
-#   just test REDIS_URL=redis://other:6379
-
-export REDIS_URL := env_var_or_default("REDIS_URL", "redis://127.0.0.1:6379")
-export VALKEY_URL := env_var_or_default("VALKEY_URL", "redis://127.0.0.1:6380")
-export MYSQL_URL := env_var_or_default("MYSQL_URL", "mysql://root:root@127.0.0.1:3306/doorman_test")
-export MARIADB_URL := env_var_or_default("MARIADB_URL", "mysql://root:root@127.0.0.1:3307/doorman_test")
+# The storage-conformance tests are self-contained: each starts its own
+# throwaway database container via testcontainers, so the suite needs only a
+# running Docker daemon — no compose services or *_URL env vars to set up.
 
 # Show the recipe list.
 default:
     @just --list
 
-# Start the local Redis + Valkey containers and wait until they are healthy.
-up:
-    docker compose up -d --wait
-
-# Stop and remove the local Redis + Valkey containers.
-down:
-    docker compose down
-
-# Follow the container logs.
-logs:
-    docker compose logs -f
-
-# Open a redis-cli inside the Redis container.
-redis-cli *args:
-    docker compose exec redis redis-cli {{ args }}
-
-# Open a valkey-cli inside the Valkey container.
-valkey-cli *args:
-    docker compose exec valkey valkey-cli {{ args }}
-
-# Run the whole workspace test suite (Redis/Valkey URLs preset).
+# Run the whole workspace test suite. This includes the storage-conformance
+# tests, which start their own database containers, so a Docker daemon must be
+# running. Use the per-backend recipes below to run just one adapter.
 test *args:
     cargo test --workspace --all-features {{ args }}
 
-# Run only the doorman-redis suite against the live servers.
+# Run only the doorman-redis (redis + valkey) conformance suite.
 test-redis *args:
     cargo test -p doorman-redis --all-features {{ args }}
 
-# Run the doorman-sqlx mysql + mariadb conformance tests. They are #[ignore]d
-# (they start their own MySQL/MariaDB containers via testcontainers, needing a
-# Docker daemon), so run them explicitly with --include-ignored.
+# Run only the doorman-sqlx mysql + mariadb conformance tests.
 test-mysql *args:
-    cargo test -p doorman-sqlx --features mysql {{ args }} -- --include-ignored
+    cargo test -p doorman-sqlx --features mysql {{ args }}
 
-# Run the doorman-sqlx postgres conformance test. It is #[ignore]d (it needs a
-# Docker daemon for testcontainers), so run it explicitly with --include-ignored.
+# Run only the doorman-sqlx postgres conformance test.
 test-postgres *args:
-    cargo test -p doorman-sqlx --features postgres {{ args }} -- --include-ignored
+    cargo test -p doorman-sqlx --features postgres {{ args }}
 
 # Format the workspace.
 fmt:
