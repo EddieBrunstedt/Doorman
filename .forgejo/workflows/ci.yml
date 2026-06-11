@@ -101,6 +101,8 @@ jobs:
         run: cargo check -p doorman-sqlx --features mysql --locked
       - name: redis
         run: cargo check -p doorman-redis --locked
+      - name: dynamodb
+        run: cargo check -p doorman-dynamodb --locked
       - name: umbrella (axum + sqlite)
         run: cargo check -p doorman --features axum,sqlite --locked
       - name: umbrella (axum + mysql)
@@ -109,6 +111,8 @@ jobs:
         run: cargo check -p doorman --features axum,postgres,file-email --locked
       - name: umbrella (axum + postgres + redis — the mixed-backend path)
         run: cargo check -p doorman --features axum,postgres,redis --locked
+      - name: umbrella (axum + dynamodb)
+        run: cargo check -p doorman --features axum,dynamodb --locked
       - name: benches compile
         run: cargo bench --workspace --all-features --no-run --locked
 

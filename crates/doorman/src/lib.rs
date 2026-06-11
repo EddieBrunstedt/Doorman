@@ -10,6 +10,8 @@
 //!   MySQL/MariaDB).
 //! - `doorman_redis` — Redis/Valkey adapter for the ephemeral stores and the
 //!   shared rate limiter.
+//! - `doorman_dynamodb` — Amazon DynamoDB adapter, filling all five stores from
+//!   a single table for AWS-native / serverless deployments.
 //!
 //! This crate is the front door: depend on it once and pull the pieces you
 //! need in behind features instead of tracking the underlying crates
@@ -29,11 +31,13 @@
 //! - `redis` — re-export `doorman-redis` at `doorman::redis`.
 //! - `valkey` — alias for `redis`; the same adapter addresses either server, so
 //!   this just lets a host name the one it runs.
+//! - `dynamodb` — re-export `doorman-dynamodb` at `doorman::dynamodb`.
 //! - `file-email` — bundled `.eml` file email transport for local development.
 //!
 //! [`doorman::core`](core) is always available. The [`prelude`] re-exports the
 //! richest available prelude (axum's when the `axum` feature is on, core's
-//! otherwise) plus the storage adapters when a sqlx or redis feature is enabled.
+//! otherwise) plus the storage adapters when a sqlx, redis, or dynamodb feature
+//! is enabled.
 //!
 //! Redis holds only the ephemeral, TTL-bearing stores plus the rate limiter, so
 //! it is paired with a SQL backend rather than used alone — the documented
@@ -86,12 +90,17 @@ pub use doorman_sqlx as sqlx;
 #[cfg(feature = "redis")]
 pub use doorman_redis as redis;
 
+/// Amazon DynamoDB adapter. Requires the `dynamodb` feature.
+#[cfg(feature = "dynamodb")]
+pub use doorman_dynamodb as dynamodb;
+
 /// One-line import for hosts wiring doorman into their app.
 ///
 /// Re-exports the most complete prelude available — `doorman_axum::prelude`
 /// when the `axum` feature is enabled (it already folds in the core
 /// prelude), or [`doorman_core::prelude`] otherwise — plus the SQLx storage
-/// adapters when a sqlx feature is on and the Redis adapter when `redis` is on.
+/// adapters when a sqlx feature is on, the Redis adapter when `redis` is on, and
+/// the DynamoDB adapter when `dynamodb` is on.
 pub mod prelude {
     #[cfg(feature = "axum")]
     pub use doorman_axum::prelude::*;
@@ -104,4 +113,7 @@ pub mod prelude {
 
     #[cfg(feature = "redis")]
     pub use doorman_redis::*;
+
+    #[cfg(feature = "dynamodb")]
+    pub use doorman_dynamodb::*;
 }

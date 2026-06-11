@@ -26,6 +26,10 @@ test-mysql *args:
 test-postgres *args:
     cargo test -p doorman-sqlx --features postgres {{ args }}
 
+# Run only the doorman-dynamodb conformance suite.
+test-dynamodb *args:
+    cargo test -p doorman-dynamodb {{ args }}
+
 # Format the workspace.
 fmt:
     cargo fmt --all
