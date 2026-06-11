@@ -1,10 +1,15 @@
 //! Runs the shared storage-conformance suite against the SQLx + Postgres
 //! adapter.
 //!
-//! Self-contained: it always starts a throwaway Postgres container via
+//! Self-contained: it starts a throwaway Postgres container via
 //! `testcontainers`, so it needs a running Docker daemon and nothing else.
 //! There is no environment-variable branch and no external database — every
 //! run gets a fresh, empty server that is removed when the test ends.
+//!
+//! It is `#[ignore]`d so the plain `cargo test` / `--all-features` run (which
+//! also executes inside the containerised CI jobs that have no Docker socket)
+//! does not invoke it. Run it explicitly where Docker is available — the CI
+//! `conformance` job and `just test-postgres` pass `--include-ignored`.
 
 #![cfg(feature = "postgres")]
 
@@ -14,6 +19,7 @@ use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
 #[tokio::test]
+#[ignore = "requires Docker (testcontainers); run via the conformance job or --include-ignored"]
 async fn postgres_storage_conformance() {
     // The container is removed when this guard drops at the end of the test.
     let node = Postgres::default()

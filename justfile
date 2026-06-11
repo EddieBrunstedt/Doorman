@@ -46,10 +46,10 @@ test-redis *args:
 test-mysql *args:
     cargo test -p doorman-sqlx --features mysql {{ args }}
 
-# Run the doorman-sqlx postgres suite. Starts a throwaway Postgres via
-# testcontainers (needs a Docker daemon); set PG_URL to use an existing one.
+# Run the doorman-sqlx postgres conformance test. It is #[ignore]d (it needs a
+# Docker daemon for testcontainers), so run it explicitly with --include-ignored.
 test-postgres *args:
-    cargo test -p doorman-sqlx --features postgres {{ args }}
+    cargo test -p doorman-sqlx --features postgres {{ args }} -- --include-ignored
 
 # Format the workspace.
 fmt:
