@@ -6,6 +6,7 @@ members = [
   "crates/core",
   "crates/doorman",
   "crates/dynamodb",
+  "crates/fjall",
   "crates/libsql",
   "crates/mongodb",
   "crates/redb",
