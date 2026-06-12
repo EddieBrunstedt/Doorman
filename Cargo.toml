@@ -8,6 +8,7 @@ members = [
   "crates/dynamodb",
   "crates/libsql",
   "crates/mongodb",
+  "crates/redb",
   "crates/redis",
   "crates/sqlx",
   "crates/test-support",
