@@ -9,7 +9,7 @@ keywords = ["authentication", "passkey", "webauthn", "axum", "auth"]
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Opinionated passkey-only authentication for Rust web apps. Umbrella crate re-exporting doorman-core, doorman-axum, doorman-sqlx, doorman-redis, and doorman-dynamodb behind features."
+description = "Opinionated passkey-only authentication for Rust web apps. Umbrella crate re-exporting doorman-core, doorman-axum, doorman-sqlx, doorman-redis, doorman-dynamodb, and doorman-libsql behind features."
 
 [features]
 default = []
@@ -29,6 +29,9 @@ valkey = ["redis"]
 # Amazon DynamoDB adapter, filling all five stores from a single table for
 # AWS-native / serverless deployments.
 dynamodb = ["dep:doorman-dynamodb"]
+# libSQL / Turso adapter, filling all five stores against a local file, an
+# embedded replica, or a remote Turso database.
+libsql = ["dep:doorman-libsql"]
 # Bundled `.eml` file email transport for local development (pulls tokio's
 # filesystem support). Also enables it in `doorman-axum` when `axum` is on.
 file-email = ["doorman-core/file-email", "doorman-axum?/file-email"]
@@ -40,6 +43,7 @@ workspace = true
 doorman-axum = { path = "../axum", version = "0.1.0", optional = true }
 doorman-core = { path = "../core", version = "0.1.0" }
 doorman-dynamodb = { path = "../dynamodb", version = "0.1.0", optional = true }
+doorman-libsql = { path = "../libsql", version = "0.1.0", optional = true }
 doorman-redis = { path = "../redis", version = "0.1.0", optional = true }
 doorman-sqlx = { path = "../sqlx", version = "0.1.0", optional = true }
 

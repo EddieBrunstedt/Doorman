@@ -30,6 +30,11 @@ test-postgres *args:
 test-dynamodb *args:
     cargo test -p doorman-dynamodb {{ args }}
 
+# Run only the doorman-libsql conformance suite. Starts a throwaway
+# libsql-server (sqld) container, so a Docker daemon must be running.
+test-libsql *args:
+    cargo test -p doorman-libsql {{ args }}
+
 # Format the workspace.
 fmt:
     cargo fmt --all

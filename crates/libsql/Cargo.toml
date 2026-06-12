@@ -1,0 +1,44 @@
+[package]
+name = "doorman-libsql"
+version.workspace = true
+authors.workspace = true
+categories = ["authentication", "database"]
+documentation = "https://docs.rs/doorman-libsql"
+edition.workspace = true
+keywords = ["authentication", "passkey", "libsql", "turso", "sqlite"]
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+description = "libSQL / Turso storage adapter for the doorman authentication library."
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+doorman-core = { path = "../core", version = "0.1.0" }
+# `remote` (Turso over Hrana) + `tls` (HTTPS to Turso), nothing else. Crucially
+# this leaves out libSQL's bundled SQLite engine (`core`/`replication`): that
+# would statically link a second `sqlite3.c`, colliding at link time with
+# `doorman-sqlx`'s SQLite adapter (via `libsqlite3-sys`) in any binary that uses
+# both — which the workspace's `--all-features` build does. Keeping the engine
+# out makes this adapter link-clean everywhere; a host that wants a local file
+# or an embedded replica builds the `libsql::Database` itself (enabling those
+# libSQL features in its own manifest) and hands it to `from_database`. The TLS
+# stack rides hyper-rustls' ring provider, keeping the workspace on a single
+# ring crypto stack (no `aws-lc`).
+libsql = { version = "0.9", default-features = false, features = ["remote", "tls"] }
+uuid.workspace = true
+
+[dev-dependencies]
+doorman-conformance = { path = "../conformance" }
+# The remote conformance test starts a throwaway libsql-server (sqld) container
+# via testcontainers' generic-image support, re-exported through
+# testcontainers-modules (the same path the other adapters use).
+testcontainers-modules = "0.15"
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
