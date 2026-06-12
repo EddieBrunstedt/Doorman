@@ -18,9 +18,9 @@ members = [
 version = "0.1.0"
 authors = ["Eddie Brunstedt <eddie.brunstedt@protonmail.com>"]
 edition = "2024"
-homepage = "https://codeberg.org/EddieBrunstedt/bauth"
+homepage = "https://codeberg.org/EddieBrunstedt/Doorman"
 license = "MIT OR Apache-2.0"
-repository = "https://codeberg.org/EddieBrunstedt/bauth"
+repository = "https://codeberg.org/EddieBrunstedt/Doorman"
 # MSRV is driven by the dependency tree: sqlx 0.9 requires rustc 1.94, which is
 # the highest floor among the deps (webauthn-rs/time need 1.88). Verified with
 # `cargo +1.94 check --workspace --all-features`.
@@ -32,10 +32,9 @@ rust-version = "1.94"
 #
 # `missing_docs` is deliberately NOT here: a workspace lint applies to every
 # target in the package, including the test and bench crates whose `pub` helpers
-# are not part of any public API. It is instead a crate-root attribute on each
-# published library (currently `#![allow(missing_docs)]`, flipped to
-# `#![deny(missing_docs)]` by the Phase 23 documentation rewrite), so the
-# requirement scopes to the public API and never to test scaffolding.
+# are not part of any public API. Each published library instead carries
+# `#![deny(missing_docs)]` as a crate-root attribute, so the requirement scopes
+# to the public API and never to test scaffolding.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

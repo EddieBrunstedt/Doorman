@@ -529,7 +529,7 @@ mod tests {
 
     /// `revoke_all_for_user` must only notify the invalidation hook when it
     /// actually revoked something — matching `revoke_others_for_user`'s
-    /// guarded shape (P1-03). A zero-count sweep evicts nothing.
+    /// guarded shape. A zero-count sweep evicts nothing.
     #[tokio::test]
     async fn revoke_all_does_not_notify_hook_on_zero_count() {
         let hook = Arc::new(CountingHook::default());

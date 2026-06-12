@@ -199,17 +199,11 @@ pub struct PasskeyDto {
 }
 
 impl From<StoredPasskey> for PasskeyDto {
+    /// Route through the metadata-only [`PasskeySummary`] projection: the
+    /// wire shape never carries the credential blob, so the two conversions
+    /// share one field mapping.
     fn from(value: StoredPasskey) -> Self {
-        Self {
-            credential_id: URL_SAFE_NO_PAD.encode(&value.credential_id),
-            name: value.name,
-            created_at: value.created_at,
-            last_used_at: value.last_used_at,
-            aaguid: value.aaguid.map(|a| a.to_string()),
-            transports: value.transports,
-            backup_eligible: value.backup_eligible,
-            backup_state: value.backup_state,
-        }
+        PasskeySummary::from(value).into()
     }
 }
 
@@ -251,7 +245,7 @@ pub struct SignupConsumeRequest {
 
 /// Request body shared by the three registration-finish endpoints
 /// (`/auth/signup/finish`, `/auth/recovery/finish`,
-/// `/auth/passkeys/register/finish`). Each echoes the `challenge_id` its
+/// `/auth/passkey/register/finish`). Each echoes the `challenge_id` its
 /// matching `start`/`consume` endpoint returned and carries the WebAuthn
 /// attestation the browser produced from the embedded `options`; the field
 /// shape is identical across all three, so they share one type.
@@ -328,7 +322,10 @@ mod tests {
     use doorman_core::storage::{Session, SessionId, TokenHash, UserId};
 
     fn session_with_ua(ua: Option<&str>) -> Session {
-        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).single().unwrap();
+        let now = Utc
+            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+            .single()
+            .expect("valid timestamp");
         Session {
             id: SessionId::new(),
             user_id: UserId::new(),

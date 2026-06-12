@@ -469,46 +469,38 @@ impl PasskeyManager {
                 kind: AuditEventKind::CredentialAdded { user_id },
             })
             .await;
-        self.notify_passkey_registered(user_id, credential.name.as_deref())
-            .await;
+        if let Some(user) = self
+            .user_for_notification(user_id, "passkey registered")
+            .await
+        {
+            self.notifier
+                .passkey_registered(&user, credential.name.as_deref())
+                .await;
+        }
         tracing::info!(outcome = "registered", "passkey registered");
         Ok(credential)
     }
 
-    async fn notify_passkey_registered(&self, user_id: UserId, passkey_name: Option<&str>) {
+    /// Resolve the user a best-effort passkey lifecycle notice is addressed
+    /// to. A missing user or a lookup failure skips the notice with a warning
+    /// rather than failing the operation that already succeeded.
+    async fn user_for_notification(&self, user_id: UserId, what: &'static str) -> Option<User> {
         match self.users.find_user_by_id(user_id).await {
-            Ok(Some(user)) => self.notifier.passkey_registered(&user, passkey_name).await,
+            Ok(Some(user)) => Some(user),
             Ok(None) => {
                 tracing::warn!(
                     %user_id,
-                    "passkey registered notification skipped because user was not found"
+                    "{what} notification skipped because user was not found"
                 );
+                None
             }
             Err(err) => {
                 tracing::warn!(
                     error = %err,
                     %user_id,
-                    "passkey registered notification skipped because user lookup failed"
+                    "{what} notification skipped because user lookup failed"
                 );
-            }
-        }
-    }
-
-    async fn notify_passkey_removed(&self, user_id: UserId, passkey_name: Option<&str>) {
-        match self.users.find_user_by_id(user_id).await {
-            Ok(Some(user)) => self.notifier.passkey_removed(&user, passkey_name).await,
-            Ok(None) => {
-                tracing::warn!(
-                    %user_id,
-                    "passkey removed notification skipped because user was not found"
-                );
-            }
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    %user_id,
-                    "passkey removed notification skipped because user lookup failed"
-                );
+                None
             }
         }
     }
@@ -815,8 +807,11 @@ impl PasskeyManager {
                 kind: AuditEventKind::CredentialRemoved { user_id },
             })
             .await;
-        self.notify_passkey_removed(user_id, credential.name.as_deref())
-            .await;
+        if let Some(user) = self.user_for_notification(user_id, "passkey removed").await {
+            self.notifier
+                .passkey_removed(&user, credential.name.as_deref())
+                .await;
+        }
         tracing::info!(outcome = "removed", "passkey removed");
         Ok(())
     }

@@ -3,12 +3,12 @@
 //! Every check takes a [`Storage`] and asserts the contract the
 //! `doorman-core` managers rely on, independent of how the rows are stored.
 //! Depend on this crate under `[dev-dependencies]` and call [`run`] from a
-//! test to validate any adapter against the same assertions the first-party
-//! adapters run: `doorman-sqlx` exercises it against the in-memory reference
-//! stores, SQLite, and Postgres, and `doorman-redis` against Redis/Valkey.
-//! Running the identical assertions everywhere closes the gap that previously
-//! let adapters drift apart, and pins the in-memory stores to the same
-//! contract the docs claim they model.
+//! test to validate any adapter against the same assertions every first-party
+//! adapter runs (`doorman-sqlx` across SQLite/Postgres/MySQL plus the
+//! in-memory reference stores, `doorman-redis`, `doorman-dynamodb`,
+//! `doorman-mongodb`, and `doorman-redb`). Running the identical assertions
+//! everywhere keeps adapters from drifting apart and pins the in-memory
+//! stores to the same contract the docs claim they model.
 //!
 //! [`run_db_backed`] adds the extra assertions that only hold for adapters
 //! which push the expiry predicate into their query layer; call it in addition

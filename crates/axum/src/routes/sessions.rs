@@ -7,16 +7,16 @@
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
-use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::StatusCode;
+use axum::response::Response;
 use axum::routing::{delete, get, post};
 use doorman_core::storage::SessionId;
 use uuid::Uuid;
 
-use crate::cookies::clear_session_cookie;
 use crate::dto::SessionDto;
 use crate::error::ErrorResponse;
 use crate::extractors::AuthSession;
+use crate::routes::no_content_clearing_session_cookie;
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
@@ -39,10 +39,7 @@ async fn logout(
     auth: AuthSession,
 ) -> Result<Response, ErrorResponse> {
     state.session_manager.revoke(&auth.token).await?;
-    let cookie = clear_session_cookie(&state.cookie_config);
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    response.headers_mut().insert(header::SET_COOKIE, cookie);
-    Ok(response)
+    Ok(no_content_clearing_session_cookie(&state.cookie_config))
 }
 
 /// "Log out everywhere": revoke *every* session the caller has, including the
@@ -61,10 +58,7 @@ async fn logout_all(
         .session_manager
         .revoke_all_for_user(auth.user.id)
         .await?;
-    let cookie = clear_session_cookie(&state.cookie_config);
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    response.headers_mut().insert(header::SET_COOKIE, cookie);
-    Ok(response)
+    Ok(no_content_clearing_session_cookie(&state.cookie_config))
 }
 
 async fn list(

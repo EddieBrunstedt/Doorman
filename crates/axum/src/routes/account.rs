@@ -10,14 +10,14 @@
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
-use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::StatusCode;
+use axum::response::Response;
 use axum::routing::{delete, post};
 
-use crate::cookies::clear_session_cookie;
 use crate::dto::{EmailChangeConfirmRequest, EmailChangeRequest, UserDto};
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, RequestContext};
+use crate::routes::no_content_clearing_session_cookie;
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
@@ -73,8 +73,5 @@ async fn delete_account(
         return Err(ErrorResponse(doorman_core::Error::RecoveryCooldownActive));
     }
     state.account.delete_account(&auth.user, context).await?;
-    let cookie = clear_session_cookie(&state.cookie_config);
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    response.headers_mut().insert(header::SET_COOKIE, cookie);
-    Ok(response)
+    Ok(no_content_clearing_session_cookie(&state.cookie_config))
 }

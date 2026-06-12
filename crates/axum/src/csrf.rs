@@ -166,13 +166,13 @@ pub(crate) fn should_reject(
 
     // Origin is the stronger signal, so it wins when present: a matching
     // Origin allows, a mismatched one rejects.
-    if let Some(matches) = origin_matches(headers, expected_origin) {
+    if let Some(matches) = header_origin_matches(headers, header::ORIGIN, expected_origin) {
         return !matches;
     }
 
     // Fall back to Referer only when Origin is absent (some same-origin
     // navigations omit Origin).
-    if let Some(matches) = referer_matches(headers, expected_origin) {
+    if let Some(matches) = header_origin_matches(headers, header::REFERER, expected_origin) {
         return !matches;
     }
 
@@ -197,29 +197,21 @@ fn is_safe_method(method: &Method) -> bool {
     matches!(method, &Method::GET | &Method::HEAD | &Method::OPTIONS)
 }
 
-/// Returns `None` when the header is absent. A present-but-malformed
+/// Compare a URL-valued header (`Origin` or `Referer`) against the expected
+/// origin. Returns `None` when the header is absent; a present-but-malformed
 /// header returns `Some(false)` so callers fail closed instead of falling
 /// through to a weaker signal.
-fn origin_matches(headers: &HeaderMap, expected: &Url) -> Option<bool> {
-    let raw = headers.get(header::ORIGIN)?;
+fn header_origin_matches(
+    headers: &HeaderMap,
+    name: header::HeaderName,
+    expected: &Url,
+) -> Option<bool> {
+    let raw = headers.get(name)?;
     Some(
         raw.to_str()
             .ok()
             .and_then(|value| Url::parse(value).ok())
-            .map(|origin| same_origin(&origin, expected))
-            .unwrap_or(false),
-    )
-}
-
-/// Returns `None` when the header is absent. A present-but-malformed
-/// header returns `Some(false)` so callers fail closed.
-fn referer_matches(headers: &HeaderMap, expected: &Url) -> Option<bool> {
-    let raw = headers.get(header::REFERER)?;
-    Some(
-        raw.to_str()
-            .ok()
-            .and_then(|value| Url::parse(value).ok())
-            .map(|referer| same_origin(&referer, expected))
+            .map(|url| same_origin(&url, expected))
             .unwrap_or(false),
     )
 }

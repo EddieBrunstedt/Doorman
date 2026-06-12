@@ -1,6 +1,6 @@
 # doorman-conformance
 
-Backend-agnostic storage-conformance suite for [doorman](https://codeberg.org/EddieBrunstedt/bauth) storage adapters.
+Backend-agnostic storage-conformance suite for [doorman](https://codeberg.org/EddieBrunstedt/Doorman) storage adapters.
 
 Every check takes a `doorman_core::storage::Storage` and asserts the contract the `doorman-core` managers rely on, independent of how the rows are stored. Use it to validate any adapter — first-party (`doorman-sqlx`, `doorman-redis`) or your own — against the exact same assertions.
 

@@ -430,84 +430,59 @@ impl SecurityEmailNotifier {
 
     /// Send the best-effort "passkey registered" notification.
     pub async fn passkey_registered(&self, user: &User, passkey_name: Option<&str>) {
-        if user.email.is_none() {
-            tracing::debug!(
-                user_id = %user.id,
-                "passkey registered notification skipped because user has no email"
-            );
-            return;
-        }
-
-        let email = self
-            .emails
-            .passkey_registered_notification_email(user, passkey_name);
-        if let Err(err) = self.sender.send(email).await {
-            tracing::warn!(
-                error = %err,
-                user_id = %user.id,
-                "passkey registered notification failed"
-            );
-        }
+        self.send_notice(user, "passkey registered", |emails| {
+            emails.passkey_registered_notification_email(user, passkey_name)
+        })
+        .await;
     }
 
     /// Send the best-effort "passkey removed" notification.
     pub async fn passkey_removed(&self, user: &User, passkey_name: Option<&str>) {
-        if user.email.is_none() {
-            tracing::debug!(
-                user_id = %user.id,
-                "passkey removed notification skipped because user has no email"
-            );
-            return;
-        }
-
-        let email = self
-            .emails
-            .passkey_removed_notification_email(user, passkey_name);
-        if let Err(err) = self.sender.send(email).await {
-            tracing::warn!(
-                error = %err,
-                user_id = %user.id,
-                "passkey removed notification failed"
-            );
-        }
+        self.send_notice(user, "passkey removed", |emails| {
+            emails.passkey_removed_notification_email(user, passkey_name)
+        })
+        .await;
     }
 
     /// Send the best-effort notification for revoking one other session.
     pub async fn other_session_revoked(&self, user: &User) {
-        if user.email.is_none() {
-            tracing::debug!(
-                user_id = %user.id,
-                "other-session revoked notification skipped because user has no email"
-            );
-            return;
-        }
-
-        let email = self.emails.other_session_revoked_notification_email(user);
-        if let Err(err) = self.sender.send(email).await {
-            tracing::warn!(
-                error = %err,
-                user_id = %user.id,
-                "other-session revoked notification failed"
-            );
-        }
+        self.send_notice(user, "other-session revoked", |emails| {
+            emails.other_session_revoked_notification_email(user)
+        })
+        .await;
     }
 
     /// Send the best-effort notification for "sign out everywhere else".
     pub async fn other_sessions_revoked(&self, user: &User) {
+        self.send_notice(user, "other-sessions revoked", |emails| {
+            emails.other_sessions_revoked_notification_email(user)
+        })
+        .await;
+    }
+
+    /// Shared best-effort skeleton: skip (with a debug log) when the user has
+    /// no email address, render through the configured templates, and log —
+    /// never propagate — a transport failure.
+    async fn send_notice(
+        &self,
+        user: &User,
+        what: &'static str,
+        render: impl FnOnce(&dyn EmailTemplates) -> Email,
+    ) {
         if user.email.is_none() {
             tracing::debug!(
                 user_id = %user.id,
-                "other-sessions revoked notification skipped because user has no email"
+                "{what} notification skipped because user has no email"
             );
             return;
         }
 
-        let email = self.emails.other_sessions_revoked_notification_email(user);
+        let email = render(self.emails.as_ref());
         if let Err(err) = self.sender.send(email).await {
             tracing::warn!(
                 error = %err,
                 user_id = %user.id,
-                "other-sessions revoked notification failed"
+                "{what} notification failed"
             );
         }
     }

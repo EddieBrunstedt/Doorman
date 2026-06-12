@@ -318,8 +318,14 @@ mod tests {
             id: SessionId::new(),
             user_id,
             token_hash: token_hash(0),
-            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
-            expires_at: Utc.with_ymd_and_hms(2026, 12, 31, 0, 0, 0).unwrap(),
+            created_at: Utc
+                .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            expires_at: Utc
+                .with_ymd_and_hms(2026, 12, 31, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
             ip: None,
             user_agent: None,
             recovery_cooldown_until: None,
@@ -331,8 +337,14 @@ mod tests {
             id,
             email: Some("u@example.com".into()),
             email_verified_at: None,
-            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
-            updated_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            created_at: Utc
+                .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            updated_at: Utc
+                .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
         }
     }
 
@@ -358,7 +370,7 @@ mod tests {
     #[test]
     fn stale_entry_evicts_on_get() {
         let cache = SessionCache::new(SessionCacheConfig {
-            capacity: NonZeroUsize::new(8).unwrap(),
+            capacity: NonZeroUsize::new(8).expect("non-zero capacity"),
             ttl: Duration::from_secs(60),
         });
         let uid = UserId::new();
@@ -428,7 +440,7 @@ mod tests {
         // three keys share shard 0 (same leading byte) so they contend for
         // the same two slots and exercise per-shard LRU eviction.
         let cache = SessionCache::new(SessionCacheConfig {
-            capacity: NonZeroUsize::new(SHARD_COUNT * 2).unwrap(),
+            capacity: NonZeroUsize::new(SHARD_COUNT * 2).expect("non-zero capacity"),
             ttl: DEFAULT_CACHE_TTL,
         });
         let uid = UserId::new();
@@ -448,7 +460,7 @@ mod tests {
         // Two keys in different shards both survive even when the per-shard
         // capacity is 1 — independent shards mean no cross-shard eviction.
         let cache = SessionCache::new(SessionCacheConfig {
-            capacity: NonZeroUsize::new(SHARD_COUNT).unwrap(),
+            capacity: NonZeroUsize::new(SHARD_COUNT).expect("non-zero capacity"),
             ttl: DEFAULT_CACHE_TTL,
         });
         let uid = UserId::new();

@@ -1,6 +1,7 @@
 //! In-memory implementations of every storage trait, intended for tests and
 //! local experiments. Not suitable for production: data lives only as long as
-//! the process and lookups hold a `std::sync::Mutex` for their duration.
+//! the process and every operation takes a process-local lock (an `RwLock` on
+//! the read-heavy user/session stores, a `Mutex` elsewhere).
 //!
 //! The stores and [`InMemoryRateLimiter`] are always available: the limiter is
 //! the high-level builder default and the stores back local experiments. The pure
@@ -209,6 +210,25 @@ struct SessionStoreState {
     hash_to_id: HashMap<TokenHash, SessionId>,
 }
 
+impl SessionStoreState {
+    /// Remove every session matching `predicate` (and its token-hash index
+    /// entry), returning the number removed.
+    fn remove_where(&mut self, predicate: impl Fn(&SessionId, &Session) -> bool) -> u64 {
+        let ids: Vec<SessionId> = self
+            .by_id
+            .iter()
+            .filter_map(|(id, s)| predicate(id, s).then_some(*id))
+            .collect();
+        let count = ids.len() as u64;
+        for id in ids {
+            if let Some(session) = self.by_id.remove(&id) {
+                self.hash_to_id.remove(&session.token_hash);
+            }
+        }
+        count
+    }
+}
+
 impl InMemorySessionStore {
     /// Create an empty in-memory store.
     pub fn new() -> Self {
@@ -288,19 +308,7 @@ impl SessionStore for InMemorySessionStore {
     }
 
     async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let mut state = self.write();
-        let ids: Vec<SessionId> = state
-            .by_id
-            .iter()
-            .filter_map(|(id, s)| (s.user_id == user_id).then_some(*id))
-            .collect();
-        let count = ids.len() as u64;
-        for id in ids {
-            if let Some(session) = state.by_id.remove(&id) {
-                state.hash_to_id.remove(&session.token_hash);
-            }
-        }
-        Ok(count)
+        Ok(self.write().remove_where(|_, s| s.user_id == user_id))
     }
 
     async fn delete_other_sessions_for_user(
@@ -308,35 +316,13 @@ impl SessionStore for InMemorySessionStore {
         user_id: UserId,
         except: SessionId,
     ) -> StorageResult<u64> {
-        let mut state = self.write();
-        let ids: Vec<SessionId> = state
-            .by_id
-            .iter()
-            .filter_map(|(id, s)| (s.user_id == user_id && *id != except).then_some(*id))
-            .collect();
-        let count = ids.len() as u64;
-        for id in ids {
-            if let Some(session) = state.by_id.remove(&id) {
-                state.hash_to_id.remove(&session.token_hash);
-            }
-        }
-        Ok(count)
+        Ok(self
+            .write()
+            .remove_where(|id, s| s.user_id == user_id && *id != except))
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
-        let mut state = self.write();
-        let ids: Vec<SessionId> = state
-            .by_id
-            .iter()
-            .filter_map(|(id, s)| (s.expires_at <= now).then_some(*id))
-            .collect();
-        let count = ids.len() as u64;
-        for id in ids {
-            if let Some(session) = state.by_id.remove(&id) {
-                state.hash_to_id.remove(&session.token_hash);
-            }
-        }
-        Ok(count)
+        Ok(self.write().remove_where(|_, s| s.expires_at <= now))
     }
 }
 
@@ -484,24 +470,13 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
         &self,
         user_id: UserId,
     ) -> StorageResult<Vec<PasskeySummary>> {
-        // Project to metadata only, so the (otherwise large) credential blob
-        // is never cloned on the listing path.
+        // The borrowed projection clones metadata only, so the (otherwise
+        // large) credential blob is never cloned on the listing path.
         Ok(self
             .lock()
             .iter()
             .filter(|c| c.user_id == user_id)
-            .map(|c| PasskeySummary {
-                credential_id: c.credential_id.clone(),
-                user_id: c.user_id,
-                name: c.name.clone(),
-                created_at: c.created_at,
-                last_used_at: c.last_used_at,
-                aaguid: c.aaguid,
-                transports: c.transports.clone(),
-                backup_eligible: c.backup_eligible,
-                backup_state: c.backup_state,
-                recovery_cooldown_until: c.recovery_cooldown_until,
-            })
+            .map(PasskeySummary::from)
             .collect())
     }
 
@@ -760,10 +735,9 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_accessor_calls_share_state() {
-        // Unlike the old `Storage::in_memory()` associated function, the
-        // handle's accessors return clones of the *same* underlying store, so a
-        // row written through one accessor handle is visible through another —
-        // matching how a pooled SQL adapter shares one pool.
+        // The handle's accessors return clones of the *same* underlying store,
+        // so a row written through one accessor handle is visible through
+        // another — matching how a pooled SQL adapter shares one pool.
         let storage = InMemoryStorage::new();
         let now = chrono::Utc::now();
         let user = User {

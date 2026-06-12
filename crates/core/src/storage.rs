@@ -6,9 +6,10 @@
 //!
 //! ## Picking an adapter
 //!
-//! - **SQLx hosts** (SQLite or Postgres) should depend on `doorman-sqlx`
-//!   and let `SqliteStorage::all_stores()` / `PostgresStorage::all_stores()`
-//!   populate the [`Storage`] composite for them.
+//! - **Single-backend hosts** depend on a first-party adapter — `doorman-sqlx`
+//!   (SQLite/Postgres/MySQL), `doorman-dynamodb`, `doorman-mongodb`, or
+//!   `doorman-redb` — and let its `all_stores()` populate the [`Storage`]
+//!   composite in one call.
 //! - **Multi-replica deployments** can move the ephemeral, TTL-bearing
 //!   stores ([`SessionStore`], [`VerificationTokenStore`],
 //!   [`PasskeyChallengeStore`]) and the rate limiter onto Redis or Valkey
@@ -194,10 +195,7 @@ impl Session {
     /// is `now < cool-down`; sessions whose cool-down has already elapsed are
     /// treated as unrestricted and return `None`.
     pub fn active_recovery_cooldown_until(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        self.recovery_cooldown_until
-            .as_ref()
-            .filter(|until| now < **until)
-            .cloned()
+        self.recovery_cooldown_until.filter(|&until| now < until)
     }
 
     /// Returns `true` if the session is currently restricted by a recovery
@@ -360,10 +358,7 @@ impl StoredPasskey {
     /// and a credential whose cool-down has already elapsed is treated as
     /// unrestricted and returns `None`.
     pub fn active_recovery_cooldown_until(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        self.recovery_cooldown_until
-            .as_ref()
-            .filter(|until| now < **until)
-            .cloned()
+        self.recovery_cooldown_until.filter(|&until| now < until)
     }
 
     /// Returns `true` if the credential still carries an active recovery
@@ -416,6 +411,26 @@ impl From<StoredPasskey> for PasskeySummary {
             last_used_at: value.last_used_at,
             aaguid: value.aaguid,
             transports: value.transports,
+            backup_eligible: value.backup_eligible,
+            backup_state: value.backup_state,
+            recovery_cooldown_until: value.recovery_cooldown_until,
+        }
+    }
+}
+
+impl From<&StoredPasskey> for PasskeySummary {
+    /// Borrowed projection for adapters that hold full credentials and need
+    /// summaries without consuming them. Clones only the metadata fields —
+    /// never the opaque `passkey` blob, which is the point of the summary.
+    fn from(value: &StoredPasskey) -> Self {
+        Self {
+            credential_id: value.credential_id.clone(),
+            user_id: value.user_id,
+            name: value.name.clone(),
+            created_at: value.created_at,
+            last_used_at: value.last_used_at,
+            aaguid: value.aaguid,
+            transports: value.transports.clone(),
             backup_eligible: value.backup_eligible,
             backup_state: value.backup_state,
             recovery_cooldown_until: value.recovery_cooldown_until,

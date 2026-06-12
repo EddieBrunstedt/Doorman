@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn session_cookie_has_expected_attributes() {
         let value = session_cookie(&cfg(), "tok");
-        let s = value.to_str().unwrap();
+        let s = value.to_str().expect("ascii header value");
         assert!(s.contains("doorman_session=tok"));
         assert!(s.contains("HttpOnly"));
         assert!(s.contains("Path=/"));
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn clear_session_cookie_sets_zero_max_age() {
         let value = clear_session_cookie(&cfg());
-        let s = value.to_str().unwrap();
+        let s = value.to_str().expect("ascii header value");
         assert!(s.contains("doorman_session="));
         assert!(s.contains("Max-Age=0"));
     }

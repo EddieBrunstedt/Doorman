@@ -95,8 +95,8 @@ async fn register_then_discoverable_authenticate_round_trip() {
 
 #[tokio::test]
 async fn registration_captures_device_metadata_and_surfaces_it_in_summary() {
-    // Phase 15: the metadata a management UI needs (AAGUID, transports, and
-    // the backup-eligibility/state flags) is captured at registration and
+    // The metadata a management UI needs (AAGUID, transports, and the
+    // backup-eligibility/state flags) is captured at registration and
     // surfaced through the metadata-only summary projection without touching
     // the credential blob.
     let h = Harness::fresh();

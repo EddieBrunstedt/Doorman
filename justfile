@@ -30,10 +30,14 @@ test-postgres *args:
 test-dynamodb *args:
     cargo test -p doorman-dynamodb {{ args }}
 
-# Run only the doorman-libsql conformance suite. Starts a throwaway
-# libsql-server (sqld) container, so a Docker daemon must be running.
-test-libsql *args:
-    cargo test -p doorman-libsql {{ args }}
+# Run only the doorman-mongodb conformance suite.
+test-mongodb *args:
+    cargo test -p doorman-mongodb {{ args }}
+
+# Run only the doorman-redb conformance suite. redb is embedded (a local
+# file), so this is the one backend suite that needs no Docker.
+test-redb *args:
+    cargo test -p doorman-redb {{ args }}
 
 # Format the workspace.
 fmt:

@@ -1,6 +1,6 @@
 # doorman-redis
 
-Redis/Valkey-backed ephemeral storage and rate limiter for the [doorman](https://codeberg.org/EddieBrunstedt/bauth) authentication library.
+Redis/Valkey-backed ephemeral storage and rate limiter for the [doorman](https://codeberg.org/EddieBrunstedt/Doorman) authentication library.
 
 `doorman-redis` moves the ephemeral, TTL-bearing auth state — sessions, verification tokens, and passkey ceremony challenges — plus the rate limiter onto Redis or Valkey, so a multi-replica deployment shares them (instant cross-process revoke, one rate-limit budget) instead of keeping per-process copies. A single adapter built on [`redis-rs`](https://crates.io/crates/redis) connects to either server.
 

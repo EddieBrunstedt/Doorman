@@ -59,7 +59,7 @@ Every collaborator and config has a bare-noun setter on `AuthServiceBuilder` (an
 
 ## Choosing or implementing a store
 
-For SQLite/Postgres, depend on `doorman-sqlx` and call `storage.all_stores()` to get the composite `Storage` value. For an in-memory store (tests, ephemeral deployments) use `InMemoryStorage::new().all_stores()`.
+For a single backend, depend on one of the first-party adapters — `doorman-sqlx` (SQLite/Postgres/MySQL), `doorman-dynamodb`, `doorman-mongodb`, or `doorman-redb` — and call `storage.all_stores()` to get the composite `Storage` value. For an in-memory store (tests, ephemeral deployments) use `InMemoryStorage::new().all_stores()`.
 
 `Storage` is a struct of per-trait `Arc<dyn>` fields, so backends can be mixed by naming each one in the literal. The common production split is SQL for the system-of-record stores plus `doorman-redis` for the ephemeral stores and a shared rate limiter — the latter being the only way a multi-replica deployment gets instant cross-process session revoke and one rate-limit budget:
 

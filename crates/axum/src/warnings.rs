@@ -28,9 +28,9 @@ use crate::config::CookieConfig;
 
 /// `true` if `sink` is the bundled [`NoopAuditSink`].
 ///
-/// The collaborator traits no longer carry diagnostic methods; the bundled
-/// dev/noop types are recognised here by downcasting through the traits'
-/// [`Any`] supertrait, so a host implementing the trait writes nothing extra.
+/// The collaborator traits carry no diagnostic methods; the bundled dev/noop
+/// types are recognised here by downcasting through the traits' [`Any`]
+/// supertrait, so a host implementing the trait writes nothing extra.
 pub(crate) fn is_noop_audit(sink: &dyn AuditSink) -> bool {
     (sink as &dyn Any).is::<NoopAuditSink>()
 }
@@ -169,15 +169,10 @@ impl Warnings {
         out
     }
 
-    /// `true` when no warning conditions were detected.
+    /// `true` when no warning conditions were detected. Compares against the
+    /// all-`false` default so a newly added flag is counted automatically.
     pub fn is_empty(&self) -> bool {
-        !self.cookie_insecure_in_production
-            && !self.noop_audit
-            && !self.noop_rate_limiter
-            && !self.in_memory_rate_limiter
-            && !self.dev_email_transport
-            && !self.partial_email_branding
-            && !self.placeholder_url_template
+        *self == Self::default()
     }
 
     /// Emit the warnings to the configured sink — `tracing::warn!` when a

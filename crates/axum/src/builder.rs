@@ -348,9 +348,9 @@ impl AuthServiceBuilder {
             .unwrap_or_else(|| Arc::new(NoopMetrics) as Arc<dyn Metrics>);
         let session_config = self.session_config.unwrap_or_default();
 
-        // The collaborator traits no longer expose diagnostic methods; the
-        // bundled dev/noop defaults are recognised here by downcasting the
-        // raw `Arc<dyn …>` the host supplied (see `crate::warnings`).
+        // The collaborator traits expose no diagnostic methods; the bundled
+        // dev/noop defaults are recognised here by downcasting the raw
+        // `Arc<dyn …>` the host supplied (see `crate::warnings`).
         let mut warnings = Warnings::default();
         if is_noop_audit(audit.as_ref()) {
             warnings.noop_audit = true;

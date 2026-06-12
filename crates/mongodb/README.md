@@ -1,6 +1,6 @@
 # doorman-mongodb
 
-MongoDB storage adapter for the [doorman](https://codeberg.org/EddieBrunstedt/bauth) authentication library.
+MongoDB storage adapter for the [doorman](https://codeberg.org/EddieBrunstedt/Doorman) authentication library.
 
 `doorman-mongodb` fills **all five** storage traits against a MongoDB database, using one collection per record kind. It suits any deployment where MongoDB is already the path of least resistance — including serverless, edge, and managed-database environments. It is built on the official [`mongodb`](https://crates.io/crates/mongodb) Rust driver.
 

@@ -1,6 +1,6 @@
 # doorman-dynamodb
 
-Amazon DynamoDB storage adapter for the [doorman](https://codeberg.org/EddieBrunstedt/bauth) authentication library.
+Amazon DynamoDB storage adapter for the [doorman](https://codeberg.org/EddieBrunstedt/Doorman) authentication library.
 
 `doorman-dynamodb` fills **all five** storage traits against a single DynamoDB table, so an AWS-native or Lambda/serverless deployment can run doorman with neither a SQL server nor a Redis instance — exactly the environments where a managed, pay-per-request key-value store is already the path of least resistance. It is built on the official [`aws-sdk-dynamodb`](https://crates.io/crates/aws-sdk-dynamodb).
 

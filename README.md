@@ -15,7 +15,7 @@ doorman = { version = "0.1", features = ["axum", "sqlite"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-`doorman` is the umbrella crate: one dependency, one version to bump. It re-exports `doorman-core`, `doorman-axum`, `doorman-sqlx`, and `doorman-redis` behind features as `doorman::core`, `doorman::axum`, `doorman::sqlx`, and `doorman::redis`. Hosts that want only a subset can still depend on the individual crates directly.
+`doorman` is the umbrella crate: one dependency, one version to bump. It re-exports `doorman-core`, `doorman-axum`, and the storage adapters (`doorman-sqlx`, `doorman-redis`, `doorman-dynamodb`, `doorman-mongodb`, `doorman-redb`) behind features as `doorman::core`, `doorman::axum`, `doorman::sqlx`, and so on. Hosts that want only a subset can still depend on the individual crates directly.
 
 ```rust
 use std::sync::Arc;
@@ -71,6 +71,7 @@ Open <http://localhost:3000>. Signup and recovery emails are printed to the term
 - CSRF origin checks for cookie-authenticated state-changing requests.
 - Audit and rate-limiter traits, with development defaults.
 - First-party SQLx storage for SQLite, Postgres, and MySQL/MariaDB.
+- First-party single-backend adapters for Amazon DynamoDB, MongoDB, and redb (embedded, pure-Rust).
 - First-party Redis/Valkey adapter for the ephemeral stores (sessions, verification tokens, passkey challenges) and a shared cross-replica rate limiter, paired with a SQL backend for the system-of-record stores.
 - Development email transports: terminal output, and `.eml` file output behind the `file-email` feature.
 
@@ -90,11 +91,16 @@ Review the startup warnings emitted by `AuthService::builder().build()` or `Auth
 ## Workspace layout
 
 ```text
+crates/doorman/     umbrella crate re-exporting the others behind features
 crates/core/        framework-agnostic managers, storage traits, email/audit/rate-limit traits
 crates/axum/        Axum router, extractors, session layer, CSRF layer
-crates/sqlx/        SQLite/Postgres storage adapter
+crates/sqlx/        SQLite/Postgres/MySQL storage adapter
 crates/redis/       Redis/Valkey ephemeral stores + shared rate limiter
+crates/dynamodb/    Amazon DynamoDB storage adapter
+crates/mongodb/     MongoDB storage adapter
+crates/redb/        redb embedded key-value storage adapter
 crates/conformance/ shared storage-adapter conformance suite
+crates/test-support/ test-only collaborators (mock clock, capturing sinks)
 examples/minimal-app/  runnable Axum + SQLite app
 examples/web-client/   browser-side WebAuthn helper reference
 ```
@@ -119,9 +125,12 @@ cargo test --workspace --all-features            # everything, incl. all storage
 cargo test -p doorman-sqlx --features postgres   # just Postgres
 cargo test -p doorman-sqlx --features mysql       # just MySQL + MariaDB
 cargo test -p doorman-redis                       # just Redis + Valkey
+cargo test -p doorman-dynamodb                    # just DynamoDB (local container)
+cargo test -p doorman-mongodb                     # just MongoDB
+cargo test -p doorman-redb                        # just redb (no Docker needed)
 ```
 
-The `just test-postgres`, `just test-mysql`, and `just test-redis` recipes wrap the per-backend commands. Only SQLite (`--features sqlite`) needs no Docker — it runs in memory.
+The `just test-<backend>` recipes (`test-postgres`, `test-mysql`, `test-redis`, `test-dynamodb`, `test-mongodb`, `test-redb`) wrap the per-backend commands. Only SQLite (`--features sqlite`) and redb need no Docker — they run in memory / against a local file.
 
 ## Benchmarks
 

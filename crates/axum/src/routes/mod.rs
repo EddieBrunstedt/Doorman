@@ -14,7 +14,7 @@ use uuid::Uuid;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
 use crate::config::CookieConfig;
-use crate::cookies::session_cookie;
+use crate::cookies::{clear_session_cookie, session_cookie};
 use crate::dto::{AuthResponse, PasskeyChallenge};
 use crate::error::ErrorResponse;
 use crate::state::AuthState;
@@ -34,6 +34,16 @@ pub(crate) fn auth_success(
 ) -> Response {
     let cookie = session_cookie(cookie_config, &body.token);
     let mut response = (status, Json(body)).into_response();
+    response.headers_mut().insert(header::SET_COOKIE, cookie);
+    response
+}
+
+/// Build a `204 No Content` response that clears the session cookie, so the
+/// browser stops replaying a token the server just invalidated. Shared by
+/// logout, logout-all, and account deletion.
+pub(crate) fn no_content_clearing_session_cookie(cookie_config: &CookieConfig) -> Response {
+    let cookie = clear_session_cookie(cookie_config);
+    let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(header::SET_COOKIE, cookie);
     response
 }
