@@ -101,9 +101,8 @@ impl PasskeyCredentialStore for FjallPasskeyCredentialStore {
                     let key_str = std::str::from_utf8(&key_bytes).map_err(db::err)?;
                     // Extract cred_id_hex after the separator.
                     key_str
-                        .splitn(2, '\x00')
-                        .nth(1)
-                        .map(ToOwned::to_owned)
+                        .split_once('\x00')
+                        .map(|x| x.1.to_owned())
                         .ok_or_else(|| StorageError::msg("malformed user_creds_idx key"))
                 })
                 .collect::<StorageResult<_>>()?;
@@ -137,9 +136,8 @@ impl PasskeyCredentialStore for FjallPasskeyCredentialStore {
                     let (key_bytes, _) = guard.into_inner().map_err(db::err)?;
                     let key_str = std::str::from_utf8(&key_bytes).map_err(db::err)?;
                     key_str
-                        .splitn(2, '\x00')
-                        .nth(1)
-                        .map(ToOwned::to_owned)
+                        .split_once('\x00')
+                        .map(|x| x.1.to_owned())
                         .ok_or_else(|| StorageError::msg("malformed user_creds_idx key"))
                 })
                 .collect::<StorageResult<_>>()?;

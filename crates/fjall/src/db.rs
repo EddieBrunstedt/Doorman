@@ -263,7 +263,7 @@ pub(crate) fn decode_passkey_summary(bytes: &[u8]) -> StorageResult<PasskeySumma
 }
 
 fn decode_hex(s: &str) -> StorageResult<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(StorageError::msg("odd-length hex string in stored record"));
     }
     let mut out = Vec::with_capacity(s.len() / 2);

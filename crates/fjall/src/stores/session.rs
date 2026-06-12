@@ -28,8 +28,8 @@ impl FjallSessionStore {
 /// Extract the session-id component from a `user_sessions_idx` key of the
 /// form `"{user_id}\x00{session_id}"`.
 fn session_id_from_idx_key(key: &str) -> StorageResult<&str> {
-    key.splitn(2, '\x00')
-        .nth(1)
+    key.split_once('\x00')
+        .map(|x| x.1)
         .ok_or_else(|| StorageError::msg("malformed user_sessions_idx key"))
 }
 

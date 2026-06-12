@@ -104,9 +104,8 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                         r.map_err(db::err).and_then(|(k, _)| {
                             // Extract cred_id_hex after the separator.
                             k.value()
-                                .splitn(2, '\x00')
-                                .nth(1)
-                                .map(ToOwned::to_owned)
+                                .split_once('\x00')
+                                .map(|x| x.1.to_owned())
                                 .ok_or_else(|| StorageError::msg("malformed user_creds_idx key"))
                         })
                     })
@@ -144,9 +143,8 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                     .map(|r| {
                         r.map_err(db::err).and_then(|(k, _)| {
                             k.value()
-                                .splitn(2, '\x00')
-                                .nth(1)
-                                .map(ToOwned::to_owned)
+                                .split_once('\x00')
+                                .map(|x| x.1.to_owned())
                                 .ok_or_else(|| StorageError::msg("malformed user_creds_idx key"))
                         })
                     })

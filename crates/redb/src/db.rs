@@ -286,7 +286,7 @@ pub(crate) fn decode_passkey_summary(bytes: &[u8]) -> StorageResult<PasskeySumma
 }
 
 fn decode_hex(s: &str) -> StorageResult<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(StorageError::msg("odd-length hex string in stored record"));
     }
     let mut out = Vec::with_capacity(s.len() / 2);
@@ -330,6 +330,7 @@ impl RedbHandle {
 /// Ensure every table exists by opening (thus creating) each one in a single
 /// write transaction. Safe to call on every boot — already-existing tables are
 /// a no-op.
+#[allow(clippy::result_large_err)]
 pub(crate) fn ensure_tables(db: &Database) -> Result<(), redb::Error> {
     let wtxn = db.begin_write()?;
     wtxn.open_table(USERS)?;

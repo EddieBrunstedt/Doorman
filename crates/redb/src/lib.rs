@@ -78,6 +78,7 @@ impl RedbStorage {
     /// Creates the file (and all required tables) if it does not exist;
     /// opens an existing file in-place otherwise. An exclusive OS-level lock
     /// prevents two processes from opening the same file concurrently.
+    #[allow(clippy::result_large_err)]
     pub fn open(path: impl AsRef<Path>) -> Result<Self, redb::Error> {
         let db = Database::create(path)?;
         Self::from_database(db)
@@ -89,6 +90,7 @@ impl RedbStorage {
     /// in a shared `Arc`. Use this when you need full control over the
     /// [`Database`] builder options — for example to tune the cache size or
     /// to pass a custom backend.
+    #[allow(clippy::result_large_err)]
     pub fn from_database(db: Database) -> Result<Self, redb::Error> {
         db::ensure_tables(&db)?;
         Ok(Self {

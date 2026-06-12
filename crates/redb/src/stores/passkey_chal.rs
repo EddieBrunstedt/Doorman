@@ -110,8 +110,8 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
                 let mut count = 0u64;
                 for idx_key in &idx_keys {
                     let challenge_id = idx_key
-                        .splitn(2, '\x00')
-                        .nth(1)
+                        .split_once('\x00')
+                        .map(|x| x.1)
                         .ok_or_else(|| StorageError::msg("malformed user_pkregs_idx key"))?;
                     if pkregs.remove(challenge_id).map_err(db::err)?.is_some() {
                         count += 1;
