@@ -155,7 +155,7 @@ doorman's persistence is defined by five small traits in `doorman-core`: `UserSt
 
 Because a backend is chosen **per trait** via the `Storage` struct, you can mix them. The intended mixed deployment is a SQL backend for the system-of-record stores (users and passkey credentials) paired with `doorman-redis` for the ephemeral, TTL-bearing stores and a shared rate limiter:
 
-```rust,ignore
+```rust
 let storage = Storage {
     users:               pg.user_store(),
     passkey_credentials: pg.passkey_credential_store(),
@@ -219,13 +219,13 @@ Run `just` with no arguments to list every recipe.
 **A running Docker daemon is required for the full suite.** The storage-conformance suites are self-contained: each starts its own throwaway database container via [testcontainers](https://docs.rs/testcontainers) — no external server or connection string to configure — and tears it down when the test ends.
 
 ```sh
-cargo test --workspace --all-features            # everything, incl. all storage backends
-cargo test -p doorman-sqlx --features postgres   # just Postgres
+cargo test --workspace --all-features             # everything, incl. all storage backends
+cargo test -p doorman-sqlx --features postgres    # just Postgres
 cargo test -p doorman-sqlx --features mysql       # just MySQL + MariaDB
 cargo test -p doorman-redis                       # just Redis + Valkey
 cargo test -p doorman-dynamodb                    # just DynamoDB (local container)
 cargo test -p doorman-mongodb                     # just MongoDB
-cargo test -p doorman-redb                         # just redb (no Docker needed)
+cargo test -p doorman-redb                        # just redb (no Docker needed)
 ```
 
 Only SQLite (`--features sqlite`) and redb need no Docker — they run in memory / against a local file. The `just test-<backend>` recipes wrap the per-backend commands.
