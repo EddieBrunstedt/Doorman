@@ -32,7 +32,7 @@ dynamodb = ["dep:doorman-dynamodb"]
 # MongoDB adapter, filling all five stores from one database.
 mongodb = ["dep:doorman-mongodb"]
 # redb embedded key-value adapter, filling all five stores from a single local
-# file. Pure Rust — no C toolchain required.
+# file. Pure-Rust adapter (adds no libsqlite3-sys C dependency).
 redb = ["dep:doorman-redb"]
 # Bundled `.eml` file email transport for local development (pulls tokio's
 # filesystem support). Also enables it in `doorman-axum` when `axum` is on.

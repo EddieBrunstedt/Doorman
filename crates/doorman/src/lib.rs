@@ -15,7 +15,7 @@
 //! - `doorman_mongodb` — MongoDB adapter, filling all five stores from one
 //!   database.
 //! - `doorman_redb` — redb embedded key-value adapter, filling all five stores
-//!   from a single local file with no C toolchain required.
+//!   from a single local file (a pure-Rust adapter).
 //!
 //! This crate is the front door: depend on it once and pull the pieces you
 //! need in behind features instead of tracking the underlying crates

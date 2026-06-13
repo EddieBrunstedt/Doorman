@@ -150,7 +150,7 @@ doorman's persistence is defined by five small traits in `doorman-core`: `UserSt
 | `sqlite` / `postgres` / `mysql` | SQLite, Postgres, MySQL/MariaDB       | First-party SQLx adapter; covers all five stores                                        |
 | `dynamodb`                      | Amazon DynamoDB                       | All five stores from one table — AWS-native / serverless                                |
 | `mongodb`                       | MongoDB                               | All five stores from one database                                                       |
-| `redb`                          | [redb](https://crates.io/crates/redb) | Embedded, single-file, **pure Rust** — no C toolchain                                   |
+| `redb`                          | [redb](https://crates.io/crates/redb) | Embedded, single-file, pure-Rust adapter                                                |
 | `redis` / `valkey`              | Redis or Valkey                       | _Ephemeral_ stores (sessions, tokens, challenges) + a shared cross-replica rate limiter |
 
 Because a backend is chosen **per trait** via the `Storage` struct, you can mix them. The intended mixed deployment is a SQL backend for the system-of-record stores (users and passkey credentials) paired with `doorman-redis` for the ephemeral, TTL-bearing stores and a shared rate limiter:

@@ -2,10 +2,9 @@
 //!
 //! `doorman-redb` fills **all five** storage traits against a single
 //! [redb](https://crates.io/crates/redb) database file — a pure-Rust,
-//! ACID-transactional, copy-on-write B-tree. No C libraries are bundled, no
-//! server is needed, and no network is required: ideal for single-binary
-//! self-hosted deployments that want a lighter footprint than SQLite or a
-//! truly C-free build.
+//! ACID-transactional, copy-on-write B-tree. No server is needed and no
+//! network is required: ideal for single-binary self-hosted deployments that
+//! want a lighter footprint than SQLite.
 //!
 //! ## Trade-offs vs the SQLite adapter
 //!
@@ -14,8 +13,9 @@
 //! clauses, and secondary indexes are declarative. redb is a raw key-value
 //! store, so this adapter maintains secondary indexes by hand (the same
 //! approach `doorman-redis` uses) and emulates expiry with `purge_expired`.
-//! The upside is **no C toolchain**: redb is pure Rust, so it cross-compiles
-//! without a `libsqlite3` build dependency.
+//! In return, the adapter pulls no `libsqlite3-sys` C build dependency the way
+//! the SQLite adapter does. (This does not make the whole build C-free:
+//! `doorman-core` links OpenSSL through `webauthn-rs` regardless of backend.)
 //!
 //! ## No native TTL
 //!
