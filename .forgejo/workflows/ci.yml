@@ -1,9 +1,12 @@
 # Continuous integration for doorman on Forgejo Actions (Codeberg).
 #
-# Most jobs run on the `docker` label (containerised). The `test` job is the
-# exception: it runs on `native` because the storage-conformance tests start
-# throwaway database containers via testcontainers, which need the host's
-# Docker daemon — a containerised job has no Docker socket.
+# The runner is a self-hosted machine exposed under the `native` label. It
+# already carries the full toolchain — a rustup with the stable and 1.94
+# toolchains, dprint, cargo-deny, and a Docker daemon for the testcontainers
+# conformance tests — so the pipeline installs nothing. It runs the host tools
+# directly and reuses one warm build cache, instead of the old design that
+# recompiled the whole dependency tree from a cold cache in a fresh container
+# for every job (and rebuilt dprint and cargo-deny from source each run).
 
 name: ci
 
@@ -13,7 +16,8 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Weekly, so newly disclosed advisories surface even without a push.
+    # Weekly, so newly disclosed advisories surface even without a push. Only
+    # `audit` runs on this trigger; `ci` skips it (see its `if`).
     - cron: "0 6 * * 1"
 
 # A newer push to the same ref cancels the in-flight run.
@@ -21,124 +25,70 @@ concurrency:
   group: ${{ forgejo.workflow }}-${{ forgejo.ref }}
   cancel-in-progress: true
 
-# Shared by every job: colored cargo output and backtraces on test failures.
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  # Static checks that never run tests: formatting, lints, and a doc build.
-  lint:
-    runs-on: docker
-    container:
-      image: rust:1.96-bookworm
+  # Everything that needs the project to compile, in one job so the steps share
+  # a single warm target directory rather than recompiling per job. Ordered
+  # cheap-first: formatting and lints fail in seconds; the container-backed test
+  # suite runs last. Skipped on the weekly cron — that trigger only re-scans
+  # advisories via `audit`.
+  ci:
+    if: ${{ forgejo.event_name != 'schedule' }}
+    runs-on: native
     steps:
-      - name: install Node.js (required by actions/checkout@v4)
-        run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
-      - name: install rustfmt + clippy
-        run: rustup component add rustfmt clippy
+      # Build into a persistent path outside the workspace so the cache survives
+      # checkout's `git clean` between runs (and keeps the multi-gigabyte target
+      # dir out of the repo tree, where git and dprint would otherwise scan it).
+      - name: shared build cache
+        run: echo "CARGO_TARGET_DIR=$HOME/.cache/doorman-ci/target" >> "$GITHUB_ENV"
+
       - name: rustfmt
         run: cargo fmt --all --check
-      - name: clippy
+      - name: dprint (Markdown/TOML/YAML/JSON)
+        run: dprint check
+
+      - name: clippy (all targets, all features)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: docs
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --all-features --locked
 
-  # Formatting check for the non-Rust files (Markdown, TOML, YAML, JSON).
-  format:
-    runs-on: docker
-    container:
-      image: rust:1.96-bookworm
-    steps:
-      - name: install deps (actions/checkout@v4 needs node; dprint installer needs curl + unzip)
-        run: apt-get update && apt-get install -y --no-install-recommends nodejs curl unzip
-      - uses: actions/checkout@v4
-      - name: install dprint
-        run: curl -fsSL https://dprint.dev/install.sh | sh -s 0.54.0 > /dev/null
-      - name: dprint check
-        run: ~/.dprint/bin/dprint check
+      # Isolated feature builds. clippy above already compiles every target with
+      # *all* features on, so this only covers what that configuration hides: the
+      # default build (no features, no tokio) and one driver/backend at a time —
+      # where the `#[cfg(feature)]` gating actually lives.
+      - name: build — default features (whole workspace)
+        run: cargo check --workspace --locked
+      - name: build — sqlx drivers in isolation
+        run: |
+          cargo check -p doorman-sqlx --features sqlite --locked
+          cargo check -p doorman-sqlx --features postgres --locked
+          cargo check -p doorman-sqlx --features mysql --locked
+      - name: build — umbrella with a single backend
+        run: cargo check -p doorman --features axum,sqlite --locked
 
-  # The full test suite, including the storage-backend conformance tests. Runs
-  # on the host (`runs-on: native`) because those tests start throwaway database
-  # containers via testcontainers, which need the host's Docker daemon — so the
-  # runner must expose the `native` label with Docker access. Run twice to cover
-  # both the default and the full feature set.
-  test:
-    runs-on: native
-    steps:
-      - uses: actions/checkout@v4
-      - name: test (default features)
-        run: cargo test --workspace --locked
+      # Minimum supported Rust version; keep `1.94` in sync with `rust-version`
+      # in the workspace manifest. A compile check, not a test run.
+      - name: msrv (1.94)
+        run: cargo +1.94.1 check --workspace --all-features --locked
+
+      # The real correctness gate: the full suite with every backend enabled,
+      # which starts throwaway databases through testcontainers (hence the Docker
+      # daemon on the native runner). Last because it is the slowest step.
       - name: test (all features)
         run: cargo test --workspace --all-features --locked
 
-  # Compile-only check of each feature combination, so a feature gate that only
-  # breaks under a specific mix of features is caught without running tests.
-  features:
-    runs-on: docker
-    container:
-      image: rust:1.96-bookworm
+  # Dependency policy: licenses, RustSec advisories, banned/duplicate crates.
+  # Split out because it compiles none of the project, so the weekly cron can
+  # surface freshly disclosed advisories without rerunning the whole pipeline.
+  audit:
+    runs-on: native
     steps:
-      - name: install Node.js (required by actions/checkout@v4)
-        run: apt-get update && apt-get install -y --no-install-recommends nodejs
       - uses: actions/checkout@v4
-      - name: core (default — no tokio)
-        run: cargo check -p doorman-core --locked
-      - name: core (file-email)
-        run: cargo check -p doorman-core --features file-email --locked
-      - name: core (background-purge)
-        run: cargo check -p doorman-core --features background-purge --locked
-      - name: core (all features)
-        run: cargo check -p doorman-core --all-features --locked
-      - name: sqlx (sqlite)
-        run: cargo check -p doorman-sqlx --features sqlite --locked
-      - name: sqlx (postgres)
-        run: cargo check -p doorman-sqlx --features postgres --locked
-      - name: sqlx (mysql)
-        run: cargo check -p doorman-sqlx --features mysql --locked
-      - name: redis
-        run: cargo check -p doorman-redis --locked
-      - name: dynamodb
-        run: cargo check -p doorman-dynamodb --locked
-      - name: umbrella (axum + sqlite)
-        run: cargo check -p doorman --features axum,sqlite --locked
-      - name: umbrella (axum + mysql)
-        run: cargo check -p doorman --features axum,mysql --locked
-      - name: umbrella (axum + postgres + file-email)
-        run: cargo check -p doorman --features axum,postgres,file-email --locked
-      - name: umbrella (axum + postgres + redis — the mixed-backend path)
-        run: cargo check -p doorman --features axum,postgres,redis --locked
-      - name: umbrella (axum + dynamodb)
-        run: cargo check -p doorman --features axum,dynamodb --locked
-      - name: benches compile
-        run: cargo bench --workspace --all-features --no-run --locked
-
-  # Verifies the crate still builds on its minimum supported Rust version. Pinned
-  # to the declared `rust-version` 1.94 (driven by sqlx 0.9); keep the two in sync.
-  msrv:
-    runs-on: docker
-    container:
-      image: rust:1.94-bookworm
-    steps:
-      - name: install Node.js (required by actions/checkout@v4)
-        run: apt-get update && apt-get install -y --no-install-recommends nodejs
-      - uses: actions/checkout@v4
-      - name: check on MSRV
-        run: cargo check --workspace --all-features --locked
-
-  # Dependency policy gate: license, advisory, and ban checks via cargo-deny.
-  deny:
-    runs-on: docker
-    container:
-      image: rust:1.96-bookworm
-    steps:
-      - name: install Node.js (required by actions/checkout@v4)
-        run: apt-get update && apt-get install -y --no-install-recommends nodejs
-      - uses: actions/checkout@v4
-      - name: install cargo-deny
-        run: cargo install cargo-deny --locked
       - name: cargo-deny
         run: cargo deny check
