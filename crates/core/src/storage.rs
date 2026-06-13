@@ -38,7 +38,7 @@
 //! ## Implementing a key-value adapter
 //!
 //! Adapters on a key-value store (Redis/Valkey, or similar) without
-//! per-member-TTL collections must honour three expectations the SQL adapters
+//! per-member-TTL collections must honour four expectations the SQL adapters
 //! get for free:
 //!
 //! - **Atomic take.** `consume_token`, `take_registration`, and

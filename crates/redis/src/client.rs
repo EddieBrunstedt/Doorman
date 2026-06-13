@@ -74,7 +74,7 @@ pub(crate) fn from_json<T: DeserializeOwned>(raw: &str) -> StorageResult<T> {
 /// A TTL is layered on **only** when `expires_at` is strictly in the
 /// wall-clock future. Expiry *correctness* never depends on it — the stores
 /// filter on a caller-supplied logical `now` at read time and reclaim in
-/// `purge_expired` (§5.4) — so TTL is purely a production memory-reclamation
+/// `purge_expired` — so TTL is purely a production memory-reclamation
 /// safety net. Skipping it for already-past timestamps is what lets the
 /// logical-clock conformance suite, whose fixed test instants sit in the real
 /// past, exercise the read-filter/purge path instead of having its rows
@@ -108,8 +108,8 @@ pub(crate) async fn get_json<T: DeserializeOwned>(
 }
 
 /// Atomically `GETDEL` a key and deserialize its JSON value. The single step
-/// is what gives the single-use guarantee: under concurrency exactly one caller
-/// observes the value (§5.5).
+/// is what gives the single-use guarantee: under concurrency exactly one
+/// caller observes the value.
 pub(crate) async fn getdel_json<T: DeserializeOwned>(
     conn: &mut ConnectionManager,
     key: &str,
@@ -168,8 +168,8 @@ pub(crate) async fn scard(conn: &mut ConnectionManager, key: &str) -> StorageRes
 }
 
 /// `SREM` members from a SET, returning the number actually removed. A
-/// re-`SREM` of an already-removed member returns 0, so summing these counts is
-/// idempotent under a `SCAN` that revisits the same SET (§5.6).
+/// re-`SREM` of an already-removed member returns 0, so summing these counts
+/// stays correct even when a `SCAN` revisits the same SET.
 pub(crate) async fn srem(
     conn: &mut ConnectionManager,
     key: &str,

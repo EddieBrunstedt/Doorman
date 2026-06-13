@@ -2,10 +2,10 @@
 //!
 //! [`sqlx_stores`] expands into the five `*Store` implementations, their row
 //! mappers, and the store-accessor methods on a dialect's storage wrapper.
-//! Each dialect adapter (`sqlite.rs`, `postgres.rs`) keeps only its genuinely
-//! dialect-specific surface — connection setup, the pool/row types, the
-//! migration path, and the placeholder syntax — and invokes this macro to
-//! generate everything else, so the ~600-line body exists once.
+//! Each dialect adapter (`sqlite.rs`, `postgres.rs`, `mysql.rs`) keeps only
+//! its genuinely dialect-specific surface — connection setup, the pool/row
+//! types, the migration path, and the placeholder syntax — and invokes this
+//! macro to generate everything else, so the ~600-line body exists once.
 //!
 //! Placeholders are written once as `?`; the `$placeholders` rewriter passed
 //! by each dialect turns them into the syntax that dialect wants (`?` stays

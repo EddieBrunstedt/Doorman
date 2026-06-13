@@ -321,8 +321,8 @@ impl SessionManager {
         Ok(session)
     }
 
-    /// Revoke the session identified by a plaintext token. No-op if it does
-    /// not resolve.
+    /// Revoke the session identified by a plaintext token. Returns
+    /// [`Error::SessionNotFound`] if the token does not resolve.
     #[tracing::instrument(skip(self, token))]
     pub async fn revoke(&self, token: &str) -> Result<()> {
         let hash = hash_token(token);
@@ -333,8 +333,8 @@ impl SessionManager {
         self.revoke_session(session).await
     }
 
-    /// Revoke a session by its id, firing the invalidation hook. No-op if the
-    /// id does not resolve.
+    /// Revoke a session by its id, firing the invalidation hook. Returns
+    /// [`Error::SessionNotFound`] if the id does not resolve.
     #[tracing::instrument(skip(self), fields(session_id = %session_id))]
     pub async fn revoke_by_id(&self, session_id: SessionId) -> Result<()> {
         let Some(session) = self.sessions.find_session_by_id(session_id).await? else {

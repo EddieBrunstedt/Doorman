@@ -8,7 +8,7 @@
 //! `DEL`eted directly over a raw connection while its hash index and user-set
 //! membership are left behind, then the store API is driven over the resulting
 //! orphan. They assert the read-time hygiene and the `purge_expired` backstop
-//! the §5.6 design relies on.
+//! the key-value adapter contract relies on.
 //!
 //! Self-contained: each test starts its own throwaway container via
 //! `testcontainers`, so it needs a running Docker daemon and nothing else.

@@ -4,10 +4,10 @@
 //! use doorman_core::prelude::*;
 //! ```
 //!
-//! Brings the storage traits, manager types, configs, and the trait-shaped
-//! collaborators (clock, audit, email, rate limiter) into scope in one
-//! line. Hosts who want a narrower import surface should reach into the
-//! individual modules instead.
+//! Brings the storage traits, manager types, configs, and the supporting
+//! collaborator traits (clock, audit, email, rate limiter) into scope in
+//! one line. Hosts that want a narrower import surface should import from
+//! the individual modules instead.
 
 pub use crate::account::{AccountConfig, AccountManager};
 pub use crate::audit::{

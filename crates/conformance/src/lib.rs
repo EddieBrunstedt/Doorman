@@ -60,9 +60,10 @@ pub async fn run(storage: &Storage) {
 }
 
 /// Extra assertions that only hold for database-backed adapters, which push
-/// the expiry predicate into the query. The in-memory reference store
-/// deliberately returns expired rows (the manager filters them), so these
-/// run from the SQLite/Postgres harnesses only, not the shared [`run`].
+/// the expiry predicate into the query (or filter on read). The in-memory
+/// reference store deliberately returns expired rows (the manager filters
+/// them), so every adapter harness calls this in addition to [`run`] while
+/// the in-memory harness sticks to [`run`] alone.
 pub async fn run_db_backed(storage: &Storage) {
     sessions_list_excludes_expired(storage).await;
 }

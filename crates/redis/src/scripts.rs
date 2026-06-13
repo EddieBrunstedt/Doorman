@@ -1,9 +1,9 @@
 //! Lua scripts run server-side via `EVALSHA` (with an `EVAL` fallback).
 //!
 //! Lua is reserved for the one operation whose read-decide-write sequence must
-//! be a single atomic step across replicas: the rate limiter's check-and-charge
-//! (§5.5). The ephemeral stores stay on plain commands — `GETDEL` already gives
-//! their single-use guarantee without a script.
+//! be a single atomic step across replicas: the rate limiter's
+//! check-and-charge. The ephemeral stores stay on plain commands — `GETDEL`
+//! already gives their single-use guarantee without a script.
 
 /// Sliding-window-log rate limiter, mirroring
 /// [`InMemoryRateLimiter`](doorman_core::memory::InMemoryRateLimiter).

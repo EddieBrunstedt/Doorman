@@ -16,9 +16,10 @@
 //! driver a naive UTC datetime so the parameter is typed `DATETIME`; binding a
 //! `DateTime<Utc>` directly tags it `TIMESTAMP`, and MariaDB then nulls any
 //! value past the 2038 epoch ceiling (see `ts_mysql` for the full story). The
-//! shared storage-conformance suite (`tests/mysql`, `tests/mariadb`) runs the
-//! same assertions against this expansion as against the Postgres and SQLite
-//! ones — and against both servers, which is what catches MySQL/MariaDB drift.
+//! shared `doorman-conformance` suite (run from `tests/mysql.rs` and
+//! `tests/mariadb.rs`) asserts the same storage contract against this
+//! expansion as against the Postgres and SQLite ones — and against both
+//! servers, which is what catches MySQL/MariaDB drift.
 
 use sqlx::MySqlPool;
 use sqlx::mysql::MySqlPoolOptions;

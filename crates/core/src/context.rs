@@ -1,12 +1,12 @@
 //! Shared dependency context threaded into the core managers.
 //!
-//! [`CoreDeps`] bundles the orthogonal collaborators every manager needs —
-//! the clock, audit sink, email transport, rate limiter, the
-//! already-constructed [`SessionManager`], and the persistence stores — so
-//! the composition root names them once instead of re-listing each one in
-//! every manager `new`. It is what lets [`PasskeyManager::new`] and
-//! [`EnrollmentFlow::new`] take a `(deps, …)` shape rather than the
-//! eight-positional-argument constructors they replaced.
+//! [`CoreDeps`] bundles the collaborators every manager needs — the clock,
+//! audit sink, email transport, rate limiter, the already-constructed
+//! [`SessionManager`], and the persistence stores — so the composition root
+//! (the place that wires everything together at startup) names them once
+//! instead of re-listing each one in every manager constructor.
+//! [`PasskeyManager::new`] and [`EnrollmentFlow::new`] take this bundle plus
+//! their own config rather than a long positional argument list.
 //!
 //! [`PasskeyManager::new`]: crate::passkey::PasskeyManager::new
 //! [`EnrollmentFlow::new`]: crate::verification::EnrollmentFlow::new
@@ -74,12 +74,11 @@ pub struct CoreDeps {
 }
 
 impl CoreDeps {
-    /// Assemble a context from the orthogonal collaborators and a
-    /// [`Storage`] composite. The session manager and the security
-    /// [`SecurityEmailNotifier`] are built separately — the manager needs its
-    /// config and any invalidation hook (plus the notifier) wired before
-    /// dependent managers clone it — so both are passed in rather than
-    /// derived here.
+    /// Assemble a context from the individual collaborators and a
+    /// [`Storage`] composite. The [`SessionManager`] and the
+    /// [`SecurityEmailNotifier`] are passed in rather than derived here:
+    /// both need their own configuration (and any invalidation hook) wired
+    /// up before the dependent managers clone them.
     pub fn new(
         clock: Arc<dyn Clock>,
         audit: Arc<dyn AuditSink>,

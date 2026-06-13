@@ -3,7 +3,7 @@
 //! Valkey shares the RESP protocol and the command set this adapter uses, so
 //! the identical suite runs unchanged; only the target server differs. Running
 //! both this and the Redis suite is what catches any Redis/Valkey drift
-//! mechanically (§3).
+//! mechanically.
 //!
 //! Self-contained: it starts a throwaway Valkey container via `testcontainers`,
 //! so it needs a running Docker daemon and nothing else. There is no

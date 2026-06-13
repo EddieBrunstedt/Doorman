@@ -1,6 +1,6 @@
 //! Behaviour tests for the Redis-backed [`RedisRateLimiter`].
 //!
-//! These port the in-memory limiter's contract as the spec (§6): charge up to
+//! These port the in-memory limiter's contract as the reference: charge up to
 //! budget, reject past it, `retry_after` shape, window rollover, key isolation,
 //! and single-script atomicity under concurrency. A mock clock makes the
 //! window-rollover assertions deterministic without sleeping.

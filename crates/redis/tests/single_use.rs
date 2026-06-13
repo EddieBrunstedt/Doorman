@@ -2,7 +2,7 @@
 //!
 //! Each test creates one challenge, then spawns many concurrent redeemers and
 //! asserts that exactly one succeeds — the guarantee `GETDEL` provides under
-//! concurrency (§5.5).
+//! concurrency.
 //!
 //! Self-contained: each test starts its own throwaway Redis container via
 //! `testcontainers`, so it needs a running Docker daemon.

@@ -1,11 +1,11 @@
 //! Redis-backed [`VerificationTokenStore`].
 //!
 //! A token is stored as its JSON row under `vtoken:{purpose}:{hash}` plus
-//! membership in the per-user, per-purpose `user:{uid}:vtokens:{purpose}` SET
-//! (§5.4). Purpose is part of the key so a leaked token of one purpose can
-//! never be redeemed under another. Redemption is the atomic `GETDEL` primitive
-//! (§5.5): exactly one concurrent caller observes the value, giving the
-//! single-use guarantee; the index `SREM` is a best-effort follow-up.
+//! membership in the per-user, per-purpose `user:{uid}:vtokens:{purpose}` SET.
+//! Purpose is part of the key so a leaked token of one purpose can never be
+//! redeemed under another. Redemption is the atomic `GETDEL` primitive:
+//! exactly one concurrent caller observes the value, giving the single-use
+//! guarantee; the index `SREM` is a best-effort follow-up.
 //!
 //! `create_token` writes with a plain `SET`, so it is an upsert: a repeated
 //! `(purpose, hash)` overwrites rather than erroring, which the trait permits
@@ -107,8 +107,8 @@ impl VerificationTokenStore for RedisVerificationTokenStore {
         let mut conn = self.client.conn();
 
         // The purpose lives in the SET key, so iterate the known purposes and
-        // scan each purpose's SETs; that fixes the purpose used to rebuild each
-        // value key precisely (§5.6).
+        // scan each purpose's SETs; that pins the purpose needed to rebuild
+        // each value key exactly.
         let mut removed = 0u64;
         for purpose in keys::ALL_PURPOSES {
             let set_keys = client::scan_all(&mut conn, &keys.user_vtokens_pattern(purpose)).await?;

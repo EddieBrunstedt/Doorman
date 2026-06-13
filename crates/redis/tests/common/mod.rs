@@ -15,7 +15,7 @@ use testcontainers_modules::valkey::Valkey;
 use uuid::Uuid;
 
 /// Which RESP server a test targets. Running the identical suite against both
-/// is what catches any Redis/Valkey drift mechanically (§3).
+/// is what catches any Redis/Valkey drift mechanically.
 #[derive(Clone, Copy)]
 pub enum Backend {
     Redis,
@@ -75,7 +75,7 @@ pub async fn start(backend: Backend) -> (ContainerGuard, String) {
 /// Pairing the Redis ephemeral stores with in-memory `users` /
 /// `passkey_credentials` lets the shared conformance suite run end to end: the
 /// suite exercises every Redis-backed method, and the in-memory fillers stand
-/// in only for the two stores the adapter intentionally omits (§6).
+/// in only for the two stores the adapter intentionally omits.
 pub async fn storage(backend: Backend) -> (ContainerGuard, Storage) {
     let (guard, storage, _, _) = storage_with_raw(backend).await;
     (guard, storage)

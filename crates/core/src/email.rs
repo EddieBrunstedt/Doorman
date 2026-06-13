@@ -1,14 +1,13 @@
 //! Email transport and email-template customization.
 //!
 //! Managers build transactional emails through [`EmailTemplates`] and hand
-//! them to an [`EmailSender`]. The library does not ship a silent
-//! transport — every host wires an explicit sender. First-party
+//! them to an [`EmailSender`]. The library ships no transport that silently
+//! drops mail — every host wires an explicit sender. First-party
 //! implementations: [`TerminalEmailSender`] (prints rendered messages to
-//! stdout) and `FileEmailSender` (writes RFC 822-shaped `.eml` files
-//! into a directory, behind the `file-email` feature). Tests use
-//! `CapturingEmailSender` from
-//! `doorman-test-support`; hosts plug in real transports (lettre, resend,
-//! SES, …) through the [`EmailSender`] trait.
+//! stdout) and `FileEmailSender` (writes RFC 822-shaped `.eml` files into a
+//! directory, behind the `file-email` feature). Tests use
+//! `CapturingEmailSender` from `doorman-test-support`; hosts plug in real
+//! transports (lettre, resend, SES, …) through the [`EmailSender`] trait.
 //!
 //! The library uses email purely as a side channel for **signup links**,
 //! **recovery links**, and security notifications for recovery, passkey

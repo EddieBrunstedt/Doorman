@@ -3,9 +3,9 @@
 //! The store logic lives once in the `stores::sqlx_stores` macro; this module
 //! supplies only the Postgres specifics — connection setup, the pool/row
 //! types, the migration path, and the `$1`/`$2`/… placeholder rewriter
-//! (`common::ph_postgres`). The shared storage-conformance suite
-//! (`tests/conformance`) runs the same assertions against this expansion and
-//! the SQLite one.
+//! (`common::ph_postgres`). The shared `doorman-conformance` suite (run from
+//! `tests/postgres.rs`) asserts the same storage contract against this
+//! expansion as against the SQLite and MySQL/MariaDB ones.
 
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;

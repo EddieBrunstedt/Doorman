@@ -3,11 +3,10 @@
 //!
 //! This module is the single home for the opaque-token primitives: the
 //! random-token generator, the at-rest hash function, and the [`TokenHash`]
-//! type sessions and verification tokens are keyed by. Centralizing them
-//! here keeps the two flows from diverging on entropy, encoding, or the
-//! comparison used to look a token up — a security-relevant invariant, so
-//! it lives in one deliberate place rather than being defined next to one
-//! consumer and borrowed by the other.
+//! type that sessions and verification tokens are keyed by. Keeping them in
+//! one place ensures the two flows can never diverge on entropy, encoding,
+//! or the comparison used to look a token up — all security-relevant
+//! invariants.
 
 use std::fmt;
 

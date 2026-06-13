@@ -1,12 +1,12 @@
 //! Redis-backed [`PasskeyChallengeStore`].
 //!
-//! Two ceremony kinds share this store (§5.4). A registration is its JSON row
-//! under `pkreg:{id}` plus membership in the per-user `user:{uid}:pkregs` SET,
-//! which backs the per-user count and bulk-delete the recovery flow relies on.
-//! An authentication is a bare `pkauth:{id}` row with **no** secondary index —
+//! Two ceremony kinds share this store. A registration is its JSON row under
+//! `pkreg:{id}` plus membership in the per-user `user:{uid}:pkregs` SET, which
+//! backs the per-user count and bulk-delete the recovery flow relies on. An
+//! authentication is a bare `pkauth:{id}` row with **no** secondary index —
 //! nothing queries authentications by user — so it is pure TTL, and its purge
-//! scans the rows directly. Both `take_*` use the atomic `GETDEL` primitive
-//! (§5.5) so a challenge can never be replayed.
+//! scans the rows directly. Both `take_*` use the atomic `GETDEL` primitive so
+//! a challenge can never be replayed.
 //!
 //! `put_registration` and `put_authentication` write with a plain `SET`, so
 //! they are upserts: a repeated ceremony id overwrites rather than erroring,
@@ -96,8 +96,8 @@ impl PasskeyChallengeStore for RedisPasskeyChallengeStore {
 
     async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
         // SCARD counts members directly, including any that have technically
-        // expired — the trait permits this coarse bound (§5.6), and it avoids
-        // fetching every row just to size the set.
+        // expired — the trait permits this coarse bound, and it avoids fetching
+        // every row just to size the set.
         let user_key = self.client.keys().user_pkregs(user_id);
         let mut conn = self.client.conn();
         client::scard(&mut conn, &user_key).await

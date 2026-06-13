@@ -58,16 +58,19 @@ pub struct MockClock {
 }
 
 impl MockClock {
+    /// Create a clock frozen at `time`.
     pub fn new(time: DateTime<Utc>) -> Self {
         Self {
             inner: Mutex::new(time),
         }
     }
 
+    /// Jump the clock to an absolute `time`.
     pub fn set(&self, time: DateTime<Utc>) {
         *self.inner.lock().expect("mock clock poisoned") = time;
     }
 
+    /// Move the clock forward by `by`.
     pub fn advance(&self, by: Duration) {
         let mut guard = self.inner.lock().expect("mock clock poisoned");
         *guard += by;
@@ -87,10 +90,12 @@ pub struct InMemoryAuditSink {
 }
 
 impl InMemoryAuditSink {
+    /// Create an empty sink.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Snapshot every event emitted so far, in emission order.
     pub fn events(&self) -> Vec<AuditEvent> {
         self.events
             .lock()
@@ -98,10 +103,12 @@ impl InMemoryAuditSink {
             .clone()
     }
 
+    /// Number of events emitted so far.
     pub fn len(&self) -> usize {
         self.events.lock().expect("audit sink mutex poisoned").len()
     }
 
+    /// Whether no events have been emitted yet.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -125,10 +132,12 @@ pub struct CapturingEmailSender {
 }
 
 impl CapturingEmailSender {
+    /// Create an empty sender.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Snapshot every captured message, in send order.
     pub fn sent(&self) -> Vec<Email> {
         self.sent
             .lock()
@@ -145,6 +154,8 @@ impl CapturingEmailSender {
             .expect("email sender failure mutex poisoned") = Some(successful_sends);
     }
 
+    /// Undo [`fail_after_successful_sends`](Self::fail_after_successful_sends)
+    /// so sends succeed again.
     pub fn clear_send_failure(&self) {
         *self
             .fail_after_successful_sends
@@ -176,10 +187,12 @@ pub struct CapturingMetrics {
 }
 
 impl CapturingMetrics {
+    /// Create an empty sink.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Snapshot every observation recorded so far, in order.
     pub fn events(&self) -> Vec<MetricEvent> {
         self.events.lock().expect("metrics mutex poisoned").clone()
     }

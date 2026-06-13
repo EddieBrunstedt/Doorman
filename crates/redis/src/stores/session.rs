@@ -1,6 +1,6 @@
 //! Redis-backed [`SessionStore`].
 //!
-//! A session is stored as three keys (§5.4): the JSON row under `session:{id}`,
+//! A session is stored as three keys: the JSON row under `session:{id}`,
 //! a `session:hash:{hash}` index resolving the hashed bearer token to the id
 //! (the hot per-request lookup), and membership in the per-user
 //! `user:{uid}:sessions` SET that backs the listing and bulk-delete paths. The
@@ -219,7 +219,8 @@ impl SessionStore for RedisSessionStore {
         // Every session is reachable through exactly one user SET, so scanning
         // the SETs reaches every row and is also where dangling members are
         // reclaimed. The returned count is the number of members reclaimed
-        // (expired rows plus already-evicted ones); see §5.6.
+        // (expired rows plus already-evicted ones), as the `SessionStore`
+        // contract permits for key-value adapters.
         let set_keys = client::scan_all(&mut conn, &keys.user_sessions_pattern()).await?;
         let mut removed = 0u64;
         for set_key in set_keys {

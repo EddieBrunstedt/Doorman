@@ -3,9 +3,9 @@
 //! The store logic lives once in the `stores::sqlx_stores` macro; this module
 //! supplies only the SQLite specifics — connection setup, the pool/row types,
 //! the migration path, and the no-op `?` placeholder rewriter
-//! (`common::ph_sqlite`). The shared storage-conformance suite
-//! (`tests/conformance`) runs the same assertions against this expansion and
-//! the Postgres one.
+//! (`common::ph_sqlite`). The shared `doorman-conformance` suite (run from
+//! `tests/sqlite.rs`) asserts the same storage contract against this
+//! expansion as against the Postgres and MySQL/MariaDB ones.
 
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};

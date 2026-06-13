@@ -47,10 +47,9 @@ use crate::verification::enforce_rate_limit;
 /// single source (or a single targeted credential) cannot hammer the
 /// ceremony. They are enforced against the same [`RateLimiter`] the signup /
 /// recovery request endpoints use. A `None` policy disables that axis; a
-/// `None` IP on
-/// the request (no client address available) skips the per-IP axes. The
-/// per-credential axis always applies on finish, since the credential id is
-/// carried in the assertion.
+/// `None` IP on the request (no client address available) skips the per-IP
+/// axes. The per-credential axis always applies on finish, since the
+/// credential id is carried in the assertion.
 ///
 /// Registration ceremonies are gated by an authenticated session and a
 /// per-user pending-challenge cap

@@ -25,8 +25,8 @@
 //! (lettre, resend, SES, …) through the [`EmailSender`] trait. The same
 //! sender is also used for best-effort security notifications such as
 //! passkey-registration notices. We keep build-time errors rather than
-//! typestate because the required inputs are
-//! few and the simpler builder is easier to read.
+//! typestate because the required inputs are few and the simpler builder is
+//! easier to read.
 //!
 //! These defaults are fine for development but not for production.
 //! [`build`](AuthServiceBuilder::build) surfaces the mismatch via the
@@ -140,8 +140,8 @@ use crate::warnings::{
 ///     .build()?;
 /// ```
 ///
-/// Collects the storage, the orthogonal collaborators (clock / audit /
-/// email / rate limiter), the session config, the cookie config, and the
+/// Collects the storage, the collaborators (clock / audit / email / rate
+/// limiter), the session config, the cookie config, and the
 /// passkey config. The signup flow is part of the only login UX and is
 /// configured implicitly; hosts that want to override its defaults call
 /// [`signup`](Self::signup). Construction of the core managers happens in

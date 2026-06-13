@@ -3,7 +3,7 @@
 //! Every key the adapter touches is namespaced under a configurable prefix
 //! (default `doorman:`) so a host can run several logical doorman instances
 //! against one server, or share a server with unrelated data, without
-//! collisions. The schema mirrors the table in the design doc:
+//! collisions. The full schema:
 //!
 //! | Concern                | Primary key               | Secondary indexes                                              |
 //! | ---------------------- | ------------------------- | ------------------------------------------------------------- |
@@ -123,8 +123,9 @@ impl KeySchema {
         format!("{}pkauth:{}", self.prefix, id.0)
     }
 
-    /// `SCAN` pattern matching every authentication-ceremony key. These carry
-    /// no secondary index (§5.6), so the purge scans them directly.
+    /// `SCAN` pattern matching every authentication-ceremony key.
+    /// Authentication ceremonies are not user-scoped and carry no secondary
+    /// index, so the purge scans the value keys directly.
     pub(crate) fn pkauth_pattern(&self) -> String {
         format!("{}pkauth:*", self.prefix)
     }
