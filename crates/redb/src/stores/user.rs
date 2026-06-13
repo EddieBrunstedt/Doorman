@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{User, UserId, UserStore};
 
-use redb::ReadableTable as _;
+use redb::{ReadableDatabase as _, ReadableTable as _};
 
 use crate::db::{self, RedbHandle};
 

@@ -15,7 +15,7 @@ use doorman_core::error::StorageResult;
 use doorman_core::storage::{
     TokenHash, UserId, VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
-use redb::ReadableTable as _;
+use redb::{ReadableDatabase as _, ReadableTable as _};
 
 use crate::db::{self, RedbHandle};
 

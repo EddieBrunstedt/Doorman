@@ -17,7 +17,7 @@ use doorman_core::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, StoredPasskeyAuthentication,
     StoredPasskeyRegistration, UserId,
 };
-use redb::ReadableTable as _;
+use redb::{ReadableDatabase as _, ReadableTable as _};
 
 use crate::db::{self, RedbHandle};
 
