@@ -18,7 +18,7 @@ use doorman_test_support::MockClock;
 use common::{
     Harness, RP_ID, RP_NAME, assert_discoverable_request_options,
     assert_resident_registration_options, authenticator, kinds, make_user, register_passkey,
-    rp_origin, ts,
+    restricted_session_for, rp_origin, session_for, ts,
 };
 
 /// A [`PasskeyConfig`] matching the harness relying party but with the
@@ -643,10 +643,11 @@ async fn remove_passkey_emits_audit_sends_notification_and_blocks_login() {
     let user = make_user(&h, "remover@example.com").await;
     let mut wa = authenticator();
     let cred = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
+    let session = session_for(&h, &user);
     let mail_before = h.email.sent().len();
 
     h.passkey
-        .remove_passkey(user.id, &cred.credential_id, SessionContext::default())
+        .remove_passkey(&session, &cred.credential_id, SessionContext::default())
         .await
         .expect("remove");
     assert!(h.credentials.is_empty());
@@ -672,11 +673,12 @@ async fn remove_passkey_refuses_other_users_credential_without_notification() {
     let bob = make_user(&h, "b@example.com").await;
     let mut wa = authenticator();
     let cred = register_passkey(&h, alice.id, &mut wa, None).await;
+    let bob_session = session_for(&h, &bob);
     let mail_before = h.email.sent().len();
 
     let err = h
         .passkey
-        .remove_passkey(bob.id, &cred.credential_id, SessionContext::default())
+        .remove_passkey(&bob_session, &cred.credential_id, SessionContext::default())
         .await
         .expect_err("ownership check");
     assert!(matches!(err, Error::PasskeyOwnershipMismatch));
@@ -688,10 +690,11 @@ async fn remove_passkey_refuses_other_users_credential_without_notification() {
 async fn remove_missing_passkey_sends_no_notification() {
     let h = Harness::fresh();
     let user = make_user(&h, "missing@example.com").await;
+    let session = session_for(&h, &user);
 
     let err = h
         .passkey
-        .remove_passkey(user.id, b"missing credential", SessionContext::default())
+        .remove_passkey(&session, b"missing credential", SessionContext::default())
         .await
         .expect_err("missing credential");
     assert!(matches!(err, Error::PasskeyNotFound));
@@ -704,11 +707,12 @@ async fn remove_passkey_notification_failure_does_not_undo_removal() {
     let user = make_user(&h, "remove-failure@example.com").await;
     let mut wa = authenticator();
     let cred = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
+    let session = session_for(&h, &user);
     let mail_before = h.email.sent().len();
     h.email.fail_after_successful_sends(mail_before);
 
     h.passkey
-        .remove_passkey(user.id, &cred.credential_id, SessionContext::default())
+        .remove_passkey(&session, &cred.credential_id, SessionContext::default())
         .await
         .expect("remove succeeds despite notification failure");
 
@@ -725,6 +729,95 @@ async fn remove_passkey_notification_failure_does_not_undo_removal() {
         mail_before,
         "failed notification was not captured"
     );
+}
+
+#[tokio::test]
+async fn remove_passkey_refused_during_recovery_cooldown() {
+    // The cool-down gate lives in the manager, so a restricted session is
+    // refused even when driving core directly — a phished recovery session
+    // must not be able to strip the owner's remaining passkeys. (F1)
+    let h = Harness::fresh();
+    let user = make_user(&h, "locked@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, user.id, &mut wa, Some("only key")).await;
+    let cooldown_until = h.clock.now() + ChronoDuration::hours(24);
+    let restricted = restricted_session_for(&h, &user, cooldown_until);
+    let mail_before = h.email.sent().len();
+
+    let err = h
+        .passkey
+        .remove_passkey(&restricted, &cred.credential_id, SessionContext::default())
+        .await
+        .expect_err("removal must be refused during the cool-down");
+    assert!(matches!(err, Error::RecoveryCooldownActive));
+    assert_eq!(h.credentials.len(), 1, "the passkey is left intact");
+    assert_eq!(
+        h.email.sent().len(),
+        mail_before,
+        "no removal notification is sent when the gate trips",
+    );
+
+    // Once the cool-down lapses, the same session can remove the passkey.
+    h.clock.advance(ChronoDuration::hours(25));
+    h.passkey
+        .remove_passkey(&restricted, &cred.credential_id, SessionContext::default())
+        .await
+        .expect("removal allowed once the cool-down lapses");
+    assert!(h.credentials.is_empty());
+}
+
+#[tokio::test]
+async fn start_registration_for_session_propagates_active_cooldown() {
+    // A passkey enrolled while the acting session is locked down must inherit
+    // the same deadline, so it cannot be used to escape the cool-down. Deriving
+    // this in core (not the transport) is the point of `for_session`. (F1)
+    let h = Harness::fresh();
+    let user = make_user(&h, "reenroll@example.com").await;
+    let mut wa = authenticator();
+    let cooldown_until = h.clock.now() + ChronoDuration::hours(24);
+    let restricted = restricted_session_for(&h, &user, cooldown_until);
+
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration_for_session(&restricted)
+        .await
+        .expect("start_registration_for_session");
+    let response = wa.do_registration(ccr);
+    let credential = h
+        .passkey
+        .finish_registration(challenge_id, &response, None, SessionContext::default())
+        .await
+        .expect("finish_registration");
+
+    assert_eq!(
+        credential.recovery_cooldown_until,
+        Some(cooldown_until),
+        "the new passkey inherits the session's active cool-down",
+    );
+}
+
+#[tokio::test]
+async fn start_registration_for_session_without_cooldown_is_unrestricted() {
+    // An ordinary session carries no cool-down, so the registered passkey is
+    // unrestricted — and an *expired* cool-down is likewise not propagated.
+    let h = Harness::fresh();
+    let user = make_user(&h, "ordinary@example.com").await;
+    let mut wa = authenticator();
+    let session = session_for(&h, &user);
+
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration_for_session(&session)
+        .await
+        .expect("start_registration_for_session");
+    let response = wa.do_registration(ccr);
+    let credential = h
+        .passkey
+        .finish_registration(challenge_id, &response, None, SessionContext::default())
+        .await
+        .expect("finish_registration");
+
+    assert_eq!(credential.recovery_cooldown_until, None);
 }
 
 #[tokio::test]

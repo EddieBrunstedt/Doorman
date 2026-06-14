@@ -461,7 +461,7 @@ async fn revoke_others_for_user_keeps_only_the_exception() {
         .expect("bob");
 
     let removed = manager
-        .revoke_others_for_user(&user_with_id(alice, None), keep.session.id)
+        .revoke_others_for_user(&user_with_id(alice, None), &keep.session)
         .await
         .expect("revoke_others");
     assert_eq!(removed, 2);
@@ -502,7 +502,7 @@ async fn revoke_others_for_user_notifies_user_hook_when_anything_removed() {
         .expect("alice other");
 
     let removed = manager
-        .revoke_others_for_user(&user_with_id(alice, None), keep.session.id)
+        .revoke_others_for_user(&user_with_id(alice, None), &keep.session)
         .await
         .expect("revoke_others");
     assert_eq!(removed, 1);
@@ -542,7 +542,7 @@ async fn revoke_others_for_user_sends_notice_in_core() {
         .expect("alice other");
 
     manager
-        .revoke_others_for_user(&alice, keep.session.id)
+        .revoke_others_for_user(&alice, &keep.session)
         .await
         .expect("revoke_others");
 
@@ -584,14 +584,14 @@ async fn revoke_owned_session_notifies_only_for_other_sessions() {
 
     // Revoking the *other* session notifies.
     manager
-        .revoke_owned_session(&alice, other.session.id, current.session.id)
+        .revoke_owned_session(&alice, other.session.id, &current.session)
         .await
         .expect("revoke other");
     assert_eq!(email.sent().len(), 1, "revoking another session notifies");
 
     // Revoking the caller's *own* current session stays silent.
     manager
-        .revoke_owned_session(&alice, current.session.id, current.session.id)
+        .revoke_owned_session(&alice, current.session.id, &current.session)
         .await
         .expect("revoke self");
     assert_eq!(email.sent().len(), 1, "self-revocation sends no notice");
@@ -603,10 +603,87 @@ async fn revoke_owned_session_notifies_only_for_other_sessions() {
         .await
         .expect("bob");
     let err = manager
-        .revoke_owned_session(&alice, bob_session.session.id, current.session.id)
+        .revoke_owned_session(&alice, bob_session.session.id, &current.session)
         .await
         .expect_err("alice cannot revoke bob's session");
     assert!(matches!(err, Error::SessionNotFound));
+}
+
+#[tokio::test]
+async fn revoke_others_for_user_refused_during_recovery_cooldown() {
+    // "Sign out everywhere else" is gated in the manager: a phished recovery
+    // session must not be able to kick the legitimate owner off their devices,
+    // regardless of which transport drives core. (F1)
+    let (manager, sessions, _) = fresh_manager();
+    let alice = UserId::new();
+    let cooldown_until = manager.clock().now() + ChronoDuration::hours(24);
+    let current = manager
+        .create_restricted(alice, SessionContext::default(), cooldown_until)
+        .await
+        .expect("restricted current session");
+    let other = manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("other session");
+
+    let err = manager
+        .revoke_others_for_user(&user_with_id(alice, None), &current.session)
+        .await
+        .expect_err("must be refused during the cool-down");
+    assert!(matches!(err, Error::RecoveryCooldownActive));
+    assert!(
+        sessions
+            .find_session_by_id(other.session.id)
+            .await
+            .expect("find other")
+            .is_some(),
+        "no session is revoked when the gate trips",
+    );
+}
+
+#[tokio::test]
+async fn revoke_owned_session_cooldown_blocks_others_but_allows_self() {
+    // During the cool-down, revoking *another* device is refused, but the
+    // owner can always sign out the cool-down session itself so they are never
+    // stranded on it. (F1)
+    let (manager, sessions, _) = fresh_manager();
+    let alice = user_with_id(UserId::new(), None);
+    let cooldown_until = manager.clock().now() + ChronoDuration::hours(24);
+    let current = manager
+        .create_restricted(alice.id, SessionContext::default(), cooldown_until)
+        .await
+        .expect("restricted current session");
+    let other = manager
+        .create(alice.id, SessionContext::default())
+        .await
+        .expect("other session");
+
+    let err = manager
+        .revoke_owned_session(&alice, other.session.id, &current.session)
+        .await
+        .expect_err("revoking another device must be refused during the cool-down");
+    assert!(matches!(err, Error::RecoveryCooldownActive));
+    assert!(
+        sessions
+            .find_session_by_id(other.session.id)
+            .await
+            .expect("find other")
+            .is_some(),
+        "the other device is untouched",
+    );
+
+    manager
+        .revoke_owned_session(&alice, current.session.id, &current.session)
+        .await
+        .expect("revoking the cool-down session itself stays allowed");
+    assert!(
+        sessions
+            .find_session_by_id(current.session.id)
+            .await
+            .expect("find current")
+            .is_none(),
+        "the owner can always sign out the cool-down session",
+    );
 }
 
 #[tokio::test]
@@ -622,7 +699,7 @@ async fn revoke_others_for_user_skips_hook_when_nothing_removed() {
         .expect("alice only");
 
     let removed = manager
-        .revoke_others_for_user(&user_with_id(alice, None), only.session.id)
+        .revoke_others_for_user(&user_with_id(alice, None), &only.session)
         .await
         .expect("revoke_others");
     assert_eq!(removed, 0);

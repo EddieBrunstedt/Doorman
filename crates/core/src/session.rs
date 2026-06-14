@@ -368,11 +368,31 @@ impl SessionManager {
     }
 
     /// Report whether `session` is currently inside its post-recovery
-    /// cool-down window, using this manager's clock. Routes call this
-    /// to decide whether to reject destructive actions with
-    /// [`Error::RecoveryCooldownActive`].
+    /// cool-down window, using this manager's clock. Most callers want
+    /// [`ensure_not_in_recovery_cooldown`](Self::ensure_not_in_recovery_cooldown),
+    /// which turns the answer straight into the standard rejection; this
+    /// predicate is for the rare case that needs the boolean itself.
     pub fn is_in_recovery_cooldown(&self, session: &Session) -> bool {
         self.active_recovery_cooldown_until(session).is_some()
+    }
+
+    /// Reject the action with [`Error::RecoveryCooldownActive`] when `session`
+    /// is inside its post-recovery cool-down window; otherwise return `Ok(())`.
+    ///
+    /// This is the single enforcement point behind the post-recovery
+    /// lock-down. The destructive surfaces that could strand a legitimate
+    /// owner — passkey removal, "sign out everywhere else", revoking another
+    /// device's session, account deletion, and email change — call it (the
+    /// passkey and account managers reach it through the [`SessionManager`]
+    /// they already hold). Keeping the gate here means the guarantee holds for
+    /// every host driving `doorman-core`, not only the bundled `doorman-axum`
+    /// routes. Judged against this manager's clock, so an injected or mock
+    /// clock is honoured.
+    pub fn ensure_not_in_recovery_cooldown(&self, session: &Session) -> Result<()> {
+        if self.is_in_recovery_cooldown(session) {
+            return Err(Error::RecoveryCooldownActive);
+        }
+        Ok(())
     }
 
     /// Return every still-valid session belonging to `user_id`. Sessions
@@ -391,18 +411,27 @@ impl SessionManager {
             .collect())
     }
 
-    /// Revoke every session belonging to `user` *except* `except`. The
-    /// retained session is the caller's "current" device on the typical
-    /// "sign out everywhere else" path. Notifies the invalidation hook so
-    /// any framework-side cache evicts the removed sessions, and — when
+    /// Revoke every session belonging to `user` *except* the caller's
+    /// `current_session`. The retained session is the caller's own device on
+    /// the typical "sign out everywhere else" path. Notifies the invalidation
+    /// hook so any framework-side cache evicts the removed sessions, and — when
     /// anything was revoked — sends the best-effort "other sessions revoked"
     /// security notice so the notice originates here rather than in each
     /// host's HTTP layer.
-    #[tracing::instrument(skip(self, user), fields(user_id = %user.id, session_id = %except))]
-    pub async fn revoke_others_for_user(&self, user: &User, except: SessionId) -> Result<u64> {
+    ///
+    /// Refused with [`Error::RecoveryCooldownActive`] while `current_session`
+    /// is inside its post-recovery cool-down window: a phished recovery
+    /// session must not be able to kick the legitimate owner off their devices.
+    #[tracing::instrument(skip(self, user, current_session), fields(user_id = %user.id, session_id = %current_session.id))]
+    pub async fn revoke_others_for_user(
+        &self,
+        user: &User,
+        current_session: &Session,
+    ) -> Result<u64> {
+        self.ensure_not_in_recovery_cooldown(current_session)?;
         let count = self
             .sessions
-            .delete_other_sessions_for_user(user.id, except)
+            .delete_other_sessions_for_user(user.id, current_session.id)
             .await?;
         if count > 0 {
             self.invalidation_hook()
@@ -425,20 +454,31 @@ impl SessionManager {
     /// Reads the target once, rejects a missing session or one owned by a
     /// different user with [`Error::SessionNotFound`] (so a probe cannot
     /// learn whether another user's session id exists), then revokes it.
-    /// When the revoked session is not the caller's current one
-    /// (`current_session_id`) the best-effort "session revoked" security
-    /// notice is sent — self-revocation stays silent. Keeping this in the
-    /// manager means the notice originates in core for every host.
+    /// When the revoked session is not the caller's `current_session` the
+    /// best-effort "session revoked" security notice is sent —
+    /// self-revocation stays silent. Keeping this in the manager means the
+    /// notice originates in core for every host.
+    ///
+    /// While `current_session` is inside its post-recovery cool-down window,
+    /// revoking *another* session is refused with
+    /// [`Error::RecoveryCooldownActive`] (a phished recovery session must not
+    /// be able to strand the owner's other devices); revoking the cool-down
+    /// session *itself* stays allowed so the owner can always sign that
+    /// session out.
     #[tracing::instrument(
-        skip(self, user),
+        skip(self, user, current_session),
         fields(user_id = %user.id, session_id = %session_id),
     )]
     pub async fn revoke_owned_session(
         &self,
         user: &User,
         session_id: SessionId,
-        current_session_id: SessionId,
+        current_session: &Session,
     ) -> Result<()> {
+        let is_current = session_id == current_session.id;
+        if !is_current {
+            self.ensure_not_in_recovery_cooldown(current_session)?;
+        }
         let Some(session) = self.sessions.find_session_by_id(session_id).await? else {
             tracing::warn!(outcome = "not_found", "session revoke failed");
             return Err(Error::SessionNotFound);
@@ -448,9 +488,7 @@ impl SessionManager {
             return Err(Error::SessionNotFound);
         }
         self.revoke_session(session).await?;
-        if session_id != current_session_id
-            && let Some(notifier) = &self.notifier
-        {
+        if !is_current && let Some(notifier) = &self.notifier {
             notifier.other_session_revoked(user).await;
         }
         Ok(())

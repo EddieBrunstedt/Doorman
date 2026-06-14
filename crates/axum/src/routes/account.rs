@@ -36,12 +36,11 @@ async fn request_email_change(
     RequestContext(context): RequestContext,
     Json(body): Json<EmailChangeRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
-    if state.session_manager.is_in_recovery_cooldown(&auth.session) {
-        return Err(ErrorResponse(doorman_core::Error::RecoveryCooldownActive));
-    }
+    // The post-recovery cool-down gate lives in the manager, so the guarantee
+    // holds for every host driving core, not just this route.
     state
         .account
-        .request_email_change(&auth.user, &body.new_email, context)
+        .request_email_change(&auth.user, &auth.session, &body.new_email, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -69,9 +68,8 @@ async fn delete_account(
     auth: AuthSession,
     RequestContext(context): RequestContext,
 ) -> Result<Response, ErrorResponse> {
-    if state.session_manager.is_in_recovery_cooldown(&auth.session) {
-        return Err(ErrorResponse(doorman_core::Error::RecoveryCooldownActive));
-    }
-    state.account.delete_account(&auth.user, context).await?;
+    // The post-recovery cool-down gate lives in the manager, so the guarantee
+    // holds for every host driving core, not just this route.
+    state.account.delete_account(&auth.session, context).await?;
     Ok(no_content_clearing_session_cookie(&state.cookie_config))
 }

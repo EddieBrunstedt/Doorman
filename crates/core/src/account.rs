@@ -31,7 +31,7 @@ use crate::email::{Email, EmailSender, EmailTemplates, default_emails};
 use crate::error::{Error, Result};
 use crate::session::{SessionContext, SessionManager};
 use crate::storage::{
-    PasskeyChallengeStore, PasskeyCredentialStore, User, UserStore, VerificationPurpose,
+    PasskeyChallengeStore, PasskeyCredentialStore, Session, User, UserStore, VerificationPurpose,
     VerificationTokenStore,
 };
 use crate::token::hash_token;
@@ -150,13 +150,20 @@ impl AccountManager {
     /// the old address. The account's email is **not** changed here — that
     /// happens in [`confirm_email_change`](Self::confirm_email_change) once the
     /// link is clicked.
-    #[tracing::instrument(skip(self, new_email, context), fields(user_id = %user.id))]
+    ///
+    /// Refused with [`Error::RecoveryCooldownActive`] while the acting
+    /// `session` is inside its post-recovery cool-down window: a phished
+    /// recovery session must not be able to repoint the account's address out
+    /// from under the legitimate owner before they can react.
+    #[tracing::instrument(skip(self, session, new_email, context), fields(user_id = %user.id))]
     pub async fn request_email_change(
         &self,
         user: &User,
+        session: &Session,
         new_email: &str,
         context: SessionContext,
     ) -> Result<()> {
+        self.sessions.ensure_not_in_recovery_cooldown(session)?;
         let normalized = verification::normalize_email(new_email);
         verification::validate_email(&normalized)?;
 
@@ -260,14 +267,21 @@ impl AccountManager {
         Ok(user)
     }
 
-    /// Irreversibly delete `user` and everything that hangs off it. Revokes
-    /// every session first (evicting any framework-side session cache through
-    /// the [`SessionManager`]'s invalidation hook), then removes the user's
-    /// passkey credentials, verification tokens, pending registration
-    /// ceremonies, and finally the user row itself, leaving no orphaned rows.
-    #[tracing::instrument(skip(self, context), fields(user_id = %user.id))]
-    pub async fn delete_account(&self, user: &User, context: SessionContext) -> Result<()> {
-        let user_id = user.id;
+    /// Irreversibly delete the account behind the acting `session` and
+    /// everything that hangs off it. Revokes every session first (evicting any
+    /// framework-side session cache through the [`SessionManager`]'s
+    /// invalidation hook), then removes the user's passkey credentials,
+    /// verification tokens, pending registration ceremonies, and finally the
+    /// user row itself, leaving no orphaned rows.
+    ///
+    /// Refused with [`Error::RecoveryCooldownActive`] while `session` is
+    /// inside its post-recovery cool-down window: a phished recovery session
+    /// must not be able to delete the account before the legitimate owner can
+    /// react.
+    #[tracing::instrument(skip(self, context), fields(user_id = %session.user_id))]
+    pub async fn delete_account(&self, session: &Session, context: SessionContext) -> Result<()> {
+        self.sessions.ensure_not_in_recovery_cooldown(session)?;
+        let user_id = session.user_id;
 
         // Revoke through the session manager so the cache invalidation hook
         // fires (a raw `delete_sessions_for_user` would leave the cache warm).

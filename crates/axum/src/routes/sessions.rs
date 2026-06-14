@@ -86,41 +86,33 @@ async fn remove(
         .map(SessionId)
         .map_err(|_| ErrorResponse(doorman_core::Error::SessionNotFound))?;
 
-    // The post-recovery cool-down blocks revoking *other* sessions so a
-    // phished link cannot kick the legitimate user off their devices. The
-    // recovery session itself stays revocable so the user can still sign
-    // out of the cool-down session.
-    if id != auth.session.id && state.session_manager.is_in_recovery_cooldown(&auth.session) {
-        return Err(ErrorResponse(doorman_core::Error::RecoveryCooldownActive));
-    }
-
-    // Ownership, revocation, and the best-effort "other session revoked"
-    // notice all live in the manager: it reads the target once, treats a
-    // missing or not-owned session as "not yours" (rather than leaking the
-    // existence of someone else's id), and notifies only when the revoked
-    // session is not the caller's own.
+    // Ownership, the post-recovery cool-down gate, revocation, and the
+    // best-effort "other session revoked" notice all live in the manager: it
+    // reads the target once, refuses revoking *another* session while the
+    // current one is locked down (the cool-down session itself stays
+    // revocable so the user can sign it out), treats a missing or not-owned
+    // session as "not yours" (rather than leaking the existence of someone
+    // else's id), and notifies only when the revoked session is not the
+    // caller's own.
     state
         .session_manager
-        .revoke_owned_session(&auth.user, id, auth.session.id)
+        .revoke_owned_session(&auth.user, id, &auth.session)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// Revoke every session belonging to the caller *except* the current one.
-/// Powers the "sign out everywhere else" surface. Blocked while the
-/// current session is within the post-recovery cool-down window.
+/// Powers the "sign out everywhere else" surface. The manager refuses this
+/// while the current session is within the post-recovery cool-down window and
+/// fires the "other sessions revoked" notice itself when it revokes anything,
+/// so the route only drives it.
 async fn remove_others(
     State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<StatusCode, ErrorResponse> {
-    if state.session_manager.is_in_recovery_cooldown(&auth.session) {
-        return Err(ErrorResponse(doorman_core::Error::RecoveryCooldownActive));
-    }
-    // The manager fires the "other sessions revoked" notice itself when it
-    // revokes anything, so the route only drives it.
     state
         .session_manager
-        .revoke_others_for_user(&auth.user, auth.session.id)
+        .revoke_others_for_user(&auth.user, &auth.session)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

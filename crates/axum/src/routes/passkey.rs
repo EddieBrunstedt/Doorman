@@ -40,11 +40,11 @@ async fn register_start(
     State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ErrorResponse> {
-    let recovery_cooldown_until = state
-        .session_manager
-        .active_recovery_cooldown_until(&auth.session);
+    // Core derives the active post-recovery cool-down from the session and
+    // stamps it onto the ceremony, so a passkey enrolled during the lock-down
+    // inherits the deadline rather than the route having to thread it through.
     let (id, options) = manager(&state)
-        .start_registration_with_recovery_cooldown(auth.user.id, recovery_cooldown_until)
+        .start_registration_for_session(&auth.session)
         .await?;
     Ok(Json(PasskeyChallenge {
         challenge_id: id.0.to_string(),
@@ -112,14 +112,13 @@ async fn remove(
     RequestContext(context): RequestContext,
     Path(credential_id): Path<String>,
 ) -> Result<StatusCode, ErrorResponse> {
-    if state.session_manager.is_in_recovery_cooldown(&auth.session) {
-        return Err(ErrorResponse(doorman_core::Error::RecoveryCooldownActive));
-    }
     let bytes = URL_SAFE_NO_PAD
         .decode(credential_id.as_bytes())
         .map_err(|_| ErrorResponse(doorman_core::Error::PasskeyNotFound))?;
+    // The post-recovery cool-down gate lives in the manager, so it holds for
+    // every host driving core — not just this route.
     manager(&state)
-        .remove_passkey(auth.user.id, &bytes, context)
+        .remove_passkey(&auth.session, &bytes, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

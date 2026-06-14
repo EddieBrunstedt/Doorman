@@ -36,7 +36,10 @@ use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
-use doorman_core::storage::{SessionStore, Storage, StoredPasskey, User, UserId, UserStore};
+use doorman_core::session::hash_token;
+use doorman_core::storage::{
+    Session, SessionId, SessionStore, Storage, StoredPasskey, User, UserId, UserStore,
+};
 use doorman_core::verification::EnrollmentFlow;
 use doorman_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
 // Re-export the shared token extractor so the flow suites can keep importing
@@ -303,6 +306,38 @@ pub async fn make_user(h: &Harness, email: &str) -> User {
     };
     h.users.create_user(user.clone()).await.expect("create");
     user
+}
+
+/// Build an ordinary (non-cool-down) session row for `user` at the harness
+/// clock. The destructive managers read only the owning user and the
+/// cool-down fields off the acting session, so a hand-built row is enough to
+/// drive the cool-down gate in tests that don't go through a full login.
+pub fn session_for(h: &Harness, user: &User) -> Session {
+    plain_session(h, user.id, None)
+}
+
+/// Like [`session_for`] but restricted by a post-recovery cool-down ending at
+/// `cooldown_until`, so the destructive managers treat it as locked down.
+pub fn restricted_session_for(
+    h: &Harness,
+    user: &User,
+    cooldown_until: DateTime<Utc>,
+) -> Session {
+    plain_session(h, user.id, Some(cooldown_until))
+}
+
+fn plain_session(h: &Harness, user_id: UserId, cooldown: Option<DateTime<Utc>>) -> Session {
+    let now = h.clock.now();
+    Session {
+        id: SessionId::new(),
+        user_id,
+        token_hash: hash_token("test-session-token"),
+        created_at: now,
+        expires_at: now + chrono::Duration::hours(1),
+        ip: None,
+        user_agent: None,
+        recovery_cooldown_until: cooldown,
+    }
 }
 
 /// Register a passkey for `user` through the full ceremony and return the

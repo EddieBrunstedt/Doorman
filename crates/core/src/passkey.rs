@@ -36,7 +36,7 @@ use crate::metrics::{MetricEvent, Metrics};
 use crate::rate_limit::{RateLimitPolicy, RateLimiter};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
-    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary,
+    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,
     StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, UserStore,
 };
 use crate::verification::enforce_rate_limit;
@@ -265,13 +265,41 @@ impl PasskeyManager {
         self.start_registration_inner(user_id, None).await
     }
 
+    /// Begin registering a new passkey on behalf of an authenticated
+    /// `session`, propagating that session's *active* post-recovery cool-down
+    /// (if any) onto the in-progress ceremony. A passkey enrolled while the
+    /// session is locked down therefore inherits the same deadline and cannot
+    /// be turned into an unrestricted credential that escapes the cool-down; a
+    /// session with no active cool-down registers an ordinary, unrestricted
+    /// passkey.
+    ///
+    /// This is the session-aware entry point hosts should prefer for
+    /// authenticated re-registration: it keeps the cool-down propagation in
+    /// core (judged against this manager's clock, so expired cool-downs are
+    /// not carried forward) rather than relying on each transport to read the
+    /// deadline off the session and thread it through correctly. Use
+    /// [`start_registration`](Self::start_registration) for flows with no
+    /// acting session (e.g. signup), or
+    /// [`start_registration_with_recovery_cooldown`](Self::start_registration_with_recovery_cooldown)
+    /// to supply a deadline explicitly.
+    #[tracing::instrument(skip(self, session), fields(method = "passkey", user_id = %session.user_id))]
+    pub async fn start_registration_for_session(
+        &self,
+        session: &Session,
+    ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
+        let cooldown_until = session.active_recovery_cooldown_until(self.clock.now());
+        self.start_registration_inner(session.user_id, cooldown_until)
+            .await
+    }
+
     /// Begin registering a new passkey and associate optional recovery
     /// cool-down metadata with the in-progress ceremony. If the registration
     /// later finishes through [`PasskeyManager::finish_registration`], the
-    /// stored credential receives the same timestamp. Callers deriving this
-    /// value from an authenticated session should pass
-    /// [`crate::storage::Session::active_recovery_cooldown_until`] rather
-    /// than the raw session field so expired cool-downs are not propagated.
+    /// stored credential receives the same timestamp. Prefer
+    /// [`start_registration_for_session`](Self::start_registration_for_session)
+    /// when the deadline comes from an authenticated session: it derives the
+    /// *active* deadline from the session itself so an expired cool-down is
+    /// not propagated by accident.
     #[tracing::instrument(skip(self), fields(method = "passkey", user_id = %user_id))]
     pub async fn start_registration_with_recovery_cooldown(
         &self,
@@ -775,16 +803,22 @@ impl PasskeyManager {
         Ok(dropped)
     }
 
-    /// Remove a passkey. The `user_id` argument is enforced server-side
-    /// so a session for user A cannot delete user B's credential by
-    /// guessing a credential id.
-    #[tracing::instrument(skip(self, credential_id, context), fields(user_id = %user_id))]
+    /// Remove a passkey on behalf of the authenticated `session`. The
+    /// session's owning user is enforced server-side so a session for user A
+    /// cannot delete user B's credential by guessing a credential id.
+    ///
+    /// Refused with [`Error::RecoveryCooldownActive`] while `session` is
+    /// inside its post-recovery cool-down window: a phished recovery session
+    /// must not be able to strip the legitimate owner's remaining passkeys.
+    #[tracing::instrument(skip(self, session, credential_id, context), fields(user_id = %session.user_id))]
     pub async fn remove_passkey(
         &self,
-        user_id: UserId,
+        session: &Session,
         credential_id: &[u8],
         context: SessionContext,
     ) -> Result<()> {
+        self.sessions.ensure_not_in_recovery_cooldown(session)?;
+        let user_id = session.user_id;
         let Some(credential) = self
             .credentials
             .find_passkey_by_credential_id(credential_id)
