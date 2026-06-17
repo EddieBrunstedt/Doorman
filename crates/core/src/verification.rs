@@ -24,7 +24,7 @@ use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredentia
 
 use crate::audit::{AuditEvent, AuditEventKind, RecoveryFailureReason};
 use crate::context::CoreDeps;
-use crate::email::{Email, EmailSender};
+use crate::email::{Email, EmailSender, EmailTemplates};
 use crate::error::{Error, Result};
 use crate::passkey::PasskeyManager;
 use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
@@ -231,6 +231,7 @@ pub struct EnrollmentFlow {
     passkey: PasskeyManager,
     tokens: Arc<dyn VerificationTokenStore>,
     email: Arc<dyn EmailSender>,
+    emails: Arc<dyn EmailTemplates>,
     rate_limiter: Arc<dyn RateLimiter>,
 }
 
@@ -241,15 +242,22 @@ impl EnrollmentFlow {
     /// not held directly — the flow reaches them through its owned
     /// `PasskeyManager`, which already carries the same collaborators, so
     /// they live in one place. Only the verification-token store, email
-    /// transport, and rate limiter (the parts the passkey manager does not
-    /// hold) are taken from `deps`.
+    /// transport, email renderer, and rate limiter (the parts the passkey
+    /// manager does not hold) are taken from `deps`.
     pub fn new(deps: &CoreDeps, passkey: PasskeyManager) -> Self {
         Self {
             passkey,
             tokens: deps.verification_tokens.clone(),
             email: deps.email.clone(),
+            emails: deps.emails.clone(),
             rate_limiter: deps.rate_limiter.clone(),
         }
+    }
+
+    /// The renderer for the signup / recovery link copy and recovery notices,
+    /// threaded in from [`CoreDeps::emails`](crate::context::CoreDeps::emails).
+    pub(crate) fn emails(&self) -> &Arc<dyn EmailTemplates> {
+        &self.emails
     }
 
     pub(crate) fn users(&self) -> &Arc<dyn UserStore> {

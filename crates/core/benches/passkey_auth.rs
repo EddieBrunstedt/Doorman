@@ -97,11 +97,13 @@ async fn build_scaffold() -> Scaffold {
         passkey_challenges: challenges,
     };
     let email = email as Arc<dyn EmailSender>;
-    let notifier = SecurityEmailNotifier::new(email.clone(), Arc::new(DefaultEmailTemplates));
+    let emails = Arc::new(DefaultEmailTemplates);
+    let notifier = SecurityEmailNotifier::new(email.clone(), emails.clone());
     let deps = CoreDeps::new(
         clock,
         audit,
         email,
+        emails,
         notifier,
         Arc::new(NoopRateLimiter) as Arc<dyn RateLimiter>,
         session_manager,

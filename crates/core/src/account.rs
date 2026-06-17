@@ -27,7 +27,7 @@ use chrono::{DateTime, Utc};
 use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
-use crate::email::{Email, EmailSender, EmailTemplates, default_emails};
+use crate::email::{Email, EmailSender, EmailTemplates};
 use crate::error::{Error, Result};
 use crate::session::{SessionContext, SessionManager};
 use crate::storage::{
@@ -55,10 +55,6 @@ pub struct AccountConfig {
     /// URL template used in the confirmation email. The literal substring
     /// `{token}` is replaced with the generated token at send time.
     pub url_template: String,
-    /// Renderer for the email-change emails. `None` falls back to the renderer
-    /// the composition root threads in (see `AuthServiceBuilder::emails`), and to
-    /// [`DefaultEmailTemplates`](crate::email::DefaultEmailTemplates) if none was set.
-    pub emails: Option<Arc<dyn EmailTemplates>>,
 }
 
 impl AccountConfig {
@@ -68,16 +64,15 @@ impl AccountConfig {
 }
 
 impl Default for AccountConfig {
-    /// Default: a 15-minute token lifetime ([`DEFAULT_TOKEN_LIFETIME`]), a
+    /// Default: a 15-minute token lifetime ([`DEFAULT_TOKEN_LIFETIME`]) and a
     /// placeholder `example.invalid` URL template (the host must override
-    /// this), and no flow-specific email renderer.
+    /// this).
     ///
     /// [`DEFAULT_TOKEN_LIFETIME`]: AccountConfig::DEFAULT_TOKEN_LIFETIME
     fn default() -> Self {
         Self {
             token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
             url_template: format!("https://example.invalid/email-change?token={TOKEN_PLACEHOLDER}"),
-            emails: None,
         }
     }
 }
@@ -103,7 +98,6 @@ impl AccountManager {
     /// transport, session manager) are read from `deps` so they are named once
     /// at the composition root.
     pub fn new(deps: &CoreDeps, config: AccountConfig) -> Self {
-        let emails = config.emails.clone().unwrap_or_else(default_emails);
         Self {
             users: deps.users.clone(),
             tokens: deps.verification_tokens.clone(),
@@ -113,7 +107,7 @@ impl AccountManager {
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             email: deps.email.clone(),
-            emails,
+            emails: deps.emails.clone(),
             config,
         }
     }

@@ -26,13 +26,11 @@
 //! cool-down (24h by default), and passkeys added from a restricted
 //! session inherit the active deadline.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
 use crate::audit::{AuditEventKind, RecoveryFailureReason};
-use crate::email::{EmailTemplates, default_emails};
 use crate::error::Result;
 use crate::rate_limit::RateLimitPolicy;
 use crate::session::SessionContext;
@@ -58,14 +56,6 @@ pub struct RecoveryConfig {
     /// non-`None` policy is enforced. Aggressive defaults are applied; see
     /// [`RecoveryRateLimits::default`].
     pub rate_limits: RecoveryRateLimits,
-    /// Renderer for the recovery emails. `None` falls back to the renderer
-    /// the composition root threads in (see [`AuthServiceBuilder::emails`]), and to
-    /// [`DefaultEmailTemplates`](crate::email::DefaultEmailTemplates) if none was
-    /// set. Set `Some(..)` to brand this flow specifically, overriding the
-    /// shared renderer.
-    ///
-    /// [`AuthServiceBuilder::emails`]: https://docs.rs/doorman-axum
-    pub emails: Option<Arc<dyn EmailTemplates>>,
     /// Length of the post-recovery cool-down applied to the session and
     /// passkey created by `finish_recovery`. Sessions created from that
     /// passkey, or from passkeys added by a restricted session, stay
@@ -195,8 +185,8 @@ impl RecoveryConfig {
 impl Default for RecoveryConfig {
     /// Default: a 15-minute token lifetime ([`DEFAULT_TOKEN_LIFETIME`]), the
     /// default [`RecoveryRateLimits`], a 24-hour post-recovery cool-down
-    /// ([`DEFAULT_COOLDOWN`]), a placeholder `example.invalid` URL template
-    /// (the host must override this), and no flow-specific email renderer.
+    /// ([`DEFAULT_COOLDOWN`]), and a placeholder `example.invalid` URL template
+    /// (the host must override this).
     ///
     /// [`DEFAULT_TOKEN_LIFETIME`]: RecoveryConfig::DEFAULT_TOKEN_LIFETIME
     /// [`DEFAULT_COOLDOWN`]: RecoveryConfig::DEFAULT_COOLDOWN
@@ -205,7 +195,6 @@ impl Default for RecoveryConfig {
             token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
             url_template: format!("https://example.invalid/recovery?token={TOKEN_PLACEHOLDER}"),
             rate_limits: RecoveryRateLimits::default(),
-            emails: None,
             cooldown: Self::DEFAULT_COOLDOWN,
             danger_allow_cooldown_below_floor: false,
         }
@@ -223,9 +212,6 @@ impl Default for RecoveryConfig {
 pub struct RecoveryManager {
     flow: EnrollmentFlow,
     config: RecoveryConfig,
-    /// Renderer resolved from [`RecoveryConfig::emails`], falling back to
-    /// [`DefaultEmailTemplates`](crate::email::DefaultEmailTemplates) when unset.
-    emails: Arc<dyn EmailTemplates>,
 }
 
 impl RecoveryManager {
@@ -251,12 +237,7 @@ impl RecoveryManager {
                 minimum: MIN_COOLDOWN,
             });
         }
-        let emails = config.emails.clone().unwrap_or_else(default_emails);
-        Ok(Self {
-            flow,
-            config,
-            emails,
-        })
+        Ok(Self { flow, config })
     }
 
     /// Issue a recovery link to `email`. Returns `Ok(())` regardless of
@@ -353,11 +334,14 @@ impl RecoveryManager {
         // bounces (or simply measure two synchronous sends vs none) tell a
         // registered address from an unknown one, defeating the property this
         // endpoint exists to protect.
-        let link_email = self.emails.recovery_email(&user, &url);
+        let link_email = self.flow.emails().recovery_email(&user, &url);
         self.flow
             .send_best_effort(link_email, "recovery link")
             .await;
-        let notification = self.emails.recovery_requested_notification_email(&user);
+        let notification = self
+            .flow
+            .emails()
+            .recovery_requested_notification_email(&user);
         self.flow
             .send_best_effort(notification, "recovery requested notification")
             .await;
@@ -409,7 +393,11 @@ impl RecoveryManager {
                 name,
                 context,
                 Some(self.config.cooldown),
-                Some(&|user| self.emails.recovery_completed_notification_email(user)),
+                Some(&|user| {
+                    self.flow
+                        .emails()
+                        .recovery_completed_notification_email(user)
+                }),
             )
             .await
     }

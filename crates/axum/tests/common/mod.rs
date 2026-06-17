@@ -136,8 +136,7 @@ impl TestApp {
             .cookie(CookieConfig {
                 secure: secure_cookies,
                 ..CookieConfig::default()
-            })
-            .silence_warnings();
+            });
 
         let auth = customise(builder).build().expect("auth built");
 

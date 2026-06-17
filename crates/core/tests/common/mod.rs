@@ -25,7 +25,9 @@ use doorman_core::account::{AccountConfig, AccountManager};
 use doorman_core::audit::{AuditEvent, AuditEventKind, AuditSink};
 use doorman_core::clock::Clock;
 use doorman_core::context::CoreDeps;
-use doorman_core::email::{DefaultEmailTemplates, EmailSender, SecurityEmailNotifier};
+use doorman_core::email::{
+    DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityEmailNotifier,
+};
 use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
@@ -151,6 +153,10 @@ pub struct HarnessBuilder {
     /// spending the budget it is measuring.
     signup_limiter: Arc<dyn RateLimiter>,
     recovery_limiter: Arc<dyn RateLimiter>,
+    /// The single renderer threaded through `CoreDeps` and used for every
+    /// flow's link copy and security notices. Defaults to the stock copy;
+    /// branding tests override it.
+    emails: Arc<dyn EmailTemplates>,
 }
 
 impl HarnessBuilder {
@@ -165,7 +171,15 @@ impl HarnessBuilder {
             passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
             signup_limiter: Arc::new(NoopRateLimiter),
             recovery_limiter: Arc::new(NoopRateLimiter),
+            emails: Arc::new(DefaultEmailTemplates),
         }
+    }
+
+    /// Override the renderer used for every flow's link copy and security
+    /// notices.
+    pub fn emails(mut self, emails: Arc<dyn EmailTemplates>) -> Self {
+        self.emails = emails;
+        self
     }
 
     pub fn signup_config(mut self, config: SignupConfig) -> Self {
@@ -212,10 +226,8 @@ impl HarnessBuilder {
         let clock: Arc<MockClock> = Arc::new(MockClock::new(ts(2026, 1, 1)));
         let metrics: Arc<CapturingMetrics> = Arc::new(CapturingMetrics::new());
 
-        let notifier = SecurityEmailNotifier::new(
-            email.clone() as Arc<dyn EmailSender>,
-            Arc::new(DefaultEmailTemplates),
-        );
+        let notifier =
+            SecurityEmailNotifier::new(email.clone() as Arc<dyn EmailSender>, self.emails.clone());
         let session_manager = SessionManager::new(
             sessions.clone() as Arc<dyn SessionStore>,
             clock.clone() as Arc<dyn Clock>,
@@ -241,6 +253,7 @@ impl HarnessBuilder {
             clock.clone() as Arc<dyn Clock>,
             audit.clone() as Arc<dyn AuditSink>,
             email.clone() as Arc<dyn EmailSender>,
+            self.emails.clone(),
             notifier,
             self.signup_limiter,
             session_manager,

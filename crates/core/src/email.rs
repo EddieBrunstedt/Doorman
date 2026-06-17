@@ -64,8 +64,7 @@ pub trait EmailSender: Send + Sync + Any {
 /// Prints every rendered email to stdout in a clearly-labelled block.
 ///
 /// Intended for local development and the bundled example app. Does not
-/// deliver mail. Detected at build time by the axum warnings module so
-/// hosts who forget to swap in a real transport get a startup nudge.
+/// deliver mail; swap in a real [`EmailSender`] for production.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TerminalEmailSender;
 
@@ -485,12 +484,6 @@ impl SecurityEmailNotifier {
             );
         }
     }
-}
-
-/// Convenience for the default [`Arc<dyn EmailTemplates>`] handed to configs
-/// that don't otherwise specify a renderer.
-pub(crate) fn default_emails() -> Arc<dyn EmailTemplates> {
-    Arc::new(DefaultEmailTemplates)
 }
 
 #[cfg(test)]

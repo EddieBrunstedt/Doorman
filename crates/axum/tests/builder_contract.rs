@@ -2,13 +2,11 @@
 //! and `AuthService::from_managers().build()`.
 //!
 //! The builder is strict by default: a missing required collaborator, a
-//! placeholder URL, or an undecided CSRF posture is a hard [`BuilderError`].
-//! The only surviving warning is partial email branding — those two tests
-//! install a thread-scoped `tracing` subscriber that captures warnings into an
-//! in-memory buffer and assert on the emitted copy.
+//! placeholder URL, an undecided CSRF posture, or any other misconfiguration
+//! is a hard [`BuilderError`] rather than a silenceable warning. These tests
+//! pin each failure mode and the successful happy path.
 
-use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use doorman_axum::config::CookieConfig;
@@ -31,40 +29,6 @@ use doorman_core::signup::{SignupConfig, SignupManager};
 use doorman_core::storage::{Storage, UserId};
 use doorman_core::verification::EnrollmentFlow;
 use doorman_test_support::CapturingEmailSender;
-use tracing_subscriber::fmt::MakeWriter;
-
-#[derive(Default, Clone)]
-struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
-
-impl CaptureWriter {
-    fn output(&self) -> String {
-        String::from_utf8(self.0.lock().expect("capture writer lock").clone()).expect("utf-8")
-    }
-}
-
-struct CaptureHandle(Arc<Mutex<Vec<u8>>>);
-
-impl io::Write for CaptureHandle {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0
-            .lock()
-            .expect("capture writer lock")
-            .extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> MakeWriter<'a> for CaptureWriter {
-    type Writer = CaptureHandle;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        CaptureHandle(self.0.clone())
-    }
-}
 
 fn fresh_storage() -> Storage {
     Storage {
@@ -137,33 +101,11 @@ fn valid_builder() -> AuthServiceBuilder {
         .csrf(CsrfConfig::disabled())
 }
 
-fn capture<F>(f: F) -> String
-where
-    F: FnOnce(),
-{
-    let writer = CaptureWriter::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(writer.clone())
-        .with_ansi(false)
-        .with_level(true)
-        .without_time()
-        .with_max_level(tracing::Level::WARN)
-        .finish();
-    tracing::subscriber::with_default(subscriber, f);
-    writer.output()
-}
-
-// --- A fully-wired builder succeeds and emits nothing ---
+// --- A fully-wired builder succeeds ---
 
 #[test]
-fn fully_wired_builder_builds_without_warnings() {
-    let output = capture(|| {
-        valid_builder().build().expect("build");
-    });
-    assert!(
-        output.is_empty(),
-        "a fully wired builder should emit no warnings; got: {output}"
-    );
+fn fully_wired_builder_builds() {
+    valid_builder().build().expect("build");
 }
 
 // --- Required collaborators (strict by default, no silent defaults) ---
@@ -407,67 +349,6 @@ fn recovery_url_template_without_token_is_rejected() {
     );
 }
 
-// --- Partial email branding is the one surviving warning ---
-
-#[test]
-fn branding_one_flow_without_shared_renderer_warns() {
-    let output = capture(|| {
-        let _ = valid_builder()
-            .signup(SignupConfig {
-                url_template: SIGNUP_URL.to_string(),
-                emails: Some(Arc::new(DefaultEmailTemplates)),
-                ..SignupConfig::default()
-            })
-            .build()
-            .expect("build");
-    });
-
-    assert!(
-        output.contains("custom email renderer"),
-        "expected partial-branding warning when only one flow is branded; got: {output}"
-    );
-}
-
-#[test]
-fn shared_emails_renderer_does_not_warn_about_partial_branding() {
-    let output = capture(|| {
-        let _ = valid_builder()
-            .emails(Arc::new(DefaultEmailTemplates))
-            .signup(SignupConfig {
-                url_template: SIGNUP_URL.to_string(),
-                emails: Some(Arc::new(DefaultEmailTemplates)),
-                ..SignupConfig::default()
-            })
-            .build()
-            .expect("build");
-    });
-
-    assert!(
-        !output.contains("custom email renderer"),
-        "shared renderer should not trip the partial-branding warning; got: {output}"
-    );
-}
-
-#[test]
-fn silence_warnings_suppresses_partial_branding() {
-    let output = capture(|| {
-        let _ = valid_builder()
-            .silence_warnings()
-            .signup(SignupConfig {
-                url_template: SIGNUP_URL.to_string(),
-                emails: Some(Arc::new(DefaultEmailTemplates)),
-                ..SignupConfig::default()
-            })
-            .build()
-            .expect("build");
-    });
-
-    assert!(
-        output.is_empty(),
-        "silence_warnings should suppress the partial-branding warning; got: {output}"
-    );
-}
-
 // --- Low-level `from_managers` builder ---
 
 #[test]
@@ -483,7 +364,6 @@ fn low_level_builder_rejects_missing_passkey_manager() {
     let err = AuthService::from_managers()
         .session_manager(session_manager)
         .user_store(storage.users.clone())
-        .silence_warnings()
         .build()
         .err();
 
@@ -506,10 +386,9 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
     let email = Arc::new(CapturingEmailSender::new());
     let limiter: Arc<dyn RateLimiter> = Arc::new(NoopRateLimiter);
 
-    let notifier = SecurityEmailNotifier::new(
-        email.clone() as Arc<dyn EmailSender>,
-        Arc::new(DefaultEmailTemplates),
-    );
+    let emails = Arc::new(DefaultEmailTemplates);
+    let notifier =
+        SecurityEmailNotifier::new(email.clone() as Arc<dyn EmailSender>, emails.clone());
     let session_manager = SessionManager::new(
         storage.sessions.clone(),
         clock.clone(),
@@ -522,6 +401,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         clock,
         audit,
         email.clone() as Arc<dyn EmailSender>,
+        emails,
         notifier,
         limiter,
         session_manager.clone(),
@@ -545,7 +425,6 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         // Pre-built managers already own their transport; the only build-time
         // decision left on this path is the CSRF posture.
         .csrf(CsrfConfig::disabled())
-        .silence_warnings()
         .build()
         .expect("low-level build should succeed when every manager is supplied");
 

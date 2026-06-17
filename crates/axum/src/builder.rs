@@ -126,7 +126,6 @@ use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
 use crate::manager_builder::{BuilderError, ManagerBuilder};
-use crate::warnings::Warnings;
 
 /// High-level builder returned from [`AuthService::builder`].
 ///
@@ -171,7 +170,6 @@ pub struct AuthServiceBuilder {
     cookie_config: Option<CookieConfig>,
     cache_config: Option<SessionCacheConfig>,
     csrf_config: Option<CsrfConfig>,
-    silence_warnings: bool,
 
     external_origin: Option<Url>,
 
@@ -195,22 +193,12 @@ impl AuthServiceBuilder {
             cookie_config: None,
             cache_config: None,
             csrf_config: None,
-            silence_warnings: false,
             external_origin: None,
             passkey: None,
             signup: None,
             recovery: None,
             account: None,
         }
-    }
-
-    /// Suppress the remaining build-time configuration warning. Only the
-    /// partial email-branding check is still a warning (every other
-    /// misconfiguration is now a hard [`BuilderError`]); silence it after you
-    /// have reviewed it and made an informed choice.
-    pub fn silence_warnings(mut self) -> Self {
-        self.silence_warnings = true;
-        self
     }
 
     /// Override the default [`SystemClock`].
@@ -242,16 +230,15 @@ impl AuthServiceBuilder {
         self
     }
 
-    /// Wire one [`EmailTemplates`] renderer for every flow at once: the signup
-    /// link, the recovery link and notices, and the best-effort security
-    /// notices (passkey lifecycle, session revocation). This is the single
-    /// place to brand all transactional copy.
+    /// Wire the one [`EmailTemplates`] renderer for every transactional email
+    /// the app sends: the signup link, the recovery link and notices, the
+    /// email-change confirmation, and the best-effort security notices (passkey
+    /// lifecycle, session revocation). This is the single place to brand all
+    /// transactional copy.
     ///
-    /// A renderer set directly on a [`SignupConfig`](doorman_core::signup::SignupConfig)
-    /// or [`RecoveryConfig`](doorman_core::recovery::RecoveryConfig) still wins
-    /// for that flow. Branding only some flows without calling this — leaving
-    /// the rest on the stock copy — trips a startup warning so partial wiring
-    /// is never silent.
+    /// Defaults to [`DefaultEmailTemplates`](doorman_core::email::DefaultEmailTemplates),
+    /// whose trait methods each have a stock body — implement [`EmailTemplates`]
+    /// and override only the messages you want to change, inheriting the rest.
     ///
     /// [`EmailTemplates`]: doorman_core::email::EmailTemplates
     pub fn emails(mut self, emails: Arc<dyn EmailTemplates>) -> Self {
@@ -369,27 +356,16 @@ impl AuthServiceBuilder {
             .unwrap_or_else(|| Arc::new(NoopMetrics) as Arc<dyn Metrics>);
         let session_config = self.session_config.unwrap_or_default();
 
-        // The only remaining startup warning covers partial email branding;
-        // every other misconfiguration is now a hard build error (a missing
-        // required collaborator, a placeholder URL, or an undecided CSRF
-        // posture) rather than a silenceable warning.
-        let mut warnings = Warnings::default();
-
-        // Resolve the one renderer that brands every flow. A renderer set on
-        // a specific config still wins for that flow; the shared `.emails(..)`
-        // value fills the rest. Branding only some flows without the shared
-        // renderer leaves the security notices on the stock copy — flag that
-        // so partial wiring is never silent.
-        let mut signup_config = self.signup.unwrap_or_default();
-        let mut recovery_config = self.recovery.unwrap_or_default();
-        let mut account_config = self.account.unwrap_or_default();
-        if self.emails.is_none()
-            && (signup_config.emails.is_some()
-                || recovery_config.emails.is_some()
-                || account_config.emails.is_some())
-        {
-            warnings.partial_email_branding = true;
-        }
+        // One renderer brands every flow and every notice. The host wires it
+        // with `.emails(..)`; left unset it falls back to the stock copy.
+        // There is no per-flow override, so partial branding (and the warning
+        // it used to need) is structurally impossible.
+        let emails: Arc<dyn EmailTemplates> = self
+            .emails
+            .unwrap_or_else(|| Arc::new(DefaultEmailTemplates));
+        let signup_config = self.signup.unwrap_or_default();
+        let recovery_config = self.recovery.unwrap_or_default();
+        let account_config = self.account.unwrap_or_default();
 
         // Fail closed on every misconfigured value before constructing any
         // manager: a template that drops the token, a template still pointing
@@ -415,16 +391,7 @@ impl AuthServiceBuilder {
                 session_lifetime: session_config.lifetime,
             });
         }
-        if let Some(shared) = &self.emails {
-            signup_config.emails.get_or_insert_with(|| shared.clone());
-            recovery_config.emails.get_or_insert_with(|| shared.clone());
-            account_config.emails.get_or_insert_with(|| shared.clone());
-        }
-        let notifier_renderer: Arc<dyn EmailTemplates> = self
-            .emails
-            .clone()
-            .unwrap_or_else(|| Arc::new(DefaultEmailTemplates));
-        let notifier = SecurityEmailNotifier::new(email.clone(), notifier_renderer);
+        let notifier = SecurityEmailNotifier::new(email.clone(), emails.clone());
 
         // Build the cache up-front so its invalidator can be attached to
         // the `SessionManager` before any dependent manager clones it.
@@ -450,6 +417,7 @@ impl AuthServiceBuilder {
             clock,
             audit,
             email,
+            emails,
             notifier,
             limiter,
             session_manager.clone(),
@@ -461,11 +429,7 @@ impl AuthServiceBuilder {
             .session_manager(session_manager)
             .user_store(deps.users.clone())
             .session_cache(cache)
-            .metrics(metrics)
-            .inherited_warnings(warnings);
-        if self.silence_warnings {
-            builder = builder.silence_warnings();
-        }
+            .metrics(metrics);
 
         builder = builder.cookie(cookie_config);
 

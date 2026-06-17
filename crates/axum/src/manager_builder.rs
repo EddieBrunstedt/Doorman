@@ -24,7 +24,6 @@ use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
 use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::AuthState;
-use crate::warnings::Warnings;
 
 use doorman_core::account::AccountManager;
 use doorman_core::passkey::PasskeyManager;
@@ -191,9 +190,7 @@ pub enum BuilderError {
 /// clock, audit sink, rate limiter, email transport, etc.) and just need
 /// the HTTP presentation layer bolted on. Each manager already owns its
 /// [`EmailSender`](doorman_core::email::EmailSender), so this builder does not
-/// take a separate sender. The dev-transport startup warning is emitted only
-/// on the high-level [`AuthServiceBuilder`](crate::AuthServiceBuilder) path, which holds
-/// the raw transport and can inspect it.
+/// take a separate sender.
 ///
 /// If you would rather hand over a [`Storage`](doorman_core::storage::Storage)
 /// plus passkey / email config and let the managers be constructed for you,
@@ -205,15 +202,6 @@ pub struct ManagerBuilder {
     cookie_config: Option<CookieConfig>,
     cache_config: Option<SessionCacheConfig>,
     session_cache: Option<SessionCache>,
-    /// Pre-computed warning conditions from a parent builder (the
-    /// high-level [`AuthServiceBuilder`](crate::AuthServiceBuilder) entry point) that
-    /// already inspected audit / rate-limiter / linking state the low-level
-    /// builder does not see. Merged with the builder's own cookie-config
-    /// check at [`Self::build`] time. Set through
-    /// [`inherited_warnings`](Self::inherited_warnings) rather than poked
-    /// directly so the high-level builder doesn't reach into private state.
-    inherited_warnings: Warnings,
-    silence_warnings: bool,
     external_origin: Option<Url>,
     csrf_config: Option<CsrfConfig>,
     metrics: Option<Arc<dyn Metrics>>,
@@ -329,24 +317,6 @@ impl ManagerBuilder {
         self
     }
 
-    /// Suppress the remaining build-time configuration warning. Only the
-    /// partial email-branding check is still a warning (every other
-    /// misconfiguration is now a hard [`BuilderError`]); silence it after you
-    /// have reviewed it and made an informed choice.
-    pub fn silence_warnings(mut self) -> Self {
-        self.silence_warnings = true;
-        self
-    }
-
-    /// Seed the warning conditions a parent builder has already computed
-    /// (audit / rate-limiter / email-transport / partial-branding state the
-    /// low-level builder cannot see). Crate-internal: only the high-level
-    /// [`AuthServiceBuilder`](crate::AuthServiceBuilder) supplies these.
-    pub(crate) fn inherited_warnings(mut self, warnings: Warnings) -> Self {
-        self.inherited_warnings = warnings;
-        self
-    }
-
     /// Validate the configuration and assemble the [`AuthService`] surface, or
     /// return a [`BuilderError`] describing the first missing/invalid input.
     pub fn build(self) -> Result<AuthService, BuilderError> {
@@ -361,15 +331,6 @@ impl ManagerBuilder {
         let cookie_config = self.cookie_config.unwrap_or_default();
         validate_cookie_prefix(&cookie_config)?;
         let cookie_config = Arc::new(cookie_config);
-
-        if !self.silence_warnings {
-            // The only surviving warning — partial email branding — is decided
-            // by the high-level `AuthServiceBuilder` (which holds the raw
-            // renderers) and arrives via `inherited_warnings`. The low-level
-            // path takes pre-built managers, so it has nothing of its own to
-            // add here.
-            self.inherited_warnings.emit();
-        }
 
         // CSRF is not guessed. Cookie-authenticated mutations need an origin
         // check or a deliberate opt-out; with neither an origin nor an

@@ -25,13 +25,11 @@
 //! distinct token purposes so a leaked link of one kind cannot be redeemed
 //! as the other.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
 use crate::audit::AuditEventKind;
-use crate::email::{EmailTemplates, default_emails};
 use crate::error::Result;
 use crate::rate_limit::RateLimitPolicy;
 use crate::session::SessionContext;
@@ -56,14 +54,6 @@ pub struct SignupConfig {
     /// per-IP and per-identifier policies are checked; both must clear
     /// for the request to proceed.
     pub rate_limits: SignupRateLimits,
-    /// Renderer for the signup email. `None` falls back to the renderer the
-    /// composition root threads in (see [`AuthServiceBuilder::emails`]), and to
-    /// [`DefaultEmailTemplates`](crate::email::DefaultEmailTemplates) if none was
-    /// set. Set `Some(..)` to brand this flow specifically, overriding the
-    /// shared renderer.
-    ///
-    /// [`AuthServiceBuilder::emails`]: https://docs.rs/doorman-axum
-    pub emails: Option<Arc<dyn EmailTemplates>>,
 }
 
 /// Rate-limit policies for the signup request endpoint.
@@ -118,9 +108,8 @@ impl SignupConfig {
 
 impl Default for SignupConfig {
     /// Default: a 15-minute token lifetime ([`DEFAULT_TOKEN_LIFETIME`]), the
-    /// default [`SignupRateLimits`], a placeholder `example.invalid` URL
-    /// template (the host must override this), and no flow-specific email
-    /// renderer.
+    /// default [`SignupRateLimits`], and a placeholder `example.invalid` URL
+    /// template (the host must override this).
     ///
     /// [`DEFAULT_TOKEN_LIFETIME`]: SignupConfig::DEFAULT_TOKEN_LIFETIME
     fn default() -> Self {
@@ -128,7 +117,6 @@ impl Default for SignupConfig {
             token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
             url_template: format!("https://example.invalid/signup?token={TOKEN_PLACEHOLDER}"),
             rate_limits: SignupRateLimits::default(),
-            emails: None,
         }
     }
 }
@@ -143,20 +131,14 @@ impl Default for SignupConfig {
 pub struct SignupManager {
     flow: EnrollmentFlow,
     config: SignupConfig,
-    /// Renderer resolved from [`SignupConfig::emails`], falling back to
-    /// [`DefaultEmailTemplates`](crate::email::DefaultEmailTemplates) when unset.
-    emails: Arc<dyn EmailTemplates>,
 }
 
 impl SignupManager {
-    /// Build the signup manager from an enrollment flow and its config.
+    /// Build the signup manager from an enrollment flow and its config. The
+    /// email renderer comes from the [`EnrollmentFlow`] (and thus the shared
+    /// [`CoreDeps`](crate::context::CoreDeps)).
     pub fn new(flow: EnrollmentFlow, config: SignupConfig) -> Self {
-        let emails = config.emails.clone().unwrap_or_else(default_emails);
-        Self {
-            flow,
-            config,
-            emails,
-        }
+        Self { flow, config }
     }
 
     /// Issue a signup link to `email`. Returns `Ok(())` regardless of
@@ -241,7 +223,7 @@ impl SignupManager {
         // response. The already-registered branch above returns `Ok(())` with
         // no send, so propagating a send error from this new-user branch would
         // make a bounce distinguish a fresh address from a registered one.
-        let email = self.emails.signup_email(&user, &url);
+        let email = self.flow.emails().signup_email(&user, &url);
         self.flow.send_best_effort(email, "signup link").await;
 
         self.flow

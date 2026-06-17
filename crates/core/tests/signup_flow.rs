@@ -470,12 +470,7 @@ impl EmailTemplates for BrandedEmails {
 
 #[tokio::test]
 async fn custom_emails_override_signup_subject_and_html() {
-    let h = Harness::builder()
-        .signup_config(SignupConfig {
-            emails: Some(Arc::new(BrandedEmails)),
-            ..signup_config()
-        })
-        .build();
+    let h = Harness::builder().emails(Arc::new(BrandedEmails)).build();
 
     h.signup
         .request_signup("user@example.com", SessionContext::default())

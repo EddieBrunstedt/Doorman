@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::audit::AuditSink;
 use crate::clock::Clock;
-use crate::email::{EmailSender, SecurityEmailNotifier};
+use crate::email::{EmailSender, EmailTemplates, SecurityEmailNotifier};
 use crate::metrics::{Metrics, NoopMetrics};
 use crate::rate_limit::RateLimiter;
 use crate::session::SessionManager;
@@ -46,9 +46,17 @@ pub struct CoreDeps {
     /// Transport for signup / recovery links and best-effort security
     /// notifications.
     pub email: Arc<dyn EmailSender>,
+    /// The single [`EmailTemplates`] renderer
+    /// that brands every transactional email: the signup / recovery / email-change
+    /// links and the security notices. Threaded through the enrollment and
+    /// account managers (for the link copy) and used to build
+    /// [`notifier`](Self::notifier) (for the notices) so one renderer covers
+    /// every flow. Defaults to
+    /// [`DefaultEmailTemplates`](crate::email::DefaultEmailTemplates).
+    pub emails: Arc<dyn EmailTemplates>,
     /// Notifier for best-effort security notices (passkey lifecycle,
     /// session revocation). Built once at the composition root from
-    /// [`email`](Self::email) and the chosen [`EmailTemplates`](crate::email::EmailTemplates)
+    /// [`email`](Self::email) and the chosen [`EmailTemplates`]
     /// renderer, then shared by the passkey and session managers so every
     /// bundled notice originates from one configured helper.
     pub notifier: SecurityEmailNotifier,
@@ -79,10 +87,14 @@ impl CoreDeps {
     /// [`SecurityEmailNotifier`] are passed in rather than derived here:
     /// both need their own configuration (and any invalidation hook) wired
     /// up before the dependent managers clone them.
+    // A dependency bundle is inherently wide; the alternative (a second
+    // builder layered over this one) would be more indirection, not less.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         clock: Arc<dyn Clock>,
         audit: Arc<dyn AuditSink>,
         email: Arc<dyn EmailSender>,
+        emails: Arc<dyn EmailTemplates>,
         notifier: SecurityEmailNotifier,
         rate_limiter: Arc<dyn RateLimiter>,
         sessions: SessionManager,
@@ -92,6 +104,7 @@ impl CoreDeps {
             clock,
             audit,
             email,
+            emails,
             notifier,
             rate_limiter,
             metrics: Arc::new(NoopMetrics),

@@ -1020,12 +1020,7 @@ fn recovery_config_with_zero_cooldown_is_accepted_with_escape_hatch() {
 
 #[tokio::test]
 async fn custom_emails_override_recovery_subjects_and_html() {
-    let h = Harness::builder()
-        .recovery_config(RecoveryConfig {
-            emails: Some(Arc::new(BrandedEmails)),
-            ..recovery_config()
-        })
-        .build();
+    let h = Harness::builder().emails(Arc::new(BrandedEmails)).build();
     let _ = provision_user(&h, "user@example.com").await;
     let mail_before = h.email.sent().len();
 

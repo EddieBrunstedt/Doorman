@@ -60,7 +60,6 @@ pub mod prelude;
 mod routes;
 pub mod session;
 mod state;
-pub mod warnings;
 
 mod builder;
 mod manager_builder;
