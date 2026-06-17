@@ -21,15 +21,19 @@ use axum::routing::get;
 use doorman_axum::AuthService;
 use doorman_axum::SessionCache;
 use doorman_axum::config::CookieConfig;
+use doorman_axum::csrf::CsrfConfig;
 use doorman_axum::dto::{
     AuthResponse, PasskeyChallenge, PasskeyDto, RegistrationFinishRequest, SignupConsumeRequest,
     SignupRequest, UserDto,
 };
 use doorman_axum::extractors::AuthSession;
+use doorman_core::account::AccountConfig;
+use doorman_core::audit::NoopAuditSink;
+use doorman_core::clock::SystemClock;
 use doorman_core::email::EmailSender;
 use doorman_core::memory::{
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
-    InMemoryUserStore, InMemoryVerificationTokenStore,
+    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemoryRateLimiter,
+    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
@@ -51,6 +55,7 @@ use webauthn_rs_proto::AllowCredentials;
 
 pub const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 pub const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
+pub const ACCOUNT_URL: &str = "https://app.test/email-change?token={token}";
 
 pub struct TestApp {
     pub addr: SocketAddr,
@@ -109,6 +114,8 @@ impl TestApp {
                 rp_origin.clone(),
                 "doorman tests",
             ))
+            .audit(Arc::new(NoopAuditSink))
+            .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
             .signup(SignupConfig {
                 url_template: SIGNUP_URL.to_string(),
                 rate_limits: SignupRateLimits::disabled(),
@@ -119,6 +126,13 @@ impl TestApp {
                 rate_limits: RecoveryRateLimits::disabled(),
                 ..RecoveryConfig::default()
             })
+            .account(AccountConfig {
+                url_template: ACCOUNT_URL.to_string(),
+                ..AccountConfig::default()
+            })
+            // Tests that exercise CSRF opt in via `customise`; the default
+            // app is a non-browser test client, so opt out deliberately.
+            .csrf(CsrfConfig::disabled())
             .cookie(CookieConfig {
                 secure: secure_cookies,
                 ..CookieConfig::default()

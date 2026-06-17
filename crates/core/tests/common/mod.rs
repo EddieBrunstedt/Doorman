@@ -34,9 +34,9 @@ use doorman_core::metrics::Metrics;
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
+use doorman_core::session::hash_token;
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
-use doorman_core::session::hash_token;
 use doorman_core::storage::{
     Session, SessionId, SessionStore, Storage, StoredPasskey, User, UserId, UserStore,
 };
@@ -318,11 +318,7 @@ pub fn session_for(h: &Harness, user: &User) -> Session {
 
 /// Like [`session_for`] but restricted by a post-recovery cool-down ending at
 /// `cooldown_until`, so the destructive managers treat it as locked down.
-pub fn restricted_session_for(
-    h: &Harness,
-    user: &User,
-    cooldown_until: DateTime<Utc>,
-) -> Session {
+pub fn restricted_session_for(h: &Harness, user: &User, cooldown_until: DateTime<Utc>) -> Session {
     plain_session(h, user.id, Some(cooldown_until))
 }
 

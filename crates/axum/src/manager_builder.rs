@@ -24,7 +24,7 @@ use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
 use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::AuthState;
-use crate::warnings::{self, Warnings};
+use crate::warnings::Warnings;
 
 use doorman_core::account::AccountManager;
 use doorman_core::passkey::PasskeyManager;
@@ -52,6 +52,41 @@ pub enum BuilderError {
     /// [`TerminalEmailSender`]: doorman_core::email::TerminalEmailSender
     #[error("email_sender is required")]
     MissingEmailSender,
+    /// The high-level [`AuthServiceBuilder`](crate::AuthServiceBuilder) was not
+    /// given an [`AuditSink`]. There is no silent default: a real deployment
+    /// wires a sink that persists security events, and a host that genuinely
+    /// wants events discarded says so explicitly with
+    /// `.audit(Arc::new(NoopAuditSink))`. The low-level [`ManagerBuilder`]
+    /// takes pre-built managers that already own their sink, so it never
+    /// returns this error.
+    ///
+    /// [`AuditSink`]: doorman_core::audit::AuditSink
+    #[error("audit sink is required (pass NoopAuditSink explicitly to discard events)")]
+    MissingAuditSink,
+    /// The high-level [`AuthServiceBuilder`](crate::AuthServiceBuilder) was not
+    /// given a [`RateLimiter`]. There is no silent default: a host picks the
+    /// per-process [`InMemoryRateLimiter`], a shared backend, or — to opt out
+    /// of enforcement entirely — `NoopRateLimiter`, but the choice is always
+    /// explicit. The low-level [`ManagerBuilder`] takes pre-built managers
+    /// that already own their limiter, so it never returns this error.
+    ///
+    /// [`RateLimiter`]: doorman_core::rate_limit::RateLimiter
+    /// [`InMemoryRateLimiter`]: doorman_core::memory::InMemoryRateLimiter
+    #[error(
+        "rate limiter is required (pass InMemoryRateLimiter, a shared backend, or NoopRateLimiter explicitly)"
+    )]
+    MissingRateLimiter,
+    /// No CSRF decision was made: the builder was given neither an
+    /// [`external_origin`](crate::AuthServiceBuilder::external_origin) (which
+    /// enables origin checks) nor an explicit
+    /// [`csrf`](crate::AuthServiceBuilder::csrf) config. Cookie-authenticated
+    /// mutations would rest on `SameSite=Lax` alone, so the build refuses to
+    /// guess: set the origin, or opt out deliberately with
+    /// `.csrf(CsrfConfig::disabled())`.
+    #[error(
+        "a CSRF decision is required: set external_origin to enable origin checks, or pass CsrfConfig::disabled() to opt out"
+    )]
+    CsrfDecisionRequired,
     /// The high-level builder cannot construct the passkey manager until
     /// the host supplies the WebAuthn relying-party configuration via
     /// [`AuthServiceBuilder::passkey`](crate::AuthServiceBuilder::passkey).
@@ -90,6 +125,21 @@ pub enum BuilderError {
         flow: &'static str,
         /// The placeholder substring that was expected but missing.
         placeholder: &'static str,
+    },
+    /// A flow's `url_template` is still the stock `example.invalid`
+    /// placeholder the host never replaced. The link would carry a valid
+    /// token but point at a domain the host does not own, so the email is
+    /// effectively dead. The build fails closed rather than mailing it; set a
+    /// real template via `.signup(..)` / `.recovery(..)` / `.account(..)`.
+    #[error(
+        "{flow} url_template is still the stock `{placeholder_host}` placeholder; set a real template via the matching builder method"
+    )]
+    PlaceholderUrlTemplate {
+        /// The flow whose template was left at the placeholder (`"signup"`,
+        /// `"recovery"`, `"account"`).
+        flow: &'static str,
+        /// The reserved placeholder host that was detected.
+        placeholder_host: &'static str,
     },
     /// The recovery cool-down is below the documented floor. Surfaced from
     /// [`RecoveryManager::new`](doorman_core::recovery::RecoveryManager::new).
@@ -227,17 +277,19 @@ impl ManagerBuilder {
 
     /// Absolute public origin (scheme + host [+ port] [+ path prefix])
     /// that external clients use to reach the auth routes. Supplying an
-    /// origin enables the CSRF origin-check layer by default; disable it
-    /// explicitly with [`csrf`](Self::csrf) when you have a
-    /// known non-browser deployment.
+    /// origin enables the CSRF origin-check layer and satisfies the required
+    /// CSRF decision; disable it explicitly with [`csrf`](Self::csrf) when you
+    /// have a known non-browser deployment.
     pub fn external_origin(mut self, origin: Url) -> Self {
         self.external_origin = Some(origin);
         self
     }
 
-    /// Override the CSRF origin-check behaviour. By default, CSRF checks
-    /// are enabled when [`external_origin`](Self::external_origin) is set
-    /// and disabled otherwise.
+    /// Set the CSRF origin-check behaviour explicitly. Setting
+    /// [`external_origin`](Self::external_origin) already enables checks; call
+    /// this with [`CsrfConfig::disabled`](crate::csrf::CsrfConfig::disabled)
+    /// to opt out deliberately. With neither an origin nor an explicit config,
+    /// [`build`](Self::build) returns [`BuilderError::CsrfDecisionRequired`].
     pub fn csrf(mut self, config: CsrfConfig) -> Self {
         self.csrf_config = Some(config);
         self
@@ -277,10 +329,10 @@ impl ManagerBuilder {
         self
     }
 
-    /// Suppress the build-time configuration warnings. Use after you have
-    /// reviewed the warnings and made an informed choice — e.g. you are
-    /// intentionally running with an in-memory rate limiter in a
-    /// single-process deployment.
+    /// Suppress the remaining build-time configuration warning. Only the
+    /// partial email-branding check is still a warning (every other
+    /// misconfiguration is now a hard [`BuilderError`]); silence it after you
+    /// have reviewed it and made an informed choice.
     pub fn silence_warnings(mut self) -> Self {
         self.silence_warnings = true;
         self
@@ -311,16 +363,21 @@ impl ManagerBuilder {
         let cookie_config = Arc::new(cookie_config);
 
         if !self.silence_warnings {
-            let mut warnings = self.inherited_warnings.clone();
-            warnings.cookie_insecure_in_production = warnings::check_cookie(&cookie_config);
-            // Email-transport and audit/limiter diagnostics are decided by the
-            // high-level `AuthServiceBuilder` (which holds the raw collaborators) and
-            // arrive via `inherited_warnings`. The low-level path takes pre-built
-            // managers that already own their transport, so it adds only the
-            // cookie check here.
-            warnings.emit();
+            // The only surviving warning — partial email branding — is decided
+            // by the high-level `AuthServiceBuilder` (which holds the raw
+            // renderers) and arrives via `inherited_warnings`. The low-level
+            // path takes pre-built managers, so it has nothing of its own to
+            // add here.
+            self.inherited_warnings.emit();
         }
 
+        // CSRF is not guessed. Cookie-authenticated mutations need an origin
+        // check or a deliberate opt-out; with neither an origin nor an
+        // explicit config we cannot tell which the host intended, so fail
+        // closed rather than silently leaving the check off.
+        if self.external_origin.is_none() && self.csrf_config.is_none() {
+            return Err(BuilderError::CsrfDecisionRequired);
+        }
         let default_csrf_origin = self.external_origin.clone();
         let csrf_config = self
             .csrf_config

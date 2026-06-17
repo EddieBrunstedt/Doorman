@@ -4,6 +4,7 @@ use std::{env, net::SocketAddr, sync::Arc};
 
 use axum::{Json, Router, extract::State, response::Html, routing::get};
 use doorman_axum::prelude::*;
+use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::verification::TOKEN_PLACEHOLDER;
 use doorman_sqlx::SqliteStorage;
 use url::Url;
@@ -47,6 +48,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let auth = AuthService::builder(storage.all_stores())
         .email(Arc::new(TerminalEmailSender))
         .passkey(passkey_config)
+        // This demo is a single process, so the bundled per-process limiter
+        // and a no-op audit sink are deliberate choices — spelled out rather
+        // than defaulted. A real deployment wires a persistent audit sink and,
+        // across replicas, a shared rate-limiter backend.
+        .audit(Arc::new(NoopAuditSink))
+        .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
         .signup(SignupConfig {
             url_template: format!("{base}/?signup_token={TOKEN_PLACEHOLDER}"),
             ..SignupConfig::default()
@@ -55,9 +62,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             url_template: format!("{base}/?recovery_token={TOKEN_PLACEHOLDER}"),
             ..RecoveryConfig::default()
         })
+        .account(AccountConfig {
+            url_template: format!("{base}/?email_change_token={TOKEN_PLACEHOLDER}"),
+            ..AccountConfig::default()
+        })
+        // CSRF origin checks are enabled by configuring the public origin.
         .external_origin(external_origin)
         .cookie(cookie_config)
-        .silence_warnings()
         .build()?;
 
     let app_state = AppState {

@@ -4,12 +4,13 @@ Running doorman in production: purging expired rows, configuration, rate limitin
 
 ## Production checklist
 
-Review the startup warnings emitted by `build()` and make an explicit choice for each before silencing them.
+`build()` is strict by default and fails closed (`BuilderError`) until each required input is wired — there are no silent insecure defaults to remember to override. Make a deliberate choice for each:
 
 - Replace `TerminalEmailSender` / `FileEmailSender` with a real `EmailSender`.
-- Wire a durable `AuditSink`; `NoopAuditSink` discards security events.
-- Wire a shared `RateLimiter`; `InMemoryRateLimiter` is per-process only.
-- Set `external_origin` to the exact public origin; keep the CSRF layer enabled for browser cookie flows.
+- Wire a durable `AuditSink`, or pass `NoopAuditSink` explicitly to discard security events.
+- Wire a shared `RateLimiter`; `InMemoryRateLimiter` is per-process only, and `NoopRateLimiter` disables enforcement.
+- Set `external_origin` to the exact public origin (enables the CSRF layer for browser cookie flows), or opt out with `CsrfConfig::disabled()`.
+- Set real signup / recovery / account URL templates; the stock `example.invalid` placeholders are rejected.
 - Keep secure, HttpOnly, SameSite session cookies outside local HTTP dev.
 - Run storage migrations before serving traffic.
 - Purge expired rows on a schedule (below).

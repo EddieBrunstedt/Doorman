@@ -1,28 +1,27 @@
-//! Build-time configuration warnings emitted by `AuthService::builder().build()`
+//! Build-time configuration contract for `AuthService::builder().build()`
 //! and `AuthService::from_managers().build()`.
 //!
-//! Each test installs its own thread-scoped `tracing` subscriber that
-//! captures warnings into an in-memory buffer, then asserts the messages
-//! match the configuration that was supposed to trigger them.
+//! The builder is strict by default: a missing required collaborator, a
+//! placeholder URL, or an undecided CSRF posture is a hard [`BuilderError`].
+//! The only surviving warning is partial email branding — those two tests
+//! install a thread-scoped `tracing` subscriber that captures warnings into an
+//! in-memory buffer and assert on the emitted copy.
 
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use doorman_axum::config::CookieConfig;
-use doorman_axum::{AuthService, BuilderError};
+use doorman_axum::csrf::CsrfConfig;
+use doorman_axum::{AuthService, AuthServiceBuilder, BuilderError};
 use doorman_core::account::{AccountConfig, AccountManager};
 use doorman_core::audit::{AuditSink, NoopAuditSink};
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::context::CoreDeps;
-#[cfg(feature = "file-email")]
-use doorman_core::email::FileEmailSender;
-use doorman_core::email::{
-    DefaultEmailTemplates, EmailSender, SecurityEmailNotifier, TerminalEmailSender,
-};
+use doorman_core::email::{DefaultEmailTemplates, EmailSender, SecurityEmailNotifier};
 use doorman_core::memory::{
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
-    InMemoryUserStore, InMemoryVerificationTokenStore,
+    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemoryRateLimiter,
+    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
@@ -81,6 +80,14 @@ fn capturing_email() -> Arc<dyn EmailSender> {
     Arc::new(CapturingEmailSender::new())
 }
 
+fn noop_audit() -> Arc<dyn AuditSink> {
+    Arc::new(NoopAuditSink)
+}
+
+fn in_memory_limiter() -> Arc<dyn RateLimiter> {
+    Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock)))
+}
+
 fn passkey_config() -> PasskeyConfig {
     PasskeyConfig::new(
         "localhost",
@@ -93,9 +100,6 @@ const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
 const ACCOUNT_URL: &str = "https://app.test/email-change?token={token}";
 
-/// A signup config with a real (non-placeholder) URL template, so the
-/// build does not trip the URL warning/error while a different validation
-/// is under test.
 fn real_signup() -> SignupConfig {
     SignupConfig {
         url_template: SIGNUP_URL.to_string(),
@@ -117,6 +121,22 @@ fn real_account() -> AccountConfig {
     }
 }
 
+/// A builder with every required input wired correctly, so `build()`
+/// succeeds. Tests that probe a single validation start here and override the
+/// one field under test; tests that probe a *missing* required input build a
+/// chain by hand instead (you cannot un-set a builder field).
+fn valid_builder() -> AuthServiceBuilder {
+    AuthService::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .audit(noop_audit())
+        .limiter(in_memory_limiter())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .account(real_account())
+        .csrf(CsrfConfig::disabled())
+}
+
 fn capture<F>(f: F) -> String
 where
     F: FnOnce(),
@@ -133,140 +153,322 @@ where
     writer.output()
 }
 
-#[test]
-fn quickstart_defaults_warn_about_noop_audit_and_in_memory_limiter() {
-    let output = capture(|| {
-        let _ = AuthService::builder(fresh_storage())
-            .email(capturing_email())
-            .passkey(passkey_config())
-            .cookie(CookieConfig {
-                secure: false,
-                ..CookieConfig::default()
-            })
-            .build()
-            .expect("build");
-    });
-
-    assert!(
-        output.contains("InMemoryRateLimiter"),
-        "expected in-memory limiter warning, got: {output}"
-    );
-    assert!(
-        output.contains("AuditSink"),
-        "expected noop audit warning, got: {output}"
-    );
-    assert!(
-        !output.contains("cookie.secure"),
-        "did not expect cookie warning for None domain (treated as local dev); got: {output}"
-    );
-}
+// --- A fully-wired builder succeeds and emits nothing ---
 
 #[test]
-fn explicit_noop_rate_limiter_emits_noop_warning() {
+fn fully_wired_builder_builds_without_warnings() {
     let output = capture(|| {
-        let _ = AuthService::builder(fresh_storage())
-            .email(capturing_email())
-            .passkey(passkey_config())
-            .limiter(Arc::new(NoopRateLimiter))
-            .build()
-            .expect("build");
+        valid_builder().build().expect("build");
     });
-
-    assert!(
-        output.contains("Rate limiting is disabled"),
-        "expected noop limiter warning, got: {output}"
-    );
-    assert!(
-        !output.contains("InMemoryRateLimiter"),
-        "should not also warn about in-memory limiter when noop is explicit; got: {output}"
-    );
-}
-
-#[test]
-fn cookie_secure_false_with_production_domain_warns() {
-    let output = capture(|| {
-        let _ = AuthService::builder(fresh_storage())
-            .email(capturing_email())
-            .passkey(passkey_config())
-            .cookie(CookieConfig {
-                secure: false,
-                domain: Some("example.com".into()),
-                ..CookieConfig::default()
-            })
-            .silence_warnings() // keep cookie warning but suppress audit/limiter
-            .build()
-            .expect("build");
-    });
-
-    // silence_warnings should suppress *all* warnings, including the cookie one.
     assert!(
         output.is_empty(),
-        "silence_warnings should suppress all warnings; got: {output}"
+        "a fully wired builder should emit no warnings; got: {output}"
     );
 }
 
-#[test]
-fn cookie_warning_fires_when_not_silenced() {
-    let output = capture(|| {
-        let _ = AuthService::builder(fresh_storage())
-            .email(capturing_email())
-            .passkey(passkey_config())
-            .cookie(CookieConfig {
-                secure: false,
-                domain: Some("example.com".into()),
-                ..CookieConfig::default()
-            })
-            .build()
-            .expect("build");
-    });
-
-    assert!(
-        output.contains("cookie.secure"),
-        "expected cookie warning for non-localhost domain over plaintext HTTP; got: {output}"
-    );
-}
-
-#[test]
-fn quickstart_silence_warnings_suppresses_everything() {
-    let output = capture(|| {
-        let _ = AuthService::builder(fresh_storage())
-            .email(capturing_email())
-            .passkey(passkey_config())
-            .silence_warnings()
-            .build()
-            .expect("build");
-    });
-
-    assert!(
-        output.is_empty(),
-        "silence_warnings should suppress every warning, got: {output}"
-    );
-}
+// --- Required collaborators (strict by default, no silent defaults) ---
 
 #[test]
 fn missing_email_sender_returns_build_error() {
-    let result = AuthService::builder(fresh_storage())
-        .silence_warnings()
-        .build();
-    match result {
-        Err(BuilderError::MissingEmailSender) => {}
-        Err(other) => panic!("expected MissingEmailSender, got: {other:?}"),
-        Ok(_) => panic!("build should fail without email transport"),
-    }
+    let err = AuthService::builder(fresh_storage()).build().err();
+    assert!(
+        matches!(err, Some(BuilderError::MissingEmailSender)),
+        "expected MissingEmailSender, got: {err:?}"
+    );
 }
 
 #[test]
 fn missing_passkey_config_returns_build_error() {
-    let result = AuthService::builder(fresh_storage())
+    let err = AuthService::builder(fresh_storage())
         .email(capturing_email())
-        .silence_warnings()
-        .build();
-    match result {
-        Err(BuilderError::MissingPasskeyConfig) => {}
-        Err(other) => panic!("expected MissingPasskeyConfig, got: {other:?}"),
-        Ok(_) => panic!("build should fail without passkey config"),
-    }
+        .build()
+        .err();
+    assert!(
+        matches!(err, Some(BuilderError::MissingPasskeyConfig)),
+        "expected MissingPasskeyConfig, got: {err:?}"
+    );
 }
+
+#[test]
+fn missing_audit_sink_returns_build_error() {
+    let err = AuthService::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .limiter(in_memory_limiter())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .account(real_account())
+        .csrf(CsrfConfig::disabled())
+        .build()
+        .err();
+    assert!(
+        matches!(err, Some(BuilderError::MissingAuditSink)),
+        "expected MissingAuditSink when no audit sink is wired, got: {err:?}"
+    );
+}
+
+#[test]
+fn missing_rate_limiter_returns_build_error() {
+    let err = AuthService::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .audit(noop_audit())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .account(real_account())
+        .csrf(CsrfConfig::disabled())
+        .build()
+        .err();
+    assert!(
+        matches!(err, Some(BuilderError::MissingRateLimiter)),
+        "expected MissingRateLimiter when no limiter is wired, got: {err:?}"
+    );
+}
+
+#[test]
+fn explicit_noop_collaborators_are_accepted() {
+    // The dev/opt-out choices are still available — they are just explicit
+    // now, so they build without any warning.
+    let err = AuthService::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .audit(noop_audit())
+        .limiter(Arc::new(NoopRateLimiter))
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .account(real_account())
+        .csrf(CsrfConfig::disabled())
+        .build()
+        .err();
+    assert!(
+        err.is_none(),
+        "explicitly chosen noop collaborators should build, got: {err:?}"
+    );
+}
+
+// --- CSRF decision is required ---
+
+#[test]
+fn csrf_decision_required_when_neither_origin_nor_config_set() {
+    let err = AuthService::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .audit(noop_audit())
+        .limiter(in_memory_limiter())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .account(real_account())
+        .build()
+        .err();
+    assert!(
+        matches!(err, Some(BuilderError::CsrfDecisionRequired)),
+        "expected CsrfDecisionRequired with neither origin nor csrf config, got: {err:?}"
+    );
+}
+
+#[test]
+fn external_origin_satisfies_the_csrf_decision() {
+    let err = AuthService::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .audit(noop_audit())
+        .limiter(in_memory_limiter())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .account(real_account())
+        .external_origin("https://app.test".parse().expect("origin"))
+        .build()
+        .err();
+    assert!(
+        err.is_none(),
+        "setting an external origin should satisfy the CSRF decision, got: {err:?}"
+    );
+}
+
+#[test]
+fn explicit_csrf_disabled_satisfies_the_csrf_decision() {
+    let err = valid_builder().build().err();
+    assert!(
+        err.is_none(),
+        "explicit CsrfConfig::disabled() should satisfy the CSRF decision, got: {err:?}"
+    );
+}
+
+// --- Placeholder URL templates fail closed ---
+
+#[test]
+fn default_signup_template_is_rejected_as_placeholder() {
+    // Leave signup at its example.invalid default; recovery and account real.
+    let err = AuthService::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .audit(noop_audit())
+        .limiter(in_memory_limiter())
+        .recovery(real_recovery())
+        .account(real_account())
+        .csrf(CsrfConfig::disabled())
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::PlaceholderUrlTemplate { flow: "signup", .. })
+        ),
+        "expected PlaceholderUrlTemplate for signup, got: {err:?}"
+    );
+}
+
+#[test]
+fn default_recovery_template_is_rejected_as_placeholder() {
+    let err = AuthService::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .audit(noop_audit())
+        .limiter(in_memory_limiter())
+        .signup(real_signup())
+        .account(real_account())
+        .csrf(CsrfConfig::disabled())
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::PlaceholderUrlTemplate {
+                flow: "recovery",
+                ..
+            })
+        ),
+        "expected PlaceholderUrlTemplate for recovery, got: {err:?}"
+    );
+}
+
+#[test]
+fn default_account_template_is_rejected_as_placeholder() {
+    let err = AuthService::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .audit(noop_audit())
+        .limiter(in_memory_limiter())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .csrf(CsrfConfig::disabled())
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::PlaceholderUrlTemplate {
+                flow: "account email change",
+                ..
+            })
+        ),
+        "expected PlaceholderUrlTemplate for account, got: {err:?}"
+    );
+}
+
+// --- URL templates must still carry the token placeholder ---
+
+#[test]
+fn signup_url_template_without_token_is_rejected() {
+    let err = valid_builder()
+        .signup(SignupConfig {
+            url_template: "https://app.test/signup".to_string(),
+            ..SignupConfig::default()
+        })
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::InvalidUrlTemplate { flow: "signup", .. })
+        ),
+        "expected InvalidUrlTemplate for signup, got: {err:?}"
+    );
+}
+
+#[test]
+fn recovery_url_template_without_token_is_rejected() {
+    let err = valid_builder()
+        .recovery(RecoveryConfig {
+            url_template: "https://app.test/recovery".to_string(),
+            ..RecoveryConfig::default()
+        })
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::InvalidUrlTemplate {
+                flow: "recovery",
+                ..
+            })
+        ),
+        "expected InvalidUrlTemplate for recovery, got: {err:?}"
+    );
+}
+
+// --- Partial email branding is the one surviving warning ---
+
+#[test]
+fn branding_one_flow_without_shared_renderer_warns() {
+    let output = capture(|| {
+        let _ = valid_builder()
+            .signup(SignupConfig {
+                url_template: SIGNUP_URL.to_string(),
+                emails: Some(Arc::new(DefaultEmailTemplates)),
+                ..SignupConfig::default()
+            })
+            .build()
+            .expect("build");
+    });
+
+    assert!(
+        output.contains("custom email renderer"),
+        "expected partial-branding warning when only one flow is branded; got: {output}"
+    );
+}
+
+#[test]
+fn shared_emails_renderer_does_not_warn_about_partial_branding() {
+    let output = capture(|| {
+        let _ = valid_builder()
+            .emails(Arc::new(DefaultEmailTemplates))
+            .signup(SignupConfig {
+                url_template: SIGNUP_URL.to_string(),
+                emails: Some(Arc::new(DefaultEmailTemplates)),
+                ..SignupConfig::default()
+            })
+            .build()
+            .expect("build");
+    });
+
+    assert!(
+        !output.contains("custom email renderer"),
+        "shared renderer should not trip the partial-branding warning; got: {output}"
+    );
+}
+
+#[test]
+fn silence_warnings_suppresses_partial_branding() {
+    let output = capture(|| {
+        let _ = valid_builder()
+            .silence_warnings()
+            .signup(SignupConfig {
+                url_template: SIGNUP_URL.to_string(),
+                emails: Some(Arc::new(DefaultEmailTemplates)),
+                ..SignupConfig::default()
+            })
+            .build()
+            .expect("build");
+    });
+
+    assert!(
+        output.is_empty(),
+        "silence_warnings should suppress the partial-branding warning; got: {output}"
+    );
+}
+
+// --- Low-level `from_managers` builder ---
 
 #[test]
 fn low_level_builder_rejects_missing_passkey_manager() {
@@ -278,17 +480,17 @@ fn low_level_builder_rejects_missing_passkey_manager() {
         SessionConfig::default(),
     );
 
-    let result = AuthService::from_managers()
+    let err = AuthService::from_managers()
         .session_manager(session_manager)
         .user_store(storage.users.clone())
         .silence_warnings()
-        .build();
+        .build()
+        .err();
 
-    match result {
-        Err(BuilderError::MissingPasskeyManager) => {}
-        Err(other) => panic!("expected MissingPasskeyManager, got: {other:?}"),
-        Ok(_) => panic!("build should fail without passkey manager"),
-    }
+    assert!(
+        matches!(err, Some(BuilderError::MissingPasskeyManager)),
+        "expected MissingPasskeyManager, got: {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -340,6 +542,9 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         .signup_manager(signup)
         .recovery_manager(recovery)
         .account_manager(account)
+        // Pre-built managers already own their transport; the only build-time
+        // decision left on this path is the CSRF posture.
+        .csrf(CsrfConfig::disabled())
         .silence_warnings()
         .build()
         .expect("low-level build should succeed when every manager is supplied");
@@ -371,178 +576,16 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
     let _ = auth.state().recovery();
 }
 
-#[test]
-fn branding_one_flow_without_shared_renderer_warns() {
-    let output = capture(|| {
-        let _ = AuthService::builder(fresh_storage())
-            .email(capturing_email())
-            .passkey(passkey_config())
-            .signup(SignupConfig {
-                emails: Some(Arc::new(DefaultEmailTemplates)),
-                ..SignupConfig::default()
-            })
-            .build()
-            .expect("build");
-    });
-
-    assert!(
-        output.contains("custom email renderer"),
-        "expected partial-branding warning when only one flow is branded; got: {output}"
-    );
-}
-
-#[test]
-fn shared_emails_renderer_does_not_warn_about_partial_branding() {
-    let output = capture(|| {
-        let _ = AuthService::builder(fresh_storage())
-            .email(capturing_email())
-            .passkey(passkey_config())
-            .emails(Arc::new(DefaultEmailTemplates))
-            .signup(SignupConfig {
-                emails: Some(Arc::new(DefaultEmailTemplates)),
-                ..SignupConfig::default()
-            })
-            .build()
-            .expect("build");
-    });
-
-    assert!(
-        !output.contains("custom email renderer"),
-        "shared renderer should not trip the partial-branding warning; got: {output}"
-    );
-}
-
-#[test]
-fn terminal_email_transport_emits_dev_email_warning() {
-    let output = capture(|| {
-        let _ = AuthService::builder(fresh_storage())
-            .email(Arc::new(TerminalEmailSender))
-            .passkey(passkey_config())
-            .build()
-            .expect("build");
-    });
-
-    assert!(
-        output.contains("dev-only sender"),
-        "expected dev-email-transport warning for TerminalEmailSender; got: {output}"
-    );
-}
-
-#[cfg(feature = "file-email")]
-#[test]
-fn file_email_transport_emits_dev_email_warning() {
-    let dir = std::env::temp_dir().join(format!("doorman-warnings-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    let output = capture(|| {
-        let _ = AuthService::builder(fresh_storage())
-            .email(Arc::new(FileEmailSender::new(&dir)))
-            .passkey(passkey_config())
-            .build()
-            .expect("build");
-    });
-
-    assert!(
-        output.contains("dev-only sender"),
-        "expected dev-email-transport warning for FileEmailSender; got: {output}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 // --- Build-time validation (fail closed on misconfiguration) ---
 
 #[test]
-fn signup_url_template_without_token_is_rejected() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .signup(SignupConfig {
-            url_template: "https://app.test/signup".to_string(),
-            ..SignupConfig::default()
-        })
-        .recovery(real_recovery())
-        .silence_warnings()
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::InvalidUrlTemplate { flow: "signup", .. })
-        ),
-        "expected InvalidUrlTemplate for signup, got: {err:?}"
-    );
-}
-
-#[test]
-fn recovery_url_template_without_token_is_rejected() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .signup(real_signup())
-        .recovery(RecoveryConfig {
-            url_template: "https://app.test/recovery".to_string(),
-            ..RecoveryConfig::default()
-        })
-        .silence_warnings()
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::InvalidUrlTemplate {
-                flow: "recovery",
-                ..
-            })
-        ),
-        "expected InvalidUrlTemplate for recovery, got: {err:?}"
-    );
-}
-
-#[test]
-fn default_example_invalid_url_template_warns() {
-    let output = capture(|| {
-        let _ = AuthService::builder(fresh_storage())
-            .email(capturing_email())
-            .passkey(passkey_config())
-            .build()
-            .expect("build");
-    });
-    assert!(
-        output.contains("example.invalid"),
-        "expected placeholder-url-template warning when the template is left at the default; \
-         got: {output}"
-    );
-}
-
-#[test]
-fn real_url_templates_do_not_warn_about_placeholder() {
-    let output = capture(|| {
-        let _ = AuthService::builder(fresh_storage())
-            .email(capturing_email())
-            .passkey(passkey_config())
-            .signup(real_signup())
-            .recovery(real_recovery())
-            .account(real_account())
-            .build()
-            .expect("build");
-    });
-    assert!(
-        !output.contains("example.invalid"),
-        "real templates should not trip the placeholder warning; got: {output}"
-    );
-}
-
-#[test]
 fn subfloor_recovery_cooldown_is_rejected() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .signup(real_signup())
+    let err = valid_builder()
         .recovery(RecoveryConfig {
             cooldown: Duration::from_secs(60),
             url_template: RECOVERY_URL.to_string(),
             ..RecoveryConfig::default()
         })
-        .silence_warnings()
         .build()
         .err();
     assert!(
@@ -553,17 +596,12 @@ fn subfloor_recovery_cooldown_is_rejected() {
 
 #[test]
 fn host_prefixed_cookie_without_secure_is_rejected() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .signup(real_signup())
-        .recovery(real_recovery())
+    let err = valid_builder()
         .cookie(CookieConfig {
             session_cookie_name: "__Host-doorman".to_string(),
             secure: false,
             ..CookieConfig::default()
         })
-        .silence_warnings()
         .build()
         .err();
     assert!(
@@ -580,18 +618,13 @@ fn host_prefixed_cookie_without_secure_is_rejected() {
 
 #[test]
 fn host_prefixed_cookie_with_domain_is_rejected() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .signup(real_signup())
-        .recovery(real_recovery())
+    let err = valid_builder()
         .cookie(CookieConfig {
             session_cookie_name: "__Host-doorman".to_string(),
             secure: true,
             domain: Some("app.test".to_string()),
             ..CookieConfig::default()
         })
-        .silence_warnings()
         .build()
         .err();
     assert!(
@@ -608,17 +641,12 @@ fn host_prefixed_cookie_with_domain_is_rejected() {
 
 #[test]
 fn secure_prefixed_cookie_without_secure_is_rejected() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .signup(real_signup())
-        .recovery(real_recovery())
+    let err = valid_builder()
         .cookie(CookieConfig {
             session_cookie_name: "__Secure-doorman".to_string(),
             secure: false,
             ..CookieConfig::default()
         })
-        .silence_warnings()
         .build()
         .err();
     assert!(
@@ -635,11 +663,7 @@ fn secure_prefixed_cookie_without_secure_is_rejected() {
 
 #[test]
 fn host_prefixed_cookie_with_correct_attributes_builds() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .signup(real_signup())
-        .recovery(real_recovery())
+    let err = valid_builder()
         .cookie(CookieConfig {
             session_cookie_name: "__Host-doorman".to_string(),
             secure: true,
@@ -647,7 +671,6 @@ fn host_prefixed_cookie_with_correct_attributes_builds() {
             path: "/".to_string(),
             ..CookieConfig::default()
         })
-        .silence_warnings()
         .build()
         .err();
     assert!(
@@ -658,16 +681,11 @@ fn host_prefixed_cookie_with_correct_attributes_builds() {
 
 #[test]
 fn zero_session_lifetime_is_rejected() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .signup(real_signup())
-        .recovery(real_recovery())
+    let err = valid_builder()
         .session(SessionConfig {
             lifetime: Duration::ZERO,
             ..SessionConfig::default()
         })
-        .silence_warnings()
         .build()
         .err();
     assert!(
@@ -684,16 +702,12 @@ fn zero_session_lifetime_is_rejected() {
 
 #[test]
 fn zero_signup_token_lifetime_is_rejected() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
+    let err = valid_builder()
         .signup(SignupConfig {
             url_template: SIGNUP_URL.to_string(),
             token_lifetime: Duration::ZERO,
             ..SignupConfig::default()
         })
-        .recovery(real_recovery())
-        .silence_warnings()
         .build()
         .err();
     assert!(
@@ -710,11 +724,7 @@ fn zero_signup_token_lifetime_is_rejected() {
 
 #[test]
 fn cookie_max_age_exceeding_session_lifetime_is_rejected() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .signup(real_signup())
-        .recovery(real_recovery())
+    let err = valid_builder()
         .session(SessionConfig {
             lifetime: Duration::from_secs(60 * 60),
             ..SessionConfig::default()
@@ -723,7 +733,6 @@ fn cookie_max_age_exceeding_session_lifetime_is_rejected() {
             session_max_age: Duration::from_secs(60 * 60 * 2),
             ..CookieConfig::default()
         })
-        .silence_warnings()
         .build()
         .err();
     assert!(

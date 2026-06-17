@@ -22,7 +22,12 @@ async fn email_change_happy_path() {
     let mail_before = h.email.sent().len();
 
     h.account
-        .request_email_change(&user, &session, "New@Example.com", SessionContext::default())
+        .request_email_change(
+            &user,
+            &session,
+            "New@Example.com",
+            SessionContext::default(),
+        )
         .await
         .expect("request email change");
 
@@ -110,7 +115,12 @@ async fn email_change_rejects_address_already_in_use() {
 
     let err = h
         .account
-        .request_email_change(&user, &session, "taken@example.com", SessionContext::default())
+        .request_email_change(
+            &user,
+            &session,
+            "taken@example.com",
+            SessionContext::default(),
+        )
         .await
         .expect_err("address already in use must be rejected");
     assert!(matches!(err, Error::EmailAlreadyInUse));
@@ -135,7 +145,12 @@ async fn request_email_change_refused_during_recovery_cooldown() {
 
     let err = h
         .account
-        .request_email_change(&user, &restricted, "new@example.com", SessionContext::default())
+        .request_email_change(
+            &user,
+            &restricted,
+            "new@example.com",
+            SessionContext::default(),
+        )
         .await
         .expect_err("email change must be refused during the cool-down");
     assert!(matches!(err, Error::RecoveryCooldownActive));
@@ -198,7 +213,12 @@ async fn delete_account_cascades_all_stores() {
     // email-change token, a pending registration ceremony, plus the session
     // and credential that signup already created.
     h.account
-        .request_email_change(&user, &session, "elsewhere@example.com", SessionContext::default())
+        .request_email_change(
+            &user,
+            &session,
+            "elsewhere@example.com",
+            SessionContext::default(),
+        )
         .await
         .expect("request email change");
     h.passkey

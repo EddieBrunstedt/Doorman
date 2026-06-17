@@ -7,9 +7,10 @@ use axum::http::StatusCode;
 use common::{TestApp, token_from_email_with};
 use doorman_axum::dto::{AuthResponse, UserDto};
 
-/// The default `AccountConfig` url_template (the TestApp does not override it),
-/// used to recover the confirmation token from the email body.
-const EMAIL_CHANGE_URL: &str = "https://example.invalid/email-change?token={token}";
+/// The account email-change url_template the `TestApp` wires (see
+/// `common::ACCOUNT_URL`), used to recover the confirmation token from the
+/// email body.
+const EMAIL_CHANGE_URL: &str = "https://app.test/email-change?token={token}";
 
 async fn login(client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
     common::login(client, app, email).await

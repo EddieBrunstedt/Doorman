@@ -14,13 +14,13 @@ const APP_ORIGIN: &str = "https://app.test";
 const EVIL_ORIGIN: &str = "https://evil.test";
 
 async fn start(csrf_config: Option<CsrfConfig>) -> TestApp {
-    TestApp::start_with(Router::new(), false, |builder| {
-        let builder = builder.external_origin(Url::parse(APP_ORIGIN).expect("origin"));
-        if let Some(config) = csrf_config {
-            builder.csrf(config)
-        } else {
-            builder
-        }
+    let origin = Url::parse(APP_ORIGIN).expect("origin");
+    TestApp::start_with(Router::new(), false, move |builder| {
+        // The shared `TestApp` builder opts CSRF out by default; set an
+        // explicit config here so these tests drive the real check (enabled
+        // against `APP_ORIGIN` unless the caller overrides it).
+        let config = csrf_config.unwrap_or_else(|| CsrfConfig::new(origin.clone()));
+        builder.external_origin(origin.clone()).csrf(config)
     })
     .await
 }

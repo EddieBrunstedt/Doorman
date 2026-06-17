@@ -9,31 +9,33 @@
 //! `RecoveryManager` internally with sensible defaults, and returns a
 //! fully built [`AuthService`].
 //!
-//! Defaults applied when the host does not override them:
-//! - [`Clock`] → [`SystemClock`]
-//! - [`AuditSink`] → [`NoopAuditSink`]
-//! - [`RateLimiter`] → [`InMemoryRateLimiter`]
+//! The builder is strict by default: the only collaborator with a silent
+//! default is the [`Clock`] → [`SystemClock`]. Everything whose wrong choice
+//! is a security or delivery footgun must be wired explicitly, so the unsafe
+//! option is always a visible, greppable call rather than an implicit default
+//! the host has to be warned about. [`build`](AuthServiceBuilder::build)
+//! returns a [`BuilderError`] when a required input is missing:
 //!
-//! The [`EmailSender`] and [`PasskeyConfig`] have **no defaults**. Hosts
-//! must wire them explicitly via [`AuthServiceBuilder::email`] and
-//! [`AuthServiceBuilder::passkey`]; otherwise [`build`](AuthServiceBuilder::build)
-//! returns [`BuilderError::MissingEmailSender`] or
-//! [`BuilderError::MissingPasskeyConfig`]. First-party email transports:
-//! [`TerminalEmailSender`] (stdout) and [`FileEmailSender`] (`.eml`
-//! files on disk); both are intended for local development and trip
-//! a startup warning. Production hosts plug in their real transport
-//! (lettre, resend, SES, …) through the [`EmailSender`] trait. The same
-//! sender is also used for best-effort security notifications such as
-//! passkey-registration notices. We keep build-time errors rather than
-//! typestate because the required inputs are few and the simpler builder is
-//! easier to read.
+//! - [`EmailSender`] → [`BuilderError::MissingEmailSender`]
+//! - [`PasskeyConfig`] → [`BuilderError::MissingPasskeyConfig`]
+//! - [`AuditSink`] → [`BuilderError::MissingAuditSink`] (pass
+//!   [`NoopAuditSink`] explicitly to discard events)
+//! - [`RateLimiter`] → [`BuilderError::MissingRateLimiter`] (pass
+//!   [`InMemoryRateLimiter`], a shared backend, or `NoopRateLimiter`)
+//! - a CSRF decision → [`BuilderError::CsrfDecisionRequired`] unless
+//!   [`external_origin`](AuthServiceBuilder::external_origin) is set or CSRF
+//!   is explicitly configured
+//! - a real signup / recovery / account `url_template` → the stock
+//!   `example.invalid` placeholder is rejected with
+//!   [`BuilderError::PlaceholderUrlTemplate`]
 //!
-//! These defaults are fine for development but not for production.
-//! [`build`](AuthServiceBuilder::build) surfaces the mismatch via the
-//! [`warnings`](crate::warnings) module — hosts who have made an informed
-//! choice silence them with [`AuthServiceBuilder::silence_warnings`]. The
-//! host's responsibility is to wire real implementations through
-//! [`AuthServiceBuilder::clock`], [`audit`], etc.
+//! First-party email transports [`TerminalEmailSender`] (stdout) and
+//! [`FileEmailSender`] (`.eml` files on disk) are intended for local
+//! development; production hosts plug in their real transport (lettre,
+//! resend, SES, …) through the [`EmailSender`] trait. The same sender is also
+//! used for best-effort security notifications such as passkey-registration
+//! notices. We keep build-time errors rather than typestate because the
+//! required inputs are few and the simpler builder is easier to read.
 //!
 //! [`Clock`]: doorman_core::clock::Clock
 //! [`SystemClock`]: doorman_core::clock::SystemClock
@@ -45,19 +47,17 @@
 //! [`PasskeyConfig`]: doorman_core::passkey::PasskeyConfig
 //! [`TerminalEmailSender`]: doorman_core::email::TerminalEmailSender
 //! [`FileEmailSender`]: doorman_core::email::FileEmailSender
-//! [`audit`]: AuthServiceBuilder::audit
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use doorman_core::account::{AccountConfig, AccountManager};
-use doorman_core::audit::{AuditSink, NoopAuditSink};
+use doorman_core::audit::AuditSink;
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::context::CoreDeps;
 use doorman_core::email::{
     DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityEmailNotifier,
 };
-use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::metrics::{Metrics, NoopMetrics};
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::RateLimiter;
@@ -106,14 +106,27 @@ fn validate_url_template(flow: &'static str, template: &str) -> Result<(), Build
     }
 }
 
+/// Reject a `url_template` still pointing at the reserved `example.invalid`
+/// host — the stock default the host never replaced. The link would carry a
+/// valid token but resolve nowhere, so the build fails closed rather than
+/// emailing a dead link.
+fn reject_placeholder_url(flow: &'static str, template: &str) -> Result<(), BuilderError> {
+    if template.contains(PLACEHOLDER_URL_HOST) {
+        Err(BuilderError::PlaceholderUrlTemplate {
+            flow,
+            placeholder_host: PLACEHOLDER_URL_HOST,
+        })
+    } else {
+        Ok(())
+    }
+}
+
 use crate::AuthService;
 use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
 use crate::manager_builder::{BuilderError, ManagerBuilder};
-use crate::warnings::{
-    RateLimiterFlavor, Warnings, is_dev_email_transport, is_noop_audit, rate_limiter_flavor,
-};
+use crate::warnings::Warnings;
 
 /// High-level builder returned from [`AuthService::builder`].
 ///
@@ -191,10 +204,10 @@ impl AuthServiceBuilder {
         }
     }
 
-    /// Suppress the build-time configuration warnings. Use after you have
-    /// reviewed the warnings and made an informed choice — e.g. you are
-    /// intentionally running with the in-memory rate limiter in a
-    /// single-process deployment.
+    /// Suppress the remaining build-time configuration warning. Only the
+    /// partial email-branding check is still a warning (every other
+    /// misconfiguration is now a hard [`BuilderError`]); silence it after you
+    /// have reviewed it and made an informed choice.
     pub fn silence_warnings(mut self) -> Self {
         self.silence_warnings = true;
         self
@@ -208,10 +221,12 @@ impl AuthServiceBuilder {
         self
     }
 
-    /// Override the default [`NoopAuditSink`]. Wire a real sink in
-    /// production so security events are not silently dropped.
+    /// Wire the [`AuditSink`] security events are written to. Required —
+    /// [`build`](Self::build) returns [`BuilderError::MissingAuditSink`] when
+    /// not set. To discard events deliberately, pass
+    /// `Arc::new(NoopAuditSink)` explicitly.
     ///
-    /// [`NoopAuditSink`]: doorman_core::audit::NoopAuditSink
+    /// [`AuditSink`]: doorman_core::audit::AuditSink
     pub fn audit(mut self, audit: Arc<dyn AuditSink>) -> Self {
         self.audit = Some(audit);
         self
@@ -244,10 +259,13 @@ impl AuthServiceBuilder {
         self
     }
 
-    /// Override the default [`InMemoryRateLimiter`]. The in-memory limiter
-    /// is per-process; a multi-replica deployment should swap in a shared
-    /// backend.
+    /// Wire the [`RateLimiter`] enforcing per-flow budgets. Required —
+    /// [`build`](Self::build) returns [`BuilderError::MissingRateLimiter`]
+    /// when not set. The bundled [`InMemoryRateLimiter`] is per-process (fine
+    /// single-process; a multi-replica deployment should swap in a shared
+    /// backend); pass `NoopRateLimiter` to disable enforcement deliberately.
     ///
+    /// [`RateLimiter`]: doorman_core::rate_limit::RateLimiter
     /// [`InMemoryRateLimiter`]: doorman_core::memory::InMemoryRateLimiter
     pub fn limiter(mut self, limiter: Arc<dyn RateLimiter>) -> Self {
         self.rate_limiter = Some(limiter);
@@ -284,9 +302,12 @@ impl AuthServiceBuilder {
         self
     }
 
-    /// Override the CSRF origin-check behaviour. By default, CSRF checks
-    /// are enabled when [`external_origin`](Self::external_origin) is set
-    /// and disabled otherwise.
+    /// Set the CSRF origin-check behaviour explicitly. Setting
+    /// [`external_origin`](Self::external_origin) already enables checks; call
+    /// this with [`CsrfConfig::disabled`](crate::csrf::CsrfConfig::disabled)
+    /// to opt out deliberately. With neither an origin nor an explicit config,
+    /// [`build`](Self::build) returns [`BuilderError::CsrfDecisionRequired`]
+    /// rather than silently leaving the check off.
     pub fn csrf(mut self, config: CsrfConfig) -> Self {
         self.csrf_config = Some(config);
         self
@@ -328,7 +349,8 @@ impl AuthServiceBuilder {
     }
 
     /// Absolute public origin clients use to reach the auth routes.
-    /// Supplying an origin enables CSRF origin checks by default.
+    /// Supplying an origin enables CSRF origin checks and satisfies the
+    /// required CSRF decision (see [`csrf`](Self::csrf)).
     pub fn external_origin(mut self, origin: Url) -> Self {
         self.external_origin = Some(origin);
         self
@@ -337,32 +359,21 @@ impl AuthServiceBuilder {
     /// Construct the managers and return a wired-up [`AuthService`].
     pub fn build(self) -> Result<AuthService, BuilderError> {
         let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock));
-        let audit: Arc<dyn AuditSink> = self.audit.unwrap_or_else(|| Arc::new(NoopAuditSink));
         let email: Arc<dyn EmailSender> = self.email.ok_or(BuilderError::MissingEmailSender)?;
         let passkey_config = self.passkey.ok_or(BuilderError::MissingPasskeyConfig)?;
-        let limiter: Arc<dyn RateLimiter> = self
-            .rate_limiter
-            .unwrap_or_else(|| Arc::new(InMemoryRateLimiter::new(clock.clone())));
+        let audit: Arc<dyn AuditSink> = self.audit.ok_or(BuilderError::MissingAuditSink)?;
+        let limiter: Arc<dyn RateLimiter> =
+            self.rate_limiter.ok_or(BuilderError::MissingRateLimiter)?;
         let metrics: Arc<dyn Metrics> = self
             .metrics
             .unwrap_or_else(|| Arc::new(NoopMetrics) as Arc<dyn Metrics>);
         let session_config = self.session_config.unwrap_or_default();
 
-        // The collaborator traits expose no diagnostic methods; the bundled
-        // dev/noop defaults are recognised here by downcasting the raw
-        // `Arc<dyn …>` the host supplied (see `crate::warnings`).
+        // The only remaining startup warning covers partial email branding;
+        // every other misconfiguration is now a hard build error (a missing
+        // required collaborator, a placeholder URL, or an undecided CSRF
+        // posture) rather than a silenceable warning.
         let mut warnings = Warnings::default();
-        if is_noop_audit(audit.as_ref()) {
-            warnings.noop_audit = true;
-        }
-        match rate_limiter_flavor(limiter.as_ref()) {
-            RateLimiterFlavor::Noop => warnings.noop_rate_limiter = true,
-            RateLimiterFlavor::InMemory => warnings.in_memory_rate_limiter = true,
-            RateLimiterFlavor::Custom => {}
-        }
-        if is_dev_email_transport(email.as_ref()) {
-            warnings.dev_email_transport = true;
-        }
 
         // Resolve the one renderer that brands every flow. A renderer set on
         // a specific config still wins for that flow; the shared `.emails(..)`
@@ -381,25 +392,21 @@ impl AuthServiceBuilder {
         }
 
         // Fail closed on every misconfigured value before constructing any
-        // manager: a template that drops the token, a zero/absurd lifetime
-        // (which would otherwise panic when converted to chrono), or a
-        // cookie that outlives its session. A template left at the stock
-        // example.invalid host is a loud warning rather than an error — the
-        // link is structurally valid, it just points at a domain the host
-        // does not own.
+        // manager: a template that drops the token, a template still pointing
+        // at the stock example.invalid host (a valid link to a domain the host
+        // does not own — effectively dead), a zero/absurd lifetime (which would
+        // otherwise panic when converted to chrono), or a cookie that outlives
+        // its session.
         validate_url_template("signup", &signup_config.url_template)?;
         validate_url_template("recovery", &recovery_config.url_template)?;
         validate_url_template("account email change", &account_config.url_template)?;
+        reject_placeholder_url("signup", &signup_config.url_template)?;
+        reject_placeholder_url("recovery", &recovery_config.url_template)?;
+        reject_placeholder_url("account email change", &account_config.url_template)?;
         validate_lifetime("session lifetime", session_config.lifetime)?;
         validate_lifetime("signup token_lifetime", signup_config.token_lifetime)?;
         validate_lifetime("recovery token_lifetime", recovery_config.token_lifetime)?;
         validate_lifetime("account token_lifetime", account_config.token_lifetime)?;
-        if signup_config.url_template.contains(PLACEHOLDER_URL_HOST)
-            || recovery_config.url_template.contains(PLACEHOLDER_URL_HOST)
-            || account_config.url_template.contains(PLACEHOLDER_URL_HOST)
-        {
-            warnings.placeholder_url_template = true;
-        }
 
         let cookie_config = self.cookie_config.unwrap_or_default();
         if cookie_config.session_max_age > session_config.lifetime {

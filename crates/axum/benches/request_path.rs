@@ -28,15 +28,21 @@ use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use doorman_axum::AuthService;
 use doorman_axum::SessionCache;
 use doorman_axum::config::CookieConfig;
+use doorman_axum::csrf::CsrfConfig;
 use doorman_axum::dto::UserDto;
 use doorman_axum::extractors::AuthSession;
+use doorman_core::account::AccountConfig;
+use doorman_core::audit::NoopAuditSink;
+use doorman_core::clock::SystemClock;
 use doorman_core::email::EmailSender;
 use doorman_core::memory::{
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
-    InMemoryUserStore, InMemoryVerificationTokenStore,
+    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemoryRateLimiter,
+    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use doorman_core::passkey::PasskeyConfig;
+use doorman_core::recovery::RecoveryConfig;
 use doorman_core::session::{SessionContext, SessionManager};
+use doorman_core::signup::SignupConfig;
 use doorman_core::storage::{PasskeyCredentialStore, Storage, User, UserId, UserStore};
 use doorman_test_support::CapturingEmailSender;
 use tokio::runtime::Runtime;
@@ -72,11 +78,25 @@ async fn build_scaffold() -> Scaffold {
     let auth = AuthService::builder(storage)
         .email(email as Arc<dyn EmailSender>)
         .passkey(PasskeyConfig::new("localhost", rp_origin, "doorman bench"))
+        .audit(Arc::new(NoopAuditSink))
+        .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
+        .signup(SignupConfig {
+            url_template: "https://app.test/signup?token={token}".to_string(),
+            ..SignupConfig::default()
+        })
+        .recovery(RecoveryConfig {
+            url_template: "https://app.test/recovery?token={token}".to_string(),
+            ..RecoveryConfig::default()
+        })
+        .account(AccountConfig {
+            url_template: "https://app.test/email-change?token={token}".to_string(),
+            ..AccountConfig::default()
+        })
+        .csrf(CsrfConfig::disabled())
         .cookie(CookieConfig {
             secure: false,
             ..CookieConfig::default()
         })
-        .silence_warnings()
         .build()
         .expect("auth built");
 

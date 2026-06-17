@@ -21,6 +21,7 @@ use doorman_axum::dto::{
     RegistrationFinishRequest, SignupConsumeRequest, SignupRequest,
 };
 use doorman_axum::prelude::*;
+use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::verification::TOKEN_PLACEHOLDER;
 use doorman_sqlx::SqliteStorage;
 use doorman_test_support::CapturingEmailSender;
@@ -45,12 +46,18 @@ async fn readme_quickstart_snippet_compiles() -> std::result::Result<(), Box<dyn
     let auth = AuthService::builder(storage.all_stores())
         .email(Arc::new(TerminalEmailSender))
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
+        .audit(Arc::new(NoopAuditSink))
+        .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
         .signup(SignupConfig {
             url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"),
             ..Default::default()
         })
         .recovery(RecoveryConfig {
             url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"),
+            ..Default::default()
+        })
+        .account(AccountConfig {
+            url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"),
             ..Default::default()
         })
         .external_origin(origin)
@@ -90,6 +97,8 @@ async fn readme_quickstart_drives_signup_login_recovery() {
     let auth = AuthService::builder(storage.all_stores())
         .email(email.clone() as Arc<dyn doorman_core::email::EmailSender>)
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
+        .audit(Arc::new(NoopAuditSink))
+        .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
         .signup(SignupConfig {
             url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"),
             ..Default::default()
@@ -98,9 +107,12 @@ async fn readme_quickstart_drives_signup_login_recovery() {
             url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"),
             ..Default::default()
         })
+        .account(AccountConfig {
+            url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"),
+            ..Default::default()
+        })
         .external_origin(origin.clone())
         .cookie(CookieConfig::default())
-        .silence_warnings()
         .build()
         .expect("auth built");
 

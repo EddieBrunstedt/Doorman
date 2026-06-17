@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use doorman::core::memory::InMemoryRateLimiter;
 use doorman::core::verification::TOKEN_PLACEHOLDER;
 use doorman::prelude::*;
 use url::Url;
@@ -23,12 +24,18 @@ async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn 
     let auth = AuthService::builder(storage.all_stores())
         .email(Arc::new(TerminalEmailSender))
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
+        .audit(Arc::new(NoopAuditSink))
+        .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
         .signup(SignupConfig {
             url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"),
             ..Default::default()
         })
         .recovery(RecoveryConfig {
             url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"),
+            ..Default::default()
+        })
+        .account(AccountConfig {
+            url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"),
             ..Default::default()
         })
         .external_origin(origin)

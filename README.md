@@ -57,6 +57,8 @@ let base = origin.as_str().trim_end_matches('/');
 let auth = AuthService::builder(storage.all_stores())
     .email(Arc::new(TerminalEmailSender))                       // dev transport; swap for production
     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
+    .audit(Arc::new(NoopAuditSink))                             // discards events; wire a durable sink in prod
+    .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock)))) // per-process; share a backend across replicas
     .signup(SignupConfig {
         url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"),
         ..Default::default()
@@ -65,7 +67,11 @@ let auth = AuthService::builder(storage.all_stores())
         url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"),
         ..Default::default()
     })
-    .external_origin(origin)
+    .account(AccountConfig {
+        url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"),
+        ..Default::default()
+    })
+    .external_origin(origin)        // enables CSRF origin checks; required CSRF decision
     .cookie(CookieConfig::default())
     .build()?;
 
@@ -138,7 +144,7 @@ Encourage every user to register at least two passkeys — for example a platfor
 - **Passkey-bound post-recovery cool-down** for destructive account actions.
 - **Security-notification emails** for recovery, passkey add/remove, email change, and high-risk session revocations.
 - **CSRF origin checks** for cookie-authenticated state-changing requests.
-- **Pluggable collaborators** — audit sink, rate limiter, metrics, clock, and email renderer — each with a sensible development default and a startup warning when a placeholder is left in place.
+- **Pluggable collaborators** — audit sink, rate limiter, metrics, clock, and email renderer — wired explicitly at build time, so the development-only choices are visible in the code rather than silent defaults.
 - **A session-resolution cache** so the hot authenticated-request path doesn't hit storage every time.
 
 ## Storage backends
@@ -171,12 +177,13 @@ To support a database doorman doesn't ship, implement the five traits yourself. 
 
 ## Going to production
 
-`AuthService::builder().build()` emits startup warnings whenever a development placeholder is still wired in. Review them and make each choice explicitly:
+`AuthService::builder().build()` is strict by default: there is no silent insecure default, so every footgun is a choice you make explicitly at the call site rather than a warning you have to remember to act on. The build fails closed (returns a `BuilderError`) until each of these is wired:
 
-- **Email** — replace `TerminalEmailSender` / `FileEmailSender` with a real `EmailSender`. doorman uses it for both the link emails and the security notifications.
-- **Audit** — wire a durable `AuditSink`; the default `NoopAuditSink` discards security events.
-- **Rate limiting** — wire a shared `RateLimiter` (e.g. the Redis one); `InMemoryRateLimiter` is per-process and `NoopRateLimiter` disables enforcement.
-- **Origin & CSRF** — set `external_origin` to the exact public origin and keep the default CSRF layer enabled for browser cookie flows.
+- **Email** — required. Use `TerminalEmailSender` / `FileEmailSender` for local development, or a real `EmailSender` in production (used for both the link emails and the security notifications).
+- **Audit** — required. Wire a durable `AuditSink`, or pass `NoopAuditSink` explicitly to discard security events.
+- **Rate limiting** — required. Wire a shared `RateLimiter` (e.g. the Redis one) for multi-replica deployments, the per-process `InMemoryRateLimiter` for a single process, or `NoopRateLimiter` to disable enforcement deliberately.
+- **Origin & CSRF** — required decision. Set `external_origin` to the exact public origin (which enables the CSRF origin checks for browser cookie flows), or opt out explicitly with `CsrfConfig::disabled()`.
+- **URL templates** — required. The stock `example.invalid` signup / recovery / account templates are rejected; set real ones that carry the `{token}` placeholder.
 - **Cookies** — keep `secure`, `HttpOnly`, `SameSite` session cookies anywhere but local HTTP development.
 - **Maintenance** — run storage migrations and periodically purge expired sessions, verification tokens, and passkey challenges.
 - **Monitoring** — watch recovery requests/completions, passkey add/remove events, high-risk session revocations, and failed WebAuthn ceremonies. Optionally wire a `Metrics` implementation.
