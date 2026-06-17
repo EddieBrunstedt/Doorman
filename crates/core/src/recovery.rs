@@ -36,7 +36,7 @@ use crate::rate_limit::RateLimitPolicy;
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, VerificationPurpose};
 use crate::verification::{
-    self, EnrollmentFlow, EnrollmentOutcome, FlowKind, TOKEN_PLACEHOLDER,
+    self, EnrollmentFlow, EnrollmentOutcome, FlowKind, RecoveryFinish, TOKEN_PLACEHOLDER,
     VerificationConsumeOutcome,
 };
 
@@ -392,11 +392,13 @@ impl RecoveryManager {
                 response,
                 name,
                 context,
-                Some(self.config.cooldown),
-                Some(&|user| {
-                    self.flow
-                        .emails()
-                        .recovery_completed_notification_email(user)
+                Some(RecoveryFinish {
+                    cooldown: self.config.cooldown,
+                    notification: &|user| {
+                        self.flow
+                            .emails()
+                            .recovery_completed_notification_email(user)
+                    },
                 }),
             )
             .await

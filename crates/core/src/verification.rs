@@ -220,6 +220,18 @@ impl FlowKind {
     }
 }
 
+/// Recovery-only extras for [`EnrollmentFlow::finish`]. The two always
+/// travel together — recovery supplies both, signup supplies neither — so
+/// they are bundled into one `Option` rather than two independent ones,
+/// making "cooldown without notification" unrepresentable. `cooldown` is
+/// the post-recovery deadline stamped onto both the new passkey and the new
+/// session; `notification` renders the recovery-completed email sent
+/// best-effort once enrollment succeeds.
+pub(crate) struct RecoveryFinish<'a> {
+    pub cooldown: std::time::Duration,
+    pub notification: &'a (dyn Fn(&User) -> Email + Send + Sync),
+}
+
 /// Shared dependencies and consume/finish skeleton behind the signup and
 /// recovery managers. Both managers hold one of these and delegate to it,
 /// passing an internal flow-kind selector plus the per-flow knobs
@@ -412,11 +424,10 @@ impl EnrollmentFlow {
     }
 
     /// Finish a passkey registration ceremony and issue a session. When
-    /// `cooldown` is set the new passkey and session share the same
-    /// post-recovery cool-down deadline; when `notification` is set the
-    /// rendered email is sent best-effort once the new passkey is enrolled.
-    /// Both flows audit `LoginSucceeded`.
-    #[allow(clippy::too_many_arguments)]
+    /// `recovery` is set the new passkey and session share the same
+    /// post-recovery cool-down deadline and the recovery-completed email is
+    /// sent best-effort once the new passkey is enrolled. Both flows audit
+    /// `LoginSucceeded`.
     pub(crate) async fn finish(
         &self,
         kind: FlowKind,
@@ -424,16 +435,15 @@ impl EnrollmentFlow {
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
         context: SessionContext,
-        cooldown: Option<std::time::Duration>,
-        notification: Option<&(dyn Fn(&User) -> Email + Send + Sync)>,
+        recovery: Option<RecoveryFinish<'_>>,
     ) -> Result<EnrollmentOutcome> {
         // The deadline is bound explicitly to the recovery-completion instant
         // (`now + cooldown`) and is the single value applied to both the new
         // passkey and the new session, so the two never disagree and the
         // deadline is never re-derived from a credential/session `created_at`
         // later on.
-        let cooldown_until = cooldown.map(|cooldown| {
-            let cooldown = chrono::Duration::from_std(cooldown)
+        let cooldown_until = recovery.as_ref().map(|recovery| {
+            let cooldown = chrono::Duration::from_std(recovery.cooldown)
                 .expect("recovery cooldown overflows chrono::Duration; configure a smaller value");
             self.passkey.clock().now() + cooldown
         });
@@ -475,10 +485,11 @@ impl EnrollmentFlow {
                 .await?;
         }
 
-        if let Some(render) = notification {
+        if let Some(recovery) = recovery {
             // Best-effort — a notification-send failure is logged but does
             // not roll back the enrollment (the passkey is already stored).
-            self.send_best_effort(render(&user), kind.label()).await;
+            self.send_best_effort((recovery.notification)(&user), kind.label())
+                .await;
         }
 
         self.emit(

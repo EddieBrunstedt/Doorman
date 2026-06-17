@@ -272,7 +272,6 @@ impl SignupManager {
                 name,
                 context,
                 None,
-                None,
             )
             .await
     }
