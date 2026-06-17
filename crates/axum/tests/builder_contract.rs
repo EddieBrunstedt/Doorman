@@ -378,7 +378,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
     // Build every core manager from one shared `CoreDeps` and hand them to
     // the low-level `from_managers` builder. Asserts the path builds and,
     // crucially, that the `EnrollmentFlow` reaches its email transport
-    // through the shared context (it no longer holds its own copy): a signup
+    // through the shared context rather than a copy of its own: a signup
     // request must enqueue a link email on the sender that lives in `deps`.
     let storage = fresh_storage();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);

@@ -279,9 +279,8 @@ impl SignupClient {
         let challenge: PasskeyChallenge<CreationChallengeResponse> =
             consume.json().await.expect("consume body");
 
-        // Relax the resident-key flags so SoftPasskey accepts the ceremony.
-        // doorman's server still emitted resident=required earlier; we
-        // verified that elsewhere.
+        // Relax the resident-key flags so SoftPasskey accepts the ceremony;
+        // it rejects a required resident key during registration.
         let mut options = challenge.options;
         let selection = options
             .public_key

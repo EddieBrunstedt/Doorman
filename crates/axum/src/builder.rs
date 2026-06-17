@@ -358,8 +358,8 @@ impl AuthServiceBuilder {
 
         // One renderer brands every flow and every notice. The host wires it
         // with `.emails(..)`; left unset it falls back to the stock copy.
-        // There is no per-flow override, so partial branding (and the warning
-        // it used to need) is structurally impossible.
+        // There is no per-flow override, so partial branding is structurally
+        // impossible.
         let emails: Arc<dyn EmailTemplates> = self
             .emails
             .unwrap_or_else(|| Arc::new(DefaultEmailTemplates));
