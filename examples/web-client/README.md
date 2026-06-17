@@ -24,6 +24,9 @@ Customise it by editing `ERROR_GUIDANCE` (wording, tone, localisation) or by rea
 - `registerPasskey(name?)` → add a passkey for the current session. If the current session is in recovery cool-down, the new passkey inherits that deadline
 - `listPasskeys()` / `deletePasskey(id)`
 - `listSessions()` / `revokeSession(id)` / `revokeOtherSessions()`
+- `logout()` → end the current session; `logoutEverywhere()` → end every session for the user. Neither is gated by the recovery cool-down
+- `requestEmailChange(newEmail)` → start a verified email change (link mailed to the new address); `confirmEmailChange(token)` → redeem the token and receive the updated `UserDto`. Both are blocked during the cool-down at the request step
+- `deleteAccount()` → irreversibly delete the current account; blocked during the cool-down
 
 ## Endpoint shape
 
@@ -44,7 +47,12 @@ Customise it by editing `ERROR_GUIDANCE` (wording, tone, localisation) or by rea
 | GET    | `/auth/sessions`                    | authenticated                       | `SessionDto[]`                                             |
 | DELETE | `/auth/sessions/{id}`               | authenticated                       | `204` or `409 recovery_cooldown_active` for other sessions |
 | DELETE | `/auth/sessions`                    | authenticated                       | `204` or `409 recovery_cooldown_active`                    |
+| POST   | `/auth/logout`                      | authenticated                       | `204`, clears the cookie                                   |
+| POST   | `/auth/logout-all`                  | authenticated                       | `204`, clears the cookie                                   |
+| POST   | `/auth/account/email`               | `{ new_email }`, authenticated      | `204` or `409 recovery_cooldown_active`                    |
+| POST   | `/auth/account/email/confirm`       | `{ token }`                         | `UserDto`                                                  |
+| DELETE | `/auth/account`                     | authenticated                       | `204` or `409 recovery_cooldown_active`, clears the cookie |
 
-Recovery links only start passkey registration; no session is issued until `/auth/recovery/finish` succeeds. During recovery cool-down, deleting passkeys, revoking other sessions, and `DELETE /auth/sessions` are blocked; adding passkeys and revoking/logging out of the current session remain allowed. Signing in with a recovery-created or inherited passkey before its cool-down deadline returns another restricted `AuthResponse`.
+Recovery links only start passkey registration; no session is issued until `/auth/recovery/finish` succeeds. During recovery cool-down, deleting passkeys, revoking other sessions, `DELETE /auth/sessions`, changing the account email, and deleting the account are blocked; adding passkeys and logging out (`/auth/logout`, `/auth/logout-all`, or revoking the current session) remain allowed. Signing in with a recovery-created or inherited passkey before its cool-down deadline returns another restricted `AuthResponse`.
 
 `index.html` wires the helpers to a minimal page. The bundled `examples/minimal-app` contains a fuller no-build static client that shows signup, sign-in, recovery, passkeys, and sessions against a live Axum app.

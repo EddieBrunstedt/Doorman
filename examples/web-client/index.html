@@ -49,6 +49,19 @@
       <h2 id="sessions-h">Sessions</h2>
       <button id="list-sessions">List sessions</button>
       <button id="revoke-others">Sign out everywhere else</button>
+      <button id="logout">Sign out (this session)</button>
+      <button id="logout-all">Sign out everywhere</button>
+    </section>
+
+    <section aria-labelledby="account-h">
+      <h2 id="account-h">Account</h2>
+      <label for="new-email">New email</label>
+      <input id="new-email" type="email" value="bob@example.com" autocomplete="email" />
+      <button id="request-email-change">Request email change</button>
+      <label for="email-change-token">Email-change token from email</label>
+      <input id="email-change-token" placeholder="token from email" />
+      <button id="confirm-email-change">Confirm email change</button>
+      <button id="delete-account">Delete account</button>
     </section>
 
     <p id="error" role="alert" aria-live="assertive"></p>
@@ -57,11 +70,16 @@
     <script type="module">
       import {
         authenticatePasskey,
+        confirmEmailChange,
+        deleteAccount,
         finishRecovery,
         finishSignup,
         listPasskeys,
         listSessions,
+        logout,
+        logoutEverywhere,
         registerPasskey,
+        requestEmailChange,
         requestRecovery,
         requestSignup,
         revokeOtherSessions,
@@ -101,6 +119,23 @@
       document.getElementById("revoke-others").addEventListener("click", run("revoke others", async () => {
         await revokeOtherSessions();
         return "revoked other sessions";
+      }));
+      document.getElementById("logout").addEventListener("click", run("logout", async () => {
+        await logout();
+        return "signed out of this session";
+      }));
+      document.getElementById("logout-all").addEventListener("click", run("logout all", async () => {
+        await logoutEverywhere();
+        return "signed out everywhere";
+      }));
+      document.getElementById("request-email-change").addEventListener("click", run("email change request", async () => {
+        await requestEmailChange(value("new-email"));
+        return "email-change confirmation requested";
+      }));
+      document.getElementById("confirm-email-change").addEventListener("click", run("email change confirm", () => confirmEmailChange(value("email-change-token"))));
+      document.getElementById("delete-account").addEventListener("click", run("delete account", async () => {
+        await deleteAccount();
+        return "account deleted";
       }));
     </script>
   </body>

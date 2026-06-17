@@ -286,3 +286,32 @@ export async function revokeSession(id: string): Promise<void> {
 export async function revokeOtherSessions(): Promise<void> {
   await deleteJson("/auth/sessions");
 }
+
+// End the current session server-side; the server also clears the cookie.
+export async function logout(): Promise<void> {
+  await postJson<void>("/auth/logout");
+}
+
+// Revoke every session for the user, including this one.
+export async function logoutEverywhere(): Promise<void> {
+  await postJson<void>("/auth/logout-all");
+}
+
+// Start a verified email change. Mails a confirmation link to the new address;
+// the account email does not change until `confirmEmailChange` redeems the
+// token. Blocked during the recovery cool-down.
+export async function requestEmailChange(newEmail: string): Promise<void> {
+  await postJson<void>("/auth/account/email", { new_email: newEmail });
+}
+
+// Redeem the token from the new address's link. No session required — the
+// single-use token authorises the change. Returns the updated user.
+export async function confirmEmailChange(token: string): Promise<UserDto> {
+  return postJson<UserDto>("/auth/account/email/confirm", { token });
+}
+
+// Irreversibly delete the current account and everything tied to it; the
+// server also clears the cookie. Blocked during the recovery cool-down.
+export async function deleteAccount(): Promise<void> {
+  await deleteJson("/auth/account");
+}

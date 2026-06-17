@@ -9,7 +9,8 @@ It demonstrates:
 - recovery by email link followed by forced new-passkey registration before any session is issued;
 - the passkey-bound post-recovery cool-down UX (`409 recovery_cooldown_active` on blocked actions);
 - passkey listing, adding, and deletion;
-- session listing, current-session logout, and "sign out everywhere else";
+- session listing, current-session logout, "sign out everywhere", and "sign out everywhere else";
+- verified email change (confirmation link consumed from the `email_change_token` query param) and irreversible account deletion, both gated by the recovery cool-down;
 - a `/api/me` host route that includes `passkey_count` and recovery cool-down state.
 
 ## Run

@@ -67,7 +67,23 @@
       <h2 id="sessions-h">Your sessions</h2>
       <button id="refresh">Refresh</button>
       <button id="revoke-others">Sign out everywhere else</button>
+      <button id="logout">Sign out (this session)</button>
+      <button id="logout-all">Sign out everywhere</button>
       <ul id="sessions" aria-label="Active sessions"><li class="muted">Sign in to list sessions.</li></ul>
+    </section>
+
+    <section aria-labelledby="account-h">
+      <h2 id="account-h">Account</h2>
+      <form id="email-change" aria-labelledby="email-change-h">
+        <h3 id="email-change-h">Change email</h3>
+        <label for="new-email">New email</label>
+        <input id="new-email" name="new_email" type="email" placeholder="new@example.com" autocomplete="email" required />
+        <button>Send confirmation link</button>
+        <p class="muted">A confirmation link is printed to the server terminal for the new address; open it to apply the change. Blocked during the recovery cool-down.</p>
+      </form>
+      <h3>Delete account</h3>
+      <button id="delete-account">Delete this account</button>
+      <p class="muted">Irreversibly deletes the account and every passkey and session. Blocked during the recovery cool-down.</p>
     </section>
 
     <section aria-labelledby="log-h">
@@ -213,7 +229,7 @@
           const me = await api("/api/me");
           statusEl.className = me.recovery_cooldown_active ? "cooldown" : "";
           statusEl.innerHTML = `<h2>Signed in</h2><p>${escapeHtml(me.user.email)} · ${me.user.passkey_count} passkey(s)</p>` +
-            (me.recovery_cooldown_active ? `<p><strong>Recovery cool-down active.</strong> Deleting passkeys, revoking other sessions, and signing out everywhere else will return <code>409 recovery_cooldown_active</code>. Adding passkeys and signing out of this session are still allowed; new passkeys inherit the cool-down.</p>` : `<p>No recovery cool-down on this session.</p>`);
+            (me.recovery_cooldown_active ? `<p><strong>Recovery cool-down active.</strong> Deleting passkeys, revoking other sessions, changing the account email, and deleting the account will return <code>409 recovery_cooldown_active</code>. Adding passkeys and signing out (this session or everywhere) are still allowed; new passkeys inherit the cool-down.</p>` : `<p>No recovery cool-down on this session.</p>`);
 
           const passkeys = await api("/auth/passkey");
           passkeysEl.innerHTML = passkeys.length ? passkeys.map((p) => { const label = escapeHtml(p.name || "unnamed"); return `<li><strong>${label}</strong> <code>${p.credential_id}</code> last used ${escapeHtml(p.last_used_at || "never")} <button data-delete-passkey="${p.credential_id}" aria-label="Delete passkey ${label}">Delete</button></li>`; }).join("") : `<li>No passkeys registered.</li>`;
@@ -244,6 +260,21 @@
       document.querySelector("#revoke-others").addEventListener("click", async () => {
         try { await api("/auth/sessions", "DELETE"); log("Revoked other sessions."); await refresh(); } catch (err) { fail(err); }
       });
+      document.querySelector("#logout").addEventListener("click", async () => {
+        try { await api("/auth/logout", "POST"); log("Signed out of this session."); await refresh(); } catch (err) { fail(err); }
+      });
+      document.querySelector("#logout-all").addEventListener("click", async () => {
+        try { await api("/auth/logout-all", "POST"); log("Signed out everywhere."); await refresh(); } catch (err) { fail(err); }
+      });
+      document.querySelector("#email-change").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const newEmail = new FormData(event.currentTarget).get("new_email");
+        try { await api("/auth/account/email", "POST", { new_email: newEmail }); log("Email-change confirmation queued. Open the link printed in the server terminal for the new address."); } catch (err) { fail(err); }
+      });
+      document.querySelector("#delete-account").addEventListener("click", async () => {
+        if (!window.confirm("Permanently delete this account, including all passkeys and sessions?")) return;
+        try { await api("/auth/account", "DELETE"); log("Account deleted."); await refresh(); } catch (err) { fail(err); }
+      });
       passkeysEl.addEventListener("click", async (event) => {
         const id = event.target?.dataset?.deletePasskey;
         if (!id) return;
@@ -258,9 +289,16 @@
       const params = new URLSearchParams(window.location.search);
       const signupToken = params.get("signup_token");
       const recoveryToken = params.get("recovery_token");
+      const emailChangeToken = params.get("email_change_token");
       if (signupToken || recoveryToken) {
         finishEmailFlow(signupToken ? "signup" : "recovery", signupToken || recoveryToken)
           .then(() => history.replaceState(null, "", "/"))
+          .catch(fail);
+      } else if (emailChangeToken) {
+        // Confirming the new address needs no session: the single-use token is
+        // the authorisation. Returns the updated user.
+        api("/auth/account/email/confirm", "POST", { token: emailChangeToken })
+          .then((user) => { log(user); history.replaceState(null, "", "/"); return refresh(); })
           .catch(fail);
       }
       refresh();
