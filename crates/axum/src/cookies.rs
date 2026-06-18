@@ -173,6 +173,13 @@ mod tests {
         }
     }
 
+    fn secure_cfg() -> CookieConfig {
+        CookieConfig {
+            secure: true,
+            ..CookieConfig::default()
+        }
+    }
+
     #[test]
     fn session_cookie_has_expected_attributes() {
         let value = session_cookie(&cfg(), "tok");
@@ -182,6 +189,20 @@ mod tests {
         assert!(s.contains("Path=/"));
         assert!(s.contains("SameSite=Lax"));
         assert!(s.contains("Max-Age="));
+        // `secure: false` must not emit the `Secure` attribute, so the flag is
+        // genuinely driven by config rather than always-on.
+        assert!(!s.contains("Secure"));
+    }
+
+    #[test]
+    fn session_cookie_is_secure_when_configured() {
+        let value = session_cookie(&secure_cfg(), "tok");
+        let s = value.to_str().expect("ascii header value");
+        assert!(s.contains("doorman_session=tok"));
+        assert!(s.contains("Secure"));
+        assert!(s.contains("HttpOnly"));
+        assert!(s.contains("Path=/"));
+        assert!(s.contains("SameSite=Lax"));
     }
 
     #[test]
@@ -190,6 +211,16 @@ mod tests {
         let s = value.to_str().expect("ascii header value");
         assert!(s.contains("doorman_session="));
         assert!(s.contains("Max-Age=0"));
+    }
+
+    #[test]
+    fn clear_session_cookie_is_secure_when_configured() {
+        let value = clear_session_cookie(&secure_cfg());
+        let s = value.to_str().expect("ascii header value");
+        assert!(s.contains("doorman_session="));
+        assert!(s.contains("Max-Age=0"));
+        assert!(s.contains("Secure"));
+        assert!(s.contains("HttpOnly"));
     }
 
     #[test]
