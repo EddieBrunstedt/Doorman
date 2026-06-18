@@ -99,4 +99,10 @@ impl PasskeyCredentialStore for MongoPasskeyCredentialStore {
         self.coll.delete_one(filter).await.map_err(err)?;
         Ok(())
     }
+
+    async fn delete_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        let filter = doc! { "user_id": user_id.0.to_string() };
+        let result = self.coll.delete_many(filter).await.map_err(err)?;
+        Ok(result.deleted_count)
+    }
 }
