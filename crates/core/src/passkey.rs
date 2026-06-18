@@ -813,6 +813,11 @@ impl PasskeyManager {
     /// Refused with [`Error::RecoveryCooldownActive`] while `session` is
     /// inside its post-recovery cool-down window: a phished recovery session
     /// must not be able to strip the legitimate owner's remaining passkeys.
+    ///
+    /// Outside the cool-down this may remove the user's *last* credential.
+    /// That is intentional: the email-based recovery flow is the designed
+    /// backstop for the "lost every passkey" case, so self-service removal
+    /// does not special-case the final credential.
     #[tracing::instrument(skip(self, session, credential_id, context), fields(user_id = %session.user_id))]
     pub async fn remove_passkey(
         &self,

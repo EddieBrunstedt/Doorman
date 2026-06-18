@@ -42,6 +42,7 @@ doorman cannot defend against:
 - Passkeys registered by recovery, or from a session still in recovery cool-down, store the active `recovery_cooldown_until` deadline.
 - Authenticating with a cool-down-bound passkey before that deadline issues a restricted session; after the deadline the same passkey is treated as unrestricted with no cleanup job. Pre-existing passkeys remain unrestricted.
 - Passkey credential IDs are checked against the authenticated user before deletion, so one account cannot remove another account's credential by guessing an ID.
+- Outside a recovery cool-down, self-service removal may delete a user's **last** passkey. This is intentional: account recovery is the designed backstop for the "lost every passkey" case, so doorman does not block removing the final credential.
 
 ## Signup
 

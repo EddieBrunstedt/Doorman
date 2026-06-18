@@ -5,6 +5,11 @@
 //! `doorman-sqlx`, configure the passkey relying party and email transport,
 //! and mount the returned [`AuthService`] on their application router.
 //!
+//! The builder is strict by default: the audit sink, rate limiter, and a
+//! CSRF decision are all required, so the unsafe option is always explicit.
+//! This single-process example wires a no-op audit sink and the per-process
+//! in-memory limiter on purpose.
+//!
 //! ```ignore
 //! use std::sync::Arc;
 //!
@@ -17,11 +22,6 @@
 //!
 //! let origin = "https://app.example.com".parse()?;
 //! let base = origin.as_str().trim_end_matches('/');
-//! The builder is strict by default: the audit sink, rate limiter, and a
-//! CSRF decision are all required, so the unsafe option is always explicit.
-//! This single-process example wires a no-op audit sink and the per-process
-//! in-memory limiter on purpose.
-//!
 //! let auth = AuthService::builder(storage.all_stores())
 //!     .email(Arc::new(TerminalEmailSender))
 //!     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))

@@ -17,7 +17,7 @@ Browser                         doorman router                    Email
    |                                 |  store single-use token     |
    |                                 |  (purpose = Signup)         |
    |                                 |--- send signup link ------->|
-   |   202 (same response whether    |                             |
+   |   204 (same response whether    |                             |
    |<-- address is new or known) ----|                             |
    |                                 |                             |
    |  user opens link, posts token   |                             |
@@ -87,7 +87,7 @@ Browser                         doorman router                    Email
    |                                 |  send recovery link +       |
    |                                 |  "recovery requested" notice|
    |                                 |--- (registered only) ------>|
-   |   202 (same response whether    |                             |
+   |   204 (same response whether    |                             |
    |<-- address is known or not) ----|                             |
    |                                 |                             |
    |  POST /auth/recovery/consume    |                             |
