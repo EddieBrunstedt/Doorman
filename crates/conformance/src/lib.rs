@@ -52,6 +52,7 @@ pub async fn run(storage: &Storage) {
     sessions_crud_and_queries(storage).await;
     sessions_purge_expired(storage).await;
     passkey_credentials_cooldown_round_trip(storage).await;
+    passkey_credentials_bulk_delete_for_user(storage).await;
     passkey_registration_cooldown_round_trip(storage).await;
     passkey_registration_delete_for_user(storage).await;
     passkey_authentication_single_use(storage).await;
@@ -689,6 +690,81 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
         still_owned.user_id, user_id,
         "the original owner is preserved after a duplicate-id attempt",
     );
+}
+
+/// `PasskeyCredentialStore::delete_passkeys_for_user` removes every credential
+/// belonging to the target user in one set-based operation, returns the number
+/// removed, and leaves another user's credential untouched. This backs account
+/// deletion's credential cascade.
+async fn passkey_credentials_bulk_delete_for_user(storage: &Storage) {
+    let now = ts(2026, 1, 1);
+    let target = UserId::new();
+    let bystander = UserId::new();
+    storage
+        .users
+        .create_user(user(target, "bulk-delete-creds-target@example.com"))
+        .await
+        .expect("target user");
+    storage
+        .users
+        .create_user(user(bystander, "bulk-delete-creds-bystander@example.com"))
+        .await
+        .expect("bystander user");
+
+    let credentials = &storage.passkey_credentials;
+    let add = |user_id: UserId, credential_id: Vec<u8>| {
+        let credential = StoredPasskey {
+            credential_id,
+            user_id,
+            passkey: b"opaque-serialised-passkey-blob".to_vec(),
+            name: Some("security key".into()),
+            created_at: now,
+            last_used_at: None,
+            aaguid: None,
+            transports: vec!["usb".into()],
+            backup_eligible: false,
+            backup_state: false,
+            recovery_cooldown_until: None,
+        };
+        async move {
+            credentials
+                .add_passkey(credential)
+                .await
+                .expect("add passkey");
+        }
+    };
+
+    add(target, b"bulk-delete-target-cred-1".to_vec()).await;
+    add(target, b"bulk-delete-target-cred-2".to_vec()).await;
+    add(target, b"bulk-delete-target-cred-3".to_vec()).await;
+    let bystander_cred = b"bulk-delete-bystander-cred".to_vec();
+    add(bystander, bystander_cred.clone()).await;
+
+    let removed = credentials
+        .delete_passkeys_for_user(target)
+        .await
+        .expect("delete passkeys for user");
+    assert_eq!(
+        removed, 3,
+        "the return count equals the target user's credential count",
+    );
+
+    assert!(
+        credentials
+            .list_passkeys_for_user(target)
+            .await
+            .expect("list target after delete")
+            .is_empty(),
+        "all of the target user's credentials are removed",
+    );
+
+    // The bystander's credential is untouched.
+    let surviving = credentials
+        .list_passkeys_for_user(bystander)
+        .await
+        .expect("list bystander after delete");
+    assert_eq!(surviving.len(), 1, "another user's credential survives");
+    assert_eq!(surviving[0].credential_id, bystander_cred);
 }
 
 async fn passkey_registration_cooldown_round_trip(storage: &Storage) {
