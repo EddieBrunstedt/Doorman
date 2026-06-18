@@ -1,5 +1,6 @@
 mod common;
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ use doorman_core::clock::Clock;
 use doorman_core::email::{Email, EmailTemplates};
 use doorman_core::error::Error;
 use doorman_core::memory::InMemoryRateLimiter;
+use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::recovery::{
     MIN_COOLDOWN, RecoveryConfig, RecoveryConfigError, RecoveryManager, RecoveryRateLimits,
@@ -18,8 +20,8 @@ use doorman_core::storage::{PasskeyCredentialStore, User};
 use doorman_test_support::MockClock;
 
 use common::{
-    Harness, RECOVERY_URL, ResidentTestAuthenticator, authenticator, kinds, make_user,
-    provision_user, recovery_config, register_passkey, token_from_email,
+    Harness, RECOVERY_URL, RP_ID, RP_NAME, ResidentTestAuthenticator, authenticator, kinds,
+    make_user, provision_user, recovery_config, register_passkey, rp_origin, token_from_email,
 };
 
 #[tokio::test]
@@ -1035,4 +1037,147 @@ async fn custom_emails_override_recovery_subjects_and_html() {
     assert!(subjects.contains(&"Acme recovery"));
     assert!(subjects.contains(&"Acme recovery requested"));
     assert!(!subjects.contains(&"Acme recovery completed"));
+}
+
+/// A [`PasskeyConfig`] for the harness relying party with the per-user
+/// credential cap set to `cap`.
+fn capped_passkey_config(cap: u32) -> PasskeyConfig {
+    PasskeyConfig {
+        max_credentials_per_user: NonZeroU32::new(cap),
+        ..PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
+    }
+}
+
+#[tokio::test]
+async fn recovery_succeeds_when_at_credential_cap() {
+    // Recovery is the all-credentials-lost escape hatch: it must land its one
+    // new passkey even when the user already sits at the per-user cap, or the
+    // cap would brick recovery and lock the user out permanently.
+    const CAP: u32 = 2;
+    let h = Harness::builder()
+        .passkey_config(capped_passkey_config(CAP))
+        .build();
+
+    // `provision_user` enrols the first passkey; top up to the cap.
+    let user = provision_user(&h, "alice@example.com").await;
+    let mut filler = authenticator();
+    register_passkey(&h, user.id, &mut filler, Some("second device")).await;
+    let at_cap = h
+        .credentials
+        .list_passkey_summaries_for_user(user.id)
+        .await
+        .expect("list summaries")
+        .len();
+    assert_eq!(at_cap, CAP as usize, "user starts exactly at the cap");
+
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+
+    let consume = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect("consume");
+    let mut recovery_wa = ResidentTestAuthenticator::new();
+    let attestation = recovery_wa.do_registration(consume.options);
+    let outcome = h
+        .recovery
+        .finish_recovery(
+            consume.challenge_id,
+            &attestation,
+            Some("recovery device".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("recovery finishes despite the credential cap");
+
+    // The recovery passkey was enrolled and a session was issued.
+    assert!(!outcome.session.token.is_empty(), "recovery session issued");
+    assert_eq!(outcome.session.session.user_id, user.id);
+
+    let after = h
+        .credentials
+        .list_passkey_summaries_for_user(user.id)
+        .await
+        .expect("list summaries")
+        .len();
+    assert_eq!(
+        after,
+        CAP as usize + 1,
+        "recovery added a credential past the cap"
+    );
+
+    let stored = h
+        .credentials
+        .find_passkey_by_credential_id(&outcome.passkey.credential_id)
+        .await
+        .expect("find passkey")
+        .expect("recovery passkey stored");
+    assert_eq!(stored.user_id, user.id);
+}
+
+#[tokio::test]
+async fn ordinary_registration_still_rejected_at_cap() {
+    // Bypassing the cap is reachable only from recovery: an ordinary
+    // authenticated re-enrollment at the cap must still be rejected.
+    const CAP: u32 = 2;
+    let h = Harness::builder()
+        .passkey_config(capped_passkey_config(CAP))
+        .build();
+
+    let user = provision_user(&h, "alice@example.com").await;
+    let mut filler = authenticator();
+    register_passkey(&h, user.id, &mut filler, Some("second device")).await;
+    assert_eq!(
+        h.credentials
+            .list_passkey_summaries_for_user(user.id)
+            .await
+            .expect("list summaries")
+            .len(),
+        CAP as usize,
+        "user starts exactly at the cap",
+    );
+
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration(user.id)
+        .await
+        .expect("start allowed at the cap");
+    let response = filler.do_registration(ccr);
+    let err = h
+        .passkey
+        .finish_registration(
+            challenge_id,
+            &response,
+            Some("third device".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("ordinary registration rejected at the cap");
+    assert!(matches!(
+        err,
+        Error::ResourceLimitExceeded {
+            resource: "credentials",
+            limit: 2,
+        }
+    ));
+    assert_eq!(
+        h.credentials
+            .list_passkey_summaries_for_user(user.id)
+            .await
+            .expect("list summaries")
+            .len(),
+        CAP as usize,
+        "no credential added past the cap",
+    );
 }

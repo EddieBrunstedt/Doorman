@@ -452,6 +452,13 @@ impl EnrollmentFlow {
         // session creation bodies both take it as an `Option`, so the deadline
         // (or its absence) threads through one call each instead of a
         // Some/None branch per side.
+        //
+        // Recovery bypasses the per-user credential cap: it is the
+        // all-credentials-lost escape hatch, and its single-use email token was
+        // already burned in `consume`. Rejecting it at the cap would brick every
+        // recovery attempt and leave the user permanently locked out, since they
+        // have no working authenticator to sign in and free a slot.
+        let bypass_credential_cap = kind == FlowKind::Recovery;
         let passkey = self
             .passkey
             .finish_registration_inner(
@@ -460,6 +467,7 @@ impl EnrollmentFlow {
                 name,
                 context.clone(),
                 cooldown_until,
+                bypass_credential_cap,
             )
             .await?;
         let Some(user) = self.users().find_user_by_id(passkey.user_id).await? else {

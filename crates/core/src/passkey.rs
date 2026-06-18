@@ -391,7 +391,7 @@ impl PasskeyManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<StoredPasskey> {
-        self.finish_registration_inner(challenge_id, response, name, context, None)
+        self.finish_registration_inner(challenge_id, response, name, context, None, false)
             .await
     }
 
@@ -416,6 +416,7 @@ impl PasskeyManager {
             name,
             context,
             Some(recovery_cooldown_until),
+            false,
         )
         .await
     }
@@ -432,6 +433,7 @@ impl PasskeyManager {
         name: Option<String>,
         context: SessionContext,
         recovery_cooldown_override: Option<DateTime<Utc>>,
+        bypass_credential_cap: bool,
     ) -> Result<StoredPasskey> {
         let now = self.clock.now();
         let Some(stored) = self.challenges.take_registration(challenge_id).await? else {
@@ -449,8 +451,9 @@ impl PasskeyManager {
         // Reject (never evict) once the per-user credential cap is reached:
         // silently dropping an existing passkey would remove an authenticator
         // the user still relies on. The summary projection avoids deserialising
-        // any credential blob just to count.
-        if let Some(max) = self.config.max_credentials_per_user {
+        // any credential blob just to count. Recovery bypasses this cap so the
+        // all-credentials-lost escape hatch can always land its one passkey.
+        if !bypass_credential_cap && let Some(max) = self.config.max_credentials_per_user {
             let count = self
                 .credentials
                 .list_passkey_summaries_for_user(user_id)
