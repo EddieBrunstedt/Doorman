@@ -641,6 +641,19 @@ macro_rules! sqlx_stores {
                     .map_err($crate::common::storage)?;
                 Ok(())
             }
+
+            async fn delete_passkeys_for_user(
+                &self,
+                user_id: $crate::stores::__reexport::UserId,
+            ) -> $crate::stores::__reexport::StorageResult<u64> {
+                let sql = $ph("DELETE FROM passkey_credentials WHERE user_id = ?");
+                let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+                    .bind($crate::common::uuid_to_bytes(user_id.0))
+                    .execute(&self.pool)
+                    .await
+                    .map_err($crate::common::storage)?;
+                Ok(result.rows_affected())
+            }
         }
 
         fn row_to_passkey(
