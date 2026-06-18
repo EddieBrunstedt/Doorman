@@ -540,6 +540,95 @@ async fn revoke_others_during_cooldown_returns_409() {
 }
 
 #[tokio::test]
+async fn change_email_during_cooldown_returns_409() {
+    // A phished recovery session must not repoint the account's email: the
+    // route threads the acting session into the gated manager call, so the
+    // cool-down rejection surfaces as a 409 and no confirmation link is sent.
+    let app = TestApp::start(Router::new(), false).await;
+    let cookie_client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .expect("client");
+
+    let auth = provision_recovery_session(&app, &cookie_client, "alice@example.com").await;
+
+    let mail_before = app.email.sent().len();
+    let resp = cookie_client
+        .post(app.url("/auth/account/email"))
+        .bearer_auth(&auth.token)
+        .json(&doorman_axum::dto::EmailChangeRequest {
+            new_email: "new@example.com".into(),
+        })
+        .send()
+        .await
+        .expect("request email change");
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = resp.json().await.expect("body");
+    assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+
+    let sent = app.email.sent();
+    assert_eq!(
+        sent.len(),
+        mail_before,
+        "cooldown-blocked email change sent no mail"
+    );
+    assert!(
+        !sent[mail_before..]
+            .iter()
+            .any(|email| email.subject == "Confirm your new email address"),
+        "no confirmation link is sent when the gate trips"
+    );
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn delete_account_during_cooldown_returns_409() {
+    // A phished recovery session must not delete the account before the owner
+    // reacts: the route threads the acting session into the gated manager
+    // call, so the cool-down rejection surfaces as a 409 and the account
+    // survives — it still authenticates afterward.
+    let app = TestApp::start(Router::new(), false).await;
+    let cookie_client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .expect("client");
+
+    let auth = provision_recovery_session(&app, &cookie_client, "alice@example.com").await;
+
+    let mail_before = app.email.sent().len();
+    let resp = cookie_client
+        .delete(app.url("/auth/account"))
+        .bearer_auth(&auth.token)
+        .send()
+        .await
+        .expect("delete account");
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = resp.json().await.expect("body");
+    assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+    assert_eq!(
+        app.email.sent().len(),
+        mail_before,
+        "cooldown-blocked account deletion sent no mail"
+    );
+
+    // The account is untouched: the recovery session still authenticates.
+    let still_alive = cookie_client
+        .get(app.url("/auth/passkey"))
+        .bearer_auth(&auth.token)
+        .send()
+        .await
+        .expect("list passkeys after blocked delete");
+    assert_eq!(
+        still_alive.status(),
+        StatusCode::OK,
+        "the account survived the cooldown-blocked deletion"
+    );
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
 async fn recovery_passkey_login_during_cooldown_cannot_delete_passkeys_or_revoke_others() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
