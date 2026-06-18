@@ -663,9 +663,16 @@ impl RateLimiter for InMemoryRateLimiter {
         entries.retain(|t| *t > cutoff);
 
         if entries.len() as u32 >= policy.max_attempts {
-            let oldest = *entries.first().unwrap_or(&now);
+            // `retain` above keeps only entries `> cutoff = now - window`, so the
+            // bucket is non-empty and the oldest retained timestamp gives
+            // `retry_at = oldest + window > now`. Floor the advisory hint to one
+            // millisecond at the window boundary so it is always positive.
+            let oldest = entries.first().copied().unwrap_or(now);
             let retry_at = oldest + window;
-            let retry_after = (retry_at - now).to_std().unwrap_or(policy.window);
+            let retry_after = (retry_at - now)
+                .to_std()
+                .unwrap_or(std::time::Duration::from_millis(1))
+                .max(std::time::Duration::from_millis(1));
             return Ok(RateLimitDecision::Limited { retry_after });
         }
 

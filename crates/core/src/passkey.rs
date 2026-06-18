@@ -358,7 +358,7 @@ impl PasskeyManager {
             .webauthn
             .start_passkey_registration(user_id.0, &display_name, &display_name, exclude)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
-        require_discoverable_credential(&mut ccr);
+        require_discoverable_credential(&mut ccr)?;
 
         let now = self.clock.now();
         let id = PasskeyChallengeId::new();
@@ -933,14 +933,17 @@ impl PasskeyMetadata {
     }
 }
 
-fn require_discoverable_credential(ccr: &mut CreationChallengeResponse) {
+fn require_discoverable_credential(ccr: &mut CreationChallengeResponse) -> Result<()> {
     let selection = ccr
         .public_key
         .authenticator_selection
         .as_mut()
-        .expect("webauthn-rs passkey registration includes authenticator selection");
+        .ok_or_else(|| {
+            Error::Webauthn("passkey registration is missing authenticator selection".to_string())
+        })?;
     selection.require_resident_key = true;
     selection.resident_key = Some(ResidentKeyRequirement::Required);
+    Ok(())
 }
 
 fn user_id_from_handle(response: &PublicKeyCredential) -> Result<Option<UserId>> {
@@ -1031,5 +1034,32 @@ mod tests {
         )
         .expect_err("hostless origin must be rejected");
         assert!(matches!(err, Error::InvalidRelyingParty(_)));
+    }
+
+    #[test]
+    fn require_discoverable_forces_resident_key_when_selection_present() {
+        let origin = Url::parse("https://example.com").expect("valid url");
+        let webauthn = WebauthnBuilder::new("example.com", &origin)
+            .expect("valid relying party")
+            .build()
+            .expect("webauthn builds");
+
+        let (mut ccr, _state) = webauthn
+            .start_passkey_registration(Uuid::new_v4(), "user", "user", None)
+            .expect("registration starts");
+
+        require_discoverable_credential(&mut ccr)
+            .expect("authenticator selection present on fresh webauthn output");
+
+        let selection = ccr
+            .public_key
+            .authenticator_selection
+            .as_ref()
+            .expect("authenticator selection present");
+        assert!(selection.require_resident_key);
+        assert_eq!(
+            selection.resident_key,
+            Some(ResidentKeyRequirement::Required)
+        );
     }
 }

@@ -79,16 +79,6 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     out
 }
 
-fn unhex(s: &str) -> StorageResult<Vec<u8>> {
-    (0..s.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&s[i..i + 2], 16)
-                .map_err(|e| StorageError::msg(format!("hex decode error: {e}")))
-        })
-        .collect()
-}
-
 /// Stable lowercase purpose string, matching the `snake_case` serde rename.
 pub(crate) fn purpose_str(purpose: VerificationPurpose) -> &'static str {
     match purpose {
@@ -435,22 +425,4 @@ pub(crate) fn pkauth_from_doc(doc: &Document) -> StorageResult<StoredPasskeyAuth
         created_at: get_dt(doc, "created_at")?,
         expires_at: get_dt(doc, "expires_at")?,
     })
-}
-
-/// Decode the `_id` string of a verification_token document back to its
-/// token hash and purpose, for cases where the document itself isn't needed
-/// but we need those fields (currently unused — just the round-trip matters).
-#[allow(dead_code)]
-pub(crate) fn vtoken_id_parts(id: &str) -> StorageResult<(VerificationPurpose, TokenHash)> {
-    let (purpose_part, hash_part) = id
-        .split_once('#')
-        .ok_or_else(|| StorageError::msg(format!("malformed verification_token _id: `{id}`")))?;
-    let purpose = purpose_from_str(purpose_part)?;
-    let bytes = unhex(hash_part)?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|_| {
-        StorageError::msg(format!(
-            "verification_token _id `{id}` hash is not 32 bytes"
-        ))
-    })?;
-    Ok((purpose, TokenHash(arr)))
 }
