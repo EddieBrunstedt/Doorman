@@ -22,8 +22,9 @@ homepage = "https://codeberg.org/EddieBrunstedt/Doorman"
 license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/EddieBrunstedt/Doorman"
 # MSRV is driven by the dependency tree: sqlx 0.9 requires rustc 1.94, which is
-# the highest floor among the deps (webauthn-rs/time need 1.88). Verified with
-# `cargo +1.94 check --workspace --all-features`.
+# the highest floor among the deps (webauthn-rs/time need 1.88). `1.94` is the
+# minimum floor; CI and `just msrv` enforce it against the pinned `1.94.1`
+# toolchain (`cargo +1.94.1 check --workspace --all-features --locked`).
 rust-version = "1.94"
 
 # Shared lints applied to every crate that opts in with `[lints] workspace = true`.

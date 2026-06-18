@@ -216,8 +216,11 @@ The repo ships a [`justfile`](justfile) so the inner loop needs no manual setup.
 
 ```sh
 just test      # run the whole workspace suite
-just verify    # the full local gate: fmt-check, clippy, doc, test (mirrors CI)
+just verify    # the full local gate, mirroring CI end to end
+just msrv      # MSRV check alone (needs the pinned 1.94.1 toolchain)
 ```
+
+`just verify` runs every gate CI does: `fmt-check`, `dprint-check`, `clippy`, `doc`, the isolated feature builds (`check-features`), `msrv`, and `test`. The full gate needs a running Docker daemon (for `test`) and the pinned `1.94.1` toolchain installed via rustup (for `msrv`); CI is the canonical `--locked` gate, but the compile-heavy recipes pass `--locked` locally too so lockfile drift surfaces before CI.
 
 Run `just` with no arguments to list every recipe.
 
