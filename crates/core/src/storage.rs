@@ -507,6 +507,11 @@ pub trait PasskeyCredentialStore: Send + Sync {
     /// Delete a credential by its raw credential id. Callers verify
     /// ownership before calling.
     async fn delete_passkey(&self, credential_id: &[u8]) -> StorageResult<()>;
+
+    /// Delete every credential belonging to `user_id`, returning the number
+    /// removed. Backs account deletion's credential cascade; prefer this over
+    /// a per-credential [`delete_passkey`](Self::delete_passkey) loop.
+    async fn delete_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64>;
 }
 
 /// Persistence contract for in-progress passkey ceremony state.

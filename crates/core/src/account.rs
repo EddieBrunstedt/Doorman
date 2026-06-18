@@ -281,17 +281,8 @@ impl AccountManager {
         // fires (a raw `delete_sessions_for_user` would leave the cache warm).
         self.sessions.revoke_all_for_user(user_id).await?;
 
-        // Remove every credential. The summary projection avoids deserialising
-        // any credential blob just to enumerate the ids.
-        let credentials = self
-            .credentials
-            .list_passkey_summaries_for_user(user_id)
-            .await?;
-        for credential in credentials {
-            self.credentials
-                .delete_passkey(&credential.credential_id)
-                .await?;
-        }
+        // Remove every credential in one set-based delete.
+        self.credentials.delete_passkeys_for_user(user_id).await?;
 
         // Drop tokens of every purpose and any pending registration ceremony.
         for purpose in ALL_TOKEN_PURPOSES {

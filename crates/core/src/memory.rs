@@ -496,6 +496,13 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
         state.retain(|c| c.credential_id != credential_id);
         Ok(())
     }
+
+    async fn delete_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        let mut state = self.lock();
+        let before = state.len();
+        state.retain(|c| c.user_id != user_id);
+        Ok((before - state.len()) as u64)
+    }
 }
 
 /// In-memory [`PasskeyChallengeStore`] with atomic take semantics.
