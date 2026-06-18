@@ -916,6 +916,80 @@ async fn pre_recovery_registration_challenge_cannot_finish_after_recovery() {
 }
 
 #[tokio::test]
+async fn pre_recovery_challenge_is_invalidated_before_recovery_session() {
+    // Ordering guarantee: on the recovery success path the pre-recovery
+    // bypass sweep runs before the recovery session is issued. This test pins
+    // the success-path outcome of that ordering — the recovery session exists
+    // AND the pre-recovery challenge is gone — so a regression that lets a
+    // committed session coexist with a finishable bypass challenge is caught.
+    let h = Harness::fresh();
+    let user = make_user(&h, "alice@example.com").await;
+
+    // Pre-recovery: start (but do not finish) a registration ceremony.
+    let (pre_challenge_id, pre_ccr) = h
+        .passkey
+        .start_registration(user.id)
+        .await
+        .expect("start pre-recovery registration");
+    let mut pre_wa = authenticator();
+    let pre_attestation = pre_wa.do_registration(pre_ccr);
+
+    // Drive a full recovery: request -> consume -> finish.
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+    let consume = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect("consume");
+    let mut recovery_wa = authenticator();
+    let attestation = recovery_wa.do_registration(consume.options);
+    let outcome = h
+        .recovery
+        .finish_recovery(
+            consume.challenge_id,
+            &attestation,
+            Some("recovery device".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish recovery succeeds");
+
+    // The sweep ran before issuance, so the recovery session was still minted
+    // and carries the recovery cool-down.
+    assert!(
+        outcome
+            .session
+            .session
+            .is_in_recovery_cooldown(h.clock.now()),
+        "recovery session must be issued with the cool-down on the success path"
+    );
+
+    // And the pre-recovery challenge can no longer be finished.
+    let err = h
+        .passkey
+        .finish_registration(
+            pre_challenge_id,
+            &pre_attestation,
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("pre-recovery challenge must be invalidated");
+    assert!(matches!(err, Error::InvalidPasskeyChallenge));
+}
+
+#[tokio::test]
 async fn signup_does_not_invalidate_other_pending_registrations() {
     // The bypass closure is recovery-specific: a signup finish must not sweep
     // a user's other in-flight registration ceremonies.

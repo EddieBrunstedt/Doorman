@@ -474,12 +474,6 @@ impl EnrollmentFlow {
             return Err(Error::UserNotFound);
         };
 
-        let session = self
-            .passkey
-            .sessions()
-            .issue(user.id, context.clone(), cooldown_until)
-            .await?;
-
         if kind == FlowKind::Recovery {
             // Close the pre-recovery-challenge bypass: any registration
             // ceremony begun before this recovery completed was minted without
@@ -487,11 +481,21 @@ impl EnrollmentFlow {
             // credential outside the cool-down. Drop those pending challenges
             // (the recovery's own challenge was already consumed by
             // `finish_registration*` above, so this only sweeps the dangerous
-            // pre-recovery ones).
+            // pre-recovery ones). This sweep runs before the recovery session
+            // is issued so a sweep failure aborts with `?` while no
+            // cool-down-bearing session has been minted, keeping the guarantee
+            // hard: a surviving pre-recovery bypass challenge can never coexist
+            // with a committed recovery session.
             self.passkey
                 .invalidate_pending_registrations(user.id)
                 .await?;
         }
+
+        let session = self
+            .passkey
+            .sessions()
+            .issue(user.id, context.clone(), cooldown_until)
+            .await?;
 
         if let Some(recovery) = recovery {
             // Best-effort — a notification-send failure is logged but does
