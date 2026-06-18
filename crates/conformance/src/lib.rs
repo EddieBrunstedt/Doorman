@@ -651,6 +651,44 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
     );
     // The same record viewed as a summary is byte-for-byte the projection.
     assert_eq!(*summary, PasskeySummary::from(listed[0].clone()));
+
+    // A second `add_passkey` with the same credential id must be rejected,
+    // even when it claims a different owner and carries a different blob.
+    // This is what stops one user from registering another user's credential
+    // id; the lookup must keep resolving to the original owner.
+    let other_user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(other_user_id, "passkey-hijack@example.com"))
+        .await
+        .expect("other user");
+    let hijack = StoredPasskey {
+        credential_id: credential_id.clone(),
+        user_id: other_user_id,
+        passkey: b"hijacker-blob".to_vec(),
+        name: Some("hijacker key".into()),
+        created_at: now,
+        last_used_at: None,
+        aaguid: None,
+        transports: vec![],
+        backup_eligible: false,
+        backup_state: false,
+        recovery_cooldown_until: None,
+    };
+    credentials
+        .add_passkey(hijack)
+        .await
+        .expect_err("duplicate credential id should error");
+
+    let still_owned = credentials
+        .find_passkey_by_credential_id(&credential_id)
+        .await
+        .expect("find by credential id after duplicate attempt")
+        .expect("passkey still present");
+    assert_eq!(
+        still_owned.user_id, user_id,
+        "the original owner is preserved after a duplicate-id attempt",
+    );
 }
 
 async fn passkey_registration_cooldown_round_trip(storage: &Storage) {
