@@ -388,6 +388,13 @@ impl SessionManager {
     /// every host driving `doorman-core`, not only the bundled `doorman-axum`
     /// routes. Judged against this manager's clock, so an injected or mock
     /// clock is honoured.
+    ///
+    /// Pass a `session` resolved from storage for the current request, as the
+    /// bundled `doorman-axum` layer does. The gate trusts the supplied snapshot:
+    /// it reads the cool-down deadline (and, by extension, the session's
+    /// liveness) straight off the passed value rather than re-reading the row,
+    /// so a custom transport that hands in a cached or hand-built `Session` is
+    /// gated against that stale snapshot, not the current stored state.
     pub fn ensure_not_in_recovery_cooldown(&self, session: &Session) -> Result<()> {
         if self.is_in_recovery_cooldown(session) {
             return Err(Error::RecoveryCooldownActive);
@@ -422,6 +429,8 @@ impl SessionManager {
     /// Refused with [`Error::RecoveryCooldownActive`] while `current_session`
     /// is inside its post-recovery cool-down window: a phished recovery
     /// session must not be able to kick the legitimate owner off their devices.
+    /// Pass a `current_session` resolved from storage for this request; the
+    /// cool-down (and revocation) check trusts the supplied snapshot.
     #[tracing::instrument(skip(self, user, current_session), fields(user_id = %user.id, session_id = %current_session.id))]
     pub async fn revoke_others_for_user(
         &self,
@@ -464,7 +473,9 @@ impl SessionManager {
     /// [`Error::RecoveryCooldownActive`] (a phished recovery session must not
     /// be able to strand the owner's other devices); revoking the cool-down
     /// session *itself* stays allowed so the owner can always sign that
-    /// session out.
+    /// session out. Pass a `current_session` resolved from storage for this
+    /// request; the cool-down (and revocation) check trusts the supplied
+    /// snapshot.
     #[tracing::instrument(
         skip(self, user, current_session),
         fields(user_id = %user.id, session_id = %session_id),

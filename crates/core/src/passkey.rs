@@ -813,6 +813,8 @@ impl PasskeyManager {
     /// Refused with [`Error::RecoveryCooldownActive`] while `session` is
     /// inside its post-recovery cool-down window: a phished recovery session
     /// must not be able to strip the legitimate owner's remaining passkeys.
+    /// Pass a `session` resolved from storage for this request; the cool-down
+    /// (and revocation) check trusts the supplied snapshot.
     ///
     /// Outside the cool-down this may remove the user's *last* credential.
     /// That is intentional: the email-based recovery flow is the designed

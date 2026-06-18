@@ -148,7 +148,9 @@ impl AccountManager {
     /// Refused with [`Error::RecoveryCooldownActive`] while the acting
     /// `session` is inside its post-recovery cool-down window: a phished
     /// recovery session must not be able to repoint the account's address out
-    /// from under the legitimate owner before they can react.
+    /// from under the legitimate owner before they can react. Pass a `session`
+    /// resolved from storage for this request; the cool-down (and revocation)
+    /// check trusts the supplied snapshot.
     #[tracing::instrument(skip(self, session, new_email, context), fields(user_id = %user.id))]
     pub async fn request_email_change(
         &self,
@@ -271,7 +273,8 @@ impl AccountManager {
     /// Refused with [`Error::RecoveryCooldownActive`] while `session` is
     /// inside its post-recovery cool-down window: a phished recovery session
     /// must not be able to delete the account before the legitimate owner can
-    /// react.
+    /// react. Pass a `session` resolved from storage for this request; the
+    /// cool-down (and revocation) check trusts the supplied snapshot.
     #[tracing::instrument(skip(self, context), fields(user_id = %session.user_id))]
     pub async fn delete_account(&self, session: &Session, context: SessionContext) -> Result<()> {
         self.sessions.ensure_not_in_recovery_cooldown(session)?;
