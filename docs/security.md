@@ -15,7 +15,7 @@ Out of scope by design: password authentication, OAuth, TOTP, recovery codes, ad
 doorman is designed to defend against:
 
 - **Phishing of steady-state logins**, by relying on origin-bound WebAuthn signatures — a credential only signs for its registered relying-party origin.
-- **User enumeration** in signup, recovery, and passkey authentication: the response shape and the work performed are identical for known and unknown addresses, including when the email transport fails.
+- **User enumeration** in signup, recovery, and passkey authentication: the response shape is identical for known and unknown addresses, including when the email transport fails. For signup and recovery a residual work-asymmetry remains (an unknown address provisions a user, stores a token, and triggers a send; a registered one silently no-ops), bounded by the request rate limits and addressable host-side — see [Email transport](#email-transport).
 - **Immediate account lockout after email recovery**, by binding the post-recovery cool-down to recovery-created passkeys and sessions.
 - **Replay** of session tokens, verification tokens, and passkey ceremony state from normal HTTP flows — ceremony state is single-use and removed on consume.
 - **Database reads yielding usable bearer tokens**, because tokens are stored only as SHA-256 hashes.
@@ -96,7 +96,7 @@ Configurable per-user resource caps are available (all opt-in): maximum active s
 
 `TerminalEmailSender` and `FileEmailSender` are development transports. They expose signup/recovery links and security notices locally and do not deliver mail to users. Production hosts must implement `EmailSender` using their email provider and operate SPF, DKIM, DMARC, bounce handling, and provider-side abuse controls.
 
-Link-delivery emails are best-effort from the caller's perspective: signup, recovery, and recovery-requested sends all route through one best-effort helper, so a forced bounce on a _registered_ address cannot surface as a distinct error response — that parity is what closes the enumeration oracle. A residual raw-send-latency signal (a real address triggers a send, an unknown one does not) is a transport-layer concern the host can address by decoupling delivery (queue/spawn) at its own layer; the runtime-agnostic core does not spawn.
+Link-delivery emails are best-effort from the caller's perspective: signup, recovery, and recovery-requested sends all route through one best-effort helper, so a forced bounce on a _registered_ address cannot surface as a distinct error response — that parity is what closes the enumeration oracle. A residual work-asymmetry remains: signup and recovery do more work for an _unknown_ address than for a registered one. Signup inverts the usual shape — an unknown address provisions a new (unverified) user, stores a token, and triggers a send, while a registered address silently no-ops; recovery does the reverse, sending to a registered address and no-op-ing for an unknown one. Either way one branch performs store writes and a send that the other skips. This timing signal is bounded by the request rate limits (signup: 5/hour per IP, 3/hour per email; recovery: 20/hour per IP, 5/hour per email) and is a transport-layer concern the host can further address by decoupling delivery (queue/spawn) at its own layer; the runtime-agnostic core does not spawn.
 
 Security notifications are best-effort after the protected action has already succeeded; send failures are logged and do not roll back passkey or session changes.
 
