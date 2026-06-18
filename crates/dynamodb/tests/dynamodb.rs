@@ -11,6 +11,15 @@
 //! `aws-config`, whose default TLS pulls `aws-lc`) so the test tree stays on the
 //! workspace's single ring crypto stack. Credentials are dummies: DynamoDB Local
 //! does not authenticate.
+//!
+//! Known, accepted behavior — not a bug: the bulk-revoke paths
+//! (`delete_sessions_for_user` and friends) enumerate through the
+//! eventually-consistent `owner-index` GSI, so a row created immediately before a
+//! "revoke all" may not yet be visible to the GSI and can survive that revoke,
+//! reclaimed only on a later revoke or by the expiry purge / native TTL. The
+//! conformance suite does not assert read-after-write completeness on these
+//! paths, and no test here should: it is documented in `docs/security.md` and in
+//! the adapter's module docs. See plan 003.
 
 use aws_sdk_dynamodb::config::{BehaviorVersion, Credentials, Region};
 use aws_smithy_http_client::tls::{self, rustls_provider::CryptoMode};

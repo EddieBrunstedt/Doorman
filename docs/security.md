@@ -74,6 +74,8 @@ The cool-down length is the host's to set. By default doorman rejects a configur
 - Revocation is immediate because sessions are opaque server-side rows, not self-contained bearer claims.
 - The Axum layer accepts either the HttpOnly cookie or an `Authorization: Bearer` token, parsed through one shared bearer-token helper so the session and CSRF layers agree on what counts as bearer auth.
 
+On the DynamoDB adapter, bulk revocation — "log out everywhere", "sign out everywhere else", account deletion, and recovery's other-session sweep — is best-effort under write-after-write. Those paths enumerate the user's sessions (and verification tokens and registration ceremonies) through an eventually-consistent `owner-index` GSI, so a row created moments before the revoke may not yet be visible to the GSI and can survive it; it is reclaimed on a later revoke or by the expiry purge / native TTL. Single-session revocation and expiry are unaffected. Hosts that need hard, immediate "revoke all" should prefer a SQL system-of-record for sessions (which deletes by the authoritative table in one statement), optionally paired with Redis for ephemerals.
+
 ## CSRF and cookies
 
 For browser cookie flows, keep the default CSRF layer enabled. When `external_origin` is configured, mutating requests that carry the session cookie must present a matching `Origin` header or, if `Origin` is absent, a matching `Referer` origin. The check **fails closed**: an unsafe-method cookie request with neither header is rejected.

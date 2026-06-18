@@ -50,6 +50,11 @@ impl PasskeyChallengeStore for DynamoPasskeyChallengeStore {
         }
     }
 
+    /// Enumerates the user's registration ceremonies through the eventually-consistent
+    /// `owner-index` GSI, so a ceremony created immediately before this revoke may
+    /// not yet be visible and can survive it; it is reclaimed on a later revoke
+    /// or by `purge_expired` / native TTL. This bulk revoke is best-effort under
+    /// write-after-write.
     async fn delete_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
         let items = self
             .client

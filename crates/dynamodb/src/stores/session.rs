@@ -3,8 +3,19 @@
 //! A session is one item under `session#<id>` carrying two GSI keys: a
 //! `lookup-index` entry on its hashed bearer token (the hot per-request lookup)
 //! and an `owner-index` entry on its user (the listing and bulk-delete paths).
-//! DynamoDB maintains both indexes, so a delete or a TTL eviction cleans them up
-//! with no dangling-member bookkeeping.
+//! DynamoDB maintains both indexes, so a delete or a TTL eviction drops the
+//! index entries for free, with no dangling-member bookkeeping.
+//!
+//! The bulk-delete paths ([`delete_sessions_for_user`](DynamoSessionStore::delete_sessions_for_user),
+//! [`delete_other_sessions_for_user`](DynamoSessionStore::delete_other_sessions_for_user))
+//! enumerate the user's sessions through the `owner-index` GSI, and GSI reads
+//! are eventually consistent. A session created immediately before a bulk revoke
+//! may not yet be visible to the GSI, so it can survive that revoke and is
+//! reclaimed only on a later revoke or by
+//! [`purge_expired`](DynamoSessionStore::purge_expired) / native TTL. Bulk
+//! revocation on DynamoDB is therefore best-effort under write-after-write;
+//! `docs/security.md` records the trade-off and points hosts that need hard
+//! immediate revocation at a SQL system-of-record.
 //!
 //! `create_session` is a plain `PutItem` (an upsert); the random id and 256-bit
 //! token hash make a real collision a non-issue, and the contract permits the
