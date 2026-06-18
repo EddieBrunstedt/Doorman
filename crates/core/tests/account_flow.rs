@@ -193,6 +193,82 @@ async fn delete_account_refused_during_recovery_cooldown() {
 }
 
 #[tokio::test]
+async fn request_email_change_allowed_once_recovery_cooldown_lapses() {
+    // The cool-down releases: once the deadline passes, the same recovery
+    // session can request the email change. A regression making the gate
+    // permanent would lock the owner out of email changes forever. (F1)
+    let h = Harness::fresh();
+    let user = provision_user(&h, "owner@example.com").await;
+    let cooldown_until = h.clock.now() + chrono::Duration::hours(24);
+    let restricted = restricted_session_for(&h, &user, cooldown_until);
+
+    // Blocked while the cool-down is active.
+    let err = h
+        .account
+        .request_email_change(
+            &user,
+            &restricted,
+            "new@example.com",
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("blocked during the cool-down");
+    assert!(matches!(err, Error::RecoveryCooldownActive));
+
+    // After the deadline the request is allowed and issues the confirmation.
+    h.clock.advance(chrono::Duration::hours(25));
+    let mail_before = h.email.sent().len();
+    let tokens_before = h.tokens.len();
+    h.account
+        .request_email_change(
+            &user,
+            &restricted,
+            "new@example.com",
+            SessionContext::default(),
+        )
+        .await
+        .expect("email change allowed once the cool-down lapses");
+    assert!(
+        h.email.sent().len() > mail_before,
+        "the confirmation email is sent after the cool-down lapses",
+    );
+    assert!(
+        h.tokens.len() > tokens_before,
+        "a confirmation token is issued after the cool-down lapses",
+    );
+}
+
+#[tokio::test]
+async fn delete_account_allowed_once_recovery_cooldown_lapses() {
+    // Releasing the cool-down restores the ability to delete the account. (F1)
+    let h = Harness::fresh();
+    let user = provision_user(&h, "doomed@example.com").await;
+    let cooldown_until = h.clock.now() + chrono::Duration::hours(24);
+    let restricted = restricted_session_for(&h, &user, cooldown_until);
+
+    let err = h
+        .account
+        .delete_account(&restricted, SessionContext::default())
+        .await
+        .expect_err("blocked during the cool-down");
+    assert!(matches!(err, Error::RecoveryCooldownActive));
+
+    h.clock.advance(chrono::Duration::hours(25));
+    h.account
+        .delete_account(&restricted, SessionContext::default())
+        .await
+        .expect("deletion allowed once the cool-down lapses");
+    assert!(
+        h.users
+            .find_user_by_id(user.id)
+            .await
+            .expect("find user")
+            .is_none(),
+        "the account is deleted after the cool-down lapses",
+    );
+}
+
+#[tokio::test]
 async fn confirm_rejects_unknown_token() {
     let h = Harness::fresh();
     let err = h

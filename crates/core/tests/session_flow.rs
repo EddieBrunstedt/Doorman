@@ -687,6 +687,109 @@ async fn revoke_owned_session_cooldown_blocks_others_but_allows_self() {
 }
 
 #[tokio::test]
+async fn revoke_others_for_user_allowed_once_recovery_cooldown_lapses() {
+    // The cool-down releases: once the deadline passes, the same recovery
+    // session can sign out the other devices. A regression making the gate
+    // permanent would lock the bulk-revoke action forever. (F1)
+    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
+    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
+    let clock = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let manager = SessionManager::new(
+        sessions.clone() as Arc<dyn SessionStore>,
+        clock.clone() as Arc<dyn Clock>,
+        audit.clone() as Arc<dyn AuditSink>,
+        SessionConfig {
+            // A lifetime longer than the cool-down so the sessions survive the
+            // clock advance and the action's success reflects the gate, not
+            // session expiry.
+            lifetime: Duration::from_secs(60 * 60 * 24 * 7),
+            ..SessionConfig::default()
+        },
+    );
+    let alice = UserId::new();
+    let cooldown_until = clock.now() + ChronoDuration::hours(24);
+    let current = manager
+        .create_restricted(alice, SessionContext::default(), cooldown_until)
+        .await
+        .expect("restricted current session");
+    let other = manager
+        .create(alice, SessionContext::default())
+        .await
+        .expect("other session");
+
+    // Blocked while the cool-down is active.
+    let err = manager
+        .revoke_others_for_user(&user_with_id(alice, None), &current.session)
+        .await
+        .expect_err("blocked during the cool-down");
+    assert!(matches!(err, Error::RecoveryCooldownActive));
+
+    // After the deadline the action is allowed and removes the other session.
+    clock.advance(ChronoDuration::hours(25));
+    let removed = manager
+        .revoke_others_for_user(&user_with_id(alice, None), &current.session)
+        .await
+        .expect("revoke allowed once the cool-down lapses");
+    assert_eq!(removed, 1);
+    assert!(
+        sessions
+            .find_session_by_id(other.session.id)
+            .await
+            .expect("find other")
+            .is_none(),
+        "the other device is revoked after the cool-down lapses",
+    );
+}
+
+#[tokio::test]
+async fn revoke_owned_session_allowed_once_recovery_cooldown_lapses() {
+    // Releasing the cool-down restores the ability to sign out another device
+    // by id, not just the cool-down session itself. (F1)
+    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
+    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
+    let clock = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let manager = SessionManager::new(
+        sessions.clone() as Arc<dyn SessionStore>,
+        clock.clone() as Arc<dyn Clock>,
+        audit.clone() as Arc<dyn AuditSink>,
+        SessionConfig {
+            lifetime: Duration::from_secs(60 * 60 * 24 * 7),
+            ..SessionConfig::default()
+        },
+    );
+    let alice = user_with_id(UserId::new(), None);
+    let cooldown_until = clock.now() + ChronoDuration::hours(24);
+    let current = manager
+        .create_restricted(alice.id, SessionContext::default(), cooldown_until)
+        .await
+        .expect("restricted current session");
+    let other = manager
+        .create(alice.id, SessionContext::default())
+        .await
+        .expect("other session");
+
+    let err = manager
+        .revoke_owned_session(&alice, other.session.id, &current.session)
+        .await
+        .expect_err("blocked during the cool-down");
+    assert!(matches!(err, Error::RecoveryCooldownActive));
+
+    clock.advance(ChronoDuration::hours(25));
+    manager
+        .revoke_owned_session(&alice, other.session.id, &current.session)
+        .await
+        .expect("revoke allowed once the cool-down lapses");
+    assert!(
+        sessions
+            .find_session_by_id(other.session.id)
+            .await
+            .expect("find other")
+            .is_none(),
+        "the targeted device is revoked after the cool-down lapses",
+    );
+}
+
+#[tokio::test]
 async fn revoke_others_for_user_skips_hook_when_nothing_removed() {
     let (manager, _, _) = fresh_manager();
     let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
