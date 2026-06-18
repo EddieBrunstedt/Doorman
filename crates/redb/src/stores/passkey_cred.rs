@@ -203,4 +203,48 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
         .await
         .map_err(db::err)?
     }
+
+    async fn delete_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        let db = self.handle.db();
+        tokio::task::spawn_blocking(move || {
+            let prefix = db::user_creds_prefix(user_id);
+            let end = db::prefix_end(&prefix);
+
+            let wtxn = db.begin_write().map_err(db::err)?;
+            let removed = {
+                let mut creds = wtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
+                let mut user_idx = wtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
+
+                // Each index key is `"{user_id}\x00{cred_id_hex}"`, and the
+                // cred_id_hex segment is the primary key in `passkey_creds`.
+                let entries: Vec<(String, String)> = user_idx
+                    .range(prefix.as_str()..end.as_str())
+                    .map_err(db::err)?
+                    .map(|r| {
+                        r.map_err(db::err).and_then(|(k, _)| {
+                            let idx_key = k.value().to_owned();
+                            let cred_key = idx_key
+                                .split_once('\x00')
+                                .map(|x| x.1.to_owned())
+                                .ok_or_else(|| StorageError::msg("malformed user_creds_idx key"))?;
+                            Ok((idx_key, cred_key))
+                        })
+                    })
+                    .collect::<StorageResult<_>>()?;
+
+                let mut count = 0u64;
+                for (idx_key, cred_key) in &entries {
+                    if creds.remove(cred_key.as_str()).map_err(db::err)?.is_some() {
+                        count += 1;
+                    }
+                    user_idx.remove(idx_key.as_str()).map_err(db::err)?;
+                }
+                count
+            };
+            wtxn.commit().map_err(db::err)?;
+            Ok(removed)
+        })
+        .await
+        .map_err(db::err)?
+    }
 }
