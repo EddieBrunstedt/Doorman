@@ -12,8 +12,6 @@
 //! | Passkey registration   | `pkreg:{id}`              | `user:{uid}:pkregs` (SET of ids)                              |
 //! | Passkey authentication | `pkauth:{id}`             | none                                                          |
 
-use std::fmt::Write as _;
-
 use doorman_core::storage::{
     PasskeyChallengeId, SessionId, TokenHash, UserId, VerificationPurpose,
 };
@@ -152,23 +150,12 @@ pub(crate) const ALL_PURPOSES: [VerificationPurpose; 3] = [
 /// Stable lowercase string for a verification purpose, used in key names.
 /// Matches the `snake_case` serde rename on [`VerificationPurpose`] so a key
 /// is the same whichever side builds it.
-pub(crate) fn purpose_str(purpose: VerificationPurpose) -> &'static str {
-    match purpose {
-        VerificationPurpose::Signup => "signup",
-        VerificationPurpose::Recovery => "recovery",
-        VerificationPurpose::EmailChange => "email_change",
-    }
-}
+pub(crate) use doorman_core::encoding::purpose_to_str as purpose_str;
 
 /// Lowercase hex rendering of a token hash, used both as a key component and as
 /// the member stored in the per-user token SETs (so the two always agree).
 pub(crate) fn token_hash_hex(hash: &TokenHash) -> String {
-    let mut out = String::with_capacity(hash.0.len() * 2);
-    for byte in &hash.0 {
-        // Writing to a String is infallible.
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
+    doorman_core::encoding::hex(&hash.0)
 }
 
 #[cfg(test)]

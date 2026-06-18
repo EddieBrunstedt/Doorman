@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{TokenHash, VerificationPurpose};
+use doorman_core::storage::TokenHash;
 use uuid::Uuid;
 
 pub(crate) fn storage<E: std::fmt::Display>(e: E) -> StorageError {
@@ -120,48 +120,7 @@ pub(crate) fn uuid_from_row(b: Vec<u8>) -> StorageResult<Uuid> {
     Uuid::from_slice(&b).map_err(storage)
 }
 
-pub(crate) fn purpose_to_str(p: VerificationPurpose) -> &'static str {
-    match p {
-        VerificationPurpose::Signup => "signup",
-        VerificationPurpose::Recovery => "recovery",
-        VerificationPurpose::EmailChange => "email_change",
-    }
-}
-
-pub(crate) fn purpose_from_str(s: &str) -> StorageResult<VerificationPurpose> {
-    match s {
-        "signup" => Ok(VerificationPurpose::Signup),
-        "recovery" => Ok(VerificationPurpose::Recovery),
-        "email_change" => Ok(VerificationPurpose::EmailChange),
-        other => Err(StorageError::msg(format!(
-            "unknown verification purpose `{other}` in database"
-        ))),
-    }
-}
-
-/// Flatten the passkey transport hints into a single comma-separated column
-/// value. Transport tokens (`usb`, `nfc`, `ble`, `internal`, `hybrid`) never
-/// contain commas, so the join is unambiguous; an empty slice stores `""`.
-pub(crate) fn transports_to_str(transports: &[String]) -> String {
-    transports.join(",")
-}
-
-/// Split a comma-separated transports column back into the list. Empty
-/// segments are dropped so a stored `""` round-trips to an empty `Vec`.
-pub(crate) fn transports_from_str(s: &str) -> Vec<String> {
-    s.split(',')
-        .filter(|seg| !seg.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-/// Render an optional AAGUID for its (nullable) TEXT column.
-pub(crate) fn aaguid_to_str(aaguid: Option<Uuid>) -> Option<String> {
-    aaguid.map(|u| u.to_string())
-}
-
-/// Parse a nullable AAGUID TEXT column back into a [`Uuid`].
-pub(crate) fn aaguid_from_str(s: Option<String>) -> StorageResult<Option<Uuid>> {
-    s.map(|raw| Uuid::parse_str(&raw).map_err(storage))
-        .transpose()
-}
+pub(crate) use doorman_core::encoding::{
+    aaguid_from_str, aaguid_to_str, purpose_from_str, purpose_to_str, transports_from_str,
+    transports_to_str,
+};

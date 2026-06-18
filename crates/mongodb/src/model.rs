@@ -21,8 +21,6 @@
 //! Binary fields (token hashes, credential ids, passkey blobs, ceremony state)
 //! are stored as BSON `BinData` with subtype `Generic`.
 
-use std::fmt::Write as _;
-
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{
@@ -71,33 +69,7 @@ fn to_binary(bytes: Vec<u8>) -> Binary {
     }
 }
 
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
-}
-
-/// Stable lowercase purpose string, matching the `snake_case` serde rename.
-pub(crate) fn purpose_str(purpose: VerificationPurpose) -> &'static str {
-    match purpose {
-        VerificationPurpose::Signup => "signup",
-        VerificationPurpose::Recovery => "recovery",
-        VerificationPurpose::EmailChange => "email_change",
-    }
-}
-
-fn purpose_from_str(raw: &str) -> StorageResult<VerificationPurpose> {
-    match raw {
-        "signup" => Ok(VerificationPurpose::Signup),
-        "recovery" => Ok(VerificationPurpose::Recovery),
-        "email_change" => Ok(VerificationPurpose::EmailChange),
-        other => Err(StorageError::msg(format!(
-            "unknown verification purpose `{other}` in document"
-        ))),
-    }
-}
+pub(crate) use doorman_core::encoding::{hex, purpose_from_str, purpose_to_str as purpose_str};
 
 // ---------------------------------------------------------------------------
 // Document extractors

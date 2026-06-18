@@ -30,7 +30,6 @@
 //! `"{user_id}\x00"` uses the half-open range `[prefix, prefix_end(prefix))`
 //! where `prefix_end` replaces the trailing `\x00` with `\x01`.
 
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -82,11 +81,7 @@ pub(crate) fn token_hash_hex(hash: &TokenHash) -> String {
 }
 
 pub(crate) fn hex_bytes(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
+    doorman_core::encoding::hex(bytes)
 }
 
 pub(crate) fn vtoken_key(purpose: VerificationPurpose, hash: &TokenHash) -> String {
@@ -160,13 +155,7 @@ pub(crate) fn prefix_end(prefix: &str) -> String {
     format!("{stem}\x01")
 }
 
-pub(crate) fn purpose_str(purpose: VerificationPurpose) -> &'static str {
-    match purpose {
-        VerificationPurpose::Signup => "signup",
-        VerificationPurpose::Recovery => "recovery",
-        VerificationPurpose::EmailChange => "email_change",
-    }
-}
+pub(crate) use doorman_core::encoding::purpose_to_str as purpose_str;
 
 // ---------------------------------------------------------------------------
 // Timestamp helpers

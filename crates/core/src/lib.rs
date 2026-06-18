@@ -16,6 +16,7 @@ pub mod audit;
 pub mod clock;
 pub mod context;
 pub mod email;
+pub mod encoding;
 pub mod error;
 pub mod memory;
 pub mod metrics;

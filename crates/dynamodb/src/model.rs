@@ -20,10 +20,9 @@
 //! exactly. Timestamps are RFC3339 strings; the native-TTL `ttl` attribute (set
 //! only for future expiries) is a separate epoch-seconds number.
 
-use std::fmt::Write as _;
-
 use chrono::{DateTime, Utc};
-use doorman_core::error::{StorageError, StorageResult};
+use doorman_core::encoding::{hex, purpose_from_str, purpose_to_str as purpose_str};
+use doorman_core::error::StorageResult;
 use doorman_core::storage::{
     PasskeyChallengeId, PasskeySummary, Session, SessionId, StoredPasskey,
     StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
@@ -100,36 +99,6 @@ pub(crate) fn user_pkregs_key(user_id: UserId) -> String {
 
 pub(crate) fn pkauth_pk(id: PasskeyChallengeId) -> String {
     format!("pkauth#{}", id.0)
-}
-
-/// Stable lowercase string for a verification purpose, matching the
-/// `snake_case` serde rename on [`VerificationPurpose`].
-pub(crate) fn purpose_str(purpose: VerificationPurpose) -> &'static str {
-    match purpose {
-        VerificationPurpose::Signup => "signup",
-        VerificationPurpose::Recovery => "recovery",
-        VerificationPurpose::EmailChange => "email_change",
-    }
-}
-
-fn purpose_from_str(raw: &str) -> StorageResult<VerificationPurpose> {
-    match raw {
-        "signup" => Ok(VerificationPurpose::Signup),
-        "recovery" => Ok(VerificationPurpose::Recovery),
-        "email_change" => Ok(VerificationPurpose::EmailChange),
-        other => Err(StorageError::msg(format!(
-            "unknown verification purpose `{other}` in item"
-        ))),
-    }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        // Writing to a String is infallible.
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------
