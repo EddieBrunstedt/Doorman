@@ -8,6 +8,10 @@
 default:
     @just --list
 
+# Remove Cargo build artifacts.
+clean:
+    cargo clean
+
 # Run the whole workspace test suite. This includes the storage-conformance
 # tests, which start their own database containers, so a Docker daemon must be
 # running. Use the per-backend recipes below to run just one adapter.
