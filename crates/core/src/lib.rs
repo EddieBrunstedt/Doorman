@@ -12,7 +12,9 @@
 #![deny(missing_docs)]
 
 pub mod account;
+pub mod assembly;
 pub mod audit;
+pub mod cache;
 pub mod clock;
 pub mod context;
 pub mod email;

@@ -1302,6 +1302,7 @@ dependencies = [
  "chrono",
  "criterion",
  "doorman-test-support",
+ "lru",
  "proptest",
  "rand 0.9.4",
  "serde",
