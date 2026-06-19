@@ -158,6 +158,7 @@ doorman's persistence is defined by five small traits in `doorman-core`: `UserSt
 | `mongodb`                       | MongoDB                               | All five stores from one database                                                       |
 | `redb`                          | [redb](https://crates.io/crates/redb) | Embedded, single-file, pure-Rust adapter                                                |
 | `redis` / `valkey`              | Redis or Valkey                       | _Ephemeral_ stores (sessions, tokens, challenges) + a shared cross-replica rate limiter |
+| _(built into `doorman-core`)_   | `InMemoryStorage`                     | Process-local store for tests and ephemeral deployments; fills all five stores          |
 
 Because a backend is chosen **per trait** via the `Storage` struct, you can mix them. The intended mixed deployment is a SQL backend for the system-of-record stores (users and passkey credentials) paired with `doorman-redis` for the ephemeral, TTL-bearing stores and a shared rate limiter:
 

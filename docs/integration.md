@@ -104,6 +104,48 @@ let storage = Storage {
 };
 ```
 
+## Testing your integration with `InMemoryStorage`
+
+`InMemoryStorage` is a supported testing adapter that lives in `doorman-core` and is held to the same conformance and semver guarantees as the shipped database adapters. It fills all five stores from one process-local handle, so a host's integration test can stand up a real `AuthService` with no database, container, or migration step — `InMemoryStorage::new().all_stores()` drops straight into the same builder the quickstart uses:
+
+```rust,ignore
+use std::sync::Arc;
+use axum::{routing::get, Router};
+use doorman::prelude::*;
+use doorman::core::memory::{InMemoryRateLimiter, InMemoryStorage};
+use doorman::core::verification::TOKEN_PLACEHOLDER;
+
+#[tokio::test]
+async fn signup_route_is_mounted() -> Result<(), Box<dyn std::error::Error>> {
+    let origin: url::Url = "http://localhost:3000".parse()?;
+    let base = origin.as_str().trim_end_matches('/');
+
+    let auth = AuthService::builder(InMemoryStorage::new().all_stores())
+        .email(Arc::new(TerminalEmailSender))
+        .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
+        .audit(Arc::new(NoopAuditSink))
+        .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
+        .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
+        .recovery(RecoveryConfig { url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
+        .account(AccountConfig { url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
+        .external_origin(origin)
+        .cookie(CookieConfig::default())
+        .build()?;
+
+    let app = Router::new()
+        .merge(auth.router())
+        .route("/api/me", get(|_: AuthSession| async { "ok" }))
+        .layer(auth.session_layer());
+
+    // Drive `app` with `tower::ServiceExt::oneshot` or bind it to an ephemeral
+    // port and hit it over HTTP — every flow runs against the in-memory store.
+    let _ = app;
+    Ok(())
+}
+```
+
+The handle starts empty and is lost when the test process exits; for a shared production-grade store, reach for one of the database adapters above. To brand or capture the emails the flows send, swap `TerminalEmailSender` for `CapturingEmailSender` from `doorman-test-support`.
+
 ## Custom email and branding
 
 `.email(...)` sets the **transport**; `.emails(...)` sets the **renderer**. Implement `EmailSender` to deliver mail through your provider (lettre, Resend, SES, …):

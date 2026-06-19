@@ -34,6 +34,10 @@ use crate::storage::{
 ///
 /// In-memory storage is process-local and lost on restart; use it for tests
 /// and local experiments, not production.
+///
+/// This is a supported testing adapter: it is held to the same conformance and
+/// semver guarantees as the shipped database adapters, so host integration
+/// tests can build on `InMemoryStorage::new().all_stores()`.
 #[derive(Clone)]
 pub struct InMemoryStorage {
     users: Arc<InMemoryUserStore>,
