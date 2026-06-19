@@ -9,6 +9,15 @@
 //! `RecoveryManager` internally with sensible defaults, and returns a
 //! fully built [`AuthService`].
 //!
+//! The portable half of that work — resolving the collaborator defaults,
+//! validating the URL templates and lifetimes, wiring the security notifier
+//! and cache invalidator, and constructing the managers in dependency order —
+//! lives in [`doorman_core::assembly`]. This builder delegates to
+//! [`AuthCore::builder`](doorman_core::assembly::AuthCore::builder) for that
+//! part and then layers on the HTTP-specific decisions (cookie config and its
+//! `__Host-`/`__Secure-` prefix rules, the CSRF posture, and the router /
+//! session layer).
+//!
 //! The builder is strict by default: the only collaborator with a silent
 //! default is the [`Clock`] → [`SystemClock`]. Everything whose wrong choice
 //! is a security or delivery footgun must be wired explicitly, so the unsafe
@@ -49,80 +58,24 @@
 //! [`FileEmailSender`]: doorman_core::email::FileEmailSender
 
 use std::sync::Arc;
-use std::time::Duration;
 
-use doorman_core::account::{AccountConfig, AccountManager};
+use doorman_core::account::AccountConfig;
+use doorman_core::assembly::AuthCore;
 use doorman_core::audit::AuditSink;
-use doorman_core::clock::{Clock, SystemClock};
-use doorman_core::context::CoreDeps;
-use doorman_core::email::{
-    DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityEmailNotifier,
-};
-use doorman_core::metrics::{Metrics, NoopMetrics};
-use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
+use doorman_core::clock::Clock;
+use doorman_core::email::{EmailSender, EmailTemplates};
+use doorman_core::metrics::Metrics;
+use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::RateLimiter;
-use doorman_core::recovery::{RecoveryConfig, RecoveryManager};
-use doorman_core::session::{SessionConfig, SessionManager};
-use doorman_core::signup::{SignupConfig, SignupManager};
+use doorman_core::recovery::RecoveryConfig;
+use doorman_core::session::SessionConfig;
+use doorman_core::signup::SignupConfig;
 use doorman_core::storage::Storage;
-use doorman_core::verification::{EnrollmentFlow, TOKEN_PLACEHOLDER};
 
 use url::Url;
 
-/// Upper bound on any host-supplied lifetime (session / token). Ten years —
-/// well below the point where converting to a `chrono::Duration` overflows,
-/// and far past any sane session or verification-link validity. A value
-/// above this is almost certainly a units mistake, so the build rejects it.
-const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 10);
-
-/// Host (DNS suffix) reserved for documentation/examples. A `url_template`
-/// still pointing here is the stock default the host never replaced.
-const PLACEHOLDER_URL_HOST: &str = "example.invalid";
-
-/// Reject a zero or implausibly large lifetime before it reaches a manager
-/// (where converting to a `chrono::Duration` would otherwise panic).
-fn validate_lifetime(field: &'static str, value: Duration) -> Result<(), BuilderError> {
-    if value.is_zero() || value > MAX_LIFETIME {
-        return Err(BuilderError::InvalidLifetime {
-            field,
-            value,
-            max: MAX_LIFETIME,
-        });
-    }
-    Ok(())
-}
-
-/// Reject a `url_template` that would render a link without the verification
-/// token. The link is the entire signup / recovery flow, so a template
-/// missing the placeholder is a hard error rather than a warning.
-fn validate_url_template(flow: &'static str, template: &str) -> Result<(), BuilderError> {
-    if template.contains(TOKEN_PLACEHOLDER) {
-        Ok(())
-    } else {
-        Err(BuilderError::InvalidUrlTemplate {
-            flow,
-            placeholder: TOKEN_PLACEHOLDER,
-        })
-    }
-}
-
-/// Reject a `url_template` still pointing at the reserved `example.invalid`
-/// host — the stock default the host never replaced. The link would carry a
-/// valid token but resolve nowhere, so the build fails closed rather than
-/// emailing a dead link.
-fn reject_placeholder_url(flow: &'static str, template: &str) -> Result<(), BuilderError> {
-    if template.contains(PLACEHOLDER_URL_HOST) {
-        Err(BuilderError::PlaceholderUrlTemplate {
-            flow,
-            placeholder_host: PLACEHOLDER_URL_HOST,
-        })
-    } else {
-        Ok(())
-    }
-}
-
 use crate::AuthService;
-use crate::cache::{SessionCache, SessionCacheConfig};
+use crate::cache::SessionCacheConfig;
 use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
 use crate::manager_builder::{BuilderError, ManagerBuilder};
@@ -156,8 +109,9 @@ use crate::manager_builder::{BuilderError, ManagerBuilder};
 /// limiter), the session config, the cookie config, and the
 /// passkey config. The signup flow is part of the only login UX and is
 /// configured implicitly; hosts that want to override its defaults call
-/// [`signup`](Self::signup). Construction of the core managers happens in
-/// [`build`](Self::build).
+/// [`signup`](Self::signup). The portable assembly is delegated to
+/// [`AuthCore::builder`] in [`build`](Self::build); this builder adds the
+/// cookie / CSRF decisions on top.
 pub struct AuthServiceBuilder {
     storage: Storage,
     clock: Option<Arc<dyn Clock>>,
@@ -344,125 +298,88 @@ impl AuthServiceBuilder {
     }
 
     /// Construct the managers and return a wired-up [`AuthService`].
+    ///
+    /// The portable assembly (collaborator defaults, URL / lifetime
+    /// validation, notifier + cache wiring, manager construction) is
+    /// delegated to [`AuthCore::builder`]; any [`AssemblyError`] it returns is
+    /// mapped onto the matching [`BuilderError`] variant. This method then
+    /// adds the HTTP decisions — the cookie `Max-Age` vs session-lifetime
+    /// check here, the `__Host-`/`__Secure-` prefix rules and the CSRF posture
+    /// in [`ManagerBuilder::build`].
+    ///
+    /// [`AssemblyError`]: doorman_core::assembly::AssemblyError
     pub fn build(self) -> Result<AuthService, BuilderError> {
-        let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock));
-        let email: Arc<dyn EmailSender> = self.email.ok_or(BuilderError::MissingEmailSender)?;
-        let passkey_config = self.passkey.ok_or(BuilderError::MissingPasskeyConfig)?;
-        let audit: Arc<dyn AuditSink> = self.audit.ok_or(BuilderError::MissingAuditSink)?;
-        let limiter: Arc<dyn RateLimiter> =
-            self.rate_limiter.ok_or(BuilderError::MissingRateLimiter)?;
-        let metrics: Arc<dyn Metrics> = self
-            .metrics
-            .unwrap_or_else(|| Arc::new(NoopMetrics) as Arc<dyn Metrics>);
         let session_config = self.session_config.unwrap_or_default();
-
-        // One renderer brands every flow and every notice. The host wires it
-        // with `.emails(..)`; left unset it falls back to the stock copy.
-        // There is no per-flow override, so partial branding is structurally
-        // impossible.
-        let emails: Arc<dyn EmailTemplates> = self
-            .emails
-            .unwrap_or_else(|| Arc::new(DefaultEmailTemplates));
-        let signup_config = self.signup.unwrap_or_default();
-        let recovery_config = self.recovery.unwrap_or_default();
-        let account_config = self.account.unwrap_or_default();
-
-        // Fail closed on every misconfigured value before constructing any
-        // manager: a template that drops the token, a template still pointing
-        // at the stock example.invalid host (a valid link to a domain the host
-        // does not own — effectively dead), a zero/absurd lifetime (which would
-        // otherwise panic when converted to chrono), or a cookie that outlives
-        // its session.
-        validate_url_template("signup", &signup_config.url_template)?;
-        validate_url_template("recovery", &recovery_config.url_template)?;
-        validate_url_template("account email change", &account_config.url_template)?;
-        reject_placeholder_url("signup", &signup_config.url_template)?;
-        reject_placeholder_url("recovery", &recovery_config.url_template)?;
-        reject_placeholder_url("account email change", &account_config.url_template)?;
-        validate_lifetime("session lifetime", session_config.lifetime)?;
-        validate_lifetime("signup token_lifetime", signup_config.token_lifetime)?;
-        validate_lifetime("recovery token_lifetime", recovery_config.token_lifetime)?;
-        validate_lifetime("account token_lifetime", account_config.token_lifetime)?;
-
+        let session_lifetime = session_config.lifetime;
         let cookie_config = self.cookie_config.unwrap_or_default();
-        if cookie_config.session_max_age > session_config.lifetime {
+
+        // Delegate the portable half. Each input is threaded through only when
+        // the host set it, so the core builder applies the same defaults this
+        // builder used to. The required-input and validation errors come back
+        // as `AssemblyError` and map onto the matching `BuilderError` variant.
+        let mut core_builder = AuthCore::builder(self.storage).session(session_config);
+        if let Some(clock) = self.clock {
+            core_builder = core_builder.clock(clock);
+        }
+        if let Some(audit) = self.audit {
+            core_builder = core_builder.audit(audit);
+        }
+        if let Some(email) = self.email {
+            core_builder = core_builder.email(email);
+        }
+        if let Some(emails) = self.emails {
+            core_builder = core_builder.emails(emails);
+        }
+        if let Some(limiter) = self.rate_limiter {
+            core_builder = core_builder.limiter(limiter);
+        }
+        if let Some(metrics) = self.metrics {
+            core_builder = core_builder.metrics(metrics);
+        }
+        if let Some(cache_config) = self.cache_config {
+            core_builder = core_builder.cache(cache_config);
+        }
+        if let Some(passkey) = self.passkey {
+            core_builder = core_builder.passkey(passkey);
+        }
+        if let Some(signup) = self.signup {
+            core_builder = core_builder.signup(signup);
+        }
+        if let Some(recovery) = self.recovery {
+            core_builder = core_builder.recovery(recovery);
+        }
+        if let Some(account) = self.account {
+            core_builder = core_builder.account(account);
+        }
+
+        let core = core_builder.build()?;
+
+        // The cookie Max-Age vs session-lifetime check is HTTP-specific: it
+        // compares a cookie attribute against the session lifetime. Run it
+        // after the portable assembly so a misconfigured lifetime (validated
+        // in core) is reported as the lifetime error, not masked by a cookie
+        // that now "exceeds" a rejected lifetime.
+        if cookie_config.session_max_age > session_lifetime {
             return Err(BuilderError::CookieMaxAgeExceedsSessionLifetime {
                 cookie_max_age: cookie_config.session_max_age,
-                session_lifetime: session_config.lifetime,
+                session_lifetime,
             });
         }
-        let notifier = SecurityEmailNotifier::new(email.clone(), emails.clone());
-
-        // Build the cache up-front so its invalidator can be attached to
-        // the `SessionManager` before any dependent manager clones it.
-        // Every clone captures the same invalidation hook, so revocations
-        // routed through manager logout / revoke paths evict the cache for
-        // free. The security notifier is installed the same way — before the
-        // manager is cloned into `CoreDeps` — so every clone carries it.
-        let cache = SessionCache::new(self.cache_config.unwrap_or_default());
-
-        let session_manager = SessionManager::new(
-            self.storage.sessions.clone(),
-            clock.clone(),
-            audit.clone(),
-            session_config,
-        )
-        .with_invalidation_hook(cache.invalidator())
-        .with_security_notifier(notifier.clone());
-
-        // Bundle the shared collaborators once. Every manager below reads
-        // what it needs from this context instead of re-threading each
-        // store / clock / sink through its own positional constructor.
-        let deps = CoreDeps::new(
-            clock,
-            audit,
-            email,
-            emails,
-            notifier,
-            limiter,
-            session_manager.clone(),
-            self.storage.clone(),
-        )
-        .with_metrics(metrics.clone());
 
         let mut builder = ManagerBuilder::default()
-            .session_manager(session_manager)
-            .user_store(deps.users.clone())
-            .session_cache(cache)
-            .metrics(metrics);
-
-        builder = builder.cookie(cookie_config);
+            .session_manager(core.session_manager.clone())
+            .user_store(core.user_store.clone())
+            .session_cache(core.cache.clone())
+            .metrics(core.metrics.clone())
+            .cookie(cookie_config)
+            .passkey_manager(core.passkey)
+            .signup_manager(core.signup)
+            .recovery_manager(core.recovery)
+            .account_manager(core.account);
 
         if let Some(csrf_config) = self.csrf_config {
             builder = builder.csrf(csrf_config);
         }
-
-        let passkey_manager =
-            PasskeyManager::new(&deps, passkey_config).map_err(BuilderError::Passkey)?;
-
-        // Signup and recovery share the same dependencies and consume/finish
-        // skeleton; build one EnrollmentFlow and hand a clone to each manager.
-        let enrollment_flow = EnrollmentFlow::new(&deps, passkey_manager.clone());
-
-        // Signup is part of the only login UX — wire it implicitly so the
-        // host doesn't have to opt in. Hosts that need to tune the rate
-        // limits or token lifetime call `.signup(...)`.
-        let signup_manager = SignupManager::new(enrollment_flow.clone(), signup_config);
-
-        // Recovery rides on the same primitives as signup and is similarly
-        // always-on. Hosts override the defaults via `.recovery(...)` to
-        // tune the aggressive rate limits.
-        let recovery_manager = RecoveryManager::new(enrollment_flow, recovery_config)?;
-
-        // The account manager reads its collaborators (stores, clock, audit,
-        // email transport, session manager) from the same shared context.
-        let account_manager = AccountManager::new(&deps, account_config);
-
-        builder = builder
-            .passkey_manager(passkey_manager)
-            .signup_manager(signup_manager)
-            .recovery_manager(recovery_manager)
-            .account_manager(account_manager);
 
         if let Some(origin) = self.external_origin {
             builder = builder.external_origin(origin);

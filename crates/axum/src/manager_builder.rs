@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use doorman_core::assembly::AssemblyError;
 use doorman_core::metrics::{Metrics, NoopMetrics};
 use doorman_core::session::SessionManager;
 use doorman_core::storage::UserStore;
@@ -31,6 +32,15 @@ use doorman_core::recovery::RecoveryManager;
 use doorman_core::signup::SignupManager;
 
 /// Errors returned when the Axum auth surface is incompletely configured.
+///
+/// Splits into two halves. The HTTP-specific variants (the missing-manager
+/// inputs to the low-level builder, the CSRF decision, the cookie-prefix
+/// rules, and the cookie `Max-Age` check) originate in this crate. The
+/// portable variants (missing collaborators, URL-template and lifetime
+/// validation, the recovery cool-down floor) originate in
+/// [`doorman_core::assembly`] and are carried here unchanged so a host sees
+/// one error type — the [`From<AssemblyError>`](AssemblyError) mapping below
+/// re-projects each core variant onto the matching one here.
 #[derive(Debug, thiserror::Error)]
 pub enum BuilderError {
     /// No `SessionManager` was supplied to the low-level builder.
@@ -180,6 +190,35 @@ pub enum BuilderError {
         /// The session lifetime it exceeds.
         session_lifetime: std::time::Duration,
     },
+}
+
+impl From<AssemblyError> for BuilderError {
+    /// Re-project a core assembly failure onto the matching `BuilderError`
+    /// variant so the high-level builder surfaces one error type. Every
+    /// portable variant has a same-named counterpart here.
+    fn from(err: AssemblyError) -> Self {
+        match err {
+            AssemblyError::MissingEmailSender => BuilderError::MissingEmailSender,
+            AssemblyError::MissingAuditSink => BuilderError::MissingAuditSink,
+            AssemblyError::MissingRateLimiter => BuilderError::MissingRateLimiter,
+            AssemblyError::MissingPasskeyConfig => BuilderError::MissingPasskeyConfig,
+            AssemblyError::Passkey(e) => BuilderError::Passkey(e),
+            AssemblyError::InvalidUrlTemplate { flow, placeholder } => {
+                BuilderError::InvalidUrlTemplate { flow, placeholder }
+            }
+            AssemblyError::PlaceholderUrlTemplate {
+                flow,
+                placeholder_host,
+            } => BuilderError::PlaceholderUrlTemplate {
+                flow,
+                placeholder_host,
+            },
+            AssemblyError::RecoveryCooldownTooShort(e) => BuilderError::RecoveryCooldownTooShort(e),
+            AssemblyError::InvalidLifetime { field, value, max } => {
+                BuilderError::InvalidLifetime { field, value, max }
+            }
+        }
+    }
 }
 
 /// Low-level builder for hosts that construct the core managers
