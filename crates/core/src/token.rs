@@ -12,7 +12,7 @@ use std::fmt;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rand::RngCore;
+use rand::TryRngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -65,7 +65,9 @@ pub fn hash_token(token: &str) -> TokenHash {
 /// and the verification flows.
 pub(crate) fn generate_token() -> (String, TokenHash) {
     let mut bytes = [0u8; TOKEN_BYTES];
-    OsRng.fill_bytes(&mut bytes);
+    OsRng
+        .try_fill_bytes(&mut bytes)
+        .expect("OS CSPRNG must produce token bytes");
     let token = URL_SAFE_NO_PAD.encode(bytes);
     let hash = hash_token(&token);
     (token, hash)
