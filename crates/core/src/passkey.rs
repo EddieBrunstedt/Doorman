@@ -845,6 +845,34 @@ impl PasskeyManager {
     ) -> Result<()> {
         self.sessions.ensure_not_in_recovery_cooldown(session)?;
         let user_id = session.user_id;
+        self.remove_passkey_for(
+            user_id,
+            credential_id,
+            Actor::Subject {
+                ip: context.ip,
+                user_agent: context.user_agent,
+            },
+        )
+        .await
+    }
+
+    /// Remove `credential_id` from `user_id`, attributing the audit event to
+    /// `actor`. The id-keyed core both self-service
+    /// [`remove_passkey`](Self::remove_passkey) and the operator removal flow
+    /// drive, so the resolve-verify-ownership-delete cascade plus the audit
+    /// and best-effort notice are shared.
+    ///
+    /// The core resolves the credential and verifies it belongs to `user_id`
+    /// before deleting: a missing credential is [`Error::PasskeyNotFound`] and
+    /// one owned by a different user is [`Error::PasskeyOwnershipMismatch`].
+    /// Binding ownership to the passed `user_id` is what keeps a removal named
+    /// against one user from touching another user's credential.
+    pub(crate) async fn remove_passkey_for(
+        &self,
+        user_id: UserId,
+        credential_id: &[u8],
+        actor: Actor,
+    ) -> Result<()> {
         let Some(credential) = self
             .credentials
             .find_passkey_by_credential_id(credential_id)
@@ -861,10 +889,7 @@ impl PasskeyManager {
         self.audit
             .emit(AuditEvent {
                 timestamp: self.clock.now(),
-                actor: Actor::Subject {
-                    ip: context.ip,
-                    user_agent: context.user_agent,
-                },
+                actor,
                 kind: AuditEventKind::CredentialRemoved { user_id },
             })
             .await;

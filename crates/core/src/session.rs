@@ -504,19 +504,38 @@ impl SessionManager {
         if !is_current {
             self.ensure_not_in_recovery_cooldown(current_session)?;
         }
-        let Some(session) = self.sessions.find_session_by_id(session_id).await? else {
-            tracing::warn!(outcome = "not_found", "session revoke failed");
-            return Err(Error::SessionNotFound);
-        };
-        if session.user_id != user.id {
-            tracing::warn!(outcome = "not_owned", "session revoke failed");
-            return Err(Error::SessionNotFound);
-        }
-        self.revoke_session(session).await?;
+        self.revoke_session_for_target(user.id, session_id).await?;
         if !is_current && let Some(notifier) = &self.notifier {
             notifier.other_session_revoked(user).await;
         }
         Ok(())
+    }
+
+    /// Revoke `session_id` after asserting it belongs to `target_user_id`,
+    /// firing the invalidation hook and emitting the audit event through
+    /// [`revoke_session`](Self::revoke_session). The id-keyed core both
+    /// self-service [`revoke_owned_session`](Self::revoke_owned_session) and
+    /// the operator single-session-revoke flow drive.
+    ///
+    /// Reads the target once and rejects a missing session — or one owned by a
+    /// different user — with [`Error::SessionNotFound`], so the ownership
+    /// re-bind is part of the core rather than a concern the operator path
+    /// could skip. The cool-down, current-session protection, and notice are
+    /// the self-service caller's concerns, layered on top.
+    pub(crate) async fn revoke_session_for_target(
+        &self,
+        target_user_id: UserId,
+        session_id: SessionId,
+    ) -> Result<()> {
+        let Some(session) = self.sessions.find_session_by_id(session_id).await? else {
+            tracing::warn!(outcome = "not_found", "session revoke failed");
+            return Err(Error::SessionNotFound);
+        };
+        if session.user_id != target_user_id {
+            tracing::warn!(outcome = "not_owned", "session revoke failed");
+            return Err(Error::SessionNotFound);
+        }
+        self.revoke_session(session).await
     }
 
     /// Delete every session past its expiry, returning the number removed.

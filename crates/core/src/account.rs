@@ -31,8 +31,8 @@ use crate::email::{Email, EmailSender, EmailTemplates};
 use crate::error::{Error, Result};
 use crate::session::{SessionContext, SessionManager};
 use crate::storage::{
-    PasskeyChallengeStore, PasskeyCredentialStore, Session, User, UserStore, VerificationPurpose,
-    VerificationTokenStore,
+    PasskeyChallengeStore, PasskeyCredentialStore, Session, User, UserId, UserStore,
+    VerificationPurpose, VerificationTokenStore,
 };
 use crate::token::hash_token;
 use crate::verification::{self, TOKEN_PLACEHOLDER};
@@ -281,7 +281,29 @@ impl AccountManager {
     pub async fn delete_account(&self, session: &Session, context: SessionContext) -> Result<()> {
         self.sessions.ensure_not_in_recovery_cooldown(session)?;
         let user_id = session.user_id;
+        self.delete_account_for(
+            user_id,
+            Actor::Subject {
+                ip: context.ip,
+                user_agent: context.user_agent,
+            },
+        )
+        .await
+    }
 
+    /// Run the full account-deletion cascade for `user_id`, attributing the
+    /// audit event to `actor`. The id-keyed core both self-service
+    /// [`delete_account`](Self::delete_account) and the operator delete flow
+    /// drive, so the cache-invalidation + audit cascade is shared rather than
+    /// re-issued from raw store primitives.
+    ///
+    /// The cascade ordering is load-bearing: revoke every session first
+    /// (through the [`SessionManager`] so its invalidation hook fires and the
+    /// cache is evicted while the rest of the rows still exist), then
+    /// credentials, then verification tokens of every purpose, then pending
+    /// registration ceremonies, and finally the user row — leaving no orphaned
+    /// rows and never orphaning the parent on a mid-cascade failure.
+    pub(crate) async fn delete_account_for(&self, user_id: UserId, actor: Actor) -> Result<()> {
         // Revoke through the session manager so the cache invalidation hook
         // fires (a raw `delete_sessions_for_user` would leave the cache warm).
         self.sessions.revoke_all_for_user(user_id).await?;
@@ -300,7 +322,12 @@ impl AccountManager {
         // The user row last, so a failure midway never orphans the parent.
         self.users.delete_user(user_id).await?;
 
-        self.emit(&context, AuditEventKind::AccountDeleted { user_id })
+        self.audit
+            .emit(AuditEvent {
+                timestamp: self.now(),
+                actor,
+                kind: AuditEventKind::AccountDeleted { user_id },
+            })
             .await;
         tracing::info!(outcome = "deleted", "account deleted");
         Ok(())
