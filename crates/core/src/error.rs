@@ -99,6 +99,16 @@ pub enum Error {
         /// The configured cap that was hit.
         limit: u32,
     },
+
+    /// An operator actor descriptor field exceeded its documented length
+    /// bound and was rejected rather than silently truncated.
+    #[error("operator actor field `{field}` exceeds the {limit}-byte limit")]
+    InvalidOperatorActor {
+        /// Which field was too long (e.g. `"id"`, `"correlation_id"`).
+        field: &'static str,
+        /// The byte-length cap that was exceeded.
+        limit: usize,
+    },
 }
 
 /// Opaque storage-backend failure.

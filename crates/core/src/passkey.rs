@@ -27,7 +27,7 @@ use webauthn_rs::prelude::{
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
 
-use crate::audit::{AuditEvent, AuditEventKind, AuditSink, AuthFailureReason};
+use crate::audit::{Actor, AuditEvent, AuditEventKind, AuditSink, AuthFailureReason};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
@@ -494,8 +494,10 @@ impl PasskeyManager {
         self.audit
             .emit(AuditEvent {
                 timestamp: now,
-                ip: context.ip,
-                user_agent: context.user_agent,
+                actor: Actor::Subject {
+                    ip: context.ip,
+                    user_agent: context.user_agent,
+                },
                 kind: AuditEventKind::CredentialAdded { user_id },
             })
             .await;
@@ -552,8 +554,10 @@ impl PasskeyManager {
         self.audit
             .emit(AuditEvent {
                 timestamp: now,
-                ip: context.ip.clone(),
-                user_agent: context.user_agent.clone(),
+                actor: Actor::Subject {
+                    ip: context.ip.clone(),
+                    user_agent: context.user_agent.clone(),
+                },
                 kind: AuditEventKind::AuthenticationFailed { user_id, reason },
             })
             .await;
@@ -751,8 +755,10 @@ impl PasskeyManager {
         self.audit
             .emit(AuditEvent {
                 timestamp: now,
-                ip: context.ip.clone(),
-                user_agent: context.user_agent.clone(),
+                actor: Actor::Subject {
+                    ip: context.ip.clone(),
+                    user_agent: context.user_agent.clone(),
+                },
                 kind: AuditEventKind::LoginSucceeded { user_id },
             })
             .await;
@@ -845,8 +851,10 @@ impl PasskeyManager {
         self.audit
             .emit(AuditEvent {
                 timestamp: self.clock.now(),
-                ip: context.ip,
-                user_agent: context.user_agent,
+                actor: Actor::Subject {
+                    ip: context.ip,
+                    user_agent: context.user_agent,
+                },
                 kind: AuditEventKind::CredentialRemoved { user_id },
             })
             .await;

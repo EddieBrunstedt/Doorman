@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
-use crate::audit::{AuditEvent, AuditEventKind, RecoveryFailureReason};
+use crate::audit::{Actor, AuditEvent, AuditEventKind, RecoveryFailureReason};
 use crate::context::CoreDeps;
 use crate::email::{Email, EmailSender, EmailTemplates};
 use crate::error::{Error, Result};
@@ -310,8 +310,10 @@ impl EnrollmentFlow {
             .audit()
             .emit(AuditEvent {
                 timestamp: self.passkey.clock().now(),
-                ip: context.ip.clone(),
-                user_agent: context.user_agent.clone(),
+                actor: Actor::Subject {
+                    ip: context.ip.clone(),
+                    user_agent: context.user_agent.clone(),
+                },
                 kind,
             })
             .await;

@@ -11,7 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
+use crate::audit::{Actor, AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
@@ -246,8 +246,10 @@ impl SessionManager {
         self.audit
             .emit(AuditEvent {
                 timestamp: now,
-                ip: context.ip,
-                user_agent: context.user_agent,
+                actor: Actor::Subject {
+                    ip: context.ip,
+                    user_agent: context.user_agent,
+                },
                 kind: AuditEventKind::SessionCreated {
                     user_id,
                     session_id: session.id,
@@ -306,8 +308,10 @@ impl SessionManager {
             self.audit
                 .emit(AuditEvent {
                     timestamp: now,
-                    ip: session.ip.clone(),
-                    user_agent: session.user_agent.clone(),
+                    actor: Actor::Subject {
+                        ip: session.ip.clone(),
+                        user_agent: session.user_agent.clone(),
+                    },
                     kind: AuditEventKind::SessionExpired {
                         user_id: session.user_id,
                         session_id: session.id,
@@ -522,8 +526,10 @@ impl SessionManager {
         self.audit
             .emit(AuditEvent {
                 timestamp: self.clock.now(),
-                ip: session.ip,
-                user_agent: session.user_agent,
+                actor: Actor::Subject {
+                    ip: session.ip,
+                    user_agent: session.user_agent,
+                },
                 kind: AuditEventKind::SessionRevoked {
                     user_id: session.user_id,
                     session_id: session.id,

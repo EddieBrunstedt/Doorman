@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::error::{Error, Result};
 use crate::storage::{SessionId, UserId};
 
 /// One audit record emitted by an auth flow.
@@ -17,12 +18,100 @@ use crate::storage::{SessionId, UserId};
 pub struct AuditEvent {
     /// When the event occurred.
     pub timestamp: DateTime<Utc>,
-    /// Client IP associated with the event, if known.
-    pub ip: Option<String>,
-    /// Client user-agent associated with the event, if known.
-    pub user_agent: Option<String>,
-    /// The specific event and its payload.
+    /// Who acted. The subject's or the operator's network metadata lives
+    /// inside this descriptor so the two principals can never be confused.
+    pub actor: Actor,
+    /// The specific event and its payload. Its `user_id` always identifies
+    /// the *subject* of the event, regardless of who acted.
     pub kind: AuditEventKind,
+}
+
+/// Who performed the action recorded by an [`AuditEvent`].
+///
+/// The event's [`AuditEventKind`] always names the *subject* (the account the
+/// action targets). This descriptor names the *actor*, and carries that
+/// actor's network metadata, so a self-service action and an operator action
+/// against the same subject are no longer indistinguishable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "actor_type", rename_all = "snake_case")]
+pub enum Actor {
+    /// The subject acted on themselves; doorman verified them via the session.
+    /// The `ip` / `user_agent` are the subject's own request metadata.
+    Subject {
+        /// The subject's client IP, if known.
+        ip: Option<String>,
+        /// The subject's client user-agent, if known.
+        user_agent: Option<String>,
+    },
+    /// A host-supplied operator acted on the subject. Recorded verbatim and
+    /// never verified by doorman.
+    Operator(OperatorActor),
+}
+
+/// A host-supplied operator that acted on a subject's behalf.
+///
+/// Every field is recorded verbatim and is **never verified** by doorman: the
+/// audit row witnesses only that some caller asserted this identity. Because
+/// the host may derive these values from attacker-influenceable input, doorman
+/// stores them unmodified (fidelity) but consumers must neutralize them on
+/// render (e.g. strip control characters before writing to a text log).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorActor {
+    /// The operator's identity, verbatim and unverified.
+    pub id: String,
+    /// An optional correlation id tying the action back to the host's own
+    /// authorization log.
+    pub correlation_id: Option<String>,
+    /// The *operator's* client IP, if the host captured one.
+    pub ip: Option<String>,
+    /// The *operator's* client user-agent, if the host captured one.
+    pub user_agent: Option<String>,
+}
+
+impl OperatorActor {
+    /// Maximum byte length accepted for [`id`](Self::id) and
+    /// [`correlation_id`](Self::correlation_id). A free-form, host-supplied
+    /// value with no bound is an audit-store bloat / cost vector, so the
+    /// constructor caps each at 1024 bytes.
+    pub const MAX_FIELD_LEN: usize = 1024;
+
+    /// Build an [`OperatorActor`], recording every field **verbatim** — no
+    /// control-character stripping or other neutralization (that is the
+    /// consumer's job on render).
+    ///
+    /// The `id` and `correlation_id` are each bounded to
+    /// [`MAX_FIELD_LEN`](Self::MAX_FIELD_LEN) bytes. A value that exceeds the
+    /// bound is **rejected** with [`Error::InvalidOperatorActor`] rather than
+    /// silently truncated, so a caller never persists a quietly mangled
+    /// identity.
+    pub fn new(
+        id: impl Into<String>,
+        correlation_id: Option<String>,
+        ip: Option<String>,
+        user_agent: Option<String>,
+    ) -> Result<Self> {
+        let id = id.into();
+        if id.len() > Self::MAX_FIELD_LEN {
+            return Err(Error::InvalidOperatorActor {
+                field: "id",
+                limit: Self::MAX_FIELD_LEN,
+            });
+        }
+        if let Some(correlation_id) = &correlation_id
+            && correlation_id.len() > Self::MAX_FIELD_LEN
+        {
+            return Err(Error::InvalidOperatorActor {
+                field: "correlation_id",
+                limit: Self::MAX_FIELD_LEN,
+            });
+        }
+        Ok(Self {
+            id,
+            correlation_id,
+            ip,
+            user_agent,
+        })
+    }
 }
 
 /// Specific security event captured in an [`AuditEvent`].

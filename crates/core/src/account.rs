@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::audit::{AuditEvent, AuditEventKind, AuditSink};
+use crate::audit::{Actor, AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::{Email, EmailSender, EmailTemplates};
@@ -120,8 +120,10 @@ impl AccountManager {
         self.audit
             .emit(AuditEvent {
                 timestamp: self.now(),
-                ip: context.ip.clone(),
-                user_agent: context.user_agent.clone(),
+                actor: Actor::Subject {
+                    ip: context.ip.clone(),
+                    user_agent: context.user_agent.clone(),
+                },
                 kind,
             })
             .await;

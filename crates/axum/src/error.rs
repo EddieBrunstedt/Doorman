@@ -98,6 +98,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         Error::RecoveryCooldownActive => (StatusCode::CONFLICT, "recovery_cooldown_active"),
         Error::ResourceLimitExceeded { .. } => (StatusCode::CONFLICT, "resource_limit_exceeded"),
+        Error::InvalidOperatorActor { .. } => (StatusCode::BAD_REQUEST, "invalid_operator_actor"),
     }
 }
 
