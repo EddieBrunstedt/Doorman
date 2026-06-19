@@ -301,26 +301,11 @@ pub(crate) fn passkey_item(credential: &StoredPasskey) -> Item {
     item
 }
 
-pub(crate) fn passkey_from_item(item: &Item) -> StorageResult<StoredPasskey> {
-    Ok(StoredPasskey {
-        credential_id: client::get_b(item, "credential_id")?,
-        user_id: UserId(client::get_uuid(item, "user_id")?),
-        passkey: client::get_b(item, "passkey")?,
-        name: client::get_opt_s(item, "name")?,
-        created_at: client::get_ts(item, "created_at")?,
-        last_used_at: client::get_opt_ts(item, "last_used_at")?,
-        aaguid: aaguid_from_item(item)?,
-        transports: client::get_list_s(item, "transports")?,
-        backup_eligible: client::get_bool(item, "backup_eligible")?,
-        backup_state: client::get_bool(item, "backup_state")?,
-        recovery_cooldown_until: client::get_opt_ts(item, "recovery_cooldown_until")?,
-    })
-}
-
-/// Project a passkey item to its metadata-only summary. Deliberately never reads
-/// the `passkey` blob attribute, satisfying the contract that summaries are
-/// derived without deserialising the credential.
-pub(crate) fn passkey_summary_from_item(item: &Item) -> StorageResult<PasskeySummary> {
+/// Read every passkey metadata attribute — everything except the opaque
+/// `passkey` blob — into a [`PasskeySummary`]. Both decoders share this single
+/// field assembly; the summary path returns it directly and the full decoder
+/// adds the blob, so neither re-lists the metadata fields.
+fn passkey_meta_from_item(item: &Item) -> StorageResult<PasskeySummary> {
     Ok(PasskeySummary {
         credential_id: client::get_b(item, "credential_id")?,
         user_id: UserId(client::get_uuid(item, "user_id")?),
@@ -333,6 +318,30 @@ pub(crate) fn passkey_summary_from_item(item: &Item) -> StorageResult<PasskeySum
         backup_state: client::get_bool(item, "backup_state")?,
         recovery_cooldown_until: client::get_opt_ts(item, "recovery_cooldown_until")?,
     })
+}
+
+pub(crate) fn passkey_from_item(item: &Item) -> StorageResult<StoredPasskey> {
+    let meta = passkey_meta_from_item(item)?;
+    Ok(StoredPasskey {
+        credential_id: meta.credential_id,
+        user_id: meta.user_id,
+        passkey: client::get_b(item, "passkey")?,
+        name: meta.name,
+        created_at: meta.created_at,
+        last_used_at: meta.last_used_at,
+        aaguid: meta.aaguid,
+        transports: meta.transports,
+        backup_eligible: meta.backup_eligible,
+        backup_state: meta.backup_state,
+        recovery_cooldown_until: meta.recovery_cooldown_until,
+    })
+}
+
+/// Project a passkey item to its metadata-only summary. Deliberately never reads
+/// the `passkey` blob attribute, satisfying the contract that summaries are
+/// derived without deserialising the credential.
+pub(crate) fn passkey_summary_from_item(item: &Item) -> StorageResult<PasskeySummary> {
+    passkey_meta_from_item(item)
 }
 
 fn aaguid_from_item(item: &Item) -> StorageResult<Option<Uuid>> {

@@ -656,37 +656,10 @@ macro_rules! sqlx_stores {
             }
         }
 
-        fn row_to_passkey(
-            row: $row,
-        ) -> $crate::stores::__reexport::StorageResult<$crate::stores::__reexport::StoredPasskey> {
-            use ::sqlx::Row as _;
-            let credential_id: Vec<u8> =
-                row.try_get("credential_id").map_err($crate::common::storage)?;
-            let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage)?;
-            let passkey: Vec<u8> = row.try_get("passkey").map_err($crate::common::storage)?;
-            let aaguid: Option<String> = row.try_get("aaguid").map_err($crate::common::storage)?;
-            let transports: String = row.try_get("transports").map_err($crate::common::storage)?;
-            Ok($crate::stores::__reexport::StoredPasskey {
-                credential_id,
-                user_id: $crate::stores::__reexport::UserId(
-                    $crate::common::uuid_from_row(user_id_bytes)?,
-                ),
-                passkey,
-                name: row.try_get("name").map_err($crate::common::storage)?,
-                created_at: row.try_get("created_at").map_err($crate::common::storage)?,
-                last_used_at: row.try_get("last_used_at").map_err($crate::common::storage)?,
-                aaguid: $crate::common::aaguid_from_str(aaguid)?,
-                transports: $crate::common::transports_from_str(&transports),
-                backup_eligible: row
-                    .try_get("backup_eligible")
-                    .map_err($crate::common::storage)?,
-                backup_state: row.try_get("backup_state").map_err($crate::common::storage)?,
-                recovery_cooldown_until: row
-                    .try_get("recovery_cooldown_until")
-                    .map_err($crate::common::storage)?,
-            })
-        }
-
+        // Read every passkey metadata column — everything except the `passkey`
+        // blob — into a `PasskeySummary`. Both decoders share this single field
+        // assembly: the summary path returns it directly and the full decoder
+        // adds the blob, so neither re-lists the metadata columns.
         fn row_to_passkey_summary(
             row: $row,
         ) -> $crate::stores::__reexport::StorageResult<
@@ -715,6 +688,27 @@ macro_rules! sqlx_stores {
                 recovery_cooldown_until: row
                     .try_get("recovery_cooldown_until")
                     .map_err($crate::common::storage)?,
+            })
+        }
+
+        fn row_to_passkey(
+            row: $row,
+        ) -> $crate::stores::__reexport::StorageResult<$crate::stores::__reexport::StoredPasskey> {
+            use ::sqlx::Row as _;
+            let passkey: Vec<u8> = row.try_get("passkey").map_err($crate::common::storage)?;
+            let meta = row_to_passkey_summary(row)?;
+            Ok($crate::stores::__reexport::StoredPasskey {
+                credential_id: meta.credential_id,
+                user_id: meta.user_id,
+                passkey,
+                name: meta.name,
+                created_at: meta.created_at,
+                last_used_at: meta.last_used_at,
+                aaguid: meta.aaguid,
+                transports: meta.transports,
+                backup_eligible: meta.backup_eligible,
+                backup_state: meta.backup_state,
+                recovery_cooldown_until: meta.recovery_cooldown_until,
             })
         }
 

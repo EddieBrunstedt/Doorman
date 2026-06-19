@@ -314,25 +314,11 @@ pub(crate) fn passkey_to_doc(cred: &StoredPasskey) -> Document {
     doc
 }
 
-pub(crate) fn passkey_from_doc(doc: &Document) -> StorageResult<StoredPasskey> {
-    Ok(StoredPasskey {
-        credential_id: get_bytes(doc, "credential_id")?,
-        user_id: UserId(get_uuid(doc, "user_id")?),
-        passkey: get_bytes(doc, "passkey")?,
-        name: get_opt_str(doc, "name")?,
-        created_at: get_dt(doc, "created_at")?,
-        last_used_at: get_opt_dt(doc, "last_used_at")?,
-        aaguid: get_opt_uuid(doc, "aaguid")?,
-        transports: get_str_array(doc, "transports")?,
-        backup_eligible: get_bool(doc, "backup_eligible")?,
-        backup_state: get_bool(doc, "backup_state")?,
-        recovery_cooldown_until: get_opt_dt(doc, "recovery_cooldown_until")?,
-    })
-}
-
-/// Project a passkey document to its metadata-only summary without reading the
-/// `passkey` blob. The `passkey` field is intentionally not accessed here.
-pub(crate) fn passkey_summary_from_doc(doc: &Document) -> StorageResult<PasskeySummary> {
+/// Read every passkey metadata field — everything except the opaque `passkey`
+/// blob — into a [`PasskeySummary`]. Both decoders share this single field
+/// assembly; the summary path returns it directly and the full decoder adds the
+/// blob, so neither re-lists the metadata fields.
+fn passkey_meta_from_doc(doc: &Document) -> StorageResult<PasskeySummary> {
     Ok(PasskeySummary {
         credential_id: get_bytes(doc, "credential_id")?,
         user_id: UserId(get_uuid(doc, "user_id")?),
@@ -345,6 +331,29 @@ pub(crate) fn passkey_summary_from_doc(doc: &Document) -> StorageResult<PasskeyS
         backup_state: get_bool(doc, "backup_state")?,
         recovery_cooldown_until: get_opt_dt(doc, "recovery_cooldown_until")?,
     })
+}
+
+pub(crate) fn passkey_from_doc(doc: &Document) -> StorageResult<StoredPasskey> {
+    let meta = passkey_meta_from_doc(doc)?;
+    Ok(StoredPasskey {
+        credential_id: meta.credential_id,
+        user_id: meta.user_id,
+        passkey: get_bytes(doc, "passkey")?,
+        name: meta.name,
+        created_at: meta.created_at,
+        last_used_at: meta.last_used_at,
+        aaguid: meta.aaguid,
+        transports: meta.transports,
+        backup_eligible: meta.backup_eligible,
+        backup_state: meta.backup_state,
+        recovery_cooldown_until: meta.recovery_cooldown_until,
+    })
+}
+
+/// Project a passkey document to its metadata-only summary without reading the
+/// `passkey` blob. The `passkey` field is intentionally not accessed here.
+pub(crate) fn passkey_summary_from_doc(doc: &Document) -> StorageResult<PasskeySummary> {
+    passkey_meta_from_doc(doc)
 }
 
 pub(crate) fn pkreg_to_doc(value: &StoredPasskeyRegistration) -> Document {

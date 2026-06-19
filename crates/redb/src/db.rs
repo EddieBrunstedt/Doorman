@@ -223,11 +223,11 @@ pub(crate) fn encode_passkey(cred: &StoredPasskey) -> StorageResult<Vec<u8>> {
     serde_json::to_vec(&row).map_err(err)
 }
 
-pub(crate) fn decode_passkey(bytes: &[u8]) -> StorageResult<StoredPasskey> {
-    let row: PasskeyRow = serde_json::from_slice(bytes).map_err(err)?;
-    let credential_id = decode_hex(&row.credential_id_hex)?;
+/// Rebuild a full [`StoredPasskey`] from its stored row, parsing every metadata
+/// field and carrying the opaque `passkey` blob through verbatim.
+fn row_to_passkey(row: PasskeyRow) -> StorageResult<StoredPasskey> {
     Ok(StoredPasskey {
-        credential_id,
+        credential_id: decode_hex(&row.credential_id_hex)?,
         user_id: UserId(Uuid::parse_str(&row.user_id).map_err(err)?),
         passkey: row.passkey,
         name: row.name,
@@ -249,29 +249,17 @@ pub(crate) fn decode_passkey(bytes: &[u8]) -> StorageResult<StoredPasskey> {
     })
 }
 
+pub(crate) fn decode_passkey(bytes: &[u8]) -> StorageResult<StoredPasskey> {
+    let row: PasskeyRow = serde_json::from_slice(bytes).map_err(err)?;
+    row_to_passkey(row)
+}
+
 pub(crate) fn decode_passkey_summary(bytes: &[u8]) -> StorageResult<PasskeySummary> {
     let row: PasskeyRow = serde_json::from_slice(bytes).map_err(err)?;
-    let credential_id = decode_hex(&row.credential_id_hex)?;
-    Ok(PasskeySummary {
-        credential_id,
-        user_id: UserId(Uuid::parse_str(&row.user_id).map_err(err)?),
-        name: row.name,
-        created_at: parse_ts(&row.created_at)?,
-        last_used_at: row.last_used_at.as_deref().map(parse_ts).transpose()?,
-        aaguid: row
-            .aaguid
-            .as_deref()
-            .map(|s| Uuid::parse_str(s).map_err(err))
-            .transpose()?,
-        transports: row.transports,
-        backup_eligible: row.backup_eligible,
-        backup_state: row.backup_state,
-        recovery_cooldown_until: row
-            .recovery_cooldown_until
-            .as_deref()
-            .map(parse_ts)
-            .transpose()?,
-    })
+    // The record is one JSON blob, so the metadata fields share one assembly with
+    // the full decoder; the summary projects from the borrowed credential via the
+    // core `From<&StoredPasskey>` impl rather than re-listing every field.
+    Ok(PasskeySummary::from(&row_to_passkey(row)?))
 }
 
 fn decode_hex(s: &str) -> StorageResult<Vec<u8>> {
