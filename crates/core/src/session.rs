@@ -15,7 +15,7 @@ use crate::audit::{Actor, AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
-use crate::storage::{Session, SessionId, SessionStore, TokenHash, User, UserId};
+use crate::storage::{Session, SessionId, SessionStore, SessionSummary, TokenHash, User, UserId};
 use crate::token::generate_token;
 pub use crate::token::hash_token;
 
@@ -422,6 +422,16 @@ impl SessionManager {
             .collect())
     }
 
+    /// Return a [`SessionSummary`] for every still-valid session belonging to
+    /// `user_id`. Projects the full rows from [`list_for_user`](Self::list_for_user)
+    /// so the session `token_hash` never leaves the manager — the projection
+    /// is what an operator session listing is meant to consume.
+    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
+    pub async fn list_summaries_for_user(&self, user_id: UserId) -> Result<Vec<SessionSummary>> {
+        let sessions = self.list_for_user(user_id).await?;
+        Ok(sessions.iter().map(SessionSummary::from).collect())
+    }
+
     /// Revoke every session belonging to `user` *except* the caller's
     /// `current_session`. The retained session is the caller's own device on
     /// the typical "sign out everywhere else" path. Notifies the invalidation
@@ -546,6 +556,37 @@ impl SessionManager {
     }
 }
 
+impl From<Session> for SessionSummary {
+    fn from(value: Session) -> Self {
+        Self {
+            id: value.id,
+            user_id: value.user_id,
+            created_at: value.created_at,
+            expires_at: value.expires_at,
+            ip: value.ip,
+            user_agent: value.user_agent,
+            recovery_cooldown_until: value.recovery_cooldown_until,
+        }
+    }
+}
+
+impl From<&Session> for SessionSummary {
+    /// Borrowed projection for callers that hold full sessions and need
+    /// summaries without consuming them. Clones only the metadata fields —
+    /// never the `token_hash`, which is the point of the summary.
+    fn from(value: &Session) -> Self {
+        Self {
+            id: value.id,
+            user_id: value.user_id,
+            created_at: value.created_at,
+            expires_at: value.expires_at,
+            ip: value.ip.clone(),
+            user_agent: value.user_agent.clone(),
+            recovery_cooldown_until: value.recovery_cooldown_until,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,6 +598,42 @@ mod tests {
     #[test]
     fn default_config_builds() {
         let _ = SessionConfig::default();
+    }
+
+    /// The `SessionSummary` projection must carry every operator-useful field
+    /// across unchanged while dropping the live bearer-token hash. The hash
+    /// only exists on `Session`, so its absence on `SessionSummary` is a
+    /// compile-time guarantee; this asserts the surviving fields match.
+    #[test]
+    fn session_summary_preserves_fields_and_drops_token_hash() {
+        use crate::token::TokenHash;
+        use chrono::{TimeZone, Utc};
+
+        let created_at = Utc.timestamp_opt(1_000, 0).single().expect("ts");
+        let expires_at = Utc.timestamp_opt(2_000, 0).single().expect("ts");
+        let cooldown = Utc.timestamp_opt(1_500, 0).single().expect("ts");
+        let session = Session {
+            id: SessionId::new(),
+            user_id: UserId::new(),
+            token_hash: TokenHash([7u8; 32]),
+            created_at,
+            expires_at,
+            ip: Some("203.0.113.7".to_string()),
+            user_agent: Some("doorman-test/1.0".to_string()),
+            recovery_cooldown_until: Some(cooldown),
+        };
+
+        let summary = SessionSummary::from(&session);
+        assert_eq!(summary.id, session.id);
+        assert_eq!(summary.user_id, session.user_id);
+        assert_eq!(summary.created_at, created_at);
+        assert_eq!(summary.expires_at, expires_at);
+        assert_eq!(summary.ip, session.ip);
+        assert_eq!(summary.user_agent, session.user_agent);
+        assert_eq!(summary.recovery_cooldown_until, Some(cooldown));
+
+        // The owning projection drops the same field.
+        assert_eq!(SessionSummary::from(session.clone()), summary);
     }
 
     #[derive(Default)]

@@ -206,6 +206,34 @@ impl Session {
     }
 }
 
+/// Metadata-only view of a session.
+///
+/// Carries the fields an operator session listing needs (id, owner,
+/// timestamps, the request context captured at creation, and any recovery
+/// cool-down) *without* the [`Session::token_hash`]. The hash is the SHA-256
+/// of the live bearer token — a sensitive capability identifier — so it must
+/// never cross into an operator-facing view, its logs, or its JSON. The
+/// projection is produced in [`crate::session::SessionManager`] so
+/// `token_hash` never leaves the manager.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSummary {
+    /// Stable session identifier, matching [`Session::id`].
+    pub id: SessionId,
+    /// Owner of the session, matching [`Session::user_id`].
+    pub user_id: UserId,
+    /// When the session was created, matching [`Session::created_at`].
+    pub created_at: DateTime<Utc>,
+    /// When the session expires, matching [`Session::expires_at`].
+    pub expires_at: DateTime<Utc>,
+    /// Client IP captured at creation, mirroring [`Session::ip`].
+    pub ip: Option<String>,
+    /// Client user-agent captured at creation, mirroring [`Session::user_agent`].
+    pub user_agent: Option<String>,
+    /// Active recovery cool-down deadline, mirroring
+    /// [`Session::recovery_cooldown_until`].
+    pub recovery_cooldown_until: Option<DateTime<Utc>>,
+}
+
 /// Persistence contract for local user records.
 #[async_trait]
 pub trait UserStore: Send + Sync {
