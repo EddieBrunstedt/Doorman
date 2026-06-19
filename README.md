@@ -258,6 +258,7 @@ cargo bench -p doorman-sqlx --features sqlite
 - [`docs/security.md`](docs/security.md) — threat model, implemented guarantees, defaults, and disclosure policy.
 - [`docs/integration.md`](docs/integration.md) — wiring into Axum, custom stores, custom email/branding.
 - [`docs/operations.md`](docs/operations.md) — purging, configuration, rate limiting, observability, the single-tenant assumption.
+- [`docs/operators.md`](docs/operators.md) — operator flows, host authorization, the two-record audit pattern, and the operator threat model.
 
 API reference: `cargo doc --open`.
 

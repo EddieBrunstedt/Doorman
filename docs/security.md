@@ -10,6 +10,8 @@ doorman has one steady-state login method: passkeys/WebAuthn using the discovera
 
 Out of scope by design: password authentication, OAuth, TOTP, recovery codes, admin impersonation, roles/permissions, multi-tenancy, and general-purpose email login.
 
+doorman does ship **operator flows** — library-level operations a host invokes to act on a user other than the acting one (delete an account, remove a passkey, revoke sessions, list a user's inventory). They perform **no authorization**: the host's authorization is the single load-bearing control in front of them, and the operator actor is recorded verbatim, never verified. See [operators.md](operators.md) for the host authorization patterns, the two-record audit pattern, and the operator threat model.
+
 ## Threat model
 
 doorman is designed to defend against:
