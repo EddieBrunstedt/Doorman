@@ -11,6 +11,7 @@ use doorman_core::session::SessionManager;
 use doorman_core::storage::UserStore;
 
 use doorman_core::account::AccountManager;
+use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::PasskeyManager;
 use doorman_core::recovery::RecoveryManager;
 use doorman_core::signup::SignupManager;
@@ -31,6 +32,7 @@ pub struct AuthState {
     pub(crate) signup: SignupManager,
     pub(crate) recovery: RecoveryManager,
     pub(crate) account: AccountManager,
+    pub(crate) operator: OperatorManager,
 }
 
 impl AuthState {
@@ -71,5 +73,16 @@ impl AuthState {
     /// email change and account deletion).
     pub fn account(&self) -> &AccountManager {
         &self.account
+    }
+
+    /// Borrow the operator manager for host-driven flows that act on a user
+    /// _other_ than the acting one (delete another user's account, etc.).
+    ///
+    /// Reached through this deliberate accessor — and never wired to a bundled
+    /// route — precisely so a handler must hold it explicitly to invoke an
+    /// operator flow. Doorman performs **no authorization** here: the host must
+    /// put its own authorization check in front of every call.
+    pub fn operator(&self) -> &OperatorManager {
+        &self.operator
     }
 }

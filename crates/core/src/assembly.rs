@@ -46,6 +46,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::context::CoreDeps;
 use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityEmailNotifier};
 use crate::metrics::{Metrics, NoopMetrics};
+use crate::operator::{NotificationPolicy, OperatorManager};
 use crate::passkey::{PasskeyConfig, PasskeyManager};
 use crate::rate_limit::RateLimiter;
 use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
@@ -214,6 +215,10 @@ pub struct AuthCore {
     pub recovery: RecoveryManager,
     /// Account manager (verified email change, account deletion).
     pub account: AccountManager,
+    /// Operator manager (host-driven flows acting on another user). Reached
+    /// through its own deliberate accessor so a handler must hold it
+    /// explicitly to invoke an operator flow.
+    pub operator: OperatorManager,
     /// Session-resolution cache whose invalidator is installed on
     /// [`session_manager`](Self::session_manager). Hand this to the front
     /// end's session-resolution layer so it reads the cache core has hooked.
@@ -250,6 +255,7 @@ pub struct AuthCoreBuilder {
     signup: Option<SignupConfig>,
     recovery: Option<RecoveryConfig>,
     account: Option<AccountConfig>,
+    notification_policy: Option<NotificationPolicy>,
 }
 
 impl AuthCoreBuilder {
@@ -268,6 +274,7 @@ impl AuthCoreBuilder {
             signup: None,
             recovery: None,
             account: None,
+            notification_policy: None,
         }
     }
 
@@ -349,6 +356,14 @@ impl AuthCoreBuilder {
     /// email-change flow.
     pub fn account(mut self, config: AccountConfig) -> Self {
         self.account = Some(config);
+        self
+    }
+
+    /// Set the [`NotificationPolicy`] governing whether operator flows notify
+    /// the subject. Left unset, the asymmetric default applies (passkey-removed
+    /// notices send, session-revoked notices suppress).
+    pub fn notification_policy(mut self, policy: NotificationPolicy) -> Self {
+        self.notification_policy = Some(policy);
         self
     }
 
@@ -448,6 +463,16 @@ impl AuthCoreBuilder {
         // email transport, session manager) from the same shared context.
         let account = AccountManager::new(&deps, account_config);
 
+        // The operator manager reuses the account cascade and reads its own
+        // collaborators from the same context. Its notification policy is
+        // chosen here at the composition root; left unset the asymmetric
+        // default applies.
+        let operator = OperatorManager::new(
+            &deps,
+            account.clone(),
+            self.notification_policy.unwrap_or_default(),
+        );
+
         Ok(AuthCore {
             session_manager,
             user_store,
@@ -455,6 +480,7 @@ impl AuthCoreBuilder {
             signup,
             recovery,
             account,
+            operator,
             cache,
             metrics,
         })

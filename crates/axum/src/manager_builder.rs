@@ -27,6 +27,7 @@ use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::AuthState;
 
 use doorman_core::account::AccountManager;
+use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::PasskeyManager;
 use doorman_core::recovery::RecoveryManager;
 use doorman_core::signup::SignupManager;
@@ -113,6 +114,9 @@ pub enum BuilderError {
     /// No `AccountManager` was supplied to the low-level builder.
     #[error("account_manager is required")]
     MissingAccountManager,
+    /// No `OperatorManager` was supplied to the low-level builder.
+    #[error("operator_manager is required")]
+    MissingOperatorManager,
     /// Returned through [`AuthServiceBuilder`](crate::AuthServiceBuilder), which has to
     /// construct the passkey manager itself. The direct `ManagerBuilder`
     /// path takes a pre-built [`PasskeyManager`] and surfaces the same
@@ -249,6 +253,7 @@ pub struct ManagerBuilder {
     signup: Option<SignupManager>,
     recovery: Option<RecoveryManager>,
     account: Option<AccountManager>,
+    operator: Option<OperatorManager>,
 }
 
 impl ManagerBuilder {
@@ -356,6 +361,12 @@ impl ManagerBuilder {
         self
     }
 
+    /// Supply the pre-built operator manager. Required.
+    pub fn operator_manager(mut self, manager: OperatorManager) -> Self {
+        self.operator = Some(manager);
+        self
+    }
+
     /// Validate the configuration and assemble the [`AuthService`] surface, or
     /// return a [`BuilderError`] describing the first missing/invalid input.
     pub fn build(self) -> Result<AuthService, BuilderError> {
@@ -367,6 +378,7 @@ impl ManagerBuilder {
         let signup = self.signup.ok_or(BuilderError::MissingSignupManager)?;
         let recovery = self.recovery.ok_or(BuilderError::MissingRecoveryManager)?;
         let account = self.account.ok_or(BuilderError::MissingAccountManager)?;
+        let operator = self.operator.ok_or(BuilderError::MissingOperatorManager)?;
         let cookie_config = self.cookie_config.unwrap_or_default();
         validate_cookie_prefix(&cookie_config)?;
         let cookie_config = Arc::new(cookie_config);
@@ -421,6 +433,7 @@ impl ManagerBuilder {
             signup,
             recovery,
             account,
+            operator,
         };
 
         Ok(AuthService {

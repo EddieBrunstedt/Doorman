@@ -21,6 +21,7 @@ use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemoryRateLimiter,
     InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
+use doorman_core::operator::{NotificationPolicy, OperatorManager};
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager};
@@ -414,6 +415,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
     let recovery =
         RecoveryManager::new(flow, RecoveryConfig::default()).expect("recovery cooldown valid");
     let account = AccountManager::new(&deps, AccountConfig::default());
+    let operator = OperatorManager::new(&deps, account.clone(), NotificationPolicy::default());
 
     let auth = AuthService::from_managers()
         .session_manager(session_manager)
@@ -422,6 +424,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         .signup_manager(signup)
         .recovery_manager(recovery)
         .account_manager(account)
+        .operator_manager(operator)
         // Pre-built managers already own their transport; the only build-time
         // decision left on this path is the CSRF posture.
         .csrf(CsrfConfig::disabled())

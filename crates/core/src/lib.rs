@@ -22,6 +22,7 @@ pub mod encoding;
 pub mod error;
 pub mod memory;
 pub mod metrics;
+pub mod operator;
 pub mod passkey;
 pub mod prelude;
 pub mod purge;

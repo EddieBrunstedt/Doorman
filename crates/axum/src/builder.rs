@@ -375,7 +375,8 @@ impl AuthServiceBuilder {
             .passkey_manager(core.passkey)
             .signup_manager(core.signup)
             .recovery_manager(core.recovery)
-            .account_manager(core.account);
+            .account_manager(core.account)
+            .operator_manager(core.operator);
 
         if let Some(csrf_config) = self.csrf_config {
             builder = builder.csrf(csrf_config);

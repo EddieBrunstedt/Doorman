@@ -13,6 +13,7 @@ mod common;
 use axum::Router;
 use axum::http::StatusCode;
 use common::{TestApp, login};
+use doorman_core::audit::OperatorActor;
 use doorman_core::session::hash_token;
 
 async fn me(client: &reqwest::Client, app: &TestApp, token: &str) -> StatusCode {
@@ -98,6 +99,42 @@ async fn revoke_all_for_user_invalidates_cache() {
     assert_eq!(
         me(&client, &app, &second.token).await,
         StatusCode::UNAUTHORIZED
+    );
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn operator_delete_evicts_cache_and_blocks_further_requests() {
+    let app = TestApp::start(Router::new(), false).await;
+    let client = reqwest::Client::new();
+
+    let auth = login(&client, &app, "doomed@example.com").await;
+
+    // Warm the cache, then delete the account through the operator manager.
+    assert_eq!(me(&client, &app, &auth.token).await, StatusCode::OK);
+    assert!(
+        app.cache.get(&hash_token(&auth.token)).is_some(),
+        "cache populated before operator delete"
+    );
+
+    let actor = OperatorActor::new("incident-responder", None, None, None)
+        .expect("operator actor within bounds");
+    app.operator
+        .delete_account(auth.user.id, actor)
+        .await
+        .expect("operator delete");
+
+    // The delete revoked the session through the SessionManager, so its
+    // invalidation hook evicted the cache: no warm resolve survives.
+    assert!(
+        app.cache.get(&hash_token(&auth.token)).is_none(),
+        "operator delete evicts the cached session"
+    );
+    assert_eq!(
+        me(&client, &app, &auth.token).await,
+        StatusCode::UNAUTHORIZED,
+        "request after operator delete is unauthorised, not a stale cache hit"
     );
 
     app.shutdown().await;

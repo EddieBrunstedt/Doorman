@@ -11,7 +11,8 @@
 
 pub use crate::account::{AccountConfig, AccountManager};
 pub use crate::audit::{
-    AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, RecoveryFailureReason,
+    Actor, AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, OperatorActor,
+    RecoveryFailureReason,
 };
 pub use crate::clock::{Clock, SystemClock};
 #[cfg(feature = "file-email")]
@@ -22,6 +23,7 @@ pub use crate::email::{
 };
 pub use crate::error::{Error, Result, StorageError, StorageResult};
 pub use crate::metrics::{MetricEvent, Metrics, NoopMetrics};
+pub use crate::operator::{NotificationPolicy, OperatorManager, OperatorNotice};
 pub use crate::passkey::{PasskeyConfig, PasskeyManager};
 pub use crate::purge::PurgeSummary;
 pub use crate::rate_limit::{

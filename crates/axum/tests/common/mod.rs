@@ -36,6 +36,7 @@ use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemoryRateLimiter,
     InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
 };
+use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use doorman_core::session::{SessionContext, SessionManager};
@@ -71,6 +72,10 @@ pub struct TestApp {
     /// (cloned out of the built `AuthService`). `login` mints sessions
     /// through it, and revoking through it evicts [`Self::cache`].
     pub session_manager: SessionManager,
+    /// The live operator manager the app runs on, so operator-flow tests can
+    /// drive a host-side operation (e.g. deleting a user) and observe its
+    /// effect on the running app (cache eviction, subsequent 401s).
+    pub operator: OperatorManager,
     user_store: Arc<InMemoryUserStore>,
     handle: JoinHandle<()>,
     shutdown: tokio::sync::oneshot::Sender<()>,
@@ -171,6 +176,7 @@ impl TestApp {
         // high-level builder wires the cache invalidator onto this manager,
         // so the cache-invalidation tests can drive it via `session_manager`.
         let session_manager = auth.state().session_manager().clone();
+        let operator = auth.state().operator().clone();
         let cache = auth.cache().clone();
 
         let passkey_credentials_dyn: Arc<dyn PasskeyCredentialStore> = passkey_credentials.clone();
@@ -203,6 +209,7 @@ impl TestApp {
             passkey_credentials,
             cache,
             session_manager,
+            operator,
             user_store,
             handle,
             shutdown: tx,

@@ -33,6 +33,7 @@ use doorman_core::memory::{
     InMemoryUserStore, InMemoryVerificationTokenStore,
 };
 use doorman_core::metrics::Metrics;
+use doorman_core::operator::{NotificationPolicy, OperatorManager};
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
@@ -109,6 +110,7 @@ pub struct Harness {
     pub signup: SignupManager,
     pub recovery: RecoveryManager,
     pub account: AccountManager,
+    pub operator: OperatorManager,
     /// The recovery flow the harness built `recovery` from, kept so tests
     /// can construct another `RecoveryManager` (e.g. to exercise
     /// `RecoveryManager::new`'s cool-down validation) without re-wiring the
@@ -279,12 +281,15 @@ impl HarnessBuilder {
                 ..AccountConfig::default()
             },
         );
+        let operator =
+            OperatorManager::new(&signup_deps, account.clone(), NotificationPolicy::default());
 
         Harness {
             passkey,
             signup,
             recovery,
             account,
+            operator,
             recovery_flow,
             users,
             sessions,
