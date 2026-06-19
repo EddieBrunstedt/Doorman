@@ -489,6 +489,16 @@ impl PasskeyManager {
             recovery_cooldown_until: recovery_cooldown_override
                 .or(challenge_recovery_cooldown_until),
         };
+        // Re-check the user still exists before persisting the credential. A
+        // concurrent operator delete (or self-service close) may have removed
+        // the user after the challenge was issued; writing now would orphan a
+        // credential against a vanished user. This narrows the window to a true
+        // check-then-`add_passkey` TOCTOU.
+        if self.users.find_user_by_id(user_id).await?.is_none() {
+            tracing::warn!(%user_id, outcome = "user_vanished", "passkey registration failed");
+            return Err(Error::UserNotFound);
+        }
+
         self.credentials.add_passkey(credential.clone()).await?;
 
         self.audit

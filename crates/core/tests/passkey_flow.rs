@@ -12,7 +12,7 @@ use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::passkey::{PasskeyConfig, PasskeyRateLimits};
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
-use doorman_core::storage::{PasskeyChallengeStore, PasskeyCredentialStore, UserId};
+use doorman_core::storage::{PasskeyChallengeStore, PasskeyCredentialStore, UserId, UserStore};
 use doorman_test_support::MockClock;
 
 use common::{
@@ -360,6 +360,33 @@ async fn finish_registration_rejects_expired_challenge() {
         .await
         .expect_err("expired");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
+}
+
+#[tokio::test]
+async fn finish_registration_against_deleted_user_writes_no_orphan_credential() {
+    // A user deleted after the ceremony began (e.g. a concurrent operator
+    // delete) must not have a credential written against them: finishing the
+    // registration re-checks the user still exists before `add_passkey`. (D9.1)
+    let h = Harness::fresh();
+    let user = make_user(&h, "vanishing@example.com").await;
+    let mut wa = authenticator();
+
+    let (challenge_id, ccr) = h.passkey.start_registration(user.id).await.expect("start");
+    let response = wa.do_registration(ccr);
+
+    // Delete the user out from under the in-flight ceremony.
+    h.users.delete_user(user.id).await.expect("delete user");
+
+    let err = h
+        .passkey
+        .finish_registration(challenge_id, &response, None, SessionContext::default())
+        .await
+        .expect_err("finishing against a deleted user must be rejected");
+    assert!(matches!(err, Error::UserNotFound));
+    assert!(
+        h.credentials.is_empty(),
+        "no credential written against the deleted user"
+    );
 }
 
 #[tokio::test]
