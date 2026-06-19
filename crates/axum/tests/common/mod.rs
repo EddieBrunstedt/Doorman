@@ -20,6 +20,7 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use doorman_axum::AuthService;
 use doorman_axum::SessionCache;
+use doorman_axum::SessionCacheConfig;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
 use doorman_axum::dto::{
@@ -29,7 +30,7 @@ use doorman_axum::dto::{
 use doorman_axum::extractors::AuthSession;
 use doorman_core::account::AccountConfig;
 use doorman_core::audit::NoopAuditSink;
-use doorman_core::clock::SystemClock;
+use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::email::EmailSender;
 use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemoryRateLimiter,
@@ -80,6 +81,30 @@ impl TestApp {
     /// stores and the passkey + signup configs needed for full HTTP coverage.
     pub async fn start(host_routes: Router, secure_cookies: bool) -> Self {
         Self::start_with(host_routes, secure_cookies, |b| b).await
+    }
+
+    /// Start an app whose session manager and rate limiter both read time
+    /// through the supplied `clock`, so a test can drive token/session/window
+    /// expiry by advancing a [`MockClock`] rather than sleeping. The
+    /// resolution cache is configured with a zero freshness window so an
+    /// advance of the (domain) clock is observed on the very next request,
+    /// instead of being masked until the monotonic cache TTL lapses.
+    ///
+    /// [`MockClock`]: doorman_test_support::MockClock
+    pub async fn start_with_clock(
+        host_routes: Router,
+        secure_cookies: bool,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self::start_with(host_routes, secure_cookies, move |b| {
+            b.clock(clock.clone())
+                .limiter(Arc::new(InMemoryRateLimiter::new(clock.clone())))
+                .cache(SessionCacheConfig {
+                    ttl: std::time::Duration::ZERO,
+                    ..SessionCacheConfig::default()
+                })
+        })
+        .await
     }
 
     /// Start an app, letting the caller tweak the `AuthServiceBuilder`

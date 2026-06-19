@@ -1062,35 +1062,113 @@ fn recovery_config_at_floor_is_accepted() {
     );
 }
 
-#[test]
-fn recovery_config_with_subhour_cooldown_is_accepted_with_escape_hatch() {
-    let h = Harness::fresh();
-    assert!(
-        RecoveryManager::new(
-            h.recovery_flow.clone(),
-            RecoveryConfig {
-                cooldown: Duration::from_secs(60),
-                danger_allow_cooldown_below_floor: true,
-                ..recovery_config()
-            },
+/// Drive a full recovery (request → consume → finish) for `email` against
+/// `h` and return the [`EnrollmentOutcome`], so the cool-down assertions can
+/// read the deadline stamped on the recovery session and passkey.
+async fn drive_recovery_finish(
+    h: &Harness,
+    email: &str,
+) -> doorman_core::verification::EnrollmentOutcome {
+    h.recovery
+        .request_recovery(email, SessionContext::default())
+        .await
+        .expect("request");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+    let consume = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect("consume");
+    let mut wa = ResidentTestAuthenticator::new();
+    let attestation = wa.do_registration(consume.options);
+    h.recovery
+        .finish_recovery(
+            consume.challenge_id,
+            &attestation,
+            Some("recovery device".into()),
+            SessionContext::default(),
         )
-        .is_ok()
+        .await
+        .expect("finish")
+}
+
+#[tokio::test]
+async fn recovery_config_with_subhour_cooldown_honors_configured_cooldown() {
+    // The escape hatch must actually apply the configured sub-floor cool-down,
+    // not silently clamp it back up to the floor: a 60-second cool-down yields a
+    // deadline exactly 60 seconds out.
+    let cooldown = Duration::from_secs(60);
+    let h = Harness::builder()
+        .recovery_config(RecoveryConfig {
+            cooldown,
+            danger_allow_cooldown_below_floor: true,
+            ..recovery_config()
+        })
+        .build();
+    let _ = provision_user(&h, "alice@example.com").await;
+
+    let now_at_finish = h.clock.now();
+    let outcome = drive_recovery_finish(&h, "alice@example.com").await;
+
+    let expected = now_at_finish + ChronoDuration::seconds(60);
+    assert_eq!(
+        outcome.session.session.recovery_cooldown_until,
+        Some(expected),
+        "the configured sub-floor cool-down is honored, not clamped to the floor",
+    );
+    assert_eq!(outcome.passkey.recovery_cooldown_until, Some(expected));
+    assert!(
+        outcome
+            .session
+            .session
+            .is_in_recovery_cooldown(h.clock.now()),
+        "the cool-down is active immediately after finish",
+    );
+    // Stepping past the short window releases it.
+    h.clock.advance(ChronoDuration::seconds(61));
+    assert!(
+        !outcome
+            .session
+            .session
+            .is_in_recovery_cooldown(h.clock.now())
     );
 }
 
-#[test]
-fn recovery_config_with_zero_cooldown_is_accepted_with_escape_hatch() {
-    let h = Harness::fresh();
+#[tokio::test]
+async fn recovery_config_with_zero_cooldown_yields_inactive_deadline() {
+    // A zero cool-down via the escape hatch stamps a deadline equal to "now",
+    // which the predicate treats as already lapsed (comparison is `now < until`).
+    let h = Harness::builder()
+        .recovery_config(RecoveryConfig {
+            cooldown: Duration::ZERO,
+            danger_allow_cooldown_below_floor: true,
+            ..recovery_config()
+        })
+        .build();
+    let _ = provision_user(&h, "alice@example.com").await;
+
+    let now_at_finish = h.clock.now();
+    let outcome = drive_recovery_finish(&h, "alice@example.com").await;
+
+    assert_eq!(
+        outcome.session.session.recovery_cooldown_until,
+        Some(now_at_finish),
+        "a zero cool-down stamps the deadline at the finish instant",
+    );
+    assert_eq!(outcome.passkey.recovery_cooldown_until, Some(now_at_finish));
     assert!(
-        RecoveryManager::new(
-            h.recovery_flow.clone(),
-            RecoveryConfig {
-                cooldown: Duration::ZERO,
-                danger_allow_cooldown_below_floor: true,
-                ..recovery_config()
-            },
-        )
-        .is_ok()
+        !outcome
+            .session
+            .session
+            .is_in_recovery_cooldown(h.clock.now()),
+        "a zero cool-down is already inactive",
     );
 }
 

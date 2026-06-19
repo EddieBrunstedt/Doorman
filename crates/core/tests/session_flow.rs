@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
 use doorman_core::audit::{AuditEventKind, AuditSink};
-use doorman_core::clock::{Clock, SystemClock};
+use doorman_core::clock::Clock;
 use doorman_core::email::{DefaultEmailTemplates, Email, EmailSender, SecurityEmailNotifier};
 use doorman_core::error::Error;
 use doorman_core::memory::{InMemorySessionStore, InMemoryUserStore};
@@ -27,7 +27,7 @@ fn fresh_manager() -> (
     let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
     let manager = SessionManager::new(
         sessions.clone() as Arc<dyn SessionStore>,
-        Arc::new(SystemClock) as Arc<dyn Clock>,
+        Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
         audit.clone() as Arc<dyn AuditSink>,
         SessionConfig {
             lifetime: Duration::from_secs(60 * 60),
@@ -522,7 +522,7 @@ async fn revoke_others_for_user_sends_notice_in_core() {
     );
     let manager = SessionManager::new(
         sessions as Arc<dyn SessionStore>,
-        Arc::new(SystemClock) as Arc<dyn Clock>,
+        Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
         audit as Arc<dyn AuditSink>,
         SessionConfig {
             lifetime: Duration::from_secs(60 * 60),
@@ -563,7 +563,7 @@ async fn revoke_owned_session_notifies_only_for_other_sessions() {
     );
     let manager = SessionManager::new(
         sessions as Arc<dyn SessionStore>,
-        Arc::new(SystemClock) as Arc<dyn Clock>,
+        Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
         audit as Arc<dyn AuditSink>,
         SessionConfig {
             lifetime: Duration::from_secs(60 * 60),
@@ -1077,8 +1077,8 @@ async fn session_store_rejects_id_and_hash_collisions() {
         id: SessionId::new(),
         user_id: UserId::new(),
         token_hash: hash_token("abc"),
-        created_at: Utc::now(),
-        expires_at: Utc::now() + ChronoDuration::hours(1),
+        created_at: ts(2026, 1, 1),
+        expires_at: ts(2026, 1, 1) + ChronoDuration::hours(1),
         ip: None,
         user_agent: None,
         recovery_cooldown_until: None,

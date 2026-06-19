@@ -269,6 +269,55 @@ async fn delete_account_allowed_once_recovery_cooldown_lapses() {
 }
 
 #[tokio::test]
+async fn confirm_rejects_expired_token() {
+    // The email-change link expires like signup and recovery links do: a
+    // confirm after `token_lifetime` is rejected and the address is unchanged.
+    let h = Harness::fresh();
+    let user = provision_user(&h, "old@example.com").await;
+    let session = session_for(&h, &user);
+
+    h.account
+        .request_email_change(
+            &user,
+            &session,
+            "new@example.com",
+            SessionContext::default(),
+        )
+        .await
+        .expect("request email change");
+    let confirmation = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Confirm your new email address")
+        .expect("confirmation email queued");
+    let token = token_from_email(&confirmation.body_text, ACCOUNT_URL);
+
+    // Step past the default 15-minute token lifetime before confirming.
+    h.clock.advance(chrono::Duration::minutes(16));
+
+    let err = h
+        .account
+        .confirm_email_change(&token, SessionContext::default())
+        .await
+        .expect_err("an expired token must be rejected");
+    assert!(matches!(err, Error::InvalidVerificationToken));
+
+    let stored = h
+        .users
+        .find_user_by_id(user.id)
+        .await
+        .expect("find user")
+        .expect("user present");
+    assert_eq!(
+        stored.email.as_deref(),
+        Some("old@example.com"),
+        "the address is unchanged when the link has expired",
+    );
+}
+
+#[tokio::test]
 async fn confirm_rejects_unknown_token() {
     let h = Harness::fresh();
     let err = h
