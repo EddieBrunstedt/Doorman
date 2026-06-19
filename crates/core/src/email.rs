@@ -356,6 +356,54 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
+    /// Sent when an **operator** (a host admin, support agent, CLI, or backend
+    /// job — not the account owner) removes a passkey from the account. Uses
+    /// operator-aware copy: it states plainly that an administrator performed
+    /// the action and never the self-service "was this you?" wording, which
+    /// would mislead the owner into treating a legitimate admin action as a
+    /// possible compromise. `passkey_name` is the optional user-supplied
+    /// friendly label; raw credential material is never exposed to templates.
+    fn operator_passkey_removed_notification_email(
+        &self,
+        user: &User,
+        passkey_name: Option<&str>,
+    ) -> Email {
+        let detail = display_passkey_name(passkey_name)
+            .map(|name| {
+                format!("An administrator removed the passkey named \"{name}\" from your account.")
+            })
+            .unwrap_or_else(|| "An administrator removed a passkey from your account.".to_string());
+
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Security notice: a passkey was removed by an administrator".to_string(),
+            body_text: format!(
+                "Hello,\n\n\
+                 {detail} This was an administrative action taken on your account.\n\n\
+                 If you have questions about this change, contact support.\n"
+            ),
+            body_html: None,
+        }
+    }
+
+    /// Sent when an **operator** revokes every session on the account (not the
+    /// account owner signing themselves out). Uses operator-aware copy: it
+    /// states that an administrator signed the account out everywhere and never
+    /// the self-service "was this you?" wording.
+    fn operator_sessions_revoked_notification_email(&self, user: &User) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Security notice: your account was signed out by an administrator".to_string(),
+            body_text: "Hello,\n\n\
+                 An administrator signed your account out of all of its active sessions. \
+                 This was an administrative action taken on your account; you will need to \
+                 sign in again with one of your passkeys.\n\n\
+                 If you have questions about this change, contact support.\n"
+                .to_string(),
+            body_html: None,
+        }
+    }
+
     /// Sent whenever a session other than the caller's current session is
     /// successfully revoked from the account.
     fn other_session_revoked_notification_email(&self, user: &User) -> Email {
@@ -438,6 +486,24 @@ impl SecurityEmailNotifier {
     pub async fn passkey_removed(&self, user: &User, passkey_name: Option<&str>) {
         self.send_notice(user, "passkey removed", |emails| {
             emails.passkey_removed_notification_email(user, passkey_name)
+        })
+        .await;
+    }
+
+    /// Send the best-effort operator-aware "passkey removed by an
+    /// administrator" notification.
+    pub async fn operator_passkey_removed(&self, user: &User, passkey_name: Option<&str>) {
+        self.send_notice(user, "operator passkey removed", |emails| {
+            emails.operator_passkey_removed_notification_email(user, passkey_name)
+        })
+        .await;
+    }
+
+    /// Send the best-effort operator-aware "signed out by an administrator"
+    /// notification for an operator revoking all of a user's sessions.
+    pub async fn operator_sessions_revoked(&self, user: &User) {
+        self.send_notice(user, "operator sessions revoked", |emails| {
+            emails.operator_sessions_revoked_notification_email(user)
         })
         .await;
     }

@@ -36,8 +36,11 @@ use std::sync::Arc;
 use crate::account::AccountManager;
 use crate::audit::{Actor, OperatorActor};
 use crate::context::CoreDeps;
+use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
-use crate::storage::{PasskeyChallengeStore, UserId, UserStore};
+use crate::passkey::{PasskeyManager, PasskeyRemovalNotice};
+use crate::session::SessionManager;
+use crate::storage::{PasskeyChallengeStore, SessionId, User, UserId, UserStore};
 
 /// Whether an operator-initiated action notifies the subject.
 ///
@@ -101,24 +104,35 @@ impl Default for NotificationPolicy {
 pub struct OperatorManager {
     users: Arc<dyn UserStore>,
     challenges: Arc<dyn PasskeyChallengeStore>,
+    sessions: SessionManager,
+    passkey: PasskeyManager,
     account: AccountManager,
+    notifier: SecurityEmailNotifier,
     notifications: NotificationPolicy,
 }
 
 impl OperatorManager {
     /// Build an `OperatorManager` from the shared [`CoreDeps`] context, the
-    /// already-constructed [`AccountManager`] (whose deletion cascade the
-    /// operator delete reuses), and the [`NotificationPolicy`] chosen at the
-    /// composition root.
+    /// already-constructed [`PasskeyManager`] and [`AccountManager`] (whose
+    /// removal and deletion cascades the operator flows reuse), and the
+    /// [`NotificationPolicy`] chosen at the composition root.
+    ///
+    /// The session manager and the best-effort security notifier are read from
+    /// `deps`, so the operator flows share the one invalidation hook and the
+    /// one configured email renderer with every other manager.
     pub fn new(
         deps: &CoreDeps,
         account: AccountManager,
+        passkey: PasskeyManager,
         notifications: NotificationPolicy,
     ) -> Self {
         Self {
             users: deps.users.clone(),
             challenges: deps.passkey_challenges.clone(),
+            sessions: deps.sessions.clone(),
+            passkey,
             account,
+            notifier: deps.notifier.clone(),
             notifications,
         }
     }
@@ -169,6 +183,148 @@ impl OperatorManager {
             .await?;
 
         tracing::info!(outcome = "deleted", "operator account delete");
+        Ok(())
+    }
+
+    /// Resolve `target_user_id` to a [`User`], failing with
+    /// [`Error::UserNotFound`] when it does not exist. Every operator flow
+    /// resolves the subject up front (D7) so a stale or typo'd id fails loudly
+    /// before any store is mutated, and so the resolved row is on hand for the
+    /// best-effort subject notice.
+    async fn resolve_subject(&self, target_user_id: UserId) -> Result<User> {
+        match self.users.find_user_by_id(target_user_id).await? {
+            Some(user) => Ok(user),
+            None => {
+                tracing::warn!(outcome = "user_not_found", "operator flow failed");
+                Err(Error::UserNotFound)
+            }
+        }
+    }
+
+    /// Remove the passkey identified by `credential_id` from
+    /// `target_user_id` on an operator's behalf.
+    ///
+    /// The subject is resolved up front (D7): a missing or typo'd
+    /// `target_user_id` fails with [`Error::UserNotFound`] before any store is
+    /// touched. The credential is then resolved and **re-bound** to the subject
+    /// (F8): a missing credential is [`Error::PasskeyNotFound`] and one owned by
+    /// a *different* user is [`Error::PasskeyOwnershipMismatch`], so an action
+    /// named against user X handed a credential id belonging to user Y removes
+    /// nothing and mis-attributes nothing.
+    ///
+    /// The removal runs through the same id-keyed core as self-service removal,
+    /// so the audit event and any framework-side invalidation are identical;
+    /// only the attribution ([`Actor::Operator`]) and the notice copy differ.
+    /// When [`NotificationPolicy::passkey_removed`] is [`OperatorNotice::Send`]
+    /// (the default) the subject receives the **operator-aware** notice ("an
+    /// administrator removed a passkey"), never the self-service "was this you?"
+    /// copy; when it is [`OperatorNotice::Suppress`] no notice is sent.
+    ///
+    /// Removing a user's *last* passkey is permitted and is a de-facto account
+    /// lockout — the host owns whether that is desirable.
+    #[tracing::instrument(skip(self, credential_id, actor), fields(target_user_id = %target_user_id))]
+    pub async fn remove_passkey(
+        &self,
+        target_user_id: UserId,
+        credential_id: &[u8],
+        actor: OperatorActor,
+    ) -> Result<()> {
+        // Resolve the subject before touching the credential store (D7).
+        self.resolve_subject(target_user_id).await?;
+
+        let notice = match self.notifications.passkey_removed {
+            OperatorNotice::Send => PasskeyRemovalNotice::Operator,
+            OperatorNotice::Suppress => PasskeyRemovalNotice::Suppressed,
+        };
+
+        self.passkey
+            .remove_passkey_for(
+                target_user_id,
+                credential_id,
+                Actor::Operator(actor),
+                notice,
+            )
+            .await?;
+
+        tracing::info!(outcome = "removed", "operator passkey remove");
+        Ok(())
+    }
+
+    /// Revoke **all** of `target_user_id`'s sessions on an operator's behalf,
+    /// signing the user out everywhere.
+    ///
+    /// The subject is resolved up front (D7): a missing `target_user_id` fails
+    /// with [`Error::UserNotFound`] before any store is touched. The revoke
+    /// runs through [`SessionManager::revoke_all_for_user`], firing the
+    /// invalidation hook (cache eviction) exactly as self-service revocation
+    /// does.
+    ///
+    /// Unlike the self-service "sign out everywhere else" path this leaves
+    /// **no** session behind — an operator holds none. It runs the same bulk
+    /// revoke as the self-service "sign out everywhere else" path (a set delete
+    /// plus the user-level invalidation hook); like that path it emits no
+    /// per-session audit row.
+    ///
+    /// The underlying revoke-all primitive is silent by default, so the subject
+    /// notice here is an *opt-in* path: it is sent only when
+    /// [`NotificationPolicy::sessions_revoked`] is [`OperatorNotice::Send`]
+    /// (the default is [`OperatorNotice::Suppress`]), and always with
+    /// operator-aware copy. Doing nothing sends nothing new. The notice is
+    /// skipped when nothing was revoked.
+    ///
+    /// The `actor` is accepted for parity with the other operator flows even
+    /// though the silent bulk revoke records no audit row to attribute it to.
+    #[tracing::instrument(skip(self, _actor), fields(target_user_id = %target_user_id))]
+    pub async fn revoke_all_sessions(
+        &self,
+        target_user_id: UserId,
+        _actor: OperatorActor,
+    ) -> Result<u64> {
+        // Resolve the subject before mutating anything (D7); keep the row for
+        // the opt-in notice.
+        let user = self.resolve_subject(target_user_id).await?;
+
+        let count = self.sessions.revoke_all_for_user(target_user_id).await?;
+
+        if count > 0 && self.notifications.sessions_revoked == OperatorNotice::Send {
+            self.notifier.operator_sessions_revoked(&user).await;
+        }
+
+        tracing::info!(
+            count,
+            outcome = "revoked_all",
+            "operator session revoke-all"
+        );
+        Ok(count)
+    }
+
+    /// Revoke the single session identified by `session_id` from
+    /// `target_user_id` on an operator's behalf.
+    ///
+    /// The subject is resolved up front (D7), and the session is **re-bound** to
+    /// the subject (F8): a session that does not exist, or one owned by a
+    /// *different* user, fails with [`Error::SessionNotFound`], so an action
+    /// named against user X handed user Y's session id revokes nothing and
+    /// mis-attributes nothing. The revoke fires the invalidation hook and emits
+    /// the audit event through the same core the self-service single-session
+    /// revoke uses; only the attribution differs.
+    ///
+    /// No subject notice is sent for a single-session operator revoke.
+    #[tracing::instrument(skip(self, actor), fields(target_user_id = %target_user_id, session_id = %session_id))]
+    pub async fn revoke_session(
+        &self,
+        target_user_id: UserId,
+        session_id: SessionId,
+        actor: OperatorActor,
+    ) -> Result<()> {
+        // Resolve the subject before touching the session store (D7).
+        self.resolve_subject(target_user_id).await?;
+
+        self.sessions
+            .revoke_session_for_target(target_user_id, session_id, Actor::Operator(actor))
+            .await?;
+
+        tracing::info!(outcome = "revoked", "operator session revoke");
         Ok(())
     }
 }

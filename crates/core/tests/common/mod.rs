@@ -159,6 +159,10 @@ pub struct HarnessBuilder {
     /// flow's link copy and security notices. Defaults to the stock copy;
     /// branding tests override it.
     emails: Arc<dyn EmailTemplates>,
+    /// The [`NotificationPolicy`] the [`OperatorManager`] is built with.
+    /// Defaults to the asymmetric stock policy; the operator notice tests
+    /// override it to exercise the send/suppress toggles.
+    notification_policy: NotificationPolicy,
 }
 
 impl HarnessBuilder {
@@ -174,7 +178,15 @@ impl HarnessBuilder {
             signup_limiter: Arc::new(NoopRateLimiter),
             recovery_limiter: Arc::new(NoopRateLimiter),
             emails: Arc::new(DefaultEmailTemplates),
+            notification_policy: NotificationPolicy::default(),
         }
+    }
+
+    /// Override the operator [`NotificationPolicy`] the harness builds its
+    /// [`OperatorManager`] with.
+    pub fn notification_policy(mut self, policy: NotificationPolicy) -> Self {
+        self.notification_policy = policy;
+        self
     }
 
     /// Override the renderer used for every flow's link copy and security
@@ -281,8 +293,12 @@ impl HarnessBuilder {
                 ..AccountConfig::default()
             },
         );
-        let operator =
-            OperatorManager::new(&signup_deps, account.clone(), NotificationPolicy::default());
+        let operator = OperatorManager::new(
+            &signup_deps,
+            account.clone(),
+            passkey.clone(),
+            self.notification_policy,
+        );
 
         Harness {
             passkey,

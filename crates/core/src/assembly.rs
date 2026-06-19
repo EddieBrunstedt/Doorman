@@ -470,6 +470,7 @@ impl AuthCoreBuilder {
         let operator = OperatorManager::new(
             &deps,
             account.clone(),
+            passkey.clone(),
             self.notification_policy.unwrap_or_default(),
         );
 

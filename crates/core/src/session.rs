@@ -278,7 +278,11 @@ impl SessionManager {
         // Oldest first, so the longest-idle sessions are the ones dropped.
         active.sort_by_key(|s| s.created_at);
         for session in active.into_iter().take(evict) {
-            self.revoke_session(session).await?;
+            let actor = Actor::Subject {
+                ip: session.ip.clone(),
+                user_agent: session.user_agent.clone(),
+            };
+            self.revoke_session(session, actor).await?;
         }
         Ok(())
     }
@@ -334,7 +338,11 @@ impl SessionManager {
             tracing::warn!(outcome = "not_found", "session revoke failed");
             return Err(Error::SessionNotFound);
         };
-        self.revoke_session(session).await
+        let actor = Actor::Subject {
+            ip: session.ip.clone(),
+            user_agent: session.user_agent.clone(),
+        };
+        self.revoke_session(session, actor).await
     }
 
     /// Revoke a session by its id, firing the invalidation hook. Returns
@@ -345,7 +353,11 @@ impl SessionManager {
             tracing::warn!(outcome = "not_found", "session revoke failed");
             return Err(Error::SessionNotFound);
         };
-        self.revoke_session(session).await
+        let actor = Actor::Subject {
+            ip: session.ip.clone(),
+            user_agent: session.user_agent.clone(),
+        };
+        self.revoke_session(session, actor).await
     }
 
     /// Revoke every session belonging to a user, firing the
@@ -504,7 +516,15 @@ impl SessionManager {
         if !is_current {
             self.ensure_not_in_recovery_cooldown(current_session)?;
         }
-        self.revoke_session_for_target(user.id, session_id).await?;
+        self.revoke_session_for_target(
+            user.id,
+            session_id,
+            Actor::Subject {
+                ip: current_session.ip.clone(),
+                user_agent: current_session.user_agent.clone(),
+            },
+        )
+        .await?;
         if !is_current && let Some(notifier) = &self.notifier {
             notifier.other_session_revoked(user).await;
         }
@@ -512,10 +532,11 @@ impl SessionManager {
     }
 
     /// Revoke `session_id` after asserting it belongs to `target_user_id`,
-    /// firing the invalidation hook and emitting the audit event through
-    /// [`revoke_session`](Self::revoke_session). The id-keyed core both
+    /// attributing the audit event to `actor` and firing the invalidation hook
+    /// through [`revoke_session`](Self::revoke_session). The id-keyed core both
     /// self-service [`revoke_owned_session`](Self::revoke_owned_session) and
-    /// the operator single-session-revoke flow drive.
+    /// the operator single-session-revoke flow drive; the two diverge only on
+    /// the recorded `actor` ([`Actor::Subject`] versus [`Actor::Operator`]).
     ///
     /// Reads the target once and rejects a missing session — or one owned by a
     /// different user — with [`Error::SessionNotFound`], so the ownership
@@ -526,6 +547,7 @@ impl SessionManager {
         &self,
         target_user_id: UserId,
         session_id: SessionId,
+        actor: Actor,
     ) -> Result<()> {
         let Some(session) = self.sessions.find_session_by_id(session_id).await? else {
             tracing::warn!(outcome = "not_found", "session revoke failed");
@@ -535,7 +557,7 @@ impl SessionManager {
             tracing::warn!(outcome = "not_owned", "session revoke failed");
             return Err(Error::SessionNotFound);
         }
-        self.revoke_session(session).await
+        self.revoke_session(session, actor).await
     }
 
     /// Delete every session past its expiry, returning the number removed.
@@ -547,7 +569,13 @@ impl SessionManager {
         Ok(count)
     }
 
-    async fn revoke_session(&self, session: Session) -> Result<()> {
+    /// Delete `session`, fire the per-session invalidation hook, and emit the
+    /// `SessionRevoked` audit event attributed to `actor`. Self-service callers
+    /// pass an [`Actor::Subject`] built from the session's own request
+    /// metadata; the operator single-session revoke passes
+    /// [`Actor::Operator`] so the audit row carries the operator's identity
+    /// rather than the subject's network metadata.
+    async fn revoke_session(&self, session: Session, actor: Actor) -> Result<()> {
         self.sessions.delete_session(session.id).await?;
         self.invalidation_hook()
             .on_session_invalidated(session.id)
@@ -555,10 +583,7 @@ impl SessionManager {
         self.audit
             .emit(AuditEvent {
                 timestamp: self.clock.now(),
-                actor: Actor::Subject {
-                    ip: session.ip,
-                    user_agent: session.user_agent,
-                },
+                actor,
                 kind: AuditEventKind::SessionRevoked {
                     user_id: session.user_id,
                     session_id: session.id,

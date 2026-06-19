@@ -415,7 +415,12 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
     let recovery =
         RecoveryManager::new(flow, RecoveryConfig::default()).expect("recovery cooldown valid");
     let account = AccountManager::new(&deps, AccountConfig::default());
-    let operator = OperatorManager::new(&deps, account.clone(), NotificationPolicy::default());
+    let operator = OperatorManager::new(
+        &deps,
+        account.clone(),
+        passkey.clone(),
+        NotificationPolicy::default(),
+    );
 
     let auth = AuthService::from_managers()
         .session_manager(session_manager)

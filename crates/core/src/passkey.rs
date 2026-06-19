@@ -852,6 +852,7 @@ impl PasskeyManager {
                 ip: context.ip,
                 user_agent: context.user_agent,
             },
+            PasskeyRemovalNotice::SelfService,
         )
         .await
     }
@@ -860,7 +861,9 @@ impl PasskeyManager {
     /// `actor`. The id-keyed core both self-service
     /// [`remove_passkey`](Self::remove_passkey) and the operator removal flow
     /// drive, so the resolve-verify-ownership-delete cascade plus the audit
-    /// and best-effort notice are shared.
+    /// emission are shared; the two paths diverge only on `notice`, which
+    /// selects the notification copy (the self-service "was this you?" wording
+    /// versus operator-aware copy) and whether a notice is sent at all.
     ///
     /// The core resolves the credential and verifies it belongs to `user_id`
     /// before deleting: a missing credential is [`Error::PasskeyNotFound`] and
@@ -872,6 +875,7 @@ impl PasskeyManager {
         user_id: UserId,
         credential_id: &[u8],
         actor: Actor,
+        notice: PasskeyRemovalNotice,
     ) -> Result<()> {
         let Some(credential) = self
             .credentials
@@ -893,13 +897,50 @@ impl PasskeyManager {
                 kind: AuditEventKind::CredentialRemoved { user_id },
             })
             .await;
-        if let Some(user) = self.user_for_notification(user_id, "passkey removed").await {
-            self.notifier
-                .passkey_removed(&user, credential.name.as_deref())
-                .await;
+        if notice.sends()
+            && let Some(user) = self.user_for_notification(user_id, "passkey removed").await
+        {
+            match notice {
+                PasskeyRemovalNotice::SelfService => {
+                    self.notifier
+                        .passkey_removed(&user, credential.name.as_deref())
+                        .await;
+                }
+                PasskeyRemovalNotice::Operator => {
+                    self.notifier
+                        .operator_passkey_removed(&user, credential.name.as_deref())
+                        .await;
+                }
+                PasskeyRemovalNotice::Suppressed => {}
+            }
         }
         tracing::info!(outcome = "removed", "passkey removed");
         Ok(())
+    }
+}
+
+/// Which subject notice the shared passkey-removal core sends, the one thing
+/// the self-service and operator removal paths diverge on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PasskeyRemovalNotice {
+    /// The self-service "a passkey was removed — was this you?" copy. Always
+    /// sent (self-service removal is transparent by default).
+    SelfService,
+    /// Operator-aware copy ("an administrator removed a passkey"). The operator
+    /// path passes this when its
+    /// [`NotificationPolicy`](crate::operator::NotificationPolicy) keeps the
+    /// notice on.
+    Operator,
+    /// No subject notice. The operator path passes this when its policy
+    /// suppresses the passkey-removal notice; the removal and its audit event
+    /// still run.
+    Suppressed,
+}
+
+impl PasskeyRemovalNotice {
+    /// Whether this variant emits any subject notice.
+    fn sends(self) -> bool {
+        matches!(self, Self::SelfService | Self::Operator)
     }
 }
 
