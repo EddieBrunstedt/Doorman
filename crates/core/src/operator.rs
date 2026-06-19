@@ -34,13 +34,16 @@
 use std::sync::Arc;
 
 use crate::account::AccountManager;
-use crate::audit::{Actor, OperatorActor};
+use crate::audit::{Actor, AuditEvent, AuditEventKind, AuditSink, OperatorActor};
+use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
 use crate::passkey::{PasskeyManager, PasskeyRemovalNotice};
 use crate::session::SessionManager;
-use crate::storage::{PasskeyChallengeStore, SessionId, User, UserId, UserStore};
+use crate::storage::{
+    PasskeyChallengeStore, PasskeySummary, SessionId, SessionSummary, User, UserId, UserStore,
+};
 
 /// Whether an operator-initiated action notifies the subject.
 ///
@@ -108,6 +111,8 @@ pub struct OperatorManager {
     passkey: PasskeyManager,
     account: AccountManager,
     notifier: SecurityEmailNotifier,
+    clock: Arc<dyn Clock>,
+    audit: Arc<dyn AuditSink>,
     notifications: NotificationPolicy,
 }
 
@@ -133,6 +138,8 @@ impl OperatorManager {
             passkey,
             account,
             notifier: deps.notifier.clone(),
+            clock: deps.clock.clone(),
+            audit: deps.audit.clone(),
             notifications,
         }
     }
@@ -140,6 +147,21 @@ impl OperatorManager {
     /// The notification policy this manager was constructed with.
     pub fn notification_policy(&self) -> &NotificationPolicy {
         &self.notifications
+    }
+
+    /// Emit one audit event attributed to the supplied operator. The operator
+    /// flows that go through a manager core (delete, single-session revoke,
+    /// passkey removal) emit from inside that core; this helper covers the
+    /// flows that have no core to ride on — the audited read listings (D8) and
+    /// the bulk session revoke, whose underlying primitive is silent.
+    async fn emit_operator(&self, actor: OperatorActor, kind: AuditEventKind) {
+        self.audit
+            .emit(AuditEvent {
+                timestamp: self.clock.now(),
+                actor: Actor::Operator(actor),
+                kind,
+            })
+            .await;
     }
 
     /// Irreversibly delete the account identified by `target_user_id` on an
@@ -260,31 +282,43 @@ impl OperatorManager {
     /// does.
     ///
     /// Unlike the self-service "sign out everywhere else" path this leaves
-    /// **no** session behind — an operator holds none. It runs the same bulk
-    /// revoke as the self-service "sign out everywhere else" path (a set delete
-    /// plus the user-level invalidation hook); like that path it emits no
-    /// per-session audit row.
+    /// **no** session behind — an operator holds none. It runs the bulk
+    /// revoke-all primitive (a set delete plus the user-level invalidation
+    /// hook), which records no *per-session* audit row.
+    ///
+    /// Because that primitive is otherwise silent, this flow emits a single
+    /// [`AuditEventKind::OperatorRevokedAllSessions`] attributed to `actor`,
+    /// closing the accountability gap on the most consequential operator
+    /// mutation — the bulk revoke is the one mutation that would otherwise
+    /// leave no trace of who ran it. The audit row is emitted whenever the
+    /// subject resolved (even if nothing was revoked), so an operator firing a
+    /// revoke-all at a live but session-less account still leaves a trace.
     ///
     /// The underlying revoke-all primitive is silent by default, so the subject
-    /// notice here is an *opt-in* path: it is sent only when
+    /// *notice* here is an *opt-in* path: it is sent only when
     /// [`NotificationPolicy::sessions_revoked`] is [`OperatorNotice::Send`]
     /// (the default is [`OperatorNotice::Suppress`]), and always with
     /// operator-aware copy. Doing nothing sends nothing new. The notice is
     /// skipped when nothing was revoked.
-    ///
-    /// The `actor` is accepted for parity with the other operator flows even
-    /// though the silent bulk revoke records no audit row to attribute it to.
-    #[tracing::instrument(skip(self, _actor), fields(target_user_id = %target_user_id))]
+    #[tracing::instrument(skip(self, actor), fields(target_user_id = %target_user_id))]
     pub async fn revoke_all_sessions(
         &self,
         target_user_id: UserId,
-        _actor: OperatorActor,
+        actor: OperatorActor,
     ) -> Result<u64> {
         // Resolve the subject before mutating anything (D7); keep the row for
         // the opt-in notice.
         let user = self.resolve_subject(target_user_id).await?;
 
         let count = self.sessions.revoke_all_for_user(target_user_id).await?;
+
+        self.emit_operator(
+            actor,
+            AuditEventKind::OperatorRevokedAllSessions {
+                user_id: target_user_id,
+            },
+        )
+        .await;
 
         if count > 0 && self.notifications.sessions_revoked == OperatorNotice::Send {
             self.notifier.operator_sessions_revoked(&user).await;
@@ -326,5 +360,91 @@ impl OperatorManager {
 
         tracing::info!(outcome = "revoked", "operator session revoke");
         Ok(())
+    }
+
+    /// List `target_user_id`'s passkeys as metadata-only [`PasskeySummary`]
+    /// values for an operator UI.
+    ///
+    /// The subject is resolved up front (D7): a missing or typo'd
+    /// `target_user_id` fails with [`Error::UserNotFound`] before anything is
+    /// read. The summary projection already omits the credential blob, so no
+    /// secret-equivalent material crosses into the operator view.
+    ///
+    /// Inspecting another user's inventory is itself privacy-sensitive, so the
+    /// read is **audited** (D8): it emits an
+    /// [`AuditEventKind::OperatorListedPasskeys`] attributed to `actor`, landing
+    /// "who looked" in the same stream as "who changed what". Self-service
+    /// listings stay unaudited. The audit row is emitted only after the subject
+    /// resolves, so a failed lookup leaves no trace.
+    #[tracing::instrument(skip(self, actor), fields(target_user_id = %target_user_id))]
+    pub async fn list_passkeys(
+        &self,
+        target_user_id: UserId,
+        actor: OperatorActor,
+    ) -> Result<Vec<PasskeySummary>> {
+        // Resolve the subject before reading or auditing (D7).
+        self.resolve_subject(target_user_id).await?;
+
+        let summaries = self.passkey.list_passkey_summaries(target_user_id).await?;
+
+        self.emit_operator(
+            actor,
+            AuditEventKind::OperatorListedPasskeys {
+                user_id: target_user_id,
+            },
+        )
+        .await;
+
+        tracing::info!(
+            count = summaries.len(),
+            outcome = "listed",
+            "operator list passkeys"
+        );
+        Ok(summaries)
+    }
+
+    /// List `target_user_id`'s active sessions as [`SessionSummary`] values for
+    /// an operator UI.
+    ///
+    /// The subject is resolved up front (D7): a missing or typo'd
+    /// `target_user_id` fails with [`Error::UserNotFound`] before anything is
+    /// read. The projection happens in the [`SessionManager`], so the session
+    /// `token_hash` never leaves the manager and cannot reach an operator view,
+    /// its logs, or its JSON (F9).
+    ///
+    /// The read is **audited** (D8): it emits an
+    /// [`AuditEventKind::OperatorListedSessions`] attributed to `actor`. As with
+    /// the passkey listing, the audit row is emitted only after the subject
+    /// resolves, and self-service listings stay unaudited.
+    ///
+    /// [`SessionManager`]: crate::session::SessionManager
+    #[tracing::instrument(skip(self, actor), fields(target_user_id = %target_user_id))]
+    pub async fn list_sessions(
+        &self,
+        target_user_id: UserId,
+        actor: OperatorActor,
+    ) -> Result<Vec<SessionSummary>> {
+        // Resolve the subject before reading or auditing (D7).
+        self.resolve_subject(target_user_id).await?;
+
+        let summaries = self
+            .sessions
+            .list_summaries_for_user(target_user_id)
+            .await?;
+
+        self.emit_operator(
+            actor,
+            AuditEventKind::OperatorListedSessions {
+                user_id: target_user_id,
+            },
+        )
+        .await;
+
+        tracing::info!(
+            count = summaries.len(),
+            outcome = "listed",
+            "operator list sessions"
+        );
+        Ok(summaries)
     }
 }

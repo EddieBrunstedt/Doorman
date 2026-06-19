@@ -221,6 +221,40 @@ pub enum AuditEventKind {
         /// The deleted user.
         user_id: UserId,
     },
+    /// An operator revoked **every** session belonging to a user at once
+    /// (the bulk "sign the account out everywhere" operator flow). Carries
+    /// only the subject's `user_id` — the flow is a set delete with no single
+    /// `session_id` to name, mirroring [`AccountDeleted`](Self::AccountDeleted)
+    /// rather than the per-session [`SessionRevoked`](Self::SessionRevoked).
+    /// The self-service bulk revoke is silent; only the operator path records
+    /// this row, so the [`Actor::Operator`] it carries is the accountability
+    /// trail for the most consequential operator mutation.
+    OperatorRevokedAllSessions {
+        /// The user whose sessions were all revoked.
+        user_id: UserId,
+    },
+    /// An operator listed a user's passkeys. Operator read flows are audited
+    /// (D8): inspecting another user's inventory is itself privacy-sensitive,
+    /// so "who looked" lands in the same stream as "who changed what". The
+    /// [`Actor::Operator`] is the point of the row. Self-service listings stay
+    /// unaudited — a user reading their own inventory is not security-relevant.
+    ///
+    /// Split into distinct passkey / session variants (rather than one
+    /// `OperatorRead { resource }`) to match the existing per-action kinds,
+    /// each of which names its own operation directly.
+    OperatorListedPasskeys {
+        /// The user whose passkeys were listed.
+        user_id: UserId,
+    },
+    /// An operator listed a user's sessions. The sessions are projected to
+    /// `SessionSummary` (the `token_hash` never crosses into the operator
+    /// view); this row records only that the listing happened and who ran it.
+    /// See [`OperatorListedPasskeys`](Self::OperatorListedPasskeys) for why the
+    /// read flows are audited and why the two reads are split.
+    OperatorListedSessions {
+        /// The user whose sessions were listed.
+        user_id: UserId,
+    },
 }
 
 /// Why a passkey authentication attempt did not succeed. Pairs with

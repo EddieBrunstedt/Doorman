@@ -454,3 +454,146 @@ async fn operator_revoke_all_unknown_user_fails_loudly() {
     );
     let _ = bystander;
 }
+
+#[tokio::test]
+async fn operator_revoke_all_emits_audit_with_operator_actor() {
+    // The bulk revoke is the most consequential operator mutation, so it must
+    // leave an audited, operator-attributed trace even though the underlying
+    // revoke-all primitive is silent.
+    let h = Harness::fresh();
+    let user = provision_user(&h, "owner@example.com").await;
+
+    h.operator
+        .revoke_all_sessions(user.id, operator())
+        .await
+        .expect("operator revoke all");
+
+    let event = h
+        .audit
+        .events()
+        .into_iter()
+        .find(|e| {
+            matches!(
+                e.kind,
+                AuditEventKind::OperatorRevokedAllSessions { user_id } if user_id == user.id
+            )
+        })
+        .expect("an OperatorRevokedAllSessions event was emitted");
+    let Actor::Operator(recorded) = event.actor else {
+        panic!(
+            "revoke-all must attribute to Actor::Operator, got {:?}",
+            event.actor
+        );
+    };
+    assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
+}
+
+// ---------------------------------------------------------------------------
+// Operator read listings (D8 audited reads, F9 token_hash never escapes).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn operator_list_passkeys_returns_summaries_and_audits() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "owner@example.com").await;
+
+    let summaries = h
+        .operator
+        .list_passkeys(user.id, operator())
+        .await
+        .expect("operator list passkeys");
+    assert_eq!(summaries.len(), 1, "the provisioned credential is listed");
+
+    let listed = h
+        .audit
+        .events()
+        .into_iter()
+        .find(|e| {
+            matches!(
+                e.kind,
+                AuditEventKind::OperatorListedPasskeys { user_id } if user_id == user.id
+            )
+        })
+        .expect("an OperatorListedPasskeys event was emitted");
+    let Actor::Operator(recorded) = listed.actor else {
+        panic!(
+            "operator read must attribute to Actor::Operator, got {:?}",
+            listed.actor
+        );
+    };
+    assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
+}
+
+#[tokio::test]
+async fn operator_list_sessions_returns_summaries_without_token_hash_and_audits() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "owner@example.com").await;
+
+    let summaries = h
+        .operator
+        .list_sessions(user.id, operator())
+        .await
+        .expect("operator list sessions");
+    assert_eq!(summaries.len(), 1, "the active session is listed");
+
+    // The returned type is `SessionSummary`, which has no `token_hash` field —
+    // its absence is a compile-time guarantee. Confirm the surviving metadata
+    // identifies the user's session.
+    let summary = &summaries[0];
+    assert_eq!(summary.user_id, user.id, "summary is the subject's session");
+
+    let listed = h
+        .audit
+        .events()
+        .into_iter()
+        .find(|e| {
+            matches!(
+                e.kind,
+                AuditEventKind::OperatorListedSessions { user_id } if user_id == user.id
+            )
+        })
+        .expect("an OperatorListedSessions event was emitted");
+    let Actor::Operator(recorded) = listed.actor else {
+        panic!(
+            "operator read must attribute to Actor::Operator, got {:?}",
+            listed.actor
+        );
+    };
+    assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
+}
+
+#[tokio::test]
+async fn operator_reads_unknown_user_fail_loudly_and_unaudited() {
+    // D7: the subject is resolved before any listing, and a failed resolve
+    // emits no audit row (no "who looked" trace for a lookup that returned
+    // nothing).
+    let h = Harness::fresh();
+    let _present = provision_user(&h, "present@example.com").await;
+    let before = h.audit.events().len();
+
+    let passkey_err = h
+        .operator
+        .list_passkeys(UserId::new(), operator())
+        .await
+        .expect_err("listing a missing user's passkeys must fail");
+    assert!(
+        matches!(passkey_err, Error::UserNotFound),
+        "expected UserNotFound, got {passkey_err:?}"
+    );
+
+    let session_err = h
+        .operator
+        .list_sessions(UserId::new(), operator())
+        .await
+        .expect_err("listing a missing user's sessions must fail");
+    assert!(
+        matches!(session_err, Error::UserNotFound),
+        "expected UserNotFound, got {session_err:?}"
+    );
+
+    assert_eq!(
+        h.audit.events().len(),
+        before,
+        "a read against a missing target emits no audit row",
+    );
+}
