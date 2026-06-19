@@ -170,9 +170,13 @@ Implement `EmailTemplates` to customise the copy. Every method has a default bod
 
 User-facing copy is the host's responsibility on the **client** too: doorman returns machine error codes (see `crates/axum/src/error.rs`), and the example client maps those codes to human guidance. See [operations.md](operations.md#customizing-user-facing-messages).
 
-## Driving the managers directly
+## Layering: core assembly and the Axum front end
 
-For a custom HTTP surface (not Axum, or a bespoke API shape), skip the router and call the core managers: `SessionManager`, `PasskeyManager`, `SignupManager`, `RecoveryManager`, `AccountManager`. The high-level builder exposes the same managers the routes use via `AuthState::session_manager()`, `passkey()`, `signup()`, and `recovery()` accessors, so host code can drive them alongside the bundled routes. The low-level `AuthService::from_managers()` path accepts managers you constructed yourself.
+doorman is batteries-included and Axum-first. The auth engine and its assembly live in `doorman-core`. `AuthCore::builder(storage)` is the composition root: it resolves the collaborator defaults, validates the signup/recovery/account URL templates and the configured lifetimes, wires the security notifier and the session-resolution cache (installing the cache invalidator on the `SessionManager`), and constructs the five managers — `SessionManager`, `PasskeyManager`, `SignupManager`, `RecoveryManager`, `AccountManager` — in the order their shared collaborators require. Its `AssemblyError` carries those portable failure modes.
+
+`doorman-axum` is the first-party HTTP integration. `AuthService::builder(storage)` delegates that portable assembly to `doorman-core` and then adds the HTTP layer: the cookie config and its `__Host-`/`__Secure-` prefix rules, the CSRF posture, and the mountable router plus session layer. Its `BuilderError` embeds the core `AssemblyError` variants so a host sees one error type.
+
+The high-level builder still exposes the assembled managers the routes drive via the `AuthState::session_manager()`, `passkey()`, `signup()`, `recovery()`, and `account()` accessors, so host code can run the same logic alongside the bundled routes. Hosts that construct the managers themselves hand them to the low-level `AuthService::from_managers()` path.
 
 ## Extractors
 

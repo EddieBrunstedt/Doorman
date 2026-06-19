@@ -190,9 +190,9 @@ To support a database doorman doesn't ship, implement the five traits yourself. 
 - **Monitoring** — watch recovery requests/completions, passkey add/remove events, high-risk session revocations, and failed WebAuthn ceremonies. Optionally wire a `Metrics` implementation.
 - **Backup passkeys** — prompt users with `passkey_count < 2` to add one.
 
-## Building a custom HTTP surface
+## Layering
 
-The Axum integration is the supported front end, but it is a thin shell over framework-agnostic managers in `doorman-core`: `SessionManager`, `PasskeyManager`, `SignupManager`, `RecoveryManager`, and `AccountManager`. Call them directly via `AuthService::from_managers()` to put doorman behind a different framework or a bespoke API.
+doorman is batteries-included and Axum-first. The auth engine and its assembly live in `doorman-core`: `AuthCore::builder(storage)` resolves the collaborator defaults, validates the URL templates and lifetimes, wires the security notifier and session-resolution cache, and constructs the managers (`SessionManager`, `PasskeyManager`, `SignupManager`, `RecoveryManager`, `AccountManager`) in dependency order. `doorman-axum` is the first-party HTTP integration: `AuthService::builder(storage)` delegates that portable assembly to `doorman-core` and adds the HTTP layer (cookies, CSRF, the router and session layer). Hosts that have already constructed the managers themselves can hand them to `AuthService::from_managers()`.
 
 ## Workspace layout
 
