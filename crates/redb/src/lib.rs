@@ -49,11 +49,12 @@ mod stores;
 use std::path::Path;
 use std::sync::Arc;
 
+use doorman_core::error::StorageResult;
 use doorman_core::storage::{
-    PasskeyChallengeStore, PasskeyCredentialStore, SessionStore, Storage, UserStore,
+    PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionStore, Storage, UserStore,
     VerificationTokenStore,
 };
-use redb::Database;
+use redb::{Database, WriteTransaction};
 
 use crate::db::RedbHandle;
 
@@ -141,4 +142,35 @@ impl RedbStorage {
             self.handle.clone(),
         ))
     }
+
+    /// The shared [`Database`], for opening write transactions directly.
+    ///
+    /// For an advanced host that overrides `SessionStore::create_session` to
+    /// commit a session and its own record (e.g. a fail-closed audit/outbox
+    /// entry in a host-defined table) in **one** redb write transaction, then
+    /// delegates every other method to the bundled store. Open the transaction
+    /// with [`Database::begin_write`], call [`write_session`] inside it
+    /// alongside the host's own table writes, and `commit`. redb is natively
+    /// ACID-transactional, so the whole transaction is atomic.
+    ///
+    /// The returned `Arc` shares the one database file with every bundled store,
+    /// so writes made through it are visible to the delegated reads.
+    pub fn database(&self) -> Arc<Database> {
+        self.handle.db()
+    }
+}
+
+/// Insert a [`Session`] and both of its secondary indexes into `wtxn`.
+///
+/// A redb session is not a single row: it is the primary record plus a
+/// token-hash index and a per-user index, which must move together. This writes
+/// all three against the caller's open [`WriteTransaction`] without committing,
+/// so a host overriding `SessionStore::create_session` reuses doorman's exact
+/// index maintenance (rather than replicating it and keeping it in sync forever)
+/// while owning the transaction. Open the transaction via
+/// [`RedbStorage::database`], call this alongside the host's own writes, and
+/// `commit` — the bundled reads (`find_session_by_token_hash`,
+/// `find_session_by_id`, `list_for_user`) then find the session.
+pub fn write_session(wtxn: &WriteTransaction, session: &Session) -> StorageResult<()> {
+    db::write_session(wtxn, session)
 }

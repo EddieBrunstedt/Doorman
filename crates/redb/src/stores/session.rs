@@ -41,27 +41,8 @@ impl SessionStore for RedbSessionStore {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
         let db = self.handle.db();
         tokio::task::spawn_blocking(move || {
-            let session_key = session.id.0.to_string();
-            let hash_key = db::token_hash_hex(&session.token_hash);
-            let user_idx_key = db::user_sessions_idx_key(session.user_id, session.id);
-            let encoded = db::encode(&session)?;
-
             let wtxn = db.begin_write().map_err(db::err)?;
-            {
-                let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
-                let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
-                let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
-
-                sessions
-                    .insert(session_key.as_str(), encoded.as_slice())
-                    .map_err(db::err)?;
-                hash_idx
-                    .insert(hash_key.as_str(), session_key.as_str())
-                    .map_err(db::err)?;
-                user_idx
-                    .insert(user_idx_key.as_str(), ())
-                    .map_err(db::err)?;
-            }
+            db::write_session(&wtxn, &session)?;
             wtxn.commit().map_err(db::err)?;
             Ok(())
         })

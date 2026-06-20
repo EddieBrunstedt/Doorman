@@ -35,9 +35,9 @@ use std::sync::Arc;
 use chrono::{DateTime, SecondsFormat, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{
-    PasskeySummary, StoredPasskey, TokenHash, UserId, VerificationPurpose,
+    PasskeySummary, Session, StoredPasskey, TokenHash, UserId, VerificationPurpose,
 };
-use redb::{Database, TableDefinition};
+use redb::{Database, TableDefinition, WriteTransaction};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -298,6 +298,37 @@ impl RedbHandle {
     pub(crate) fn db(&self) -> Arc<Database> {
         self.db.clone()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Session write step
+// ---------------------------------------------------------------------------
+
+/// Insert a session and both of its secondary indexes inside `wtxn`.
+///
+/// A session spans three tables — the primary record, the token-hash index, and
+/// the per-user index — that must move together. This performs all three inserts
+/// against the caller's open write transaction without committing it, so the
+/// store's own `create_session` and a host's transactional override share the
+/// one index-maintenance implementation and can never drift.
+pub(crate) fn write_session(wtxn: &WriteTransaction, session: &Session) -> StorageResult<()> {
+    let session_key = session.id.0.to_string();
+    let hash_key = token_hash_hex(&session.token_hash);
+    let user_idx_key = user_sessions_idx_key(session.user_id, session.id);
+    let encoded = encode(session)?;
+
+    let mut sessions = wtxn.open_table(SESSIONS).map_err(err)?;
+    let mut hash_idx = wtxn.open_table(SESSION_HASH_IDX).map_err(err)?;
+    let mut user_idx = wtxn.open_table(USER_SESSIONS_IDX).map_err(err)?;
+
+    sessions
+        .insert(session_key.as_str(), encoded.as_slice())
+        .map_err(err)?;
+    hash_idx
+        .insert(hash_key.as_str(), session_key.as_str())
+        .map_err(err)?;
+    user_idx.insert(user_idx_key.as_str(), ()).map_err(err)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
