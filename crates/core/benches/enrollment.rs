@@ -30,6 +30,7 @@ use doorman_core::memory::{
 };
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
+use doorman_core::reauth::{ReauthManager, ReauthPolicy};
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use doorman_core::storage::{SessionStore, Storage};
@@ -65,12 +66,26 @@ fn signup_manager() -> SignupManager {
         users,
         sessions,
         verification_tokens: tokens,
-        passkey_credentials: credentials,
-        passkey_challenges: challenges,
+        passkey_credentials: credentials.clone(),
+        passkey_challenges: challenges.clone(),
     };
     let email = email as Arc<dyn EmailSender>;
     let emails = Arc::new(DefaultEmailTemplates);
     let notifier = SecurityEmailNotifier::new(email.clone(), emails.clone());
+    let passkey_config = PasskeyConfig::new(
+        "localhost",
+        Url::parse("http://localhost:8080").expect("rp origin"),
+        "doorman bench",
+    );
+    let reauth = ReauthManager::new(
+        &passkey_config,
+        credentials.clone(),
+        challenges.clone(),
+        clock.clone(),
+        audit.clone(),
+        ReauthPolicy::disabled(),
+    )
+    .expect("build reauth manager");
     let deps = CoreDeps::new(
         clock,
         audit,
@@ -79,18 +94,11 @@ fn signup_manager() -> SignupManager {
         notifier,
         Arc::new(NoopRateLimiter) as Arc<dyn RateLimiter>,
         session_manager,
+        reauth,
         storage,
     );
 
-    let passkey = PasskeyManager::new(
-        &deps,
-        PasskeyConfig::new(
-            "localhost",
-            Url::parse("http://localhost:8080").expect("rp origin"),
-            "doorman bench",
-        ),
-    )
-    .expect("build passkey manager");
+    let passkey = PasskeyManager::new(&deps, passkey_config).expect("build passkey manager");
 
     let flow = EnrollmentFlow::new(&deps, passkey);
     SignupManager::new(

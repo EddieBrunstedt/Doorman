@@ -277,6 +277,19 @@ pub struct RecoveryConsumeRequest {
     pub token: String,
 }
 
+/// Re-authentication proof a client attaches to a destructive request to
+/// prove session recency. Obtained by running the `POST /auth/reauth/start`
+/// ceremony and feeding its `options` to `navigator.credentials.get`.
+/// Absent-but-required surfaces as `401 reauth_required`; the client then runs
+/// the ceremony and retries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reauthentication {
+    /// The challenge id the `reauth/start` response returned.
+    pub challenge_id: String,
+    /// The WebAuthn assertion the browser produced for the challenge.
+    pub assertion: webauthn_rs::prelude::PublicKeyCredential,
+}
+
 /// Request body for `/auth/account/email`. Starts a verified email change:
 /// a confirmation link is sent to `new_email` and the current address is
 /// notified. The change only takes effect once the link is confirmed.
@@ -284,6 +297,31 @@ pub struct RecoveryConsumeRequest {
 pub struct EmailChangeRequest {
     /// The address to move the account to once confirmed.
     pub new_email: String,
+    /// Optional re-authentication proof, required when the host gates the
+    /// email-change request behind re-auth.
+    #[serde(default)]
+    pub reauthentication: Option<Reauthentication>,
+}
+
+/// Request body for `DELETE /auth/account`. The body is optional — a client
+/// with no re-auth gate (or making its first, proof-less attempt) sends
+/// none — so the only field is the optional re-authentication proof.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeleteAccountRequest {
+    /// Optional re-authentication proof, required when the host gates account
+    /// deletion behind re-auth.
+    #[serde(default)]
+    pub reauthentication: Option<Reauthentication>,
+}
+
+/// Request body for `DELETE /auth/passkey/{credential_id}`. Optional, like
+/// [`DeleteAccountRequest`]: it carries only the re-authentication proof.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RemovePasskeyRequest {
+    /// Optional re-authentication proof, required when the host gates passkey
+    /// removal behind re-auth.
+    #[serde(default)]
+    pub reauthentication: Option<Reauthentication>,
 }
 
 /// Request body for `/auth/account/email/confirm`. The token comes from the

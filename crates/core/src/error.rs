@@ -96,6 +96,14 @@ pub enum Error {
     )]
     RecoveryCooldownActive,
 
+    /// The action requires a fresh passkey re-authentication that was not
+    /// supplied (or whose challenge was missing/expired). The session is
+    /// otherwise valid; the caller should run the
+    /// [`ReauthManager`](crate::reauth::ReauthManager) `start` ceremony and
+    /// retry the action carrying the resulting proof.
+    #[error("the action requires a fresh passkey re-authentication")]
+    ReauthRequired,
+
     /// The account has been disabled by an operator. Both authentication and
     /// recovery refuse a disabled account until it is re-enabled; this is a
     /// deliberate refusal, distinct from a missing or expired session.

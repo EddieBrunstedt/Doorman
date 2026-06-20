@@ -10,6 +10,7 @@ let auth = AuthService::builder(storage.all_stores())
     .passkey(PasskeyConfig::from_origin(origin.clone(), "Example")?)
     .signup(SignupConfig { url_template, ..Default::default() })
     .recovery(RecoveryConfig { url_template, ..Default::default() })
+    .reauthentication(ReauthPolicy::required_for([ReauthAction::DeleteAccount, ReauthAction::RemovePasskey]))
     .external_origin(origin)
     .build()?;
 let app = Router::new().merge(auth.router()).layer(auth.session_layer());

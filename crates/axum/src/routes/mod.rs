@@ -8,6 +8,7 @@ use axum::Json;
 use axum::Router;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use doorman_core::reauth::ReauthProof;
 use doorman_core::storage::PasskeyChallengeId;
 use doorman_core::verification::{EnrollmentOutcome, VerificationConsumeOutcome};
 use uuid::Uuid;
@@ -15,12 +16,13 @@ use webauthn_rs::prelude::CreationChallengeResponse;
 
 use crate::config::CookieConfig;
 use crate::cookies::{clear_session_cookie, session_cookie};
-use crate::dto::{AuthResponse, PasskeyChallenge};
+use crate::dto::{AuthResponse, PasskeyChallenge, Reauthentication};
 use crate::error::ErrorResponse;
 use crate::state::AuthState;
 
 pub(crate) mod account;
 pub(crate) mod passkey;
+pub(crate) mod reauth;
 pub(crate) mod recovery;
 pub(crate) mod sessions;
 pub(crate) mod signup;
@@ -58,6 +60,23 @@ pub(crate) fn parse_challenge_id(raw: &str) -> Result<PasskeyChallengeId, ErrorR
         .map_err(|_| ErrorResponse(doorman_core::Error::InvalidPasskeyChallenge))
 }
 
+/// Convert an optional wire [`Reauthentication`] into the core
+/// [`ReauthProof`], parsing (and validating) the challenge id. Shared by every
+/// destructive route that threads a proof into its core call; `None` stays
+/// `None` so the manager's policy decides whether the absence is an error.
+pub(crate) fn reauth_proof(
+    reauth: Option<Reauthentication>,
+) -> Result<Option<ReauthProof>, ErrorResponse> {
+    reauth
+        .map(|r| {
+            Ok(ReauthProof {
+                challenge_id: parse_challenge_id(&r.challenge_id)?,
+                assertion: r.assertion,
+            })
+        })
+        .transpose()
+}
+
 /// Build the challenge payload returned by the signup/recovery `consume`
 /// step from a manager [`VerificationConsumeOutcome`]. Both enrollment
 /// flows hand the same shape to `navigator.credentials.create`.
@@ -92,6 +111,7 @@ pub(crate) async fn enrollment_success(
 pub(crate) fn router(state: AuthState) -> Router {
     Router::new()
         .merge(passkey::routes())
+        .merge(reauth::routes())
         .merge(signup::routes())
         .merge(recovery::routes())
         .merge(sessions::routes())

@@ -18,6 +18,7 @@ use crate::clock::Clock;
 use crate::email::{EmailSender, EmailTemplates, SecurityEmailNotifier};
 use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::rate_limit::RateLimiter;
+use crate::reauth::ReauthManager;
 use crate::session::SessionManager;
 use crate::storage::{
     PasskeyChallengeStore, PasskeyCredentialStore, Storage, UserStore, VerificationTokenStore,
@@ -71,6 +72,12 @@ pub struct CoreDeps {
     /// Session manager the passkey and enrollment flows mint sessions
     /// through.
     pub sessions: SessionManager,
+    /// Re-authentication manager the destructive flows (account deletion,
+    /// email-change request, passkey removal) gate through. Carries the
+    /// host's [`ReauthPolicy`](crate::reauth::ReauthPolicy), so it is built
+    /// before the bundle and shared the same way [`sessions`](Self::sessions)
+    /// is.
+    pub reauth: ReauthManager,
     /// User store.
     pub users: Arc<dyn UserStore>,
     /// Verification-token store backing the signup / recovery links.
@@ -83,10 +90,13 @@ pub struct CoreDeps {
 
 impl CoreDeps {
     /// Assemble a context from the individual collaborators and a
-    /// [`Storage`] composite. The [`SessionManager`] and the
-    /// [`SecurityEmailNotifier`] are passed in rather than derived here:
-    /// both need their own configuration (and any invalidation hook) wired
-    /// up before the dependent managers clone them.
+    /// [`Storage`] composite. The [`SessionManager`], the
+    /// [`SecurityEmailNotifier`], and the [`ReauthManager`] are passed in
+    /// rather than derived here: each needs its own configuration (the
+    /// invalidation hook, the email renderer, the [`ReauthPolicy`]) wired up
+    /// before the dependent managers clone them.
+    ///
+    /// [`ReauthPolicy`]: crate::reauth::ReauthPolicy
     // A dependency bundle is inherently wide; the alternative (a second
     // builder layered over this one) would be more indirection, not less.
     #[allow(clippy::too_many_arguments)]
@@ -98,6 +108,7 @@ impl CoreDeps {
         notifier: SecurityEmailNotifier,
         rate_limiter: Arc<dyn RateLimiter>,
         sessions: SessionManager,
+        reauth: ReauthManager,
         storage: Storage,
     ) -> Self {
         Self {
@@ -109,6 +120,7 @@ impl CoreDeps {
             rate_limiter,
             metrics: Arc::new(NoopMetricSink),
             sessions,
+            reauth,
             users: storage.users,
             verification_tokens: storage.verification_tokens,
             passkey_credentials: storage.passkey_credentials,

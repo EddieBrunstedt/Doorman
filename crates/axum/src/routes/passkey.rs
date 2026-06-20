@@ -15,11 +15,11 @@ use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use crate::dto::{
     AuthResponse, PasskeyAuthenticateFinishRequest, PasskeyChallenge, PasskeyDto,
-    PasskeyRenameRequest, RegistrationFinishRequest,
+    PasskeyRenameRequest, RegistrationFinishRequest, RemovePasskeyRequest,
 };
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, AuthUser, RequestContext};
-use crate::routes::{auth_success, parse_challenge_id};
+use crate::routes::{auth_success, parse_challenge_id, reauth_proof};
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
@@ -111,14 +111,17 @@ async fn remove(
     auth: AuthSession,
     RequestContext(context): RequestContext,
     Path(credential_id): Path<String>,
+    body: Option<Json<RemovePasskeyRequest>>,
 ) -> Result<StatusCode, ErrorResponse> {
     let bytes = URL_SAFE_NO_PAD
         .decode(credential_id.as_bytes())
         .map_err(|_| ErrorResponse(doorman_core::Error::PasskeyNotFound))?;
-    // The post-recovery cool-down gate lives in the manager, so it holds for
-    // every host driving core — not just this route.
+    // The body is optional: the proof-less first attempt sends none. The
+    // post-recovery cool-down and re-auth gates live in the manager, so they
+    // hold for every host driving core — not just this route.
+    let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     manager(&state)
-        .remove_passkey(&auth.session, &bytes, context)
+        .remove_passkey(&auth.session, &bytes, proof, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

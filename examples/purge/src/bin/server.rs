@@ -33,6 +33,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             external_origin.clone(),
             "doorman purge example",
         )?)
+        // This demo does not drive the re-auth client dance, so opt out
+        // explicitly rather than gating the destructive actions. The decision
+        // is required either way — there is no default.
+        .reauthentication(ReauthPolicy::disabled())
         // A single-process demo, so the per-process limiter and a no-op audit
         // sink are deliberate explicit choices, as in `examples/minimal-app`.
         .audit(Arc::new(NoopAuditSink))

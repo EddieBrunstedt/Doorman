@@ -21,9 +21,9 @@ use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
     AttestationMetadata, CreationChallengeResponse, Credential, CredentialID,
-    DiscoverableAuthentication, DiscoverableKey, Passkey, PasskeyRegistration, PublicKeyCredential,
-    RegisterPublicKeyCredential, RequestChallengeResponse, Webauthn, WebauthnBuilder,
-    WebauthnError,
+    DiscoverableAuthentication, DiscoverableKey, Passkey, PasskeyAuthentication,
+    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
+    RequestChallengeResponse, Webauthn, WebauthnBuilder, WebauthnError,
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
 
@@ -34,6 +34,7 @@ use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
 use crate::rate_limit::{RateLimitPolicy, RateLimiter};
+use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,
@@ -185,6 +186,7 @@ pub struct PasskeyManager {
     credentials: Arc<dyn PasskeyCredentialStore>,
     challenges: Arc<dyn PasskeyChallengeStore>,
     sessions: SessionManager,
+    reauth: ReauthManager,
     clock: Arc<dyn Clock>,
     audit: Arc<dyn AuditSink>,
     notifier: SecurityEmailNotifier,
@@ -206,17 +208,14 @@ impl PasskeyManager {
     /// passkey lifecycle notices share the one configured sender and email
     /// renderer with every other bundled notice.
     pub fn new(deps: &CoreDeps, config: PasskeyConfig) -> Result<Self> {
-        let webauthn = WebauthnBuilder::new(&config.rp_id, &config.rp_origin)
-            .map_err(|e| Error::InvalidRelyingParty(e.to_string()))?
-            .rp_name(&config.rp_name)
-            .build()
-            .map_err(|e| Error::InvalidRelyingParty(e.to_string()))?;
+        let webauthn = build_webauthn(&config)?;
 
         Ok(Self {
             users: deps.users.clone(),
             credentials: deps.passkey_credentials.clone(),
             challenges: deps.passkey_challenges.clone(),
             sessions: deps.sessions.clone(),
+            reauth: deps.reauth.clone(),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             notifier: deps.notifier.clone(),
@@ -867,14 +866,29 @@ impl PasskeyManager {
     /// That is intentional: the email-based recovery flow is the designed
     /// backstop for the "lost every passkey" case, so self-service removal
     /// does not special-case the final credential.
-    #[tracing::instrument(skip(self, session, credential_id, context), fields(user_id = %session.user_id))]
+    ///
+    /// When the host's [`ReauthPolicy`](crate::reauth::ReauthPolicy) gates
+    /// [`RemovePasskey`](ReauthAction::RemovePasskey), `reauth` must carry a
+    /// fresh [`ReauthProof`]; an absent one is rejected with
+    /// [`Error::ReauthRequired`]. The cool-down is checked **first** — it is a
+    /// hard block re-auth cannot satisfy.
+    #[tracing::instrument(skip(self, session, credential_id, reauth, context), fields(user_id = %session.user_id))]
     pub async fn remove_passkey(
         &self,
         session: &Session,
         credential_id: &[u8],
+        reauth: Option<ReauthProof>,
         context: SessionContext,
     ) -> Result<()> {
         self.sessions.ensure_not_in_recovery_cooldown(session)?;
+        self.reauth
+            .ensure(
+                ReauthAction::RemovePasskey,
+                session,
+                reauth.as_ref(),
+                &context,
+            )
+            .await?;
         let user_id = session.user_id;
         self.remove_passkey_for(
             user_id,
@@ -1136,11 +1150,24 @@ fn user_id_from_handle(response: &PublicKeyCredential) -> Result<Option<UserId>>
 // host's store needs no `webauthn-rs` dependency; `doorman-core` is the only
 // layer that knows the blob is JSON-serialised `webauthn-rs` state.
 
+/// Build the `webauthn-rs` [`Webauthn`] handle from the relying-party config.
+/// Shared by [`PasskeyManager::new`] and
+/// [`ReauthManager::new`](crate::reauth::ReauthManager::new): both need a
+/// handle configured against the same `rp_id` / origin, so the construction
+/// lives here once.
+pub(crate) fn build_webauthn(config: &PasskeyConfig) -> Result<Webauthn> {
+    WebauthnBuilder::new(&config.rp_id, &config.rp_origin)
+        .map_err(|e| Error::InvalidRelyingParty(e.to_string()))?
+        .rp_name(&config.rp_name)
+        .build()
+        .map_err(|e| Error::InvalidRelyingParty(e.to_string()))
+}
+
 fn encode_credential(passkey: &Passkey) -> Result<Vec<u8>> {
     serde_json::to_vec(passkey).map_err(|e| Error::Webauthn(format!("serialise credential: {e}")))
 }
 
-fn decode_credential(bytes: &[u8]) -> Result<Passkey> {
+pub(crate) fn decode_credential(bytes: &[u8]) -> Result<Passkey> {
     serde_json::from_slice(bytes)
         .map_err(|e| Error::Webauthn(format!("deserialise credential: {e}")))
 }
@@ -1165,7 +1192,23 @@ fn decode_authentication_state(bytes: &[u8]) -> Result<DiscoverableAuthenticatio
         .map_err(|e| Error::Webauthn(format!("deserialise authentication state: {e}")))
 }
 
-fn challenge_lifetime(d: Duration) -> chrono::Duration {
+/// Encode the allow-list-scoped [`PasskeyAuthentication`] ceremony state used
+/// by re-authentication. It rides the same opaque `state` blob and
+/// [`PasskeyChallengeStore`] as the discoverable login state above; the two
+/// kinds are naturally segregated because feeding one blob to the other's
+/// `finish` call fails to decode.
+pub(crate) fn encode_passkey_authentication_state(
+    state: &PasskeyAuthentication,
+) -> Result<Vec<u8>> {
+    serde_json::to_vec(state).map_err(|e| Error::Webauthn(format!("serialise reauth state: {e}")))
+}
+
+pub(crate) fn decode_passkey_authentication_state(bytes: &[u8]) -> Result<PasskeyAuthentication> {
+    serde_json::from_slice(bytes)
+        .map_err(|e| Error::Webauthn(format!("deserialise reauth state: {e}")))
+}
+
+pub(crate) fn challenge_lifetime(d: Duration) -> chrono::Duration {
     chrono::Duration::from_std(d)
         .expect("passkey challenge lifetime overflows chrono::Duration; configure a smaller value")
 }

@@ -67,6 +67,7 @@ use doorman_core::email::{EmailSender, EmailTemplates};
 use doorman_core::metrics::MetricSink;
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::RateLimiter;
+use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::RecoveryConfig;
 use doorman_core::session::SessionConfig;
 use doorman_core::signup::SignupConfig;
@@ -98,6 +99,7 @@ use crate::manager_builder::{BuilderError, ManagerBuilder};
 /// let auth = AuthService::builder(storage)
 ///     .email(Arc::new(TerminalEmailSender))
 ///     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
+///     .reauthentication(ReauthPolicy::required_for([ReauthAction::DeleteAccount, ReauthAction::RemovePasskey]))
 ///     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
 ///     .recovery(RecoveryConfig { url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
 ///     .external_origin(origin)
@@ -131,6 +133,7 @@ pub struct AuthServiceBuilder {
     signup: Option<SignupConfig>,
     recovery: Option<RecoveryConfig>,
     account: Option<AccountConfig>,
+    reauth: Option<ReauthPolicy>,
 }
 
 impl AuthServiceBuilder {
@@ -152,6 +155,7 @@ impl AuthServiceBuilder {
             signup: None,
             recovery: None,
             account: None,
+            reauth: None,
         }
     }
 
@@ -289,6 +293,20 @@ impl AuthServiceBuilder {
         self
     }
 
+    /// Decide which destructive actions (account deletion, email-change
+    /// request, passkey removal) require a fresh passkey re-authentication.
+    /// **Required** — like the CSRF decision there is no default, so
+    /// [`build`](Self::build) returns [`BuilderError::ReauthDecisionRequired`]
+    /// until this is called. Pass
+    /// [`ReauthPolicy::required_for`](doorman_core::reauth::ReauthPolicy::required_for)
+    /// to gate actions, or
+    /// [`ReauthPolicy::disabled`](doorman_core::reauth::ReauthPolicy::disabled)
+    /// to opt out deliberately.
+    pub fn reauthentication(mut self, policy: ReauthPolicy) -> Self {
+        self.reauth = Some(policy);
+        self
+    }
+
     /// Absolute public origin clients use to reach the auth routes.
     /// Supplying an origin enables CSRF origin checks and satisfies the
     /// required CSRF decision (see [`csrf`](Self::csrf)).
@@ -357,6 +375,9 @@ impl AuthServiceBuilder {
         if let Some(account) = self.account {
             core_builder = core_builder.account(account);
         }
+        if let Some(reauth) = self.reauth {
+            core_builder = core_builder.reauthentication(reauth);
+        }
 
         let core = core_builder.build()?;
 
@@ -382,6 +403,7 @@ impl AuthServiceBuilder {
             .signup_manager(core.signup)
             .recovery_manager(core.recovery)
             .account_manager(core.account)
+            .reauth_manager(core.reauth)
             .operator_manager(core.operator);
 
         if let Some(csrf_config) = self.csrf_config {

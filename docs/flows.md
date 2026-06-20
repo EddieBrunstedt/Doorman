@@ -146,6 +146,25 @@ Authenticated routes for an established account:
 
 Email change reuses the verification-token machinery: a single-use confirmation link goes to the **new** address and a security notice goes to the **old** one, and the change only lands when the new address confirms.
 
+## Re-authentication for destructive actions
+
+A host can require a **fresh passkey assertion immediately before** the destructive actions — delete account, request email change, remove passkey — to prove the session is still operated by its owner (see [security.md](security.md#re-authentication-for-destructive-actions) for the threat model). The decision is **required**: wire `.reauthentication(ReauthPolicy::required_for([...]))` to gate actions, or `.reauthentication(ReauthPolicy::disabled())` to opt out. The build fails closed otherwise.
+
+When an action is gated, the client follows one recipe for every protected route:
+
+1. Call the destructive endpoint with no proof.
+2. Server responds `401` with body `{ "error": { "code": "reauth_required", .. } }`.
+3. `POST /auth/reauth/start` → `{ "challenge_id", "options" }`; run `navigator.credentials.get(options)` (the same call the sign-in page makes).
+4. Re-call the destructive endpoint, now including `"reauthentication": { "challenge_id", "assertion" }` in the JSON body.
+
+| Endpoint                               | Body field carrying the proof |
+| -------------------------------------- | ----------------------------- |
+| `DELETE /auth/account`                 | `reauthentication`            |
+| `POST /auth/account/email`             | `reauthentication`            |
+| `DELETE /auth/passkey/{credential_id}` | `reauthentication`            |
+
+The challenge is single-use, scoped to the session user's own credentials, and always requires user verification. `POST /auth/reauth/start` is authenticated and inherits the CSRF origin check like every mutation; it is **not** rate-limited (it is authenticated, sends no email, and guards an unforgeable signature). Non-interactive bearer clients cannot satisfy a re-auth gate — programmatic deletion is the operator surface's job.
+
 ## Security notifications
 
 doorman sends best-effort security-notice emails (after the protected action has already succeeded) for: a registered-address recovery request, a completed recovery, every successful passkey registration, a passkey removal, an email-change request, revoking another session, and "sign out everywhere else". It does **not** send mail for unknown-address recovery, already-registered signup, or ordinary self-logout.

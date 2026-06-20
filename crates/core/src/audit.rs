@@ -228,6 +228,27 @@ pub enum AuditEventKind {
         /// The deleted user.
         user_id: UserId,
     },
+    /// A fresh passkey re-authentication succeeded immediately before a
+    /// destructive action (account deletion, email-change request, passkey
+    /// removal). Recency was proven by a user-verified assertion from one of
+    /// the session user's own credentials; the action then proceeds. No
+    /// ceremony email is sent — the destructive action keeps its own notice.
+    ReauthSucceeded {
+        /// The user that re-authenticated.
+        user_id: UserId,
+    },
+    /// A passkey re-authentication attempt failed. Emitted only when a proof
+    /// was supplied and rejected (bad/expired challenge, bad assertion,
+    /// missing user verification, a credential not owned by the session user,
+    /// or a signature-counter regression). A *missing* proof is the normal
+    /// `reauth_required` handshake and is not recorded here. Pairs with the
+    /// [`ReauthFailureReason`] for after-the-fact triage.
+    ReauthFailed {
+        /// The session user the re-authentication was attempted for.
+        user_id: UserId,
+        /// Why the attempt failed.
+        reason: ReauthFailureReason,
+    },
     /// An operator revoked **every** session belonging to a user at once
     /// (the bulk "sign the account out everywhere" operator flow). Carries
     /// only the subject's `user_id` — the flow is a set delete with no single
@@ -308,6 +329,32 @@ pub enum AuthFailureReason {
     /// user-verification flag. doorman requires user-verified passkeys, so the
     /// login is rejected and this event is emitted so the host can alert.
     UserVerificationMissing,
+    /// The assertion failed `webauthn-rs` verification for any other reason
+    /// (bad signature, origin mismatch, malformed response, etc.).
+    BadAssertion,
+}
+
+/// Why a passkey re-authentication attempt did not succeed. Pairs with
+/// [`AuditEventKind::ReauthFailed`] for after-the-fact triage and alerting.
+/// Mirrors the security-significant subset of [`AuthFailureReason`]; a missing
+/// proof is not represented because it is the ordinary `reauth_required`
+/// handshake rather than a failed attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReauthFailureReason {
+    /// The presented challenge id did not resolve to an outstanding
+    /// re-authentication ceremony, or it had already expired.
+    InvalidChallenge,
+    /// The assertion verified but the authenticator did not set the
+    /// user-verification flag. Re-authentication always requires a deliberate
+    /// user-verified gesture, so the attempt is rejected.
+    UserVerificationMissing,
+    /// The asserted credential is not registered to the session user, so the
+    /// proof cannot stand in for *this* user's presence.
+    OwnershipMismatch,
+    /// The asserted signature counter did not advance past the stored value,
+    /// which `webauthn-rs` flags as a possible cloned authenticator.
+    CounterRegression,
     /// The assertion failed `webauthn-rs` verification for any other reason
     /// (bad signature, origin mismatch, malformed response, etc.).
     BadAssertion,

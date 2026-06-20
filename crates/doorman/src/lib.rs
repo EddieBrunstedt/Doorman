@@ -68,6 +68,7 @@
 //! let auth = AuthService::builder(storage.all_stores())
 //!     .email(Arc::new(TerminalEmailSender))
 //!     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
+//!     .reauthentication(ReauthPolicy::required_for([ReauthAction::DeleteAccount, ReauthAction::RemovePasskey]))
 //!     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
 //!     .recovery(RecoveryConfig { url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
 //!     .external_origin(origin)

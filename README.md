@@ -71,6 +71,10 @@ let auth = AuthService::builder(storage.all_stores())
         url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"),
         ..Default::default()
     })
+    .reauthentication(ReauthPolicy::required_for([   // required decision; or ReauthPolicy::disabled()
+        ReauthAction::DeleteAccount,
+        ReauthAction::RemovePasskey,
+    ]))
     .external_origin(origin)        // enables CSRF origin checks; required CSRF decision
     .cookie(CookieConfig::default())
     .build()?;
@@ -184,6 +188,7 @@ To support a database doorman doesn't ship, implement the five traits yourself. 
 - **Audit** — required. Wire a durable `AuditSink`, or pass `NoopAuditSink` explicitly to discard security events.
 - **Rate limiting** — required. Wire a shared `RateLimiter` (e.g. the Redis one) for multi-replica deployments, the per-process `InMemoryRateLimiter` for a single process, or `NoopRateLimiter` to disable enforcement deliberately.
 - **Origin & CSRF** — required decision. Set `external_origin` to the exact public origin (which enables the CSRF origin checks for browser cookie flows), or opt out explicitly with `CsrfConfig::disabled()`.
+- **Re-authentication** — required decision. Pass `ReauthPolicy::required_for([..])` to require a fresh passkey assertion before the destructive actions (delete account, email-change request, passkey removal), or `ReauthPolicy::disabled()` to opt out explicitly.
 - **URL templates** — required. The stock `example.invalid` signup / recovery / account templates are rejected; set real ones that carry the `{token}` placeholder.
 - **Cookies** — keep `secure`, `HttpOnly`, `SameSite` session cookies anywhere but local HTTP development.
 - **Maintenance** — run storage migrations and periodically purge expired sessions, verification tokens, and passkey challenges.

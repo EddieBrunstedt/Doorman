@@ -36,6 +36,7 @@ use doorman_core::metrics::MetricSink;
 use doorman_core::operator::{NotificationPolicy, OperatorManager};
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
+use doorman_core::reauth::{ReauthManager, ReauthPolicy};
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
 use doorman_core::session::hash_token;
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
@@ -111,6 +112,7 @@ pub struct Harness {
     pub signup: SignupManager,
     pub recovery: RecoveryManager,
     pub account: AccountManager,
+    pub reauth: ReauthManager,
     pub operator: OperatorManager,
     /// The recovery flow the harness built `recovery` from, kept so tests
     /// can construct another `RecoveryManager` (e.g. to exercise
@@ -164,6 +166,10 @@ pub struct HarnessBuilder {
     /// Defaults to the asymmetric stock policy; the operator notice tests
     /// override it to exercise the send/suppress toggles.
     notification_policy: NotificationPolicy,
+    /// The [`ReauthPolicy`] the destructive managers gate through. Defaults to
+    /// [`ReauthPolicy::disabled`] so the account / passkey flow suites keep
+    /// passing without supplying proofs; the reauth suite overrides it.
+    reauth_policy: ReauthPolicy,
 }
 
 impl HarnessBuilder {
@@ -180,7 +186,15 @@ impl HarnessBuilder {
             recovery_limiter: Arc::new(NoopRateLimiter),
             emails: Arc::new(DefaultEmailTemplates),
             notification_policy: NotificationPolicy::default(),
+            reauth_policy: ReauthPolicy::disabled(),
         }
+    }
+
+    /// Override the [`ReauthPolicy`] the harness gates destructive actions
+    /// with. Defaults to [`ReauthPolicy::disabled`].
+    pub fn reauth_policy(mut self, policy: ReauthPolicy) -> Self {
+        self.reauth_policy = policy;
+        self
     }
 
     /// Override the operator [`NotificationPolicy`] the harness builds its
@@ -259,6 +273,17 @@ impl HarnessBuilder {
             passkey_challenges: challenges.clone(),
         };
 
+        // The destructive managers gate through one shared re-auth manager.
+        let reauth = ReauthManager::new(
+            &self.passkey,
+            credentials.clone(),
+            challenges.clone(),
+            clock.clone() as Arc<dyn Clock>,
+            audit.clone() as Arc<dyn AuditSink>,
+            self.reauth_policy,
+        )
+        .expect("build reauth manager");
+
         // Signup and recovery hold their own EnrollmentFlow. The two flows
         // share every collaborator except the rate limiter, kept separate so
         // a recovery rate-limit test can provision users through signup
@@ -272,6 +297,7 @@ impl HarnessBuilder {
             notifier,
             self.signup_limiter,
             session_manager,
+            reauth.clone(),
             storage,
         )
         .with_metrics(metrics.clone() as Arc<dyn MetricSink>);
@@ -306,6 +332,7 @@ impl HarnessBuilder {
             signup,
             recovery,
             account,
+            reauth,
             operator,
             recovery_flow,
             users,
@@ -492,6 +519,25 @@ impl ResidentTestAuthenticator {
         credential_id: &[u8],
     ) -> PublicKeyCredential {
         self.do_authentication_inner(challenge, credential_id, true)
+    }
+
+    /// Drive an allow-list-scoped authentication, as re-authentication issues.
+    /// Unlike sign-in the challenge carries an `allow_credentials` list, so the
+    /// `SoftPasskey` needs no compatibility shim — it picks the key straight
+    /// from the server-issued list. A user handle is *not* attached: the
+    /// scoped finish identifies the credential from the allow-list, and core's
+    /// re-auth gate confirms ownership by looking the asserted credential up.
+    pub fn do_scoped_authentication(
+        &mut self,
+        challenge: RequestChallengeResponse,
+    ) -> PublicKeyCredential {
+        assert!(
+            !challenge.public_key.allow_credentials.is_empty(),
+            "re-auth challenge must be allow-list scoped"
+        );
+        self.inner
+            .do_authentication(auth_origin(), challenge)
+            .expect("authenticator auth")
     }
 
     pub fn do_authentication_without_user_handle(

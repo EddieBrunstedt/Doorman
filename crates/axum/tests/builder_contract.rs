@@ -24,6 +24,7 @@ use doorman_core::memory::{
 use doorman_core::operator::{NotificationPolicy, OperatorManager};
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
+use doorman_core::reauth::{ReauthManager, ReauthPolicy};
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager};
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupManager};
@@ -99,6 +100,7 @@ fn valid_builder() -> AuthServiceBuilder {
         .signup(real_signup())
         .recovery(real_recovery())
         .account(real_account())
+        .reauthentication(ReauthPolicy::disabled())
         .csrf(CsrfConfig::disabled())
 }
 
@@ -180,6 +182,7 @@ fn explicit_noop_collaborators_are_accepted() {
         .signup(real_signup())
         .recovery(real_recovery())
         .account(real_account())
+        .reauthentication(ReauthPolicy::disabled())
         .csrf(CsrfConfig::disabled())
         .build()
         .err();
@@ -201,6 +204,7 @@ fn csrf_decision_required_when_neither_origin_nor_config_set() {
         .signup(real_signup())
         .recovery(real_recovery())
         .account(real_account())
+        .reauthentication(ReauthPolicy::disabled())
         .build()
         .err();
     assert!(
@@ -219,6 +223,7 @@ fn external_origin_satisfies_the_csrf_decision() {
         .signup(real_signup())
         .recovery(real_recovery())
         .account(real_account())
+        .reauthentication(ReauthPolicy::disabled())
         .external_origin("https://app.test".parse().expect("origin"))
         .build()
         .err();
@@ -234,6 +239,39 @@ fn explicit_csrf_disabled_satisfies_the_csrf_decision() {
     assert!(
         err.is_none(),
         "explicit CsrfConfig::disabled() should satisfy the CSRF decision, got: {err:?}"
+    );
+}
+
+// --- Re-authentication decision is required ---
+
+#[test]
+fn reauth_decision_required_when_policy_not_set() {
+    // Every other input is valid; only the re-auth decision is missing. Like
+    // the CSRF decision, the build refuses to guess whether destructive
+    // actions should require a fresh passkey assertion.
+    let err = AuthService::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .audit(noop_audit())
+        .limiter(in_memory_limiter())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .account(real_account())
+        .csrf(CsrfConfig::disabled())
+        .build()
+        .err();
+    assert!(
+        matches!(err, Some(BuilderError::ReauthDecisionRequired)),
+        "expected ReauthDecisionRequired when no policy is wired, got: {err:?}"
+    );
+}
+
+#[test]
+fn explicit_reauth_disabled_satisfies_the_decision() {
+    let err = valid_builder().build().err();
+    assert!(
+        err.is_none(),
+        "explicit ReauthPolicy::disabled() should satisfy the decision, got: {err:?}"
     );
 }
 
@@ -398,6 +436,16 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
     )
     .with_security_notifier(notifier.clone());
 
+    let reauth = ReauthManager::new(
+        &passkey_config(),
+        storage.passkey_credentials.clone(),
+        storage.passkey_challenges.clone(),
+        clock.clone(),
+        audit.clone(),
+        ReauthPolicy::disabled(),
+    )
+    .expect("reauth manager");
+
     let deps = CoreDeps::new(
         clock,
         audit,
@@ -406,6 +454,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         notifier,
         limiter,
         session_manager.clone(),
+        reauth.clone(),
         storage.clone(),
     );
 
@@ -429,9 +478,11 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         .signup_manager(signup)
         .recovery_manager(recovery)
         .account_manager(account)
+        .reauth_manager(reauth)
         .operator_manager(operator)
-        // Pre-built managers already own their transport; the only build-time
-        // decision left on this path is the CSRF posture.
+        // Pre-built managers already own their transport and embed their
+        // re-auth policy; the only build-time decision left on this path is the
+        // CSRF posture.
         .csrf(CsrfConfig::disabled())
         .build()
         .expect("low-level build should succeed when every manager is supplied");

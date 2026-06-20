@@ -674,7 +674,12 @@ async fn remove_passkey_emits_audit_sends_notification_and_blocks_login() {
     let mail_before = h.email.sent().len();
 
     h.passkey
-        .remove_passkey(&session, &cred.credential_id, SessionContext::default())
+        .remove_passkey(
+            &session,
+            &cred.credential_id,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("remove");
     assert!(h.credentials.is_empty());
@@ -705,7 +710,12 @@ async fn remove_passkey_refuses_other_users_credential_without_notification() {
 
     let err = h
         .passkey
-        .remove_passkey(&bob_session, &cred.credential_id, SessionContext::default())
+        .remove_passkey(
+            &bob_session,
+            &cred.credential_id,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect_err("ownership check");
     assert!(matches!(err, Error::PasskeyOwnershipMismatch));
@@ -721,7 +731,12 @@ async fn remove_missing_passkey_sends_no_notification() {
 
     let err = h
         .passkey
-        .remove_passkey(&session, b"missing credential", SessionContext::default())
+        .remove_passkey(
+            &session,
+            b"missing credential",
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect_err("missing credential");
     assert!(matches!(err, Error::PasskeyNotFound));
@@ -739,7 +754,12 @@ async fn remove_passkey_notification_failure_does_not_undo_removal() {
     h.email.fail_after_successful_sends(mail_before);
 
     h.passkey
-        .remove_passkey(&session, &cred.credential_id, SessionContext::default())
+        .remove_passkey(
+            &session,
+            &cred.credential_id,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("remove succeeds despite notification failure");
 
@@ -773,7 +793,12 @@ async fn remove_passkey_refused_during_recovery_cooldown() {
 
     let err = h
         .passkey
-        .remove_passkey(&restricted, &cred.credential_id, SessionContext::default())
+        .remove_passkey(
+            &restricted,
+            &cred.credential_id,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect_err("removal must be refused during the cool-down");
     assert!(matches!(err, Error::RecoveryCooldownActive));
@@ -787,7 +812,12 @@ async fn remove_passkey_refused_during_recovery_cooldown() {
     // Once the cool-down lapses, the same session can remove the passkey.
     h.clock.advance(ChronoDuration::hours(25));
     h.passkey
-        .remove_passkey(&restricted, &cred.credential_id, SessionContext::default())
+        .remove_passkey(
+            &restricted,
+            &cred.credential_id,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("removal allowed once the cool-down lapses");
     assert!(h.credentials.is_empty());

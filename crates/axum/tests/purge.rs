@@ -46,6 +46,7 @@ fn service_with_storage() -> (AuthService, Storage) {
     let service = AuthService::builder(storage)
         .email(Arc::new(TerminalEmailSender) as Arc<dyn EmailSender>)
         .passkey(PasskeyConfig::new("localhost", origin, "doorman tests"))
+        .reauthentication(doorman_core::reauth::ReauthPolicy::disabled())
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
         .signup(SignupConfig {

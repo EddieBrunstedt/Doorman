@@ -25,6 +25,7 @@ let auth = AuthService::builder(storage.all_stores())
     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
     .recovery(RecoveryConfig { url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
     .account(AccountConfig { url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
+    .reauthentication(ReauthPolicy::required_for([ReauthAction::DeleteAccount, ReauthAction::RemovePasskey]))
     .external_origin(origin)
     .cookie(CookieConfig::default())
     .build()?;
@@ -44,20 +45,21 @@ let app = Router::new()
 
 Every collaborator and config has a bare-noun setter on `AuthServiceBuilder` (and the same names on the low-level `ManagerBuilder`):
 
-| Setter                                                                                                   | Purpose                                                 |
-| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| `.email(Arc<dyn EmailSender>)`                                                                           | Transport for links and notices. Required.              |
-| `.emails(Arc<dyn EmailTemplates>)`                                                                       | One renderer branding every email (see below).          |
-| `.audit(Arc<dyn AuditSink>)`                                                                             | Sink for security events. Required.                     |
-| `.limiter(Arc<dyn RateLimiter>)`                                                                         | Rate-limit backend. Required.                           |
-| `.metrics(Arc<dyn MetricSink>)`                                                                          | Observability hook.                                     |
-| `.clock(Arc<dyn Clock>)`                                                                                 | Time source (mock in tests). Defaults to `SystemClock`. |
-| `.passkey(PasskeyConfig)`                                                                                | Relying party + ceremony config. Required.              |
-| `.signup(SignupConfig)` / `.recovery(RecoveryConfig)` / `.account(AccountConfig)`                        | Flow configs (URL templates, lifetimes, cool-down).     |
-| `.session(SessionConfig)` / `.cookie(CookieConfig)` / `.cache(SessionCacheConfig)` / `.csrf(CsrfConfig)` | Session presentation + caching + CSRF.                  |
-| `.external_origin(Url)`                                                                                  | Public origin, enables CSRF origin checks.              |
+| Setter                                                                                                   | Purpose                                                     |
+| -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `.email(Arc<dyn EmailSender>)`                                                                           | Transport for links and notices. Required.                  |
+| `.emails(Arc<dyn EmailTemplates>)`                                                                       | One renderer branding every email (see below).              |
+| `.audit(Arc<dyn AuditSink>)`                                                                             | Sink for security events. Required.                         |
+| `.limiter(Arc<dyn RateLimiter>)`                                                                         | Rate-limit backend. Required.                               |
+| `.metrics(Arc<dyn MetricSink>)`                                                                          | Observability hook.                                         |
+| `.clock(Arc<dyn Clock>)`                                                                                 | Time source (mock in tests). Defaults to `SystemClock`.     |
+| `.passkey(PasskeyConfig)`                                                                                | Relying party + ceremony config. Required.                  |
+| `.signup(SignupConfig)` / `.recovery(RecoveryConfig)` / `.account(AccountConfig)`                        | Flow configs (URL templates, lifetimes, cool-down).         |
+| `.reauthentication(ReauthPolicy)`                                                                        | Which destructive actions need a fresh assertion. Required. |
+| `.session(SessionConfig)` / `.cookie(CookieConfig)` / `.cache(SessionCacheConfig)` / `.csrf(CsrfConfig)` | Session presentation + caching + CSRF.                      |
+| `.external_origin(Url)`                                                                                  | Public origin, enables CSRF origin checks.                  |
 
-The builder is strict by default — there is no silent insecure default, so every footgun is an explicit call rather than a warning. `build()` returns a `BuilderError` until each required input is wired: the email transport (`MissingEmailSender`), passkey config (`MissingPasskeyConfig`), audit sink (`MissingAuditSink` — pass `NoopAuditSink` to discard events), rate limiter (`MissingRateLimiter` — pass `InMemoryRateLimiter`, a shared backend, or `NoopRateLimiter`), and a CSRF decision (`CsrfDecisionRequired` — set `external_origin` or `CsrfConfig::disabled()`). It also fails closed on a stock `example.invalid` URL template (`PlaceholderUrlTemplate`), a URL template missing `{token}` (`TOKEN_PLACEHOLDER`), a sub-floor recovery cool-down, a `__Host-`/`__Secure-` cookie name without the matching attributes, an out-of-bounds TTL, or a cookie max-age exceeding the session lifetime. No public config value panics the build.
+The builder is strict by default — there is no silent insecure default, so every footgun is an explicit call rather than a warning. `build()` returns a `BuilderError` until each required input is wired: the email transport (`MissingEmailSender`), passkey config (`MissingPasskeyConfig`), audit sink (`MissingAuditSink` — pass `NoopAuditSink` to discard events), rate limiter (`MissingRateLimiter` — pass `InMemoryRateLimiter`, a shared backend, or `NoopRateLimiter`), a CSRF decision (`CsrfDecisionRequired` — set `external_origin` or `CsrfConfig::disabled()`), and a re-authentication decision (`ReauthDecisionRequired` — pass `ReauthPolicy::required_for([..])` or `ReauthPolicy::disabled()`). It also fails closed on a stock `example.invalid` URL template (`PlaceholderUrlTemplate`), a URL template missing `{token}` (`TOKEN_PLACEHOLDER`), a sub-floor recovery cool-down, a `__Host-`/`__Secure-` cookie name without the matching attributes, an out-of-bounds TTL, or a cookie max-age exceeding the session lifetime. No public config value panics the build.
 
 ## Choosing or implementing a store
 

@@ -73,6 +73,27 @@ During the cool-down, doorman blocks actions that could lock out the legitimate 
 
 The cool-down length is the host's to set. By default doorman rejects a configured value below a one-hour floor, because the cool-down is the only thing protecting a freshly-recovered account from an attacker who phished the link before the owner reacted — a near-zero value would silently defeat that property. A host that has weighed the trade-off can go below the floor (down to zero) by setting `RecoveryConfig::danger_allow_cooldown_below_floor`. The floor is not a cap on host control; it only forces the choice to be deliberate rather than accidental.
 
+## Re-authentication for destructive actions
+
+Re-authentication requires a **fresh, user-verified passkey assertion immediately before an irreversible self-service action** — deleting the account, requesting an email change, or removing a passkey. It is the WebAuthn equivalent of "confirm your password" before something dangerous. Call it re-authentication, never "step-up": step-up classically means raising the assurance level (adding or upgrading a factor), but doorman is single-factor and the passkey is already the strongest rung — there is nothing to step up to. What re-auth proves is **recency**: that the human behind this session is still present right now.
+
+**Threat model.** Re-auth defends against a _stolen or stale session_ — an XSS-exfiltrated bearer token, a borrowed unlocked laptop, a session left open. The attacker holds a valid session but cannot produce a fresh user-verified passkey assertion. It does **not** defend against a stolen _authenticator_: an attacker who holds the passkey and can satisfy user verification is indistinguishable from the user, and that is out of scope. Re-auth **complements, never replaces, the recovery cool-down** — the cool-down distrusts a freshly-recovered session, re-auth distrusts an old one. Both gate the same actions, and the cool-down is checked **first**: it is a hard block you cannot re-auth your way out of.
+
+**No default — the host must decide.** Like the CSRF decision, the build fails closed: `AuthService::builder` (and the core `AuthCore::builder`) returns a `ReauthDecisionRequired` error unless the host either lists the protected actions with `ReauthPolicy::required_for([...])` or opts out explicitly with `ReauthPolicy::disabled()`. There is no silent default.
+
+**Shape.** Re-auth is an inline, per-action assertion — no intermediate token, no session stamp, and no storage migration (it reuses the passkey challenge store). The client recipe is identical for every protected action:
+
+1. Call the destructive endpoint with no proof.
+2. The server responds `401` with a machine-readable `reauth_required` code. (401, not 403: the session is valid but the action needs fresh proof, and the client _should_ retry after re-authenticating.)
+3. `POST /auth/reauth/start` to mint a single-use, user-scoped challenge; run `navigator.credentials.get(options)`.
+4. Re-call the destructive endpoint, now carrying `{ "reauthentication": { "challenge_id", "assertion" } }`.
+
+The challenge is scoped to the session user's own credentials (the allow-list-scoped ceremony, not the discoverable sign-in one), is single-use, and always requires user verification — independent of any configurable sign-in UV policy. The asserted credential's owner is re-checked against the session user as defense in depth.
+
+**No rate limiting, by design.** The re-auth endpoints are deliberately not rate-limited. Re-auth is authenticated (a valid session is required to reach it), sends no email, exposes no enumeration surface, and guards an unforgeable signature — so none of the four reasons doorman rate-limits other endpoints (brute-force, enumeration, email/quota abuse, unauthenticated amplification) apply. The lever against a stolen session is **revocation**, not throttling. Do not "fix" the absence by reflex.
+
+**Non-interactive clients cannot re-auth.** A bearer/programmatic client has no authenticator to produce an assertion, so it cannot satisfy a re-auth gate. Programmatic account deletion is the **operator surface's** job (`OperatorManager`), which is host-authorized out-of-band and carries no cool-down, rate-limit, or re-auth gate by design. Do not add re-auth to operator flows.
+
 ## Sessions
 
 - Session tokens are 256 bits of OS-CSPRNG output, URL-safe base64 encoded.
@@ -94,7 +115,7 @@ Bearer-token clients are not in CSRF scope, but they must protect the raw token 
 
 ## Audit and rate limiting
 
-Security-significant events are emitted to `AuditSink`: signup request and consume, recovery request/consume/failure, login success/failure, credential add/remove, session create/revoke/expire, email-change request/complete, and account deletion. Production hosts should ship these events to durable, queryable storage; `NoopAuditSink` discards them.
+Security-significant events are emitted to `AuditSink`: signup request and consume, recovery request/consume/failure, login success/failure, credential add/remove, session create/revoke/expire, email-change request/complete, account deletion, and re-authentication success/failure. Production hosts should ship these events to durable, queryable storage; `NoopAuditSink` discards them. The re-auth ceremony itself sends **no** security-notification email — it would be noise; the destructive action keeps its own existing notification.
 
 Managers consult `RateLimiter` before sensitive endpoints, including the passkey authentication start/finish endpoints (per-IP and per-credential). The limiter key is structured (operation + ordered dimensions) so layered limits are expressible. The built-in in-memory limiter is correct only inside one process; multi-node deployments need a shared backend.
 

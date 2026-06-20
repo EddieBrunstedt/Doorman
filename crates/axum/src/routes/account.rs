@@ -14,10 +14,10 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{delete, post};
 
-use crate::dto::{EmailChangeConfirmRequest, EmailChangeRequest, UserDto};
+use crate::dto::{DeleteAccountRequest, EmailChangeConfirmRequest, EmailChangeRequest, UserDto};
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, RequestContext};
-use crate::routes::no_content_clearing_session_cookie;
+use crate::routes::{no_content_clearing_session_cookie, reauth_proof};
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
@@ -36,11 +36,12 @@ async fn request_email_change(
     RequestContext(context): RequestContext,
     Json(body): Json<EmailChangeRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
-    // The post-recovery cool-down gate lives in the manager, so the guarantee
-    // holds for every host driving core, not just this route.
+    // The post-recovery cool-down and re-auth gates live in the manager, so the
+    // guarantees hold for every host driving core, not just this route.
+    let proof = reauth_proof(body.reauthentication)?;
     state
         .account
-        .request_email_change(&auth.user, &auth.session, &body.new_email, context)
+        .request_email_change(&auth.user, &auth.session, &body.new_email, proof, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -67,9 +68,16 @@ async fn delete_account(
     State(state): State<AuthState>,
     auth: AuthSession,
     RequestContext(context): RequestContext,
+    body: Option<Json<DeleteAccountRequest>>,
 ) -> Result<Response, ErrorResponse> {
-    // The post-recovery cool-down gate lives in the manager, so the guarantee
-    // holds for every host driving core, not just this route.
-    state.account.delete_account(&auth.session, context).await?;
+    // The body is optional: the proof-less first attempt sends none. A present
+    // body carries the re-auth proof. The post-recovery cool-down and re-auth
+    // gates live in the manager, so the guarantees hold for every host driving
+    // core, not just this route.
+    let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
+    state
+        .account
+        .delete_account(&auth.session, proof, context)
+        .await?;
     Ok(no_content_clearing_session_cookie(&state.cookie_config))
 }

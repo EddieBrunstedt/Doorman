@@ -24,6 +24,10 @@ async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn 
     let auth = AuthService::builder(storage.all_stores())
         .email(Arc::new(TerminalEmailSender))
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
+        .reauthentication(ReauthPolicy::required_for([
+            ReauthAction::DeleteAccount,
+            ReauthAction::RemovePasskey,
+        ]))
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
         .signup(SignupConfig {

@@ -24,8 +24,8 @@ use doorman_axum::SessionCacheConfig;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
 use doorman_axum::dto::{
-    AuthResponse, PasskeyChallenge, PasskeyDto, RegistrationFinishRequest, SignupConsumeRequest,
-    SignupRequest, UserDto,
+    AuthResponse, PasskeyChallenge, PasskeyDto, Reauthentication, RegistrationFinishRequest,
+    SignupConsumeRequest, SignupRequest, UserDto,
 };
 use doorman_axum::extractors::AuthSession;
 use doorman_core::account::AccountConfig;
@@ -38,6 +38,7 @@ use doorman_core::memory::{
 };
 use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::PasskeyConfig;
+use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use doorman_core::session::{SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupRateLimits};
@@ -162,6 +163,10 @@ impl TestApp {
                 url_template: ACCOUNT_URL.to_string(),
                 ..AccountConfig::default()
             })
+            // Default off so the existing suites need no proof; the reauth
+            // suite overrides this in its `customise` closure (last setter
+            // wins) to gate the destructive actions it exercises.
+            .reauthentication(ReauthPolicy::disabled())
             // Tests that exercise CSRF opt in via `customise`; the default
             // app is a non-browser test client, so opt out deliberately.
             .csrf(CsrfConfig::disabled())
@@ -409,6 +414,35 @@ impl SignupClient {
             .expect("register finish");
         assert_eq!(finish.status(), StatusCode::OK);
         finish.json().await.expect("register finish body")
+    }
+
+    /// Drive the re-authentication `start` ceremony for the authenticated
+    /// session and produce the [`Reauthentication`] proof a destructive request
+    /// carries. The `start` challenge is allow-list scoped, so the
+    /// `SoftPasskey` answers it directly — no resident-key shim needed.
+    pub async fn reauth(
+        &mut self,
+        client: &reqwest::Client,
+        app: &TestApp,
+        bearer: &str,
+    ) -> Reauthentication {
+        let start = client
+            .post(app.url("/auth/reauth/start"))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .expect("reauth start");
+        assert_eq!(start.status(), StatusCode::OK);
+        let challenge: PasskeyChallenge<RequestChallengeResponse> =
+            start.json().await.expect("reauth start body");
+        let assertion = self
+            .inner
+            .do_authentication(self.rp_origin.clone(), challenge.options)
+            .expect("authenticator scoped auth");
+        Reauthentication {
+            challenge_id: challenge.challenge_id,
+            assertion,
+        }
     }
 }
 

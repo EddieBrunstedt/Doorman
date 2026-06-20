@@ -98,6 +98,12 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         }
         Error::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         Error::RecoveryCooldownActive => (StatusCode::CONFLICT, "recovery_cooldown_active"),
+        // 401, not 403: the session is valid but the action needs fresh proof.
+        // 401 + the machine-readable `reauth_required` code is the step-up
+        // convention and keeps the client's retry branch simple (403 reads as
+        // "forbidden, don't retry", the wrong signal — the client *should*
+        // retry after re-authenticating).
+        Error::ReauthRequired => (StatusCode::UNAUTHORIZED, "reauth_required"),
         Error::AccountDisabled => (StatusCode::FORBIDDEN, "account_disabled"),
         Error::ResourceLimitExceeded { .. } => (StatusCode::CONFLICT, "resource_limit_exceeded"),
         Error::InvalidOperatorActor { .. } => (StatusCode::BAD_REQUEST, "invalid_operator_actor"),
@@ -208,6 +214,7 @@ mod tests {
                 S::CONFLICT,
                 "recovery_cooldown_active",
             ),
+            (Error::ReauthRequired, S::UNAUTHORIZED, "reauth_required"),
             (Error::AccountDisabled, S::FORBIDDEN, "account_disabled"),
             (
                 Error::ResourceLimitExceeded {

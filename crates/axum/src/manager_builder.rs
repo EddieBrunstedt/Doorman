@@ -29,6 +29,7 @@ use crate::state::AuthState;
 use doorman_core::account::AccountManager;
 use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::PasskeyManager;
+use doorman_core::reauth::ReauthManager;
 use doorman_core::recovery::RecoveryManager;
 use doorman_core::signup::SignupManager;
 
@@ -97,6 +98,18 @@ pub enum BuilderError {
         "a CSRF decision is required: set external_origin to enable origin checks, or pass CsrfConfig::disabled() to opt out"
     )]
     CsrfDecisionRequired,
+    /// No re-authentication decision was made on the high-level
+    /// [`AuthServiceBuilder`](crate::AuthServiceBuilder), which constructs the
+    /// re-auth manager itself. Call
+    /// [`reauthentication`](crate::AuthServiceBuilder::reauthentication) with a
+    /// [`ReauthPolicy`](doorman_core::reauth::ReauthPolicy) gating the
+    /// destructive actions, or `ReauthPolicy::disabled()` to opt out. The
+    /// low-level [`ManagerBuilder`] takes pre-built managers whose re-auth
+    /// policy is already embedded, so it never returns this error.
+    #[error(
+        "a re-authentication decision is required: pass ReauthPolicy::required_for([..]) to gate destructive actions, or ReauthPolicy::disabled() to opt out"
+    )]
+    ReauthDecisionRequired,
     /// The high-level builder cannot construct the passkey manager until
     /// the host supplies the WebAuthn relying-party configuration via
     /// [`AuthServiceBuilder::passkey`](crate::AuthServiceBuilder::passkey).
@@ -206,6 +219,7 @@ impl From<AssemblyError> for BuilderError {
             AssemblyError::MissingAuditSink => BuilderError::MissingAuditSink,
             AssemblyError::MissingRateLimiter => BuilderError::MissingRateLimiter,
             AssemblyError::MissingPasskeyConfig => BuilderError::MissingPasskeyConfig,
+            AssemblyError::ReauthDecisionRequired => BuilderError::ReauthDecisionRequired,
             AssemblyError::Passkey(e) => BuilderError::Passkey(e),
             AssemblyError::InvalidUrlTemplate { flow, placeholder } => {
                 BuilderError::InvalidUrlTemplate { flow, placeholder }
@@ -253,6 +267,7 @@ pub struct ManagerBuilder {
     signup: Option<SignupManager>,
     recovery: Option<RecoveryManager>,
     account: Option<AccountManager>,
+    reauth: Option<ReauthManager>,
     operator: Option<OperatorManager>,
 }
 
@@ -361,6 +376,15 @@ impl ManagerBuilder {
         self
     }
 
+    /// Supply the pre-built re-authentication manager, which already embeds
+    /// the host's [`ReauthPolicy`](doorman_core::reauth::ReauthPolicy).
+    /// Required; it backs the `reauth/start` route and is the same manager the
+    /// supplied account / passkey managers gate through.
+    pub fn reauth_manager(mut self, manager: ReauthManager) -> Self {
+        self.reauth = Some(manager);
+        self
+    }
+
     /// Supply the pre-built operator manager. Required.
     pub fn operator_manager(mut self, manager: OperatorManager) -> Self {
         self.operator = Some(manager);
@@ -378,6 +402,7 @@ impl ManagerBuilder {
         let signup = self.signup.ok_or(BuilderError::MissingSignupManager)?;
         let recovery = self.recovery.ok_or(BuilderError::MissingRecoveryManager)?;
         let account = self.account.ok_or(BuilderError::MissingAccountManager)?;
+        let reauth = self.reauth.ok_or(BuilderError::ReauthDecisionRequired)?;
         let operator = self.operator.ok_or(BuilderError::MissingOperatorManager)?;
         let cookie_config = self.cookie_config.unwrap_or_default();
         validate_cookie_prefix(&cookie_config)?;
@@ -433,6 +458,7 @@ impl ManagerBuilder {
             signup,
             recovery,
             account,
+            reauth,
             operator,
         };
 

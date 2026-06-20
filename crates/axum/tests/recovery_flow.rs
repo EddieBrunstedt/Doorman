@@ -558,6 +558,7 @@ async fn change_email_during_cooldown_returns_409() {
         .bearer_auth(&auth.token)
         .json(&doorman_axum::dto::EmailChangeRequest {
             new_email: "new@example.com".into(),
+            reauthentication: None,
         })
         .send()
         .await

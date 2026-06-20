@@ -12,7 +12,7 @@
 pub use crate::account::{AccountConfig, AccountManager};
 pub use crate::audit::{
     Actor, AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, OperatorActor,
-    RecoveryFailureReason,
+    ReauthFailureReason, RecoveryFailureReason,
 };
 pub use crate::clock::{Clock, SystemClock};
 #[cfg(feature = "file-email")]
@@ -29,6 +29,7 @@ pub use crate::purge::PurgeSummary;
 pub use crate::rate_limit::{
     NoopRateLimiter, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter,
 };
+pub use crate::reauth::{ReauthAction, ReauthManager, ReauthPolicy, ReauthProof};
 pub use crate::recovery::{MIN_COOLDOWN, RecoveryConfig, RecoveryManager, RecoveryRateLimits};
 pub use crate::session::{
     IssuedSession, SessionConfig, SessionContext, SessionInvalidationHook, SessionManager,

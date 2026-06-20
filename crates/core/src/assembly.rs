@@ -49,6 +49,7 @@ use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::operator::{NotificationPolicy, OperatorManager};
 use crate::passkey::{PasskeyConfig, PasskeyManager};
 use crate::rate_limit::RateLimiter;
+use crate::reauth::{ReauthManager, ReauthPolicy};
 use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
 use crate::session::{SessionConfig, SessionManager};
 use crate::signup::{SignupConfig, SignupManager};
@@ -100,6 +101,15 @@ pub enum AssemblyError {
     /// was supplied, so the passkey manager cannot be constructed.
     #[error("passkey config is required")]
     MissingPasskeyConfig,
+    /// No re-authentication decision was made: the builder was given neither a
+    /// [`ReauthPolicy`] (listing the destructive actions to gate) nor an
+    /// explicit [`ReauthPolicy::disabled`] opt-out. Like the CSRF decision,
+    /// the build refuses to guess whether destructive actions should require a
+    /// fresh passkey assertion, so it fails closed until the host decides.
+    #[error(
+        "a re-authentication decision is required: pass ReauthPolicy::required_for([..]) to gate destructive actions, or ReauthPolicy::disabled() to opt out"
+    )]
+    ReauthDecisionRequired,
     /// Constructing the [`PasskeyManager`]
     /// from the supplied relying-party configuration failed.
     #[error("passkey manager construction failed: {0}")]
@@ -215,6 +225,9 @@ pub struct AuthCore {
     pub recovery: RecoveryManager,
     /// Account manager (verified email change, account deletion).
     pub account: AccountManager,
+    /// Re-authentication manager backing the `reauth/start` ceremony and the
+    /// destructive-action gate.
+    pub reauth: ReauthManager,
     /// Operator manager (host-driven flows acting on another user). Reached
     /// through its own deliberate accessor so a handler must hold it
     /// explicitly to invoke an operator flow.
@@ -255,6 +268,7 @@ pub struct AuthCoreBuilder {
     signup: Option<SignupConfig>,
     recovery: Option<RecoveryConfig>,
     account: Option<AccountConfig>,
+    reauth: Option<ReauthPolicy>,
     notification_policy: Option<NotificationPolicy>,
 }
 
@@ -274,6 +288,7 @@ impl AuthCoreBuilder {
             signup: None,
             recovery: None,
             account: None,
+            reauth: None,
             notification_policy: None,
         }
     }
@@ -359,6 +374,16 @@ impl AuthCoreBuilder {
         self
     }
 
+    /// Decide which destructive actions require a fresh passkey
+    /// re-authentication. **Required** — there is no default, so
+    /// [`build`](Self::build) returns [`AssemblyError::ReauthDecisionRequired`]
+    /// until this is called (with [`ReauthPolicy::required_for`] to gate
+    /// actions, or [`ReauthPolicy::disabled`] to opt out deliberately).
+    pub fn reauthentication(mut self, policy: ReauthPolicy) -> Self {
+        self.reauth = Some(policy);
+        self
+    }
+
     /// Set the [`NotificationPolicy`] governing whether operator flows notify
     /// the subject. Left unset, the asymmetric default applies (passkey-removed
     /// notices send, session-revoked notices suppress).
@@ -428,6 +453,29 @@ impl AuthCoreBuilder {
         .with_invalidation_hook(cache.invalidator())
         .with_security_notifier(notifier.clone());
 
+        // No re-auth default: the host must decide whether destructive actions
+        // require a fresh passkey assertion. Mirrors the CSRF decision — fail
+        // closed rather than silently leaving the gate off. Resolved here,
+        // after the other collaborator and URL/lifetime validation, so a build
+        // missing several inputs still surfaces the most specific error first.
+        let reauth_policy = self.reauth.ok_or(AssemblyError::ReauthDecisionRequired)?;
+
+        // Build the re-auth manager before the bundle so it can be shared the
+        // same way the session manager is. It carries its own `Webauthn` handle
+        // built from the same relying-party config as the passkey manager —
+        // the handle is stateless across ceremonies, so a second one is
+        // equivalent to sharing one and keeps the bundle free of a webauthn
+        // field.
+        let reauth = ReauthManager::new(
+            &passkey_config,
+            self.storage.passkey_credentials.clone(),
+            self.storage.passkey_challenges.clone(),
+            clock.clone(),
+            audit.clone(),
+            reauth_policy,
+        )
+        .map_err(AssemblyError::Passkey)?;
+
         // Bundle the shared collaborators once. Every manager below reads
         // what it needs from this context instead of re-threading each
         // store / clock / sink through its own positional constructor.
@@ -439,6 +487,7 @@ impl AuthCoreBuilder {
             notifier,
             limiter,
             session_manager.clone(),
+            reauth.clone(),
             self.storage.clone(),
         )
         .with_metrics(metrics.clone());
@@ -481,6 +530,7 @@ impl AuthCoreBuilder {
             signup,
             recovery,
             account,
+            reauth,
             operator,
             cache,
             metrics,

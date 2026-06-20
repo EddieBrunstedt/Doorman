@@ -27,6 +27,7 @@ pub mod passkey;
 pub mod prelude;
 pub mod purge;
 pub mod rate_limit;
+pub mod reauth;
 pub mod recovery;
 pub mod session;
 pub mod signup;

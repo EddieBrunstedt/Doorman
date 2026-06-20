@@ -46,6 +46,7 @@ async fn readme_quickstart_snippet_compiles() -> std::result::Result<(), Box<dyn
     let auth = AuthService::builder(storage.all_stores())
         .email(Arc::new(TerminalEmailSender))
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
+        .reauthentication(ReauthPolicy::disabled())
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
         .signup(SignupConfig {
@@ -97,6 +98,7 @@ async fn readme_quickstart_drives_signup_login_recovery() {
     let auth = AuthService::builder(storage.all_stores())
         .email(email.clone() as Arc<dyn doorman_core::email::EmailSender>)
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
+        .reauthentication(ReauthPolicy::disabled())
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
         .signup(SignupConfig {

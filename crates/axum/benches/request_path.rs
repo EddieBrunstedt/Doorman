@@ -80,6 +80,7 @@ async fn build_scaffold() -> Scaffold {
     let auth = AuthService::builder(storage)
         .email(email as Arc<dyn EmailSender>)
         .passkey(PasskeyConfig::new("localhost", rp_origin, "doorman bench"))
+        .reauthentication(doorman_core::reauth::ReauthPolicy::disabled())
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
         .signup(SignupConfig {

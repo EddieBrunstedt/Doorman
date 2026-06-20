@@ -37,6 +37,7 @@ use doorman_core::memory::{
 };
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
+use doorman_core::reauth::{ReauthManager, ReauthPolicy};
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
 use doorman_core::storage::{AccountStatus, SessionStore, Storage, User, UserId, UserStore};
 use doorman_test_support::CapturingEmailSender;
@@ -94,12 +95,26 @@ async fn build_scaffold() -> Scaffold {
         users,
         sessions,
         verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
-        passkey_credentials: credentials,
-        passkey_challenges: challenges,
+        passkey_credentials: credentials.clone(),
+        passkey_challenges: challenges.clone(),
     };
     let email = email as Arc<dyn EmailSender>;
     let emails = Arc::new(DefaultEmailTemplates);
     let notifier = SecurityEmailNotifier::new(email.clone(), emails.clone());
+    let passkey_config = PasskeyConfig::new(
+        "localhost",
+        Url::parse("http://localhost:8080").expect("rp origin"),
+        "doorman bench",
+    );
+    let reauth = ReauthManager::new(
+        &passkey_config,
+        credentials.clone(),
+        challenges.clone(),
+        clock.clone(),
+        audit.clone(),
+        ReauthPolicy::disabled(),
+    )
+    .expect("build reauth manager");
     let deps = CoreDeps::new(
         clock,
         audit,
@@ -108,17 +123,10 @@ async fn build_scaffold() -> Scaffold {
         notifier,
         Arc::new(NoopRateLimiter) as Arc<dyn RateLimiter>,
         session_manager,
+        reauth,
         storage,
     );
-    let manager = PasskeyManager::new(
-        &deps,
-        PasskeyConfig::new(
-            "localhost",
-            Url::parse("http://localhost:8080").expect("rp origin"),
-            "doorman bench",
-        ),
-    )
-    .expect("build passkey manager");
+    let manager = PasskeyManager::new(&deps, passkey_config).expect("build passkey manager");
 
     Scaffold { manager, user_id }
 }

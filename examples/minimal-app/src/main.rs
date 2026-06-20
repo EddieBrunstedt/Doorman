@@ -48,6 +48,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let auth = AuthService::builder(storage.all_stores())
         .email(Arc::new(TerminalEmailSender))
         .passkey(passkey_config)
+        // Require a fresh passkey re-authentication before the irreversible
+        // actions. There is no default — the build fails closed until this
+        // decision is made — so a host either gates the actions like this or
+        // opts out with `ReauthPolicy::disabled()`.
+        .reauthentication(ReauthPolicy::required_for([
+            ReauthAction::DeleteAccount,
+            ReauthAction::RequestEmailChange,
+            ReauthAction::RemovePasskey,
+        ]))
         // This demo is a single process, so the bundled per-process limiter
         // and a no-op audit sink are deliberate choices — spelled out rather
         // than defaulted. A real deployment wires a persistent audit sink and,

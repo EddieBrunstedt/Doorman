@@ -56,7 +56,13 @@ async fn operator_delete_cascades_all_stores() {
 
     // Leave behind every kind of row that hangs off the user.
     h.account
-        .request_email_change(&user, &session, "elsewhere@example.com", Default::default())
+        .request_email_change(
+            &user,
+            &session,
+            "elsewhere@example.com",
+            None,
+            Default::default(),
+        )
         .await
         .expect("request email change");
     h.passkey

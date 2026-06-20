@@ -26,6 +26,7 @@ async fn email_change_happy_path() {
             &user,
             &session,
             "New@Example.com",
+            None,
             SessionContext::default(),
         )
         .await
@@ -119,6 +120,7 @@ async fn email_change_rejects_address_already_in_use() {
             &user,
             &session,
             "taken@example.com",
+            None,
             SessionContext::default(),
         )
         .await
@@ -149,6 +151,7 @@ async fn request_email_change_refused_during_recovery_cooldown() {
             &user,
             &restricted,
             "new@example.com",
+            None,
             SessionContext::default(),
         )
         .await
@@ -177,7 +180,7 @@ async fn delete_account_refused_during_recovery_cooldown() {
 
     let err = h
         .account
-        .delete_account(&restricted, SessionContext::default())
+        .delete_account(&restricted, None, SessionContext::default())
         .await
         .expect_err("deletion must be refused during the cool-down");
     assert!(matches!(err, Error::RecoveryCooldownActive));
@@ -209,6 +212,7 @@ async fn request_email_change_allowed_once_recovery_cooldown_lapses() {
             &user,
             &restricted,
             "new@example.com",
+            None,
             SessionContext::default(),
         )
         .await
@@ -224,6 +228,7 @@ async fn request_email_change_allowed_once_recovery_cooldown_lapses() {
             &user,
             &restricted,
             "new@example.com",
+            None,
             SessionContext::default(),
         )
         .await
@@ -248,14 +253,14 @@ async fn delete_account_allowed_once_recovery_cooldown_lapses() {
 
     let err = h
         .account
-        .delete_account(&restricted, SessionContext::default())
+        .delete_account(&restricted, None, SessionContext::default())
         .await
         .expect_err("blocked during the cool-down");
     assert!(matches!(err, Error::RecoveryCooldownActive));
 
     h.clock.advance(chrono::Duration::hours(25));
     h.account
-        .delete_account(&restricted, SessionContext::default())
+        .delete_account(&restricted, None, SessionContext::default())
         .await
         .expect("deletion allowed once the cool-down lapses");
     assert!(
@@ -281,6 +286,7 @@ async fn confirm_rejects_expired_token() {
             &user,
             &session,
             "new@example.com",
+            None,
             SessionContext::default(),
         )
         .await
@@ -342,6 +348,7 @@ async fn delete_account_cascades_all_stores() {
             &user,
             &session,
             "elsewhere@example.com",
+            None,
             SessionContext::default(),
         )
         .await
@@ -357,7 +364,7 @@ async fn delete_account_cascades_all_stores() {
     assert_eq!(h.challenges.len(), 1, "pending registration challenge");
 
     h.account
-        .delete_account(&session, SessionContext::default())
+        .delete_account(&session, None, SessionContext::default())
         .await
         .expect("delete account");
 

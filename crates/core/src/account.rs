@@ -29,6 +29,7 @@ use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::{Email, EmailSender, EmailTemplates};
 use crate::error::{Error, Result};
+use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::session::{SessionContext, SessionManager};
 use crate::storage::{
     PasskeyChallengeStore, PasskeyCredentialStore, Session, User, UserId, UserStore,
@@ -85,6 +86,7 @@ pub struct AccountManager {
     credentials: Arc<dyn PasskeyCredentialStore>,
     challenges: Arc<dyn PasskeyChallengeStore>,
     sessions: SessionManager,
+    reauth: ReauthManager,
     clock: Arc<dyn Clock>,
     audit: Arc<dyn AuditSink>,
     email: Arc<dyn EmailSender>,
@@ -104,6 +106,7 @@ impl AccountManager {
             credentials: deps.passkey_credentials.clone(),
             challenges: deps.passkey_challenges.clone(),
             sessions: deps.sessions.clone(),
+            reauth: deps.reauth.clone(),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             email: deps.email.clone(),
@@ -153,15 +156,30 @@ impl AccountManager {
     /// from under the legitimate owner before they can react. Pass a `session`
     /// resolved from storage for this request; the cool-down (and revocation)
     /// check trusts the supplied snapshot.
-    #[tracing::instrument(skip(self, session, new_email, context), fields(user_id = %user.id))]
+    ///
+    /// When the host's [`ReauthPolicy`](crate::reauth::ReauthPolicy) gates
+    /// [`RequestEmailChange`](ReauthAction::RequestEmailChange), `reauth` must
+    /// carry a fresh [`ReauthProof`]; an absent one is rejected with
+    /// [`Error::ReauthRequired`]. The cool-down is checked **first** — it is a
+    /// hard block re-auth cannot satisfy.
+    #[tracing::instrument(skip(self, session, new_email, reauth, context), fields(user_id = %user.id))]
     pub async fn request_email_change(
         &self,
         user: &User,
         session: &Session,
         new_email: &str,
+        reauth: Option<ReauthProof>,
         context: SessionContext,
     ) -> Result<()> {
         self.sessions.ensure_not_in_recovery_cooldown(session)?;
+        self.reauth
+            .ensure(
+                ReauthAction::RequestEmailChange,
+                session,
+                reauth.as_ref(),
+                &context,
+            )
+            .await?;
         let normalized = verification::normalize_email(new_email);
         verification::validate_email(&normalized)?;
 
@@ -277,9 +295,27 @@ impl AccountManager {
     /// must not be able to delete the account before the legitimate owner can
     /// react. Pass a `session` resolved from storage for this request; the
     /// cool-down (and revocation) check trusts the supplied snapshot.
-    #[tracing::instrument(skip(self, context), fields(user_id = %session.user_id))]
-    pub async fn delete_account(&self, session: &Session, context: SessionContext) -> Result<()> {
+    ///
+    /// When the host's [`ReauthPolicy`](crate::reauth::ReauthPolicy) gates
+    /// [`DeleteAccount`](ReauthAction::DeleteAccount), `reauth` must carry a
+    /// fresh [`ReauthProof`]; an absent one is rejected with
+    /// [`Error::ReauthRequired`]. The cool-down is checked **first**.
+    #[tracing::instrument(skip(self, reauth, context), fields(user_id = %session.user_id))]
+    pub async fn delete_account(
+        &self,
+        session: &Session,
+        reauth: Option<ReauthProof>,
+        context: SessionContext,
+    ) -> Result<()> {
         self.sessions.ensure_not_in_recovery_cooldown(session)?;
+        self.reauth
+            .ensure(
+                ReauthAction::DeleteAccount,
+                session,
+                reauth.as_ref(),
+                &context,
+            )
+            .await?;
         let user_id = session.user_id;
         self.delete_account_for(
             user_id,

@@ -13,6 +13,7 @@ use doorman_core::storage::UserStore;
 use doorman_core::account::AccountManager;
 use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::PasskeyManager;
+use doorman_core::reauth::ReauthManager;
 use doorman_core::recovery::RecoveryManager;
 use doorman_core::signup::SignupManager;
 
@@ -32,6 +33,7 @@ pub struct AuthState {
     pub(crate) signup: SignupManager,
     pub(crate) recovery: RecoveryManager,
     pub(crate) account: AccountManager,
+    pub(crate) reauth: ReauthManager,
     pub(crate) operator: OperatorManager,
 }
 
@@ -73,6 +75,12 @@ impl AuthState {
     /// email change and account deletion).
     pub fn account(&self) -> &AccountManager {
         &self.account
+    }
+
+    /// Borrow the re-authentication manager backing the bundled
+    /// `reauth/start` route and the destructive-action gate.
+    pub fn reauth(&self) -> &ReauthManager {
+        &self.reauth
     }
 
     /// Borrow the operator manager for host-driven flows that act on a user
