@@ -5,9 +5,13 @@ mod common;
 
 use chrono::Utc;
 use doorman_core::Error;
+use doorman_core::audit::RecoveryFailureReason;
 use doorman_core::audit::{Actor, AuditEvent, AuditEventKind, OperatorActor};
 use doorman_core::operator::{NotificationPolicy, OperatorNotice};
-use doorman_core::storage::{PasskeyCredentialStore, SessionId, SessionStore, UserId, UserStore};
+use doorman_core::session::SessionContext;
+use doorman_core::storage::{
+    AccountStatus, PasskeyCredentialStore, SessionId, SessionStore, UserId, UserStore,
+};
 
 use common::{Harness, HarnessBuilder, provision_user, session_for};
 
@@ -595,5 +599,293 @@ async fn operator_reads_unknown_user_fail_loudly_and_unaudited() {
         h.audit.events().len(),
         before,
         "a read against a missing target emits no audit row",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Operator disable / enable (reversible freeze, immediate lockout, D7, audit).
+// ---------------------------------------------------------------------------
+
+/// The stored status of `user_id` right now.
+async fn status_of(h: &Harness, user_id: UserId) -> AccountStatus {
+    h.users
+        .find_user_by_id(user_id)
+        .await
+        .expect("find user")
+        .expect("user exists")
+        .status
+}
+
+#[tokio::test]
+async fn operator_disable_freezes_account_and_drops_live_sessions() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "frozen@example.com").await;
+    assert_eq!(h.sessions.len(), 1, "user starts with a live session");
+
+    h.operator
+        .disable(user.id, operator())
+        .await
+        .expect("operator disable");
+
+    // The status flipped to Disabled and the live session is gone (immediate
+    // lockout via the revoke-all sweep).
+    assert!(
+        matches!(status_of(&h, user.id).await, AccountStatus::Disabled { .. }),
+        "the account resolves as Disabled",
+    );
+    assert_eq!(h.sessions.len(), 0, "every live session was revoked");
+}
+
+#[tokio::test]
+async fn operator_disable_emits_status_and_revoke_audit_with_operator_actor() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "frozen@example.com").await;
+
+    h.operator
+        .disable(user.id, operator())
+        .await
+        .expect("operator disable");
+
+    let disabled = h
+        .audit
+        .events()
+        .into_iter()
+        .find(|e| {
+            matches!(
+                e.kind,
+                AuditEventKind::OperatorDisabledAccount { user_id } if user_id == user.id
+            )
+        })
+        .expect("an OperatorDisabledAccount event was emitted");
+    let Actor::Operator(recorded) = disabled.actor else {
+        panic!(
+            "disable must attribute to Actor::Operator, got {:?}",
+            disabled.actor
+        );
+    };
+    assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
+
+    // The session sweep also leaves its own operator-attributed revoke row.
+    assert!(
+        h.audit.events().iter().any(|e| matches!(
+            e.kind,
+            AuditEventKind::OperatorRevokedAllSessions { user_id } if user_id == user.id
+        )),
+        "the session sweep emits OperatorRevokedAllSessions",
+    );
+}
+
+#[tokio::test]
+async fn operator_disable_suppresses_notice_by_default() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "frozen@example.com").await;
+
+    h.operator
+        .disable(user.id, operator())
+        .await
+        .expect("operator disable");
+
+    assert!(
+        !h.email.sent().iter().any(|e| e
+            .subject
+            .starts_with("Security notice: your account was disabled")),
+        "disable sends no notice under the default Suppress policy",
+    );
+}
+
+#[tokio::test]
+async fn operator_disable_sends_operator_notice_when_opted_in() {
+    let h = HarnessBuilder::new()
+        .notification_policy(NotificationPolicy {
+            account_disabled: OperatorNotice::Send,
+            ..NotificationPolicy::default()
+        })
+        .build();
+    let user = provision_user(&h, "frozen@example.com").await;
+
+    h.operator
+        .disable(user.id, operator())
+        .await
+        .expect("operator disable");
+
+    assert!(
+        h.email
+            .sent()
+            .iter()
+            .any(|e| e.subject == "Security notice: your account was disabled by an administrator"),
+        "opting in sends the operator-aware disabled notice",
+    );
+}
+
+#[tokio::test]
+async fn operator_disable_is_idempotent() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "frozen@example.com").await;
+
+    h.operator
+        .disable(user.id, operator())
+        .await
+        .expect("first disable");
+    // A second disable on an already-disabled account succeeds rather than
+    // erroring, and the account stays disabled.
+    h.operator
+        .disable(user.id, operator())
+        .await
+        .expect("second disable is idempotent");
+
+    assert!(
+        matches!(status_of(&h, user.id).await, AccountStatus::Disabled { .. }),
+        "the account is still Disabled after a redundant disable",
+    );
+    assert_eq!(h.sessions.len(), 0, "no live sessions reappear");
+}
+
+#[tokio::test]
+async fn operator_disable_unknown_user_fails_loudly() {
+    let h = Harness::fresh();
+    let bystander = provision_user(&h, "bystander@example.com").await;
+
+    let err = h
+        .operator
+        .disable(UserId::new(), operator())
+        .await
+        .expect_err("a missing target must fail loudly");
+    assert!(
+        matches!(err, Error::UserNotFound),
+        "expected UserNotFound, got {err:?}"
+    );
+    // The bystander is untouched: still active, session intact, no status event.
+    assert!(
+        matches!(status_of(&h, bystander.id).await, AccountStatus::Active),
+        "bystander stays active",
+    );
+    assert_eq!(h.sessions.len(), 1, "bystander session untouched");
+    assert!(
+        !h.audit
+            .events()
+            .iter()
+            .any(|e| matches!(e.kind, AuditEventKind::OperatorDisabledAccount { .. })),
+        "no disable event for a missing target",
+    );
+}
+
+#[tokio::test]
+async fn operator_enable_returns_account_to_active_and_audits() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "thawed@example.com").await;
+    h.operator
+        .disable(user.id, operator())
+        .await
+        .expect("disable");
+    assert!(matches!(
+        status_of(&h, user.id).await,
+        AccountStatus::Disabled { .. }
+    ));
+
+    h.operator
+        .enable(user.id, operator())
+        .await
+        .expect("operator enable");
+
+    assert!(
+        matches!(status_of(&h, user.id).await, AccountStatus::Active),
+        "the account is Active again",
+    );
+    let enabled = h
+        .audit
+        .events()
+        .into_iter()
+        .find(|e| {
+            matches!(
+                e.kind,
+                AuditEventKind::OperatorEnabledAccount { user_id } if user_id == user.id
+            )
+        })
+        .expect("an OperatorEnabledAccount event was emitted");
+    let Actor::Operator(recorded) = enabled.actor else {
+        panic!(
+            "enable must attribute to Actor::Operator, got {:?}",
+            enabled.actor
+        );
+    };
+    assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
+}
+
+#[tokio::test]
+async fn operator_enable_unknown_user_fails_loudly() {
+    let h = Harness::fresh();
+    let _present = provision_user(&h, "present@example.com").await;
+
+    let err = h
+        .operator
+        .enable(UserId::new(), operator())
+        .await
+        .expect_err("a missing target must fail loudly");
+    assert!(
+        matches!(err, Error::UserNotFound),
+        "expected UserNotFound, got {err:?}"
+    );
+    assert!(
+        !h.audit
+            .events()
+            .iter()
+            .any(|e| matches!(e.kind, AuditEventKind::OperatorEnabledAccount { .. })),
+        "no enable event for a missing target",
+    );
+}
+
+#[tokio::test]
+async fn disable_blocks_recovery_then_enable_restores_it() {
+    // End-to-end across the Step 3 recovery gate: an operator disable refuses a
+    // recovery request (no link issued), and a later enable lets recovery flow
+    // again. This drives the same `is_active` gate the auth path uses.
+    let h = Harness::fresh();
+    let user = provision_user(&h, "alice@example.com").await;
+
+    h.operator
+        .disable(user.id, operator())
+        .await
+        .expect("disable");
+
+    let mail_before = h.email.sent().len();
+    let tokens_before = h.tokens.len();
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("silent ok for a disabled account");
+
+    assert_eq!(
+        h.email.sent().len(),
+        mail_before,
+        "a disabled account gets no recovery link",
+    );
+    assert_eq!(
+        h.tokens.len(),
+        tokens_before,
+        "a disabled account gets no recovery token",
+    );
+    assert!(
+        h.audit.events().iter().any(|e| matches!(
+            e.kind,
+            AuditEventKind::RecoveryFailed {
+                reason: RecoveryFailureReason::AccountDisabled,
+                user_id: Some(id),
+            } if id == user.id,
+        )),
+        "the refusal is audited as AccountDisabled",
+    );
+
+    // Re-enable and recovery flows again: a link is now issued.
+    h.operator
+        .enable(user.id, operator())
+        .await
+        .expect("enable");
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("recovery request after enable");
+    assert!(
+        h.tokens.len() > tokens_before,
+        "an enabled account can request recovery again",
     );
 }

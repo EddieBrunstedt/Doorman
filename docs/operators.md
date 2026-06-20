@@ -65,7 +65,7 @@ These are properties an operator flow inherits from the cascade it reuses, not b
 
 ### Leaky lockout — "remove all passkeys" is not a durable disable
 
-There is **no "last passkey" guard**: an operator can remove every one of a user's passkeys, which is a _de-facto_ account lockout. But it is a **leaky** one — **recovery re-enrolls past it.** A user who still controls their recoverable email can run the recovery flow, enrol a new passkey, and regain access. Removing all passkeys is a useful soft-suspend primitive, but it is **not** a durable disable. A reversible, recovery-proof disable is a separate, later feature (it needs a user-state field that does not exist today); do not treat "remove all passkeys" as one.
+There is **no "last passkey" guard**: an operator can remove every one of a user's passkeys, which is a _de-facto_ account lockout. But it is a **leaky** one — **recovery re-enrolls past it.** A user who still controls their recoverable email can run the recovery flow, enrol a new passkey, and regain access. Removing all passkeys is a useful soft-suspend primitive, but it is **not** a durable disable. For a reversible, recovery-proof freeze use [`disable` / `enable`](#reversible-disable--enable) instead — it is honored by **both** auth and recovery, so it cannot be recovered past.
 
 ### Staleness window — an operator revoke is not an instant global kill-switch
 
@@ -109,15 +109,29 @@ async fn delete_user_route(
 
 ## The flow set
 
-| Flow                                           | Audited as                              | Subject notice (default)                                               |
-| ---------------------------------------------- | --------------------------------------- | ---------------------------------------------------------------------- |
-| `delete_account(target, actor)`                | `AccountDeleted` (operator-actored)     | None — the mailbox owner is gone, regardless of policy                 |
-| `remove_passkey(target, credential_id, actor)` | passkey-removal kind carrying the actor | **Sent** (operator-aware copy) — `NotificationPolicy::passkey_removed` |
-| `revoke_all_sessions(target, actor)`           | `OperatorRevokedAllSessions`            | **Suppressed** — `NotificationPolicy::sessions_revoked` (opt-in)       |
-| `revoke_session(target, session_id, actor)`    | session-revoke kind carrying the actor  | None                                                                   |
-| `list_passkeys(target, actor)`                 | `OperatorListedPasskeys`                | n/a (read)                                                             |
-| `list_sessions(target, actor)`                 | `OperatorListedSessions`                | n/a (read)                                                             |
+| Flow                                           | Audited as                                               | Subject notice (default)                                               |
+| ---------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `delete_account(target, actor)`                | `AccountDeleted` (operator-actored)                      | None — the mailbox owner is gone, regardless of policy                 |
+| `disable(target, actor)`                       | `OperatorDisabledAccount` + `OperatorRevokedAllSessions` | **Suppressed** — `NotificationPolicy::account_disabled` (opt-in)       |
+| `enable(target, actor)`                        | `OperatorEnabledAccount`                                 | None                                                                   |
+| `remove_passkey(target, credential_id, actor)` | passkey-removal kind carrying the actor                  | **Sent** (operator-aware copy) — `NotificationPolicy::passkey_removed` |
+| `revoke_all_sessions(target, actor)`           | `OperatorRevokedAllSessions`                             | **Suppressed** — `NotificationPolicy::sessions_revoked` (opt-in)       |
+| `revoke_session(target, session_id, actor)`    | session-revoke kind carrying the actor                   | None                                                                   |
+| `list_passkeys(target, actor)`                 | `OperatorListedPasskeys`                                 | n/a (read)                                                             |
+| `list_sessions(target, actor)`                 | `OperatorListedSessions`                                 | n/a (read)                                                             |
 
-Notices never use the self-service "was this you?" copy — that copy tells a user a legitimate admin action was a possible compromise. Operator notices use **operator-aware copy** ("an administrator removed a passkey from your account") instead, and the send-vs-suppress choice is a `NotificationPolicy` chosen once when the `OperatorManager` is constructed, not a per-call flag. The defaults are deliberately asymmetric: `passkey_removed` defaults to **`Send`** (self-service passkey removal already notifies, so the operator path keeps that transparency), while `sessions_revoked` defaults to **`Suppress`** (the underlying revoke-all primitive is silent today, so an operator notice there is a _new_ outbound email that ships opt-in). Listing flows project to `PasskeySummary` / `SessionSummary`, which omit the credential blob and the session `token_hash` respectively, so no secret-equivalent material crosses into an operator view.
+Notices never use the self-service "was this you?" copy — that copy tells a user a legitimate admin action was a possible compromise. Operator notices use **operator-aware copy** ("an administrator removed a passkey from your account") instead, and the send-vs-suppress choice is a `NotificationPolicy` chosen once when the `OperatorManager` is constructed, not a per-call flag. The defaults are deliberately asymmetric: `passkey_removed` defaults to **`Send`** (self-service passkey removal already notifies, so the operator path keeps that transparency), while `sessions_revoked` and `account_disabled` default to **`Suppress`** (the underlying revoke-all primitive is silent today, so an operator notice there is a _new_ outbound email that ships opt-in; disabling is a deliberate "quiet hold" so it ships opt-in too). Listing flows project to `PasskeySummary` / `SessionSummary`, which omit the credential blob and the session `token_hash` respectively, so no secret-equivalent material crosses into an operator view.
+
+## Reversible disable / enable
+
+`disable(target, actor)` puts an account into a **reversible freeze**, and `enable(target, actor)` lifts it. Unlike "remove all passkeys" (a [leaky lockout](#leaky-lockout--remove-all-passkeys-is-not-a-durable-disable) recovery re-enrols past), a disabled account is refused by **both** auth and recovery: the `AccountStatus::is_active` predicate gates session resolution _and_ both recovery seams (link request and token consume), so a disabled user can neither sign in nor recover their way back in. The freeze persists across every storage adapter as the `User.status` field, so it survives restarts and is not a cache artifact.
+
+**Immediate lockout.** `disable` does more than flip the flag. After persisting the status it **revokes every live session** through the same `SessionManager::revoke_all_for_user` the `revoke_all_sessions` flow uses, firing the invalidation hook that evicts any warm session cache on the calling replica. So existing sessions stop resolving at once rather than waiting to age out — subject to the same per-replica [staleness window](#staleness-window--an-operator-revoke-is-not-an-instant-global-kill-switch) the other revoke flows carry in a multi-replica deployment.
+
+**Idempotency.** `disable` on an already-disabled account is idempotent (not a no-op): it re-stamps the status, re-runs the session sweep, and never errors, so calling it twice still leaves the account disabled with no live sessions. `enable` on an already-active account is likewise idempotent. A missing or typo'd `target` fails with `UserNotFound` before any mutation (D7), the same resolve-first contract every operator flow follows.
+
+**Audit.** `disable` emits two operator-attributed rows: `OperatorDisabledAccount` for the status change, plus the `OperatorRevokedAllSessions` row from the session sweep. `enable` emits a single `OperatorEnabledAccount`. None of this is wired to a route — as with the rest of the operator surface the host owns any HTTP entry point and puts its own authorization in front.
+
+**Notification.** The subject notice is **quiet by default**: `NotificationPolicy::account_disabled` defaults to `Suppress`. Opt in by constructing the `OperatorManager` (or the high-level builder) with `account_disabled: OperatorNotice::Send`, and the subject receives the operator-aware "your account was disabled by an administrator" copy. `enable` sends no notice.
 </content>
 </invoke>

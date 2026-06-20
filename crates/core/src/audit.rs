@@ -233,6 +233,24 @@ pub enum AuditEventKind {
         /// The user whose sessions were all revoked.
         user_id: UserId,
     },
+    /// An operator disabled an account, freezing it: a reversible hold that
+    /// both auth and recovery refuse until it is re-enabled. The disable flow
+    /// also revokes every live session for immediate lockout — that bulk revoke
+    /// emits its own [`OperatorRevokedAllSessions`](Self::OperatorRevokedAllSessions)
+    /// row, so this kind records the *status change* itself rather than the
+    /// session sweep. Carries only the subject's `user_id`, mirroring the other
+    /// operator account-level kinds.
+    OperatorDisabledAccount {
+        /// The user whose account was disabled.
+        user_id: UserId,
+    },
+    /// An operator re-enabled an account, lifting the disable hold and returning
+    /// the account to `Active`. No session machinery runs — enabling only lifts
+    /// the gate; the user logs in or recovers fresh.
+    OperatorEnabledAccount {
+        /// The user whose account was re-enabled.
+        user_id: UserId,
+    },
     /// An operator listed a user's passkeys. Operator read flows are audited
     /// (D8): inspecting another user's inventory is itself privacy-sensitive,
     /// so "who looked" lands in the same stream as "who changed what". The

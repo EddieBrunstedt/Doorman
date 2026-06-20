@@ -42,7 +42,8 @@ use crate::error::{Error, Result};
 use crate::passkey::{PasskeyManager, PasskeyRemovalNotice};
 use crate::session::SessionManager;
 use crate::storage::{
-    PasskeyChallengeStore, PasskeySummary, SessionId, SessionSummary, User, UserId, UserStore,
+    AccountStatus, PasskeyChallengeStore, PasskeySummary, SessionId, SessionSummary, User, UserId,
+    UserStore,
 };
 
 /// Whether an operator-initiated action notifies the subject.
@@ -76,12 +77,18 @@ pub enum OperatorNotice {
 ///   [`OperatorNotice::Suppress`] — the underlying revoke-all primitive is
 ///   silent today, so an operator session-revoke notice is a *new* outbound
 ///   email that ships opt-in rather than forced-on.
+/// - [`account_disabled`](Self::account_disabled) defaults to
+///   [`OperatorNotice::Suppress`] — disabling is a deliberate "quiet hold", so
+///   the subject notice ships opt-in: a host that wants the account owner told
+///   turns it on explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NotificationPolicy {
     /// Whether operator-initiated passkey removal notifies the subject.
     pub passkey_removed: OperatorNotice,
     /// Whether operator-initiated session revocation notifies the subject.
     pub sessions_revoked: OperatorNotice,
+    /// Whether operator-initiated account disable notifies the subject.
+    pub account_disabled: OperatorNotice,
 }
 
 impl Default for NotificationPolicy {
@@ -89,6 +96,7 @@ impl Default for NotificationPolicy {
         Self {
             passkey_removed: OperatorNotice::Send,
             sessions_revoked: OperatorNotice::Suppress,
+            account_disabled: OperatorNotice::Suppress,
         }
     }
 }
@@ -205,6 +213,117 @@ impl OperatorManager {
             .await?;
 
         tracing::info!(outcome = "deleted", "operator account delete");
+        Ok(())
+    }
+
+    /// Disable (freeze) the account identified by `target_user_id` on an
+    /// operator's behalf, putting it into a **reversible hold** that both auth
+    /// and recovery refuse until [`enable`](Self::enable) lifts it.
+    ///
+    /// The subject is resolved up front (D7): a missing or typo'd
+    /// `target_user_id` fails with [`Error::UserNotFound`] before any store is
+    /// touched, and the resolved row is kept for the opt-in notice.
+    ///
+    /// The account's [`AccountStatus`] is set to
+    /// [`AccountStatus::Disabled`] (stamped with the manager clock) and
+    /// persisted with a bumped `updated_at`. The flow then **revokes every live
+    /// session** through [`SessionManager::revoke_all_for_user`], firing the
+    /// invalidation hook so any warm framework-side session cache is evicted and
+    /// the lockout is immediate rather than waiting for sessions to expire — the
+    /// write-side that makes the read-time disable gate bite at once.
+    ///
+    /// Disabling an **already-disabled** account is **idempotent**: the status
+    /// is re-written (re-stamping `at` to now) and the session sweep re-runs, so
+    /// the call always leaves the account disabled with no live sessions and
+    /// never errors. It is not a no-op — re-disabling re-asserts the lockout.
+    ///
+    /// Two audit rows are emitted, both attributed to `actor` as
+    /// [`Actor::Operator`]: an [`AuditEventKind::OperatorDisabledAccount`] for
+    /// the status change and an
+    /// [`AuditEventKind::OperatorRevokedAllSessions`] from the session sweep.
+    ///
+    /// The subject notice is **opt-in**: it is sent (with operator-aware copy)
+    /// only when [`NotificationPolicy::account_disabled`] is
+    /// [`OperatorNotice::Send`]; the default is [`OperatorNotice::Suppress`],
+    /// the deliberate "quiet hold".
+    ///
+    /// [`SessionManager::revoke_all_for_user`]: crate::session::SessionManager::revoke_all_for_user
+    #[tracing::instrument(skip(self, actor), fields(target_user_id = %target_user_id))]
+    pub async fn disable(&self, target_user_id: UserId, actor: OperatorActor) -> Result<()> {
+        // Resolve the subject before mutating anything (D7); keep the row for
+        // the opt-in notice.
+        let mut user = self.resolve_subject(target_user_id).await?;
+
+        let now = self.clock.now();
+        user.status = AccountStatus::Disabled { at: now };
+        user.updated_at = now;
+        self.users.update_user(user.clone()).await?;
+
+        // Drop every live session so the lockout is immediate: this fires the
+        // invalidation hook, flushing any warm framework-side session cache.
+        // The underlying revoke-all primitive is silent, so the bulk-revoke
+        // accountability row is emitted here, exactly as `revoke_all_sessions`
+        // does for the standalone flow.
+        self.sessions.revoke_all_for_user(target_user_id).await?;
+        self.emit_operator(
+            actor.clone(),
+            AuditEventKind::OperatorRevokedAllSessions {
+                user_id: target_user_id,
+            },
+        )
+        .await;
+
+        self.emit_operator(
+            actor,
+            AuditEventKind::OperatorDisabledAccount {
+                user_id: target_user_id,
+            },
+        )
+        .await;
+
+        if self.notifications.account_disabled == OperatorNotice::Send {
+            self.notifier.operator_account_disabled(&user).await;
+        }
+
+        tracing::info!(outcome = "disabled", "operator account disable");
+        Ok(())
+    }
+
+    /// Re-enable the account identified by `target_user_id` on an operator's
+    /// behalf, lifting a [`disable`](Self::disable) hold and returning the
+    /// account to [`AccountStatus::Active`].
+    ///
+    /// The subject is resolved up front (D7): a missing or typo'd
+    /// `target_user_id` fails with [`Error::UserNotFound`] before any store is
+    /// touched. The status is set back to [`AccountStatus::Active`] and
+    /// persisted with a bumped `updated_at`, then an
+    /// [`AuditEventKind::OperatorEnabledAccount`] is emitted, attributed to
+    /// `actor` as [`Actor::Operator`].
+    ///
+    /// Enabling lifts only the gate; there is **no session machinery** — disable
+    /// already revoked the live sessions, and the user signs in (or recovers)
+    /// fresh. Enabling an **already-active** account is **idempotent**: the
+    /// status is re-written and the audit row still emitted; it never errors.
+    /// No subject notice is sent for enable.
+    #[tracing::instrument(skip(self, actor), fields(target_user_id = %target_user_id))]
+    pub async fn enable(&self, target_user_id: UserId, actor: OperatorActor) -> Result<()> {
+        // Resolve the subject before mutating anything (D7).
+        let mut user = self.resolve_subject(target_user_id).await?;
+
+        let now = self.clock.now();
+        user.status = AccountStatus::Active;
+        user.updated_at = now;
+        self.users.update_user(user).await?;
+
+        self.emit_operator(
+            actor,
+            AuditEventKind::OperatorEnabledAccount {
+                user_id: target_user_id,
+            },
+        )
+        .await;
+
+        tracing::info!(outcome = "enabled", "operator account enable");
         Ok(())
     }
 

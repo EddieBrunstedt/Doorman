@@ -10,8 +10,13 @@ mod common;
 use axum::Router;
 use axum::http::StatusCode;
 use common::{TestApp, login};
+use doorman_core::audit::OperatorActor;
 use doorman_core::session::hash_token;
 use doorman_core::storage::AccountStatus;
+
+fn operator() -> OperatorActor {
+    OperatorActor::new("support-agent-7", None, None, None).expect("operator actor")
+}
 
 async fn me(client: &reqwest::Client, app: &TestApp, token: &str) -> StatusCode {
     client
@@ -102,6 +107,63 @@ async fn active_user_is_unaffected() {
     app.set_user_status(auth.user.id, AccountStatus::Active)
         .await;
     assert_eq!(me(&client, &app, &auth.token).await, StatusCode::OK);
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn operator_disable_locks_out_live_session_then_enable_restores() {
+    // End-to-end through the real operator flow: `disable` flips the status,
+    // revokes the live session, and fires the invalidation hook so the warm
+    // cache is evicted. The very next authenticated request is refused (Step 2
+    // auth gate), and `enable` lifts the freeze.
+    let app = TestApp::start(Router::new(), false).await;
+    let client = reqwest::Client::new();
+
+    let auth = login(&client, &app, "locked@example.com").await;
+
+    // Warm the cache with an authenticated request so we prove `disable`
+    // evicts it rather than relying on a cold miss.
+    assert_eq!(
+        me(&client, &app, &auth.token).await,
+        StatusCode::OK,
+        "an active user authenticates and warms the cache",
+    );
+    assert!(
+        app.cache.get(&hash_token(&auth.token)).is_some(),
+        "the active session is cached",
+    );
+
+    app.operator
+        .disable(auth.user.id, operator())
+        .await
+        .expect("operator disable");
+
+    // The disable revoked the live session and evicted the cache, so the token
+    // no longer authenticates.
+    assert!(
+        app.cache.get(&hash_token(&auth.token)).is_none(),
+        "disable evicted the warm cache entry",
+    );
+    assert_eq!(
+        me(&client, &app, &auth.token).await,
+        StatusCode::UNAUTHORIZED,
+        "the revoked session no longer resolves after disable",
+    );
+
+    // Re-enable: the account is active again. The old token stays revoked, but
+    // a fresh login authenticates, proving the gate was lifted.
+    app.operator
+        .enable(auth.user.id, operator())
+        .await
+        .expect("operator enable");
+
+    let reauth = login(&client, &app, "locked@example.com").await;
+    assert_eq!(
+        me(&client, &app, &reauth.token).await,
+        StatusCode::OK,
+        "a re-enabled account can authenticate a fresh session",
+    );
 
     app.shutdown().await;
 }

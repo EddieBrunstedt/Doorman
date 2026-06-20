@@ -404,6 +404,27 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
+    /// Sent when an **operator** disables (freezes) the account: a reversible
+    /// hold that refuses both sign-in and recovery until an operator re-enables
+    /// it. Uses operator-aware copy — it states plainly that an administrator
+    /// disabled the account and never the self-service "was this you?" wording.
+    /// This notice ships **opt-in** (the disable policy defaults to suppress),
+    /// so it is sent only when the host turns it on.
+    fn operator_account_disabled_notification_email(&self, user: &User) -> Email {
+        Email {
+            to: user.email.clone().unwrap_or_default(),
+            subject: "Security notice: your account was disabled by an administrator".to_string(),
+            body_text: "Hello,\n\n\
+                 An administrator disabled your account. While it is disabled you cannot \
+                 sign in or recover access, and any active sessions have been signed out. \
+                 This was an administrative action taken on your account; it can be reversed \
+                 by an administrator.\n\n\
+                 If you have questions about this change, contact support.\n"
+                .to_string(),
+            body_html: None,
+        }
+    }
+
     /// Sent whenever a session other than the caller's current session is
     /// successfully revoked from the account.
     fn other_session_revoked_notification_email(&self, user: &User) -> Email {
@@ -504,6 +525,15 @@ impl SecurityEmailNotifier {
     pub async fn operator_sessions_revoked(&self, user: &User) {
         self.send_notice(user, "operator sessions revoked", |emails| {
             emails.operator_sessions_revoked_notification_email(user)
+        })
+        .await;
+    }
+
+    /// Send the best-effort operator-aware "your account was disabled by an
+    /// administrator" notification.
+    pub async fn operator_account_disabled(&self, user: &User) {
+        self.send_notice(user, "operator account disabled", |emails| {
+            emails.operator_account_disabled_notification_email(user)
         })
         .await;
     }
