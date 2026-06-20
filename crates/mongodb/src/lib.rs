@@ -59,9 +59,11 @@ use std::sync::Arc;
 
 use doorman_core::error::StorageResult;
 use doorman_core::storage::{
-    PasskeyChallengeStore, PasskeyCredentialStore, SessionStore, Storage, UserStore,
+    PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionStore, Storage, UserStore,
     VerificationTokenStore,
 };
+use mongodb::Collection;
+use mongodb::bson::Document;
 
 use crate::db::MongoDb;
 
@@ -158,4 +160,40 @@ impl MongoDbStorage {
             self.db.passkey_authentications(),
         ))
     }
+
+    /// The raw `sessions` collection this adapter reads and writes.
+    ///
+    /// For an advanced host that overrides `SessionStore::create_session` to
+    /// write the session and its own record (e.g. a fail-closed audit/outbox
+    /// row) in **one transaction**, then delegates every other method to the
+    /// bundled store. Pair it with [`session_to_document`] so the inserted
+    /// document carries the same encoding the bundled reads expect, and issue
+    /// the writes inside a [`mongodb::ClientSession`] transaction.
+    ///
+    /// A multi-document transaction in MongoDB **requires a replica set** (or a
+    /// sharded cluster); it is unavailable on a standalone node. That is a
+    /// property of the deployment, not of this adapter.
+    pub fn sessions_collection(&self) -> Collection<Document> {
+        self.db.sessions()
+    }
+}
+
+/// Encode a [`Session`] into the BSON document this adapter persists.
+///
+/// Exposed so a host overriding `SessionStore::create_session` (typically to
+/// commit the session alongside its own audit/outbox document in a single
+/// transaction) writes the byte-identical encoding the bundled reads —
+/// `find_session_by_token_hash`, `find_session_by_id`, `list_for_user` —
+/// expect, rather than hand-replicating the document layout. Insert it into
+/// [`MongoDbStorage::sessions_collection`].
+pub fn session_to_document(session: &Session) -> Document {
+    model::session_to_doc(session)
+}
+
+/// Decode a session document produced by [`session_to_document`] (or read from
+/// the `sessions` collection) back into a [`Session`]. The inverse of
+/// [`session_to_document`], provided for symmetry so a host can round-trip the
+/// encoding it writes.
+pub fn session_from_document(doc: &Document) -> StorageResult<Session> {
+    model::session_from_doc(doc)
 }
