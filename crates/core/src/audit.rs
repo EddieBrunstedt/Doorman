@@ -304,6 +304,10 @@ pub enum AuthFailureReason {
     /// which `webauthn-rs` flags as a possible cloned authenticator. The
     /// login is rejected and this event is emitted so the host can alert.
     CounterRegression,
+    /// The assertion verified but the authenticator did not set the
+    /// user-verification flag. doorman requires user-verified passkeys, so the
+    /// login is rejected and this event is emitted so the host can alert.
+    UserVerificationMissing,
     /// The assertion failed `webauthn-rs` verification for any other reason
     /// (bad signature, origin mismatch, malformed response, etc.).
     BadAssertion,

@@ -46,6 +46,12 @@ doorman cannot defend against:
 - Passkey credential IDs are checked against the authenticated user before deletion, so one account cannot remove another account's credential by guessing an ID.
 - Outside a recovery cool-down, self-service removal may delete a user's **last** passkey. This is intentional: account recovery is the designed backstop for the "lost every passkey" case, so doorman does not block removing the final credential.
 
+## User verification is always required
+
+doorman requires user verification on every passkey ceremony. `webauthn-rs` requests `UserVerificationPolicy::Required` for both registration and discoverable authentication, and doorman additionally asserts the user-verification flag on every completed ceremony: a registration whose authenticator did not verify the user is rejected before the credential is stored, and an assertion that lacks user verification is rejected before a session is minted. A passkey is therefore never accepted on the basis of user presence (a bare touch) alone.
+
+This is **intentionally not configurable**. Exposing a "preferred vs. required" setting would imply control over what the browser is asked to do, which doorman cannot guarantee without rewriting the WebAuthn challenge `webauthn-rs` produces; the honest, fail-closed stance is to enforce verification at finish and own it as a fixed invariant. The trade-off is deliberate: in the unlikely event a future `webauthn-rs` loosened its request-side default, doorman would reject the affected (non-verified) logins rather than silently accept them. A unit-test canary asserts the upstream request-side default remains `Required`, so such a change surfaces at CI time on a version bump instead of weakening this guarantee unnoticed.
+
 ## Signup
 
 `/auth/signup/request` returns the same response whether the address is new or already registered. For a new address, doorman stores a single-use token hash and sends a signup email. Consuming the token marks the email verified and starts passkey registration. The session is issued only after `/auth/signup/finish` successfully registers that passkey.

@@ -475,6 +475,10 @@ impl PasskeyManager {
             .map_err(|e| Error::Webauthn(e.to_string()))?;
 
         let metadata = PasskeyMetadata::from_passkey(&passkey);
+        if !metadata.user_verified {
+            tracing::warn!(%user_id, outcome = "user_verification_missing", "passkey registration failed");
+            return Err(Error::UserVerificationRequired);
+        }
         let credential = StoredPasskey {
             credential_id: passkey.cred_id().to_vec(),
             user_id,
@@ -755,6 +759,21 @@ impl PasskeyManager {
                 return Err(Error::Webauthn(e.to_string()));
             }
         };
+
+        if !auth_result.user_verified() {
+            self.emit_auth_failure(
+                now,
+                &context,
+                Some(user_id),
+                AuthFailureReason::UserVerificationMissing,
+            )
+            .await;
+            tracing::warn!(
+                outcome = "user_verification_missing",
+                "passkey login failed"
+            );
+            return Err(Error::UserVerificationRequired);
+        }
 
         let active_recovery_cooldown_until = credential.active_recovery_cooldown_until(now);
 
@@ -1055,6 +1074,7 @@ struct PasskeyMetadata {
     transports: Vec<String>,
     backup_eligible: bool,
     backup_state: bool,
+    user_verified: bool,
 }
 
 impl PasskeyMetadata {
@@ -1081,6 +1101,7 @@ impl PasskeyMetadata {
             transports,
             backup_eligible: cred.backup_eligible,
             backup_state: cred.backup_state,
+            user_verified: cred.user_verified,
         }
     }
 }
@@ -1153,6 +1174,7 @@ fn challenge_lifetime(d: Duration) -> chrono::Duration {
 mod tests {
     use super::*;
     use url::Url;
+    use webauthn_rs_proto::UserVerificationPolicy;
 
     #[test]
     fn config_constructor_sets_default_lifetime() {
@@ -1212,6 +1234,55 @@ mod tests {
         assert_eq!(
             selection.resident_key,
             Some(ResidentKeyRequirement::Required)
+        );
+    }
+
+    #[test]
+    fn registration_requests_user_verification_required() {
+        // Canary: doorman's finish-side UV enforcement assumes webauthn-rs requests
+        // UserVerificationPolicy::Required for passkey registration. If a future
+        // webauthn-rs changes this default, this test fails on the version bump so the
+        // change is handled deliberately instead of silently weakening the guarantee.
+        let origin = Url::parse("https://example.com").expect("valid url");
+        let webauthn = WebauthnBuilder::new("example.com", &origin)
+            .expect("valid relying party")
+            .build()
+            .expect("webauthn builds");
+
+        let (ccr, _state) = webauthn
+            .start_passkey_registration(Uuid::new_v4(), "user", "user", None)
+            .expect("registration starts");
+        let selection = ccr
+            .public_key
+            .authenticator_selection
+            .as_ref()
+            .expect("authenticator selection present");
+        assert_eq!(
+            selection.user_verification,
+            UserVerificationPolicy::Required,
+            "webauthn-rs changed its passkey registration UV default; doorman enforces \
+             user verification at finish assuming Required — reconcile before bumping",
+        );
+    }
+
+    #[test]
+    fn discoverable_authentication_requests_user_verification_required() {
+        // Canary, authentication side. Requires the `conditional-ui` feature, which is
+        // enabled in the workspace Cargo.toml.
+        let origin = Url::parse("https://example.com").expect("valid url");
+        let webauthn = WebauthnBuilder::new("example.com", &origin)
+            .expect("valid relying party")
+            .build()
+            .expect("webauthn builds");
+
+        let (rcr, _state) = webauthn
+            .start_discoverable_authentication()
+            .expect("discoverable authentication starts");
+        assert_eq!(
+            rcr.public_key.user_verification,
+            UserVerificationPolicy::Required,
+            "webauthn-rs changed its discoverable-auth UV default; doorman enforces user \
+             verification at finish assuming Required — reconcile before bumping",
         );
     }
 }

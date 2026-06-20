@@ -91,6 +91,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::PasskeyNotFound => (StatusCode::NOT_FOUND, "passkey_not_found"),
         Error::PasskeyOwnershipMismatch => (StatusCode::FORBIDDEN, "passkey_ownership_mismatch"),
         Error::PasskeyPossibleCompromise => (StatusCode::FORBIDDEN, "passkey_possible_compromise"),
+        Error::UserVerificationRequired => (StatusCode::BAD_REQUEST, "user_verification_required"),
         Error::Webauthn(_) => (StatusCode::BAD_REQUEST, "webauthn_error"),
         Error::InvalidRelyingParty(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "invalid_relying_party")
@@ -179,6 +180,11 @@ mod tests {
                 Error::PasskeyPossibleCompromise,
                 S::FORBIDDEN,
                 "passkey_possible_compromise",
+            ),
+            (
+                Error::UserVerificationRequired,
+                S::BAD_REQUEST,
+                "user_verification_required",
             ),
             (
                 Error::Webauthn("x".to_owned()),

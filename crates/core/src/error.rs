@@ -69,6 +69,12 @@ pub enum Error {
     )]
     PasskeyPossibleCompromise,
 
+    /// A passkey ceremony completed without user verification (the authenticator
+    /// did not set the UV flag). doorman requires user-verified passkeys on every
+    /// ceremony, so the assertion/registration is rejected.
+    #[error("passkey ceremony did not include user verification")]
+    UserVerificationRequired,
+
     /// A WebAuthn ceremony failed verification for some other reason.
     #[error("webauthn ceremony failed: {0}")]
     Webauthn(String),
