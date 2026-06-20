@@ -64,11 +64,13 @@ mod client;
 mod model;
 mod stores;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use aws_sdk_dynamodb::types::AttributeValue;
 use doorman_core::error::StorageResult;
 use doorman_core::storage::{
-    PasskeyChallengeStore, PasskeyCredentialStore, SessionStore, Storage, UserStore,
+    PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionStore, Storage, UserStore,
     VerificationTokenStore,
 };
 
@@ -161,4 +163,22 @@ impl DynamoDbStorage {
             self.client.clone(),
         ))
     }
+}
+
+/// Encode a [`Session`] into the DynamoDB item this adapter persists, including
+/// its two GSI key attributes.
+///
+/// Exposed so an advanced host overriding `SessionStore::create_session` can
+/// compose a single [`TransactWriteItems`] from this item plus its own record
+/// (e.g. a fail-closed audit/outbox item) and commit them atomically, then
+/// delegate every other method to the bundled store. The item carries the
+/// byte-identical encoding the bundled reads — `find_session_by_token_hash`,
+/// `find_session_by_id`, `list_for_user` — expect, so a row written this way is
+/// later found by them, rather than the host hand-replicating the item layout
+/// and its GSI keys. Put it under [`DynamoDbStorage::table_name`] using the host's
+/// own `aws_sdk_dynamodb::Client`.
+///
+/// [`TransactWriteItems`]: aws_sdk_dynamodb::operation::transact_write_items
+pub fn session_item(session: &Session) -> HashMap<String, AttributeValue> {
+    model::session_item(session)
 }
