@@ -32,7 +32,7 @@ use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
-use crate::metrics::{MetricEvent, Metrics};
+use crate::metrics::{MetricEvent, MetricSink};
 use crate::rate_limit::{RateLimitPolicy, RateLimiter};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
@@ -189,7 +189,7 @@ pub struct PasskeyManager {
     audit: Arc<dyn AuditSink>,
     notifier: SecurityEmailNotifier,
     rate_limiter: Arc<dyn RateLimiter>,
-    metrics: Arc<dyn Metrics>,
+    metrics: Arc<dyn MetricSink>,
     webauthn: Arc<Webauthn>,
     config: PasskeyConfig,
 }
@@ -970,12 +970,12 @@ fn display_name_for(user: &User) -> String {
 /// domain [`Clock`] because this is elapsed real time, not a logical
 /// timestamp.
 struct AuthLatencyGuard {
-    metrics: Arc<dyn Metrics>,
+    metrics: Arc<dyn MetricSink>,
     started: Instant,
 }
 
 impl AuthLatencyGuard {
-    fn start(metrics: Arc<dyn Metrics>) -> Self {
+    fn start(metrics: Arc<dyn MetricSink>) -> Self {
         Self {
             metrics,
             started: Instant::now(),

@@ -22,7 +22,7 @@ use axum::http::{HeaderMap, Request};
 use axum::response::Response;
 use doorman_core::Error;
 use doorman_core::clock::Clock;
-use doorman_core::metrics::{MetricEvent, Metrics};
+use doorman_core::metrics::{MetricEvent, MetricSink};
 use doorman_core::session::SessionManager;
 use doorman_core::storage::{Session, User, UserStore};
 use doorman_core::token::hash_token;
@@ -67,7 +67,7 @@ pub(crate) struct SessionLayerState {
     pub(crate) cookie_name: String,
     pub(crate) cache: SessionCache,
     pub(crate) csrf: Option<CsrfConfig>,
-    pub(crate) metrics: Arc<dyn Metrics>,
+    pub(crate) metrics: Arc<dyn MetricSink>,
 }
 
 /// Tower layer constructed via

@@ -64,7 +64,7 @@ use doorman_core::assembly::AuthCore;
 use doorman_core::audit::AuditSink;
 use doorman_core::clock::Clock;
 use doorman_core::email::{EmailSender, EmailTemplates};
-use doorman_core::metrics::Metrics;
+use doorman_core::metrics::MetricSink;
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::RateLimiter;
 use doorman_core::recovery::RecoveryConfig;
@@ -119,7 +119,7 @@ pub struct AuthServiceBuilder {
     email: Option<Arc<dyn EmailSender>>,
     emails: Option<Arc<dyn EmailTemplates>>,
     rate_limiter: Option<Arc<dyn RateLimiter>>,
-    metrics: Option<Arc<dyn Metrics>>,
+    metrics: Option<Arc<dyn MetricSink>>,
     session_config: Option<SessionConfig>,
     cookie_config: Option<CookieConfig>,
     cache_config: Option<SessionCacheConfig>,
@@ -213,14 +213,14 @@ impl AuthServiceBuilder {
         self
     }
 
-    /// Wire a [`Metrics`] sink for production telemetry. The auth managers
+    /// Wire a [`MetricSink`] sink for production telemetry. The auth managers
     /// report login success, authentication failure, and per-ceremony
     /// latency through it, and the session layer reports cache hit / miss.
-    /// Defaults to [`NoopMetrics`], which discards every observation.
+    /// Defaults to [`NoopMetricSink`], which discards every observation.
     ///
-    /// [`Metrics`]: doorman_core::metrics::Metrics
-    /// [`NoopMetrics`]: doorman_core::metrics::NoopMetrics
-    pub fn metrics(mut self, metrics: Arc<dyn Metrics>) -> Self {
+    /// [`MetricSink`]: doorman_core::metrics::MetricSink
+    /// [`NoopMetricSink`]: doorman_core::metrics::NoopMetricSink
+    pub fn metrics(mut self, metrics: Arc<dyn MetricSink>) -> Self {
         self.metrics = Some(metrics);
         self
     }

@@ -187,7 +187,7 @@ To support a database doorman doesn't ship, implement the five traits yourself. 
 - **URL templates** — required. The stock `example.invalid` signup / recovery / account templates are rejected; set real ones that carry the `{token}` placeholder.
 - **Cookies** — keep `secure`, `HttpOnly`, `SameSite` session cookies anywhere but local HTTP development.
 - **Maintenance** — run storage migrations and periodically purge expired sessions, verification tokens, and passkey challenges.
-- **Monitoring** — watch recovery requests/completions, passkey add/remove events, high-risk session revocations, and failed WebAuthn ceremonies. Optionally wire a `Metrics` implementation.
+- **Monitoring** — watch recovery requests/completions, passkey add/remove events, high-risk session revocations, and failed WebAuthn ceremonies. Optionally wire a `MetricSink` implementation.
 - **Backup passkeys** — prompt users with `passkey_count < 2` to add one.
 
 ## Layering

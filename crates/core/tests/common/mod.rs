@@ -32,7 +32,7 @@ use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
 };
-use doorman_core::metrics::Metrics;
+use doorman_core::metrics::MetricSink;
 use doorman_core::operator::{NotificationPolicy, OperatorManager};
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
@@ -274,7 +274,7 @@ impl HarnessBuilder {
             session_manager,
             storage,
         )
-        .with_metrics(metrics.clone() as Arc<dyn Metrics>);
+        .with_metrics(metrics.clone() as Arc<dyn MetricSink>);
         let recovery_deps = CoreDeps {
             rate_limiter: self.recovery_limiter,
             ..signup_deps.clone()

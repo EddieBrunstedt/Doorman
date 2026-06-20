@@ -25,7 +25,7 @@ use doorman_core::audit::{AuditEvent, AuditSink};
 use doorman_core::clock::Clock;
 use doorman_core::email::{Email, EmailSender};
 use doorman_core::error::{EmailError, EmailResult};
-use doorman_core::metrics::{MetricEvent, Metrics};
+use doorman_core::metrics::{MetricEvent, MetricSink};
 use doorman_core::verification::TOKEN_PLACEHOLDER;
 
 /// Recover the raw verification token from an email body whose link was
@@ -180,7 +180,7 @@ impl EmailSender for CapturingEmailSender {
     }
 }
 
-/// Metrics sink that records every [`MetricEvent`] in memory for tests.
+/// In-memory [`MetricSink`] that records every [`MetricEvent`] for tests.
 #[derive(Debug, Default)]
 pub struct CapturingMetrics {
     events: Mutex<Vec<MetricEvent>>,
@@ -217,7 +217,7 @@ impl CapturingMetrics {
     }
 }
 
-impl Metrics for CapturingMetrics {
+impl MetricSink for CapturingMetrics {
     fn record(&self, event: MetricEvent) {
         self.events
             .lock()

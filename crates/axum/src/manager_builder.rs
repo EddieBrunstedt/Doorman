@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use doorman_core::assembly::AssemblyError;
-use doorman_core::metrics::{Metrics, NoopMetrics};
+use doorman_core::metrics::{MetricSink, NoopMetricSink};
 use doorman_core::session::SessionManager;
 use doorman_core::storage::UserStore;
 use url::Url;
@@ -247,7 +247,7 @@ pub struct ManagerBuilder {
     session_cache: Option<SessionCache>,
     external_origin: Option<Url>,
     csrf_config: Option<CsrfConfig>,
-    metrics: Option<Arc<dyn Metrics>>,
+    metrics: Option<Arc<dyn MetricSink>>,
 
     passkey: Option<PasskeyManager>,
     signup: Option<SignupManager>,
@@ -327,12 +327,12 @@ impl ManagerBuilder {
         self
     }
 
-    /// Wire a [`Metrics`] sink for the session-layer cache hit / miss
+    /// Wire a [`MetricSink`] sink for the session-layer cache hit / miss
     /// counters. The core managers report their own counters (login success,
     /// auth failure, latency) through the metrics sink they were built with;
     /// this setter covers the axum layer's cache observations. Defaults to
-    /// [`NoopMetrics`].
-    pub fn metrics(mut self, metrics: Arc<dyn Metrics>) -> Self {
+    /// [`NoopMetricSink`].
+    pub fn metrics(mut self, metrics: Arc<dyn MetricSink>) -> Self {
         self.metrics = Some(metrics);
         self
     }
@@ -414,7 +414,7 @@ impl ManagerBuilder {
 
         let metrics = self
             .metrics
-            .unwrap_or_else(|| Arc::new(NoopMetrics) as Arc<dyn Metrics>);
+            .unwrap_or_else(|| Arc::new(NoopMetricSink) as Arc<dyn MetricSink>);
 
         let layer_state = Arc::new(SessionLayerState {
             session_manager: session_manager.clone(),

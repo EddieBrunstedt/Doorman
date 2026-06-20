@@ -1,14 +1,14 @@
 //! Optional metrics hooks for the key auth counters.
 //!
-//! A host that wants production telemetry implements [`Metrics`] and wires it
+//! A host that wants production telemetry implements [`MetricSink`] and wires it
 //! in (through the high-level builder, or [`CoreDeps::with_metrics`]). The
-//! managers call [`Metrics::record`] on the hot paths — successful logins,
+//! managers call [`MetricSink::record`] on the hot paths — successful logins,
 //! authentication failures, and per-ceremony latency — and the axum session
 //! layer reports cache hits and misses through the same hook. The default
-//! [`NoopMetrics`] discards everything, so the hooks cost a single
+//! [`NoopMetricSink`] discards everything, so the hooks cost a single
 //! non-inlined call when no host backend is attached.
 //!
-//! [`record`](Metrics::record) is synchronous on purpose: a counter
+//! [`record`](MetricSink::record) is synchronous on purpose: a counter
 //! increment or histogram observation should never await. Keep host
 //! implementations cheap and non-blocking; do any I/O (scraping, flushing)
 //! out of band.
@@ -51,18 +51,18 @@ pub enum MetricEvent {
 /// Implementations bridge to whatever metrics backend the host runs
 /// (Prometheus, statsd, OpenTelemetry, …). [`record`](Self::record) is called
 /// inline on request-handling code paths, so it must return promptly.
-pub trait Metrics: Send + Sync {
+pub trait MetricSink: Send + Sync {
     /// Record one observation. Must not block or await; increment a counter
     /// or observe a histogram and return.
     fn record(&self, event: MetricEvent);
 }
 
-/// [`Metrics`] implementation that discards every observation. The default
+/// [`MetricSink`] implementation that discards every observation. The default
 /// when a host wires no metrics backend.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct NoopMetrics;
+pub struct NoopMetricSink;
 
-impl Metrics for NoopMetrics {
+impl MetricSink for NoopMetricSink {
     fn record(&self, _event: MetricEvent) {}
 }
 
@@ -83,7 +83,7 @@ mod tests {
         }
     }
 
-    impl Metrics for CapturingMetrics {
+    impl MetricSink for CapturingMetrics {
         fn record(&self, event: MetricEvent) {
             self.events
                 .lock()
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn noop_metrics_discards() {
-        let metrics = NoopMetrics;
+        let metrics = NoopMetricSink;
         metrics.record(MetricEvent::LoginSucceeded);
         metrics.record(MetricEvent::CacheHit);
     }
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn capturing_sink_collects_events_through_trait_object() {
         let sink = CapturingMetrics::default();
-        let metrics: Arc<dyn Metrics> = Arc::new(sink.clone());
+        let metrics: Arc<dyn MetricSink> = Arc::new(sink.clone());
         metrics.record(MetricEvent::LoginSucceeded);
         metrics.record(MetricEvent::AuthFailed {
             reason: AuthFailureReason::UnknownCredential,

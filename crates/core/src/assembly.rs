@@ -45,7 +45,7 @@ use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::clock::{Clock, SystemClock};
 use crate::context::CoreDeps;
 use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityEmailNotifier};
-use crate::metrics::{Metrics, NoopMetrics};
+use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::operator::{NotificationPolicy, OperatorManager};
 use crate::passkey::{PasskeyConfig, PasskeyManager};
 use crate::rate_limit::RateLimiter;
@@ -223,9 +223,9 @@ pub struct AuthCore {
     /// [`session_manager`](Self::session_manager). Hand this to the front
     /// end's session-resolution layer so it reads the cache core has hooked.
     pub cache: SessionCache,
-    /// Metrics sink shared across the managers, surfaced so the front end's
+    /// [`MetricSink`] shared across the managers, surfaced so the front end's
     /// own observations (e.g. cache hit/miss) report through the same sink.
-    pub metrics: Arc<dyn Metrics>,
+    pub metrics: Arc<dyn MetricSink>,
 }
 
 impl AuthCore {
@@ -248,7 +248,7 @@ pub struct AuthCoreBuilder {
     email: Option<Arc<dyn EmailSender>>,
     emails: Option<Arc<dyn EmailTemplates>>,
     rate_limiter: Option<Arc<dyn RateLimiter>>,
-    metrics: Option<Arc<dyn Metrics>>,
+    metrics: Option<Arc<dyn MetricSink>>,
     session_config: Option<SessionConfig>,
     cache_config: Option<SessionCacheConfig>,
     passkey: Option<PasskeyConfig>,
@@ -314,9 +314,9 @@ impl AuthCoreBuilder {
         self
     }
 
-    /// Wire a [`Metrics`] sink for the auth hot-path
-    /// counters. Defaults to [`NoopMetrics`].
-    pub fn metrics(mut self, metrics: Arc<dyn Metrics>) -> Self {
+    /// Wire a [`MetricSink`] sink for the auth hot-path
+    /// counters. Defaults to [`NoopMetricSink`].
+    pub fn metrics(mut self, metrics: Arc<dyn MetricSink>) -> Self {
         self.metrics = Some(metrics);
         self
     }
@@ -377,9 +377,9 @@ impl AuthCoreBuilder {
         let audit: Arc<dyn AuditSink> = self.audit.ok_or(AssemblyError::MissingAuditSink)?;
         let limiter: Arc<dyn RateLimiter> =
             self.rate_limiter.ok_or(AssemblyError::MissingRateLimiter)?;
-        let metrics: Arc<dyn Metrics> = self
+        let metrics: Arc<dyn MetricSink> = self
             .metrics
-            .unwrap_or_else(|| Arc::new(NoopMetrics) as Arc<dyn Metrics>);
+            .unwrap_or_else(|| Arc::new(NoopMetricSink) as Arc<dyn MetricSink>);
         let session_config = self.session_config.unwrap_or_default();
 
         // One renderer brands every flow and every notice. The host wires it

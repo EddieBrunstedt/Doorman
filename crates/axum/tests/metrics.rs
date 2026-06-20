@@ -1,5 +1,5 @@
 //! Verifies the session layer reports cache hit / miss through the optional
-//! [`Metrics`] hook wired in via [`AuthServiceBuilder::metrics`]. The first
+//! [`MetricSink`] hook wired in via [`AuthServiceBuilder::metrics`]. The first
 //! authenticated request resolves against a cold cache (a miss + a store
 //! validate); the second is served from the warm cache (a hit).
 
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::StatusCode;
 use common::{TestApp, login};
-use doorman_core::metrics::{MetricEvent, Metrics};
+use doorman_core::metrics::{MetricEvent, MetricSink};
 use doorman_test_support::CapturingMetrics;
 
 async fn me(client: &reqwest::Client, app: &TestApp, token: &str) -> StatusCode {
@@ -28,7 +28,7 @@ async fn session_layer_records_cache_miss_then_hit() {
     let metrics = Arc::new(CapturingMetrics::new());
     let metrics_for_app = metrics.clone();
     let app = TestApp::start_with(Router::new(), false, move |b| {
-        b.metrics(metrics_for_app as Arc<dyn Metrics>)
+        b.metrics(metrics_for_app as Arc<dyn MetricSink>)
     })
     .await;
     let client = reqwest::Client::new();
@@ -66,7 +66,7 @@ async fn unauthenticated_request_records_no_cache_observation() {
     let metrics = Arc::new(CapturingMetrics::new());
     let metrics_for_app = metrics.clone();
     let app = TestApp::start_with(Router::new(), false, move |b| {
-        b.metrics(metrics_for_app as Arc<dyn Metrics>)
+        b.metrics(metrics_for_app as Arc<dyn MetricSink>)
     })
     .await;
     let client = reqwest::Client::new();

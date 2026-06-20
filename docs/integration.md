@@ -50,7 +50,7 @@ Every collaborator and config has a bare-noun setter on `AuthServiceBuilder` (an
 | `.emails(Arc<dyn EmailTemplates>)`                                                                       | One renderer branding every email (see below).          |
 | `.audit(Arc<dyn AuditSink>)`                                                                             | Sink for security events. Required.                     |
 | `.limiter(Arc<dyn RateLimiter>)`                                                                         | Rate-limit backend. Required.                           |
-| `.metrics(Arc<dyn Metrics>)`                                                                             | Observability hook.                                     |
+| `.metrics(Arc<dyn MetricSink>)`                                                                          | Observability hook.                                     |
 | `.clock(Arc<dyn Clock>)`                                                                                 | Time source (mock in tests). Defaults to `SystemClock`. |
 | `.passkey(PasskeyConfig)`                                                                                | Relying party + ceremony config. Required.              |
 | `.signup(SignupConfig)` / `.recovery(RecoveryConfig)` / `.account(AccountConfig)`                        | Flow configs (URL templates, lifetimes, cool-down).     |
