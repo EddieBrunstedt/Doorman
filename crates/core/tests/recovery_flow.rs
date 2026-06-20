@@ -16,7 +16,7 @@ use doorman_core::recovery::{
     MIN_COOLDOWN, RecoveryConfig, RecoveryConfigError, RecoveryManager, RecoveryRateLimits,
 };
 use doorman_core::session::SessionContext;
-use doorman_core::storage::{PasskeyCredentialStore, User};
+use doorman_core::storage::{AccountStatus, PasskeyCredentialStore, User, UserStore};
 use doorman_test_support::MockClock;
 
 use common::{
@@ -100,6 +100,149 @@ async fn request_for_unknown_email_sends_nothing_but_audits() {
             ..
         }
     )));
+}
+
+/// Flip `user` to [`AccountStatus::Disabled`] directly through the store, the
+/// way the operator disable flow will. Step 3 proves the recovery gate holds by
+/// disabling through the store; the audited operator-facing setter lands in
+/// Step 4.
+async fn disable_user(h: &Harness, user: &User) {
+    let now = h.clock.now();
+    let disabled = User {
+        status: AccountStatus::Disabled { at: now },
+        updated_at: now,
+        ..user.clone()
+    };
+    h.users.update_user(disabled).await.expect("disable user");
+}
+
+#[tokio::test]
+async fn request_for_disabled_user_sends_nothing_but_audits() {
+    // A disabled account must not be able to recover its way back in, and the
+    // refusal must be indistinguishable from the unknown-email path to an
+    // outside caller: same `Ok(())`, no link, no token.
+    let h = Harness::fresh();
+    let user = provision_user(&h, "alice@example.com").await;
+    disable_user(&h, &user).await;
+    let mail_before = h.email.sent().len();
+    let tokens_before = h.tokens.len();
+
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("silent ok for disabled account");
+
+    assert_eq!(
+        h.email.sent().len(),
+        mail_before,
+        "no email sent for a disabled account",
+    );
+    assert_eq!(
+        h.tokens.len(),
+        tokens_before,
+        "no recovery token issued for a disabled account",
+    );
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RecoveryFailed {
+            reason: RecoveryFailureReason::AccountDisabled,
+            user_id: Some(id),
+        } if *id == user.id,
+    )));
+}
+
+#[tokio::test]
+async fn consume_refused_for_disabled_user() {
+    // A link issued while the account was active must not redeem after the
+    // account is disabled: the consume seam refuses with `AccountDisabled`.
+    let h = Harness::fresh();
+    let user = provision_user(&h, "alice@example.com").await;
+
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request while active");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+
+    disable_user(&h, &user).await;
+
+    let err = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect_err("consume refused for disabled account");
+    assert!(matches!(err, Error::AccountDisabled));
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RecoveryFailed {
+            reason: RecoveryFailureReason::AccountDisabled,
+            user_id: Some(id),
+        } if *id == user.id,
+    )));
+}
+
+#[tokio::test]
+async fn finish_refused_for_disabled_user_enrolls_nothing() {
+    // Backstop: even if the token was consumed and the registration ceremony
+    // completed in the browser while the account was still active, finishing
+    // after the disable lands must refuse — no passkey enrolled, no session
+    // issued.
+    let h = Harness::fresh();
+    let user = provision_user(&h, "alice@example.com").await;
+    let credentials_before = h.credentials.len();
+    let sessions_before = h.sessions.len();
+
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request while active");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+    let consume = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect("consume while active");
+    let mut wa = ResidentTestAuthenticator::new();
+    let attestation = wa.do_registration(consume.options);
+
+    // The disable lands after the ceremony was driven but before finish.
+    disable_user(&h, &user).await;
+
+    let err = h
+        .recovery
+        .finish_recovery(
+            consume.challenge_id,
+            &attestation,
+            Some("backup device".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("finish refused for disabled account");
+    assert!(matches!(err, Error::AccountDisabled));
+    assert_eq!(
+        h.credentials.len(),
+        credentials_before,
+        "no passkey enrolled onto a disabled account",
+    );
+    assert_eq!(
+        h.sessions.len(),
+        sessions_before,
+        "no session issued for a disabled account",
+    );
 }
 
 #[tokio::test]

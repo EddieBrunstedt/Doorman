@@ -299,6 +299,10 @@ pub enum RecoveryFailureReason {
     /// A `recovery/consume` call presented a token whose `expires_at` has
     /// already passed.
     ExpiredToken,
+    /// The target account is disabled. Recovery refuses a disabled account at
+    /// both the request seam (no link issued) and the consume seam (no token
+    /// redeemed), so a disabled account cannot recover its way back in.
+    AccountDisabled,
 }
 
 /// Destination for audit events emitted by the managers.

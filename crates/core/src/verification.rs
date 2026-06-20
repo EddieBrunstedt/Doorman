@@ -408,6 +408,28 @@ impl EnrollmentFlow {
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
+        if !user.status.is_active() {
+            // The account was disabled between requesting recovery and clicking
+            // the link. Refuse to redeem the token or start a registration
+            // ceremony for a disabled account — a disabled user must not recover
+            // its way back in. Recovery audits the refusal; signup users are
+            // always active so this never fires for signup.
+            if kind.audits_consume_failures() {
+                self.audit_recovery_failed(
+                    Some(user.id),
+                    RecoveryFailureReason::AccountDisabled,
+                    &context,
+                )
+                .await;
+            }
+            tracing::warn!(
+                outcome = "account_disabled",
+                "{} consume failed",
+                kind.label()
+            );
+            return Err(Error::AccountDisabled);
+        }
+
         if kind.marks_email_verified() && user.email_verified_at.is_none() {
             // Clicking a link sent to the address proves ownership.
             user.email_verified_at = Some(now);

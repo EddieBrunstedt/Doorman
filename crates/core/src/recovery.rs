@@ -316,6 +316,29 @@ impl RecoveryManager {
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
+        if !user.status.is_active() {
+            // The account is disabled. Refuse to issue a recovery link — a
+            // disabled account must not be able to recover its way back in. The
+            // external response is kept identical to the unknown-email and
+            // registered-active paths (`Ok(())`, no token, no distinguishing
+            // signal) so disable never becomes an account-state oracle: we
+            // simply issue no token and send no email, auditing the refusal
+            // internally. This mirrors the silent-on-unknown-email posture
+            // above. The shared predicate is the same one auth gates on.
+            self.flow
+                .audit_recovery_failed(
+                    Some(user.id),
+                    RecoveryFailureReason::AccountDisabled,
+                    &context,
+                )
+                .await;
+            tracing::info!(
+                outcome = "account_disabled",
+                "recovery request refused (silent)"
+            );
+            return Ok(());
+        }
+
         // Invalidate any prior recovery tokens for the user, store a fresh
         // single-use token, and render the link URL.
         let url = verification::issue_link(
