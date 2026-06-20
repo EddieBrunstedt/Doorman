@@ -33,7 +33,7 @@ use crate::audit::AuditEventKind;
 use crate::error::Result;
 use crate::rate_limit::RateLimitPolicy;
 use crate::session::SessionContext;
-use crate::storage::{PasskeyChallengeId, User, UserId, VerificationPurpose};
+use crate::storage::{AccountStatus, PasskeyChallengeId, User, UserId, VerificationPurpose};
 use crate::verification::{
     self, EnrollmentFlow, EnrollmentOutcome, FlowKind, TOKEN_PLACEHOLDER,
     VerificationConsumeOutcome,
@@ -201,6 +201,7 @@ impl SignupManager {
             id: UserId::new(),
             email: Some(email_normalized.clone()),
             email_verified_at: None,
+            status: AccountStatus::Active,
             created_at: now,
             updated_at: now,
         };

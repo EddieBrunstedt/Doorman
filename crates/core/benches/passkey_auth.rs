@@ -38,7 +38,7 @@ use doorman_core::memory::{
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
-use doorman_core::storage::{SessionStore, Storage, User, UserId, UserStore};
+use doorman_core::storage::{AccountStatus, SessionStore, Storage, User, UserId, UserStore};
 use doorman_test_support::CapturingEmailSender;
 use tokio::runtime::Runtime;
 use url::Url;
@@ -73,6 +73,7 @@ async fn build_scaffold() -> Scaffold {
         id: UserId::new(),
         email: Some("bench@example.com".into()),
         email_verified_at: Some(now),
+        status: AccountStatus::Active,
         created_at: now,
         updated_at: now,
     };

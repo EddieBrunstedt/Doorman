@@ -22,7 +22,7 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
-    PasskeyChallengeId, PasskeySummary, Session, SessionId, Storage, StoredPasskey,
+    AccountStatus, PasskeyChallengeId, PasskeySummary, Session, SessionId, Storage, StoredPasskey,
     StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, VerificationPurpose,
     VerificationToken,
 };
@@ -38,6 +38,7 @@ fn user(id: UserId, email: &str) -> User {
         id,
         email: Some(email.to_string()),
         email_verified_at: None,
+        status: AccountStatus::Active,
         created_at: ts(2026, 1, 1),
         updated_at: ts(2026, 1, 1),
     }
@@ -151,8 +152,49 @@ async fn users_round_trip(storage: &Storage) {
     users.update_user(verified.clone()).await.expect("update");
     assert_eq!(
         users.find_user_by_id(id).await.expect("find updated"),
-        Some(verified),
+        Some(verified.clone()),
     );
+
+    // Account status round-trips: flipping to `Disabled { at }` and back must
+    // survive a write/read cycle, variant and timestamp intact. This is what
+    // proves every adapter actually persists the new state.
+    let disabled_at = ts(2026, 2, 15);
+    let disabled = User {
+        status: AccountStatus::Disabled { at: disabled_at },
+        updated_at: disabled_at,
+        ..verified
+    };
+    users.update_user(disabled.clone()).await.expect("disable");
+    let reread = users
+        .find_user_by_id(id)
+        .await
+        .expect("find disabled")
+        .expect("disabled user present");
+    assert_eq!(reread, disabled, "disabled status round-trips");
+    assert_eq!(
+        reread.status,
+        AccountStatus::Disabled { at: disabled_at },
+        "disabled variant and timestamp survive persistence",
+    );
+    assert!(!reread.status.is_active(), "disabled account is not active");
+
+    // And back to active.
+    let reactivated = User {
+        status: AccountStatus::Active,
+        updated_at: ts(2026, 2, 20),
+        ..disabled
+    };
+    users
+        .update_user(reactivated.clone())
+        .await
+        .expect("reactivate");
+    let reread = users
+        .find_user_by_id(id)
+        .await
+        .expect("find reactivated")
+        .expect("reactivated user present");
+    assert_eq!(reread.status, AccountStatus::Active);
+    assert!(reread.status.is_active());
 
     // Delete removes both lookups.
     users.delete_user(id).await.expect("delete");

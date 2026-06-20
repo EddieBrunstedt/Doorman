@@ -69,7 +69,10 @@ fn to_binary(bytes: Vec<u8>) -> Binary {
     }
 }
 
-pub(crate) use doorman_core::encoding::{hex, purpose_from_str, purpose_to_str as purpose_str};
+pub(crate) use doorman_core::encoding::{
+    account_status_from_parts, account_status_to_str, hex, purpose_from_str,
+    purpose_to_str as purpose_str,
+};
 
 // ---------------------------------------------------------------------------
 // Document extractors
@@ -201,14 +204,21 @@ pub(crate) fn user_to_doc(user: &User) -> Document {
     if let Some(ts) = user.email_verified_at {
         doc.insert("email_verified_at", to_bson_dt(ts));
     }
+    doc.insert("status", account_status_to_str(&user.status));
+    if let Some(ts) = user.status.disabled_at() {
+        doc.insert("disabled_at", to_bson_dt(ts));
+    }
     doc
 }
 
 pub(crate) fn user_from_doc(doc: &Document) -> StorageResult<User> {
+    let status =
+        account_status_from_parts(&get_str(doc, "status")?, get_opt_dt(doc, "disabled_at")?)?;
     Ok(User {
         id: UserId(get_uuid(doc, "_id")?),
         email: get_opt_str(doc, "email")?,
         email_verified_at: get_opt_dt(doc, "email_verified_at")?,
+        status,
         created_at: get_dt(doc, "created_at")?,
         updated_at: get_dt(doc, "updated_at")?,
     })

@@ -150,6 +150,47 @@ impl fmt::Display for SessionId {
     }
 }
 
+/// Whether a user account is usable or has been frozen by an operator.
+///
+/// `Disabled` is a reversible hold: both authentication and recovery refuse a
+/// disabled account, and an operator can return it to `Active`. The timestamp
+/// lives inside the `Disabled` variant rather than as a separate nullable
+/// column so an account can never be "disabled with no `at`" or "active with a
+/// stray `at`".
+///
+/// `#[non_exhaustive]` reserves room to add further held states later without
+/// breaking host `match`es.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AccountStatus {
+    /// The account is usable: auth and recovery proceed normally.
+    #[default]
+    Active,
+    /// The account has been disabled by an operator at the given instant.
+    /// Both auth and recovery refuse it until it is re-enabled.
+    Disabled {
+        /// When the account was disabled.
+        at: DateTime<Utc>,
+    },
+}
+
+impl AccountStatus {
+    /// Returns `true` when the account is [`Active`](AccountStatus::Active).
+    /// The single shared predicate both auth and recovery gate on, so the enum
+    /// is never re-matched inline at each enforcement seam.
+    pub fn is_active(&self) -> bool {
+        matches!(self, AccountStatus::Active)
+    }
+
+    /// The instant the account was disabled, or `None` when it is active.
+    pub fn disabled_at(&self) -> Option<DateTime<Utc>> {
+        match self {
+            AccountStatus::Disabled { at } => Some(*at),
+            AccountStatus::Active => None,
+        }
+    }
+}
+
 /// Local user record shared by all auth methods.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
@@ -159,6 +200,9 @@ pub struct User {
     pub email: Option<String>,
     /// When the email address was verified, if it has been.
     pub email_verified_at: Option<DateTime<Utc>>,
+    /// Whether the account is active or has been disabled by an operator;
+    /// disabled accounts are refused by both auth and recovery.
+    pub status: AccountStatus,
     /// When the user record was created.
     pub created_at: DateTime<Utc>,
     /// When the user record was last modified.

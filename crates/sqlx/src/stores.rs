@@ -121,13 +121,15 @@ macro_rules! sqlx_stores {
                 user: $crate::stores::__reexport::User,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "INSERT INTO users (id, email, email_verified_at, created_at, updated_at)
-                     VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO users (id, email, email_verified_at, status, disabled_at, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(user.id.0))
                     .bind(&user.email)
                     .bind($ts(user.email_verified_at))
+                    .bind($crate::stores::__reexport::account_status_to_str(&user.status))
+                    .bind($ts(user.status.disabled_at()))
                     .bind($ts(user.created_at))
                     .bind($ts(user.updated_at))
                     .execute(&self.pool)
@@ -143,7 +145,7 @@ macro_rules! sqlx_stores {
                 Option<$crate::stores::__reexport::User>,
             > {
                 let sql = $ph(
-                    "SELECT id, email, email_verified_at, created_at, updated_at
+                    "SELECT id, email, email_verified_at, status, disabled_at, created_at, updated_at
                      FROM users WHERE id = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -161,7 +163,7 @@ macro_rules! sqlx_stores {
                 Option<$crate::stores::__reexport::User>,
             > {
                 let sql = $ph(
-                    "SELECT id, email, email_verified_at, created_at, updated_at
+                    "SELECT id, email, email_verified_at, status, disabled_at, created_at, updated_at
                      FROM users WHERE email = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -178,12 +180,14 @@ macro_rules! sqlx_stores {
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
                     "UPDATE users
-                     SET email = ?, email_verified_at = ?, updated_at = ?
+                     SET email = ?, email_verified_at = ?, status = ?, disabled_at = ?, updated_at = ?
                      WHERE id = ?",
                 );
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind(&user.email)
                     .bind($ts(user.email_verified_at))
+                    .bind($crate::stores::__reexport::account_status_to_str(&user.status))
+                    .bind($ts(user.status.disabled_at()))
                     .bind($ts(user.updated_at))
                     .bind($crate::common::uuid_to_bytes(user.id.0))
                     .execute(&self.pool)
@@ -214,12 +218,20 @@ macro_rules! sqlx_stores {
         ) -> $crate::stores::__reexport::StorageResult<$crate::stores::__reexport::User> {
             use ::sqlx::Row as _;
             let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage)?;
+            let status_str: String = row.try_get("status").map_err($crate::common::storage)?;
+            let disabled_at: ::core::option::Option<
+                $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
+            > = row.try_get("disabled_at").map_err($crate::common::storage)?;
             Ok($crate::stores::__reexport::User {
                 id: $crate::stores::__reexport::UserId($crate::common::uuid_from_row(id_bytes)?),
                 email: row.try_get("email").map_err($crate::common::storage)?,
                 email_verified_at: row
                     .try_get("email_verified_at")
                     .map_err($crate::common::storage)?,
+                status: $crate::stores::__reexport::account_status_from_parts(
+                    &status_str,
+                    disabled_at,
+                )?,
                 created_at: row.try_get("created_at").map_err($crate::common::storage)?,
                 updated_at: row.try_get("updated_at").map_err($crate::common::storage)?,
             })
@@ -974,6 +986,7 @@ pub(crate) use sqlx_take;
 /// the macro can name them without each dialect module importing them.
 pub(crate) mod __reexport {
     pub use chrono::{DateTime, Utc};
+    pub use doorman_core::encoding::{account_status_from_parts, account_status_to_str};
     pub use doorman_core::error::{StorageError, StorageResult};
     pub use doorman_core::storage::{
         PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,

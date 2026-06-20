@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn auth_session_cooldown_answers_through_injected_clock() {
         use chrono::{Duration, TimeZone, Utc};
-        use doorman_core::storage::{Session, SessionId, UserId};
+        use doorman_core::storage::{AccountStatus, Session, SessionId, UserId};
         use doorman_core::token::hash_token;
         use doorman_test_support::MockClock;
 
@@ -207,6 +207,7 @@ mod tests {
             id: UserId::new(),
             email: Some("alice@example.com".into()),
             email_verified_at: Some(start),
+            status: AccountStatus::Active,
             created_at: start,
             updated_at: start,
         };

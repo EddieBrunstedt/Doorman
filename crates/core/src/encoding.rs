@@ -11,10 +11,11 @@
 
 use std::fmt::Write as _;
 
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::error::{StorageError, StorageResult};
-use crate::storage::VerificationPurpose;
+use crate::storage::{AccountStatus, VerificationPurpose};
 
 /// Stable lowercase string for a verification purpose, matching the
 /// `snake_case` serde rename on [`VerificationPurpose`] so a stored value is
@@ -37,6 +38,42 @@ pub fn purpose_from_str(raw: &str) -> StorageResult<VerificationPurpose> {
         "email_change" => Ok(VerificationPurpose::EmailChange),
         other => Err(StorageError::msg(format!(
             "unknown verification purpose `{other}` in storage"
+        ))),
+    }
+}
+
+/// Stable lowercase discriminant for an account status. Adapters store this
+/// alongside a nullable `disabled_at` timestamp column ([`AccountStatus`]'s
+/// `Disabled { at }` payload, obtained via [`AccountStatus::disabled_at`]) and
+/// rebuild the enum with [`account_status_from_parts`].
+pub fn account_status_to_str(status: &AccountStatus) -> &'static str {
+    match status {
+        AccountStatus::Active => "active",
+        AccountStatus::Disabled { .. } => "disabled",
+    }
+}
+
+/// Rebuild an [`AccountStatus`] from its stored discriminant and nullable
+/// `disabled_at` timestamp, the inverse of [`account_status_to_str`] paired
+/// with [`AccountStatus::disabled_at`]. A `disabled` discriminant with no
+/// timestamp, or an unknown discriminant, is a corrupt or forward-incompatible
+/// record and surfaces as a [`StorageError`] rather than silently defaulting.
+pub fn account_status_from_parts(
+    discriminant: &str,
+    disabled_at: Option<DateTime<Utc>>,
+) -> StorageResult<AccountStatus> {
+    match discriminant {
+        "active" => Ok(AccountStatus::Active),
+        "disabled" => {
+            let at = disabled_at.ok_or_else(|| {
+                StorageError::msg(
+                    "disabled account status missing disabled_at timestamp in storage",
+                )
+            })?;
+            Ok(AccountStatus::Disabled { at })
+        }
+        other => Err(StorageError::msg(format!(
+            "unknown account status `{other}` in storage"
         ))),
     }
 }
@@ -82,6 +119,7 @@ pub fn aaguid_from_str(s: Option<String>) -> StorageResult<Option<Uuid>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone as _;
 
     #[test]
     fn purpose_strings_are_stable() {
@@ -125,6 +163,27 @@ mod tests {
                 serde_json::Value::String(purpose_to_str(p).to_string())
             );
         }
+    }
+
+    #[test]
+    fn account_status_round_trips() {
+        let at = Utc
+            .with_ymd_and_hms(2026, 2, 15, 0, 0, 0)
+            .single()
+            .expect("valid timestamp");
+        for status in [AccountStatus::Active, AccountStatus::Disabled { at }] {
+            let disc = account_status_to_str(&status);
+            let rebuilt = account_status_from_parts(disc, status.disabled_at()).unwrap();
+            assert_eq!(rebuilt, status);
+        }
+    }
+
+    #[test]
+    fn account_status_from_parts_rejects_bad_input() {
+        // Unknown discriminant.
+        assert!(account_status_from_parts("banned", None).is_err());
+        // Disabled with no timestamp is corrupt, not silently active.
+        assert!(account_status_from_parts("disabled", None).is_err());
     }
 
     #[test]

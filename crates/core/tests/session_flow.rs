@@ -13,7 +13,7 @@ use doorman_core::session::{
     SessionConfig, SessionContext, SessionInvalidationHook, SessionManager, hash_token,
 };
 use doorman_core::storage::{
-    Session, SessionId, SessionStore, StoredPasskey, User, UserId, UserStore,
+    AccountStatus, Session, SessionId, SessionStore, StoredPasskey, User, UserId, UserStore,
 };
 use doorman_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
 use std::sync::Mutex;
@@ -51,6 +51,7 @@ fn user_with_id(id: UserId, email: Option<&str>) -> User {
         id,
         email: email.map(str::to_owned),
         email_verified_at: None,
+        status: AccountStatus::Active,
         created_at: ts(2026, 1, 1),
         updated_at: ts(2026, 1, 1),
     }
@@ -864,6 +865,7 @@ async fn user_store_round_trip() {
         id: UserId::new(),
         email: Some("alice@example.com".into()),
         email_verified_at: None,
+        status: AccountStatus::Active,
         created_at: ts(2026, 1, 1),
         updated_at: ts(2026, 1, 1),
     };
@@ -890,6 +892,7 @@ async fn user_store_round_trip() {
         id: UserId::new(),
         email: Some("alice@example.com".into()),
         email_verified_at: None,
+        status: AccountStatus::Active,
         created_at: user.created_at,
         updated_at: user.updated_at,
     };

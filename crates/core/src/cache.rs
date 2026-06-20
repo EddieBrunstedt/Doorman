@@ -301,7 +301,7 @@ impl SessionInvalidationHook for CacheInvalidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{SessionId, TokenHash, UserId};
+    use crate::storage::{AccountStatus, SessionId, TokenHash, UserId};
     use chrono::{TimeZone, Utc};
 
     fn token_hash(byte: u8) -> TokenHash {
@@ -342,6 +342,7 @@ mod tests {
             id,
             email: Some("u@example.com".into()),
             email_verified_at: None,
+            status: AccountStatus::Active,
             created_at: Utc
                 .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
                 .single()

@@ -41,7 +41,8 @@ use doorman_core::session::hash_token;
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use doorman_core::storage::{
-    Session, SessionId, SessionStore, Storage, StoredPasskey, User, UserId, UserStore,
+    AccountStatus, Session, SessionId, SessionStore, Storage, StoredPasskey, User, UserId,
+    UserStore,
 };
 use doorman_core::verification::EnrollmentFlow;
 use doorman_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
@@ -335,6 +336,7 @@ pub async fn make_user(h: &Harness, email: &str) -> User {
         id: UserId::new(),
         email: Some(email.to_ascii_lowercase()),
         email_verified_at: Some(now),
+        status: AccountStatus::Active,
         created_at: now,
         updated_at: now,
     };

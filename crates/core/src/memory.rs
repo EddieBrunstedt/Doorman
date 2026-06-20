@@ -688,6 +688,7 @@ impl RateLimiter for InMemoryRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::AccountStatus;
 
     #[tokio::test]
     async fn in_memory_composite_wires_every_store() {
@@ -700,6 +701,7 @@ mod tests {
             id: UserId::new(),
             email: Some("composite@example.com".into()),
             email_verified_at: None,
+            status: AccountStatus::Active,
             created_at: now,
             updated_at: now,
         };
@@ -762,6 +764,7 @@ mod tests {
             id: UserId::new(),
             email: Some("shared@example.com".into()),
             email_verified_at: None,
+            status: AccountStatus::Active,
             created_at: now,
             updated_at: now,
         };

@@ -31,7 +31,7 @@ use doorman_core::audit::{AuditSink, NoopAuditSink};
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::memory::{InMemorySessionStore, InMemoryUserStore};
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
-use doorman_core::storage::{SessionStore, User, UserId, UserStore};
+use doorman_core::storage::{AccountStatus, SessionStore, User, UserId, UserStore};
 use tokio::runtime::Runtime;
 
 struct Scaffold {
@@ -64,6 +64,7 @@ async fn build_scaffold() -> Scaffold {
         id: UserId::new(),
         email: Some("u@example.com".into()),
         email_verified_at: Some(now),
+        status: AccountStatus::Active,
         created_at: now,
         updated_at: now,
     };

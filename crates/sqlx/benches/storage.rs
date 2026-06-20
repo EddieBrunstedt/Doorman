@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use doorman_core::session::hash_token;
-use doorman_core::storage::{Session, SessionId, Storage, TokenHash, User, UserId};
+use doorman_core::storage::{AccountStatus, Session, SessionId, Storage, TokenHash, User, UserId};
 use tokio::runtime::Runtime;
 
 /// Table sizes used by the scaling benches.
@@ -74,6 +74,7 @@ async fn seed_user(storage: &Storage) -> UserId {
         id: UserId::new(),
         email: Some("bench@example.com".into()),
         email_verified_at: Some(now),
+        status: AccountStatus::Active,
         created_at: now,
         updated_at: now,
     };

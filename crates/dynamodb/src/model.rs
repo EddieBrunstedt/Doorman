@@ -21,7 +21,10 @@
 //! only for future expiries) is a separate epoch-seconds number.
 
 use chrono::{DateTime, Utc};
-use doorman_core::encoding::{hex, purpose_from_str, purpose_to_str as purpose_str};
+use doorman_core::encoding::{
+    account_status_from_parts, account_status_to_str, hex, purpose_from_str,
+    purpose_to_str as purpose_str,
+};
 use doorman_core::error::StorageResult;
 use doorman_core::storage::{
     PasskeyChallengeId, PasskeySummary, Session, SessionId, StoredPasskey,
@@ -143,16 +146,26 @@ pub(crate) fn user_item(user: &User) -> Item {
     item.insert("id".to_string(), client::s(user.id.0.to_string()));
     put_opt_s(&mut item, "email", user.email.as_deref());
     put_opt_ts(&mut item, "email_verified_at", user.email_verified_at);
+    item.insert(
+        "status".to_string(),
+        client::s(account_status_to_str(&user.status)),
+    );
+    put_opt_ts(&mut item, "disabled_at", user.status.disabled_at());
     put_ts(&mut item, "created_at", user.created_at);
     put_ts(&mut item, "updated_at", user.updated_at);
     item
 }
 
 pub(crate) fn user_from_item(item: &Item) -> StorageResult<User> {
+    let status = account_status_from_parts(
+        &client::get_s(item, "status")?,
+        client::get_opt_ts(item, "disabled_at")?,
+    )?;
     Ok(User {
         id: UserId(client::get_uuid(item, "id")?),
         email: client::get_opt_s(item, "email")?,
         email_verified_at: client::get_opt_ts(item, "email_verified_at")?,
+        status,
         created_at: client::get_ts(item, "created_at")?,
         updated_at: client::get_ts(item, "updated_at")?,
     })

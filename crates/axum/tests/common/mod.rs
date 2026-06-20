@@ -41,7 +41,9 @@ use doorman_core::passkey::PasskeyConfig;
 use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use doorman_core::session::{SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupRateLimits};
-use doorman_core::storage::{PasskeyCredentialStore, Storage, User, UserId, UserStore};
+use doorman_core::storage::{
+    AccountStatus, PasskeyCredentialStore, Storage, User, UserId, UserStore,
+};
 use doorman_test_support::CapturingEmailSender;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -245,6 +247,7 @@ pub async fn login(_client: &reqwest::Client, app: &TestApp, email: &str) -> Aut
             id: UserId::new(),
             email: Some(email_normalized),
             email_verified_at: Some(now),
+            status: AccountStatus::Active,
             created_at: now,
             updated_at: now,
         };
