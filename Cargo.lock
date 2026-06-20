@@ -1240,6 +1240,7 @@ dependencies = [
 name = "doorman"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "doorman-axum",
  "doorman-core",
  "doorman-dynamodb",
@@ -1360,6 +1361,17 @@ dependencies = [
  "testcontainers-modules",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "doorman-purge-example"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "doorman",
+ "tokio",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

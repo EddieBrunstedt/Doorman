@@ -1,0 +1,27 @@
+[package]
+name = "doorman-purge-example"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The shared library lives under the name `app`, so both binaries below read as
+# `app::build_storage()` — the single source of truth for how this deployment
+# constructs its storage.
+[lib]
+name = "app"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The umbrella crate, with the Axum integration, the SQLite adapter, and the
+# one-shot purge runner. A real serverless host swaps `sqlite` for its own
+# backend feature (e.g. `dynamodb`) and the body of `build_storage` — nothing
+# else here changes, because the runner is backend-blind.
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }
+doorman = { path = "../../crates/doorman", features = ["axum", "sqlite", "purge-runner"] }
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread"] }
+tracing-subscriber = { workspace = true }
+url.workspace = true

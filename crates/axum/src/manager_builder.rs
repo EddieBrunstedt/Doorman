@@ -440,6 +440,10 @@ impl ManagerBuilder {
             state,
             session_layer: SessionLayer::new(layer_state),
             cache,
+            // The low-level path takes pre-built managers, not a composite
+            // `Storage`. The high-level `AuthServiceBuilder` sets this after
+            // `build()` so `AuthService::purge_expired` has a handle to sweep.
+            storage: None,
         })
     }
 }

@@ -77,7 +77,10 @@ pub use session::{AuthContext, SessionLayer};
 pub use state::AuthState;
 
 use axum::Router;
+use chrono::{DateTime, Utc};
 
+use doorman_core::error::{StorageError, StorageResult};
+use doorman_core::purge::PurgeSummary;
 use doorman_core::storage::Storage;
 
 /// Wired-up authentication HTTP layer. Construct via
@@ -88,6 +91,13 @@ pub struct AuthService {
     state: AuthState,
     session_layer: SessionLayer,
     cache: SessionCache,
+    /// The composite storage the service was built from, kept so an
+    /// in-process job or test can sweep expired rows through
+    /// [`purge_expired`](AuthService::purge_expired). Present only on the
+    /// [`builder`](AuthService::builder) path, which owns the `Storage`;
+    /// `None` on the [`from_managers`](AuthService::from_managers) path, whose
+    /// pre-built managers carry no composite handle.
+    storage: Option<Storage>,
 }
 
 impl AuthService {
@@ -136,5 +146,28 @@ impl AuthService {
     /// reach into the cache directly.
     pub fn cache(&self) -> &SessionCache {
         &self.cache
+    }
+
+    /// Sweep every store of rows whose expiry is at or before `now`, returning
+    /// the per-store [`PurgeSummary`]. A thin delegate to
+    /// [`Storage::purge_all_expired`] that makes the sweep reachable from the
+    /// built service — handy for an in-process job or a test that already holds
+    /// the `AuthService` rather than the raw `Storage`.
+    ///
+    /// Available on a service built via [`builder`](AuthService::builder),
+    /// which owns the composite [`Storage`]. The lower-level
+    /// [`from_managers`](AuthService::from_managers) path takes pre-built
+    /// managers and has no composite handle, so it returns a [`StorageError`];
+    /// those hosts call [`Storage::purge_all_expired`] on the storage they
+    /// constructed the managers from.
+    pub async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<PurgeSummary> {
+        match &self.storage {
+            Some(storage) => storage.purge_all_expired(now).await,
+            None => Err(StorageError::msg(
+                "purge_expired is only available on a service built via AuthService::builder; \
+                 the from_managers path has no composite Storage handle — call \
+                 Storage::purge_all_expired on the storage you built the managers from",
+            )),
+        }
     }
 }

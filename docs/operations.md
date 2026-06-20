@@ -43,7 +43,38 @@ use std::time::Duration;
 doorman_core::purge::spawn_purge_task(storage.clone(), clock, Duration::from_secs(3600));
 ```
 
-The default build does not pull this in, keeping the dependency surface lean. Hosts that prefer an external scheduler (cron, a job runner) can call `purge_all_expired` directly instead.
+The default build does not pull this in, keeping the dependency surface lean.
+
+### External schedulers (serverless, CronJob)
+
+The in-process sweeper assumes a long-lived process. On a frozen or short-lived host — serverless / FaaS, scale-to-zero containers, a Kubernetes `CronJob` — its tokio timer never fires reliably, so those hosts run the purge as a **separate, short-lived process** driven by an external scheduler (cron, AWS EventBridge, a `CronJob`).
+
+Enable the `purge-runner` feature on `doorman` and call `doorman::ops::run_purge` from a tiny host-owned binary. The runner is backend-blind: it parses two optional flags (`--now <rfc3339>`, `--json`), sweeps via `purge_all_expired`, prints the per-store `PurgeSummary`, and sets the process exit code (non-zero on a malformed flag or a store error, so a scheduler treats a failed sweep as a failed job).
+
+```rust,ignore
+// requires the `doorman` feature "purge-runner"
+// bins/purge/src/main.rs — the host's whole purge binary
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
+    let storage = app::build_storage().await; // the SAME builder the server uses
+    doorman::ops::run_purge(storage).await
+}
+```
+
+doorman ships only this backend-blind runner — never a ready-made binary. A Rust binary is a leaf of the dependency graph, so doorman cannot ship one generic over a backend it does not know; the backend-aware `main` must live in the crate that knows the backend (yours). The payoff is that adding a new storage backend costs zero purge work: the runner is generic over `Storage`, and your existing storage builder already produces one.
+
+**Single source of truth.** Put the storage construction in one shared function (`build_storage()`) that **both** the server and the purge binary call, so the two processes read the same database from the same environment:
+
+```
+myapp/
+├── crates/app/   # shared lib — owns build_storage() ONCE
+├── bins/server/  # main: app::build_storage() -> AuthService::builder(..).build()
+└── bins/purge/   # main: app::build_storage() -> doorman::ops::run_purge(storage)
+```
+
+(For a simple app this collapses to one crate with `src/lib.rs` + `src/bin/server.rs` + `src/bin/purge.rs`. See `examples/purge` for the runnable layout.)
+
+**Watch for silent misconfiguration.** Each networked backend has one value that must match the running app — the DynamoDB table, the MongoDB database name, the Redis key prefix. Point the purge process at the wrong one and it sweeps an empty namespace, reports `0`, and looks like a clean success. The shared `build_storage()` is the defence: it removes the second config site entirely, so there is nowhere for the purge job to drift from the app. The runner still prints the counts on every run — including a zero sweep — so a genuine empty result is visible rather than mistaken for success.
 
 The SQLx adapters ship `expires_at` indexes on the sessions, verification-token, and passkey-challenge tables, so the purge and the on-read expiry filters stay cheap as tables grow.
 

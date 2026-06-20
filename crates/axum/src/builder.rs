@@ -313,6 +313,12 @@ impl AuthServiceBuilder {
         let session_lifetime = session_config.lifetime;
         let cookie_config = self.cookie_config.unwrap_or_default();
 
+        // Keep a handle to the composite storage before it is consumed by the
+        // core assembly below, so the built service can sweep expired rows via
+        // `AuthService::purge_expired`. `Storage` is a bundle of `Arc` stores,
+        // so the clone is cheap and shares the same underlying data.
+        let storage = self.storage.clone();
+
         // Delegate the portable half. Each input is threaded through only when
         // the host set it, so the core builder applies the same defaults this
         // builder used to. The required-input and validation errors come back
@@ -386,6 +392,8 @@ impl AuthServiceBuilder {
             builder = builder.external_origin(origin);
         }
 
-        builder.build()
+        let mut service = builder.build()?;
+        service.storage = Some(storage);
+        Ok(service)
     }
 }

@@ -12,6 +12,7 @@ members = [
   "crates/sqlx",
   "crates/test-support",
   "examples/minimal-app",
+  "examples/purge",
 ]
 
 [workspace.package]

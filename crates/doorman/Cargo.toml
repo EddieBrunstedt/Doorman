@@ -37,11 +37,17 @@ redb = ["dep:doorman-redb"]
 # Bundled `.eml` file email transport for local development (pulls tokio's
 # filesystem support). Also enables it in `doorman-axum` when `axum` is on.
 file-email = ["doorman-core/file-email", "doorman-axum?/file-email"]
+# Generic one-shot purge runner (`doorman::ops::run_purge`) for hosts that
+# sweep expired rows from an external scheduler (cron, EventBridge, a k8s
+# CronJob) instead of the in-process `background-purge` task. Off by default so
+# the standard dependency surface is untouched; pulls chrono only when enabled.
+purge-runner = ["dep:chrono"]
 
 [lints]
 workspace = true
 
 [dependencies]
+chrono = { workspace = true, optional = true }
 doorman-axum = { path = "../axum", version = "0.1.0", optional = true }
 doorman-core = { path = "../core", version = "0.1.0" }
 doorman-dynamodb = { path = "../dynamodb", version = "0.1.0", optional = true }

@@ -39,6 +39,8 @@
 //! - `mongodb` — re-export `doorman-mongodb` at `doorman::mongodb`.
 //! - `redb` — re-export `doorman-redb` at `doorman::redb`.
 //! - `file-email` — bundled `.eml` file email transport for local development.
+//! - `purge-runner` — the generic one-shot purge runner `ops::run_purge` for
+//!   hosts that sweep expired rows from an external scheduler. Off by default.
 //!
 //! [`doorman::core`](core) is always available. The [`prelude`] re-exports the
 //! richest available prelude (axum's when the `axum` feature is on, core's
@@ -82,6 +84,12 @@
 
 /// Framework-agnostic authentication primitives. Always available.
 pub use doorman_core as core;
+
+/// One-shot operational entrypoints for external schedulers — currently the
+/// generic [`run_purge`](ops::run_purge) sweeper. Requires the `purge-runner`
+/// feature.
+#[cfg(feature = "purge-runner")]
+pub mod ops;
 
 /// Axum HTTP integration. Requires the `axum` feature.
 #[cfg(feature = "axum")]
