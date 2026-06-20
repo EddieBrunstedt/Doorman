@@ -169,6 +169,13 @@ pub enum AuditEventKind {
         /// The user the credential was removed from.
         user_id: UserId,
     },
+    /// A passkey credential's friendly name was changed. Purely a relabel —
+    /// the credential itself is untouched — but recorded so the credential
+    /// inventory's change history stays complete alongside add / remove.
+    CredentialRenamed {
+        /// The user whose credential was renamed.
+        user_id: UserId,
+    },
     /// A signup link was requested for an address.
     SignupRequested {
         /// The provisioned user the link is bound to.

@@ -117,6 +117,7 @@ While a session is inside its recovery cool-down, the destructive lockout action
 | Action                                                | During cool-down                 |
 | ----------------------------------------------------- | -------------------------------- |
 | Add a passkey                                         | Allowed (inherits the cool-down) |
+| Rename a passkey (`PATCH /auth/passkey/{id}`)         | Allowed (cosmetic)               |
 | Log out current session (`POST /auth/logout`)         | Allowed                          |
 | Log out everywhere (`POST /auth/logout-all`)          | Allowed (own sessions only)      |
 | Delete a passkey (`DELETE /auth/passkey/{id}`)        | **Blocked**                      |
@@ -133,6 +134,7 @@ Authenticated routes for an established account:
 | ------------------------ | ---------------------------------------------------------- | ------------------------------------------------------------------ |
 | List passkeys            | `GET /auth/passkey`                                        | Returns metadata (AAGUID, transports, backup state, device label). |
 | Add passkey              | `POST /auth/passkey/register/start` → `/finish`            | Allowed during cool-down.                                          |
+| Rename passkey           | `PATCH /auth/passkey/{credential_id}`                      | Ownership-checked; cosmetic, so allowed during cool-down.          |
 | Delete passkey           | `DELETE /auth/passkey/{credential_id}`                     | Ownership-checked; blocked during cool-down.                       |
 | List sessions            | `GET /auth/sessions`                                       | Carries IP / user-agent / device label.                            |
 | Revoke one session       | `DELETE /auth/sessions/{id}`                               | Ownership-checked; blocked during cool-down for _other_ sessions.  |

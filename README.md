@@ -113,14 +113,14 @@ Open <http://localhost:3000>. Signup and recovery emails are printed to the term
 
 Every route is mounted under `/auth` by `auth.router()`:
 
-| Group        | Endpoints                                                                                                                                 |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| **Sign up**  | `POST /auth/signup/request` · `POST /auth/signup/consume` · `POST /auth/signup/finish`                                                    |
-| **Sign in**  | `POST /auth/passkey/authenticate/start` · `POST /auth/passkey/authenticate/finish`                                                        |
-| **Recovery** | `POST /auth/recovery/request` · `POST /auth/recovery/consume` · `POST /auth/recovery/finish`                                              |
-| **Passkeys** | `POST /auth/passkey/register/start` · `POST /auth/passkey/register/finish` · `GET /auth/passkey` · `DELETE /auth/passkey/{credential_id}` |
-| **Sessions** | `POST /auth/logout` · `POST /auth/logout-all` · `GET /auth/sessions` · `DELETE /auth/sessions` (others) · `DELETE /auth/sessions/{id}`    |
-| **Account**  | `POST /auth/account/email` · `POST /auth/account/email/confirm` · `DELETE /auth/account`                                                  |
+| Group        | Endpoints                                                                                                                                                                                  |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Sign up**  | `POST /auth/signup/request` · `POST /auth/signup/consume` · `POST /auth/signup/finish`                                                                                                     |
+| **Sign in**  | `POST /auth/passkey/authenticate/start` · `POST /auth/passkey/authenticate/finish`                                                                                                         |
+| **Recovery** | `POST /auth/recovery/request` · `POST /auth/recovery/consume` · `POST /auth/recovery/finish`                                                                                               |
+| **Passkeys** | `POST /auth/passkey/register/start` · `POST /auth/passkey/register/finish` · `GET /auth/passkey` · `PATCH /auth/passkey/{credential_id}` (rename) · `DELETE /auth/passkey/{credential_id}` |
+| **Sessions** | `POST /auth/logout` · `POST /auth/logout-all` · `GET /auth/sessions` · `DELETE /auth/sessions` (others) · `DELETE /auth/sessions/{id}`                                                     |
+| **Account**  | `POST /auth/account/email` · `POST /auth/account/email/confirm` · `DELETE /auth/account`                                                                                                   |
 
 The `request → consume → finish` shape is shared by signup and recovery: `request` emails a link, `consume` redeems that link and starts a passkey ceremony, and `finish` completes the ceremony and issues a session.
 

@@ -869,6 +869,60 @@ impl PasskeyManager {
         .await
     }
 
+    /// Rename a passkey on behalf of the authenticated `session`, setting its
+    /// friendly label to `name` (`None` clears it). The session's owning user
+    /// is enforced server-side so a session for user A cannot rename user B's
+    /// credential by guessing a credential id: a missing credential is
+    /// [`Error::PasskeyNotFound`] and one owned by a different user is
+    /// [`Error::PasskeyOwnershipMismatch`]. Returns the updated credential.
+    ///
+    /// Unlike [`remove_passkey`](Self::remove_passkey) this is purely cosmetic
+    /// — it neither adds nor removes an authenticator and cannot lock the
+    /// legitimate owner out or strip their access — so it is **not** gated by
+    /// the post-recovery cool-down and sends no security notification. The
+    /// change is still recorded with a
+    /// [`CredentialRenamed`](AuditEventKind::CredentialRenamed) audit event so
+    /// the credential inventory's change history stays complete.
+    ///
+    /// The library does not interpret `name`; it is persisted verbatim,
+    /// matching how a name supplied at registration is treated.
+    #[tracing::instrument(skip(self, session, credential_id, name, context), fields(user_id = %session.user_id))]
+    pub async fn rename_passkey(
+        &self,
+        session: &Session,
+        credential_id: &[u8],
+        name: Option<String>,
+        context: SessionContext,
+    ) -> Result<StoredPasskey> {
+        let user_id = session.user_id;
+        let Some(mut credential) = self
+            .credentials
+            .find_passkey_by_credential_id(credential_id)
+            .await?
+        else {
+            tracing::warn!(outcome = "credential_not_found", "passkey rename failed");
+            return Err(Error::PasskeyNotFound);
+        };
+        if credential.user_id != user_id {
+            tracing::warn!(outcome = "ownership_mismatch", "passkey rename failed");
+            return Err(Error::PasskeyOwnershipMismatch);
+        }
+        credential.name = name;
+        self.credentials.update_passkey(credential.clone()).await?;
+        self.audit
+            .emit(AuditEvent {
+                timestamp: self.clock.now(),
+                actor: Actor::Subject {
+                    ip: context.ip,
+                    user_agent: context.user_agent,
+                },
+                kind: AuditEventKind::CredentialRenamed { user_id },
+            })
+            .await;
+        tracing::info!(outcome = "renamed", "passkey renamed");
+        Ok(credential)
+    }
+
     /// Remove `credential_id` from `user_id`, attributing the audit event to
     /// `actor`. The id-keyed core both self-service
     /// [`remove_passkey`](Self::remove_passkey) and the operator removal flow

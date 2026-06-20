@@ -794,6 +794,141 @@ async fn remove_passkey_refused_during_recovery_cooldown() {
 }
 
 #[tokio::test]
+async fn rename_passkey_updates_name_emits_audit_and_sends_no_notification() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "renamer@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
+    let session = session_for(&h, &user);
+    let mail_before = h.email.sent().len();
+
+    let updated = h
+        .passkey
+        .rename_passkey(
+            &session,
+            &cred.credential_id,
+            Some("new phone".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("rename");
+    assert_eq!(updated.name.as_deref(), Some("new phone"));
+
+    let stored = h
+        .credentials
+        .find_passkey_by_credential_id(&cred.credential_id)
+        .await
+        .expect("find credential")
+        .expect("credential persisted");
+    assert_eq!(stored.name.as_deref(), Some("new phone"), "name persisted");
+    assert_eq!(
+        h.email.sent().len(),
+        mail_before,
+        "renaming is cosmetic and sends no notification",
+    );
+
+    let events = kinds(&h.audit.events());
+    assert!(events.iter().any(
+        |k| matches!(k, AuditEventKind::CredentialRenamed { user_id } if *user_id == user.id)
+    ));
+}
+
+#[tokio::test]
+async fn rename_passkey_clears_name_with_none() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "clearer@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, user.id, &mut wa, Some("labelled")).await;
+    let session = session_for(&h, &user);
+
+    let updated = h
+        .passkey
+        .rename_passkey(
+            &session,
+            &cred.credential_id,
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("rename");
+    assert_eq!(updated.name, None, "name cleared");
+}
+
+#[tokio::test]
+async fn rename_passkey_refuses_other_users_credential() {
+    let h = Harness::fresh();
+    let alice = make_user(&h, "a-rename@example.com").await;
+    let bob = make_user(&h, "b-rename@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, alice.id, &mut wa, Some("alice key")).await;
+    let bob_session = session_for(&h, &bob);
+
+    let err = h
+        .passkey
+        .rename_passkey(
+            &bob_session,
+            &cred.credential_id,
+            Some("pwned".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("ownership check");
+    assert!(matches!(err, Error::PasskeyOwnershipMismatch));
+
+    let stored = h
+        .credentials
+        .find_passkey_by_credential_id(&cred.credential_id)
+        .await
+        .expect("find credential")
+        .expect("credential persisted");
+    assert_eq!(stored.name.as_deref(), Some("alice key"), "name untouched");
+}
+
+#[tokio::test]
+async fn rename_missing_passkey_fails() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "missing-rename@example.com").await;
+    let session = session_for(&h, &user);
+
+    let err = h
+        .passkey
+        .rename_passkey(
+            &session,
+            b"missing credential",
+            Some("ghost".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("missing credential");
+    assert!(matches!(err, Error::PasskeyNotFound));
+}
+
+#[tokio::test]
+async fn rename_passkey_allowed_during_recovery_cooldown() {
+    // Renaming is cosmetic, so unlike removal it is *not* gated by the
+    // post-recovery cool-down: a relabel cannot lock the owner out or strip
+    // access, so there is nothing for the gate to protect against.
+    let h = Harness::fresh();
+    let user = make_user(&h, "cooldown-rename@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, user.id, &mut wa, Some("only key")).await;
+    let cooldown_until = h.clock.now() + ChronoDuration::hours(24);
+    let restricted = restricted_session_for(&h, &user, cooldown_until);
+
+    let updated = h
+        .passkey
+        .rename_passkey(
+            &restricted,
+            &cred.credential_id,
+            Some("renamed during cooldown".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("rename allowed during the cool-down");
+    assert_eq!(updated.name.as_deref(), Some("renamed during cooldown"));
+}
+
+#[tokio::test]
 async fn start_registration_for_session_propagates_active_cooldown() {
     // A passkey enrolled while the acting session is locked down must inherit
     // the same deadline, so it cannot be used to escape the cool-down. Deriving

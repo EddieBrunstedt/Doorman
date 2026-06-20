@@ -294,6 +294,15 @@ pub struct EmailChangeConfirmRequest {
     pub token: String,
 }
 
+/// Request body for `PATCH /auth/passkey/{credential_id}`. Sets the
+/// credential's friendly label; an absent or `null` `name` clears it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasskeyRenameRequest {
+    /// The new friendly name for the credential, or `null` to clear it.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 /// Returned by both passkey ceremony `start` endpoints. The `options`
 /// field is the JSON `webauthn-rs` produces for
 /// `navigator.credentials.{create,get}`; we wrap it so the response also

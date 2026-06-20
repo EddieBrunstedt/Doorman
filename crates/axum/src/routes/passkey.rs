@@ -15,7 +15,7 @@ use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use crate::dto::{
     AuthResponse, PasskeyAuthenticateFinishRequest, PasskeyChallenge, PasskeyDto,
-    RegistrationFinishRequest,
+    PasskeyRenameRequest, RegistrationFinishRequest,
 };
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, AuthUser, RequestContext};
@@ -29,7 +29,7 @@ pub(crate) fn routes() -> Router<AuthState> {
         .route("/passkey/authenticate/start", post(authenticate_start))
         .route("/passkey/authenticate/finish", post(authenticate_finish))
         .route("/passkey", get(list))
-        .route("/passkey/{credential_id}", delete(remove))
+        .route("/passkey/{credential_id}", delete(remove).patch(rename))
 }
 
 fn manager(state: &AuthState) -> &PasskeyManager {
@@ -121,4 +121,22 @@ async fn remove(
         .remove_passkey(&auth.session, &bytes, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn rename(
+    State(state): State<AuthState>,
+    auth: AuthSession,
+    RequestContext(context): RequestContext,
+    Path(credential_id): Path<String>,
+    Json(body): Json<PasskeyRenameRequest>,
+) -> Result<Json<PasskeyDto>, ErrorResponse> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(credential_id.as_bytes())
+        .map_err(|_| ErrorResponse(doorman_core::Error::PasskeyNotFound))?;
+    // Relabelling is cosmetic, so the manager applies the ownership check but
+    // no cool-down gate — see `PasskeyManager::rename_passkey`.
+    let updated = manager(&state)
+        .rename_passkey(&auth.session, &bytes, body.name, context)
+        .await?;
+    Ok(Json(updated.into()))
 }
