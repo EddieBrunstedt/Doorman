@@ -25,12 +25,14 @@
 //! distinct token purposes so a leaked link of one kind cannot be redeemed
 //! as the other.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
 use crate::audit::AuditEventKind;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::rate_limit::RateLimitPolicy;
 use crate::session::SessionContext;
 use crate::storage::{AccountStatus, PasskeyChallengeId, User, UserId, VerificationPurpose};
@@ -38,6 +40,67 @@ use crate::verification::{
     self, EnrollmentFlow, EnrollmentOutcome, FlowKind, TOKEN_PLACEHOLDER,
     VerificationConsumeOutcome,
 };
+
+/// Outcome of a [`SignupPolicy`] evaluation. The host chooses how a rejected
+/// signup behaves on the wire.
+#[derive(Debug, Clone)]
+pub enum SignupDecision {
+    /// Proceed with the signup request.
+    Allow,
+    /// Reject, but return the same success the endpoint returns for an allowed
+    /// request (HTTP 204 / `Ok(())`). No link is sent and no user is created.
+    /// Preserves enumeration resistance at the cost of inviteless-UX feedback.
+    DenySilently,
+    /// Reject with a typed error ([`Error::SignupNotAllowed`] → HTTP 403). The
+    /// `reason` is recorded for the host's logs/audit and is *not* exposed on
+    /// the wire.
+    Deny {
+        /// Host-supplied rationale recorded at the denial site (logs/audit).
+        /// Never carried onto the wire, so it is safe to put account-specific
+        /// detail here.
+        reason: Option<String>,
+    },
+}
+
+/// Host hook deciding whether a signup attempt may proceed.
+///
+/// doorman supplies the normalized email, the opaque host-defined invite token
+/// (if any — doorman never interprets it), and the request [`SessionContext`].
+/// The host owns any allowlist / invite store. Returning `Err` (e.g. a store
+/// failure) aborts the request and surfaces as a server error.
+///
+/// The gate runs **after** rate limiting and **before** any user is
+/// provisioned: a denied attempt still spends rate-limit budget (so a host
+/// invite-store lookup cannot be hammered unthrottled) but never creates a
+/// [`User`] row.
+#[async_trait]
+pub trait SignupPolicy: Send + Sync {
+    /// Decide whether the signup attempt described by `email` / `invite_token`
+    /// / `context` may proceed.
+    async fn evaluate(
+        &self,
+        email: &str,
+        invite_token: Option<&str>,
+        context: &SessionContext,
+    ) -> Result<SignupDecision>;
+}
+
+/// Default policy: every signup is allowed. Wired unless the host overrides it,
+/// so out of the box signup stays open exactly as before.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct OpenSignupPolicy;
+
+#[async_trait]
+impl SignupPolicy for OpenSignupPolicy {
+    async fn evaluate(
+        &self,
+        _email: &str,
+        _invite_token: Option<&str>,
+        _context: &SessionContext,
+    ) -> Result<SignupDecision> {
+        Ok(SignupDecision::Allow)
+    }
+}
 
 /// Configuration for issuing and consuming signup tokens.
 #[derive(Clone)]
@@ -54,6 +117,10 @@ pub struct SignupConfig {
     /// per-IP and per-identifier policies are checked; both must clear
     /// for the request to proceed.
     pub rate_limits: SignupRateLimits,
+    /// Host gate deciding whether a signup may proceed. Defaults to
+    /// [`OpenSignupPolicy`] (open signup); override it to wire an allowlist /
+    /// invite store.
+    pub policy: Arc<dyn SignupPolicy>,
 }
 
 /// Rate-limit policies for the signup request endpoint.
@@ -108,8 +175,9 @@ impl SignupConfig {
 
 impl Default for SignupConfig {
     /// Default: a 15-minute token lifetime ([`DEFAULT_TOKEN_LIFETIME`]), the
-    /// default [`SignupRateLimits`], and a placeholder `example.invalid` URL
-    /// template (the host must override this).
+    /// default [`SignupRateLimits`], a placeholder `example.invalid` URL
+    /// template (the host must override this), and the open
+    /// [`OpenSignupPolicy`] (every signup allowed).
     ///
     /// [`DEFAULT_TOKEN_LIFETIME`]: SignupConfig::DEFAULT_TOKEN_LIFETIME
     fn default() -> Self {
@@ -117,6 +185,7 @@ impl Default for SignupConfig {
             token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
             url_template: format!("https://example.invalid/signup?token={TOKEN_PLACEHOLDER}"),
             rate_limits: SignupRateLimits::default(),
+            policy: Arc::new(OpenSignupPolicy),
         }
     }
 }
@@ -146,11 +215,27 @@ impl SignupManager {
     /// used to enumerate accounts. When the email is registered we audit
     /// the attempt and silently no-op; when it is not, we provision a new
     /// (unverified) user, store a single-use token, and email the link.
+    ///
+    /// `invite_token` is an optional, opaque, host-defined value handed
+    /// verbatim to the configured [`SignupPolicy`]. doorman never parses,
+    /// validates, stores, or consumes it, and treats it as a secret in
+    /// transit (it is redacted from tracing).
+    ///
+    /// The configured [`SignupPolicy`] gate runs after rate limiting and
+    /// before any user lookup or provisioning:
+    /// [`SignupDecision::DenySilently`] returns the same `Ok(())` an allowed
+    /// request returns (no link, no user); [`SignupDecision::Deny`] returns
+    /// [`Error::SignupNotAllowed`]; a policy `Err` propagates unchanged.
     #[tracing::instrument(
-        skip(self, email, context),
+        skip(self, email, invite_token, context),
         fields(method = "signup", user_id = tracing::field::Empty),
     )]
-    pub async fn request_signup(&self, email: &str, context: SessionContext) -> Result<()> {
+    pub async fn request_signup(
+        &self,
+        email: &str,
+        invite_token: Option<&str>,
+        context: SessionContext,
+    ) -> Result<()> {
         let email_normalized = verification::normalize_email(email);
         verification::validate_email(&email_normalized)?;
 
@@ -173,6 +258,29 @@ impl SignupManager {
             || async {},
         )
         .await?;
+
+        // Host signup gate. Runs after rate limiting (a denied attempt still
+        // spends budget, so a host invite-store lookup cannot be hammered) and
+        // before any user lookup or provisioning (a denied email never creates
+        // a row). The invite token is passed verbatim and never interpreted.
+        match self
+            .config
+            .policy
+            .evaluate(&email_normalized, invite_token, &context)
+            .await?
+        {
+            SignupDecision::Allow => {}
+            SignupDecision::DenySilently => {
+                self.flow.emit(&context, AuditEventKind::SignupDenied).await;
+                tracing::info!(outcome = "denied_silent", "signup request denied");
+                return Ok(());
+            }
+            SignupDecision::Deny { reason } => {
+                self.flow.emit(&context, AuditEventKind::SignupDenied).await;
+                tracing::info!(outcome = "denied", reason = ?reason, "signup request denied");
+                return Err(Error::SignupNotAllowed);
+            }
+        }
 
         let now = self.flow.now();
         if let Some(existing) = self

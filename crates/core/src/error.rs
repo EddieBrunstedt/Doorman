@@ -110,6 +110,13 @@ pub enum Error {
     #[error("account is disabled")]
     AccountDisabled,
 
+    /// The host's [`SignupPolicy`](crate::signup::SignupPolicy) rejected the
+    /// request with [`SignupDecision::Deny`](crate::signup::SignupDecision::Deny).
+    /// The host's reason, if any, is recorded at the denial site rather than
+    /// carried here, so nothing account-specific reaches the wire.
+    #[error("signup is not allowed")]
+    SignupNotAllowed,
+
     /// A configured per-user resource cap was reached.
     #[error("per-user limit for {resource} reached ({limit})")]
     ResourceLimitExceeded {

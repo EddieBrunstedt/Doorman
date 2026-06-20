@@ -568,7 +568,7 @@ async fn signup_token_cannot_be_redeemed_via_recovery_consume() {
     // Take a fresh signup token (the user is in an "unverified" state
     // after signup request but before signup consume).
     h.signup
-        .request_signup("pending@example.com", SessionContext::default())
+        .request_signup("pending@example.com", None, SessionContext::default())
         .await
         .expect("signup request");
     let signup_email = h

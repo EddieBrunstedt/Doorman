@@ -105,6 +105,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         // retry after re-authenticating).
         Error::ReauthRequired => (StatusCode::UNAUTHORIZED, "reauth_required"),
         Error::AccountDisabled => (StatusCode::FORBIDDEN, "account_disabled"),
+        Error::SignupNotAllowed => (StatusCode::FORBIDDEN, "signup_not_allowed"),
         Error::ResourceLimitExceeded { .. } => (StatusCode::CONFLICT, "resource_limit_exceeded"),
         Error::InvalidOperatorActor { .. } => (StatusCode::BAD_REQUEST, "invalid_operator_actor"),
     }
@@ -216,6 +217,7 @@ mod tests {
             ),
             (Error::ReauthRequired, S::UNAUTHORIZED, "reauth_required"),
             (Error::AccountDisabled, S::FORBIDDEN, "account_disabled"),
+            (Error::SignupNotAllowed, S::FORBIDDEN, "signup_not_allowed"),
             (
                 Error::ResourceLimitExceeded {
                     resource: "credentials",

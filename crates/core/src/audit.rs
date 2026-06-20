@@ -181,6 +181,13 @@ pub enum AuditEventKind {
         /// The provisioned user the link is bound to.
         user_id: UserId,
     },
+    /// A signup request was rejected by the host's
+    /// [`SignupPolicy`](crate::signup::SignupPolicy). Carries no user id —
+    /// denial happens before any user is provisioned — and no email (PII).
+    /// Emitted for both [`DenySilently`](crate::signup::SignupDecision::DenySilently)
+    /// and [`Deny`](crate::signup::SignupDecision::Deny); the host's rejection
+    /// reason, if any, is logged at the denial site rather than stored here.
+    SignupDenied,
     /// A signup token was consumed, starting first-passkey registration.
     SignupConsumed {
         /// The user whose signup token was consumed.

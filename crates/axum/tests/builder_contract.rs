@@ -493,7 +493,7 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
     // the request must enqueue a link email on the shared transport.
     auth.state()
         .signup()
-        .request_signup("wire@example.com", SessionContext::default())
+        .request_signup("wire@example.com", None, SessionContext::default())
         .await
         .expect("request signup");
     assert_eq!(

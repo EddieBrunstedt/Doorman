@@ -233,6 +233,12 @@ impl From<PasskeySummary> for PasskeyDto {
 pub struct SignupRequest {
     /// Email address to send the signup link to.
     pub email: String,
+    /// Optional, opaque host-defined invite token. doorman does not interpret,
+    /// store, or validate it — it is handed verbatim to the configured
+    /// [`SignupPolicy`](doorman_core::signup::SignupPolicy). Treat as a secret;
+    /// it is never logged.
+    #[serde(default)]
+    pub invite_token: Option<String>,
 }
 
 /// Request body for `/auth/signup/consume`. The token comes from the

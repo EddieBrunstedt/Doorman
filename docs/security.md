@@ -58,6 +58,20 @@ This is **intentionally not configurable**. Exposing a "preferred vs. required" 
 
 A leaked signup link cannot be redeemed as a recovery link: token purposes are distinct and re-checked at consumption.
 
+### Closed / invite-only signup
+
+Signup is open by default. A host that wants to gate it supplies a `SignupPolicy` on `SignupConfig`; the default `OpenSignupPolicy` always allows. The gate runs **after** the request rate limits and **before** any user lookup or provisioning, so a denied attempt still spends rate-limit budget (a host-side allowlist/invite-store lookup cannot be hammered unthrottled) but never creates a `User` row. A policy receives the normalized email, the optional invite token, and the request context (IP / user-agent), and returns one of three decisions — the host chooses where to sit on the enumeration-resistance ↔ UX spectrum:
+
+- **`Allow`** — proceed exactly as open signup does.
+- **`DenySilently`** — return the same success an allowed request returns (HTTP 204 / `Ok(())`), but send no link and create no user. This preserves the endpoint's uniform response, so a closed deployment does not become an oracle for "is this address / invite known".
+- **`Deny { reason }`** — fail with `Error::SignupNotAllowed` → **HTTP 403** (`signup_not_allowed`), so a host UI can tell the visitor they need an invite. The `reason` is recorded at the denial site for the host's logs/audit and is **never** put on the wire. A policy that returns `Err` (e.g. its invite store is down) aborts the request as a server error (HTTP 500).
+
+Both denial decisions emit a `SignupDenied` audit event. It carries no user id (denial precedes provisioning) and no email (PII).
+
+The optional **`invite_token`** is opaque host-defined plumbing. The wire field rides `/auth/signup/request`; doorman hands it to the policy **verbatim** and otherwise never parses, validates, stores, logs, or consumes it — it is treated as a secret in transit and redacted from tracing. Anything the host wants fits: a UUID, a signed JWT, a slug, a blob.
+
+**What doorman deliberately does _not_ do.** doorman does not store, validate, or single-use-consume invite tokens, and there is no wire-level invite-redemption or referral-accounting endpoint. Emailed single-use invite codes and referral crediting are the **host's** responsibility: the host persists its own email→token mapping at request time and credits the inviter at signup completion using the returned `EnrollmentOutcome`. This boundary is intentional for 1.0 — doorman _carries_ the request to the policy and _acts_ on the decision; the invite economy lives in the host.
+
 ## Recovery
 
 Recovery exists for users who lost every passkey. It deliberately requires the visitor to enrol a new visible passkey before any session is issued.

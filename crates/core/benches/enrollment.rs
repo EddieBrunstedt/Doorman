@@ -119,7 +119,7 @@ fn enrollment(c: &mut Criterion) {
             signup_manager,
             |manager| async move {
                 manager
-                    .request_signup("user@example.com", SessionContext::default())
+                    .request_signup("user@example.com", None, SessionContext::default())
                     .await
                     .expect("request signup");
             },

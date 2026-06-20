@@ -34,7 +34,9 @@ pub use crate::recovery::{MIN_COOLDOWN, RecoveryConfig, RecoveryManager, Recover
 pub use crate::session::{
     IssuedSession, SessionConfig, SessionContext, SessionInvalidationHook, SessionManager,
 };
-pub use crate::signup::{SignupConfig, SignupManager, SignupRateLimits};
+pub use crate::signup::{
+    OpenSignupPolicy, SignupConfig, SignupDecision, SignupManager, SignupPolicy, SignupRateLimits,
+};
 pub use crate::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionId,
     SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,

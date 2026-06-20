@@ -824,6 +824,7 @@ async fn signup_token_is_not_accepted_at_recovery_consume() {
         .post(app.url("/auth/signup/request"))
         .json(&SignupRequest {
             email: "fresh@example.com".into(),
+            invite_token: None,
         })
         .send()
         .await

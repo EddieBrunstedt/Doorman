@@ -7,10 +7,16 @@
 
 mod common;
 
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
 use axum::Router;
 use axum::http::StatusCode;
-use common::{SignupClient, TestApp, token_from_email};
+use common::{SIGNUP_URL, SignupClient, TestApp, token_from_email};
 use doorman_axum::dto::{AuthResponse, SignupConsumeRequest, SignupRequest};
+use doorman_core::error::Result;
+use doorman_core::session::SessionContext;
+use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy, SignupRateLimits};
 use reqwest::header;
 
 #[tokio::test]
@@ -86,6 +92,7 @@ async fn signup_request_for_existing_email_is_silent() {
         .post(app.url("/auth/signup/request"))
         .json(&SignupRequest {
             email: "alice@example.com".into(),
+            invite_token: None,
         })
         .send()
         .await
@@ -98,6 +105,7 @@ async fn signup_request_for_existing_email_is_silent() {
         .post(app.url("/auth/signup/request"))
         .json(&SignupRequest {
             email: "alice@example.com".into(),
+            invite_token: None,
         })
         .send()
         .await
@@ -145,6 +153,7 @@ async fn request_rejects_invalid_email_with_code() {
         .post(app.url("/auth/signup/request"))
         .json(&SignupRequest {
             email: "not-an-email".into(),
+            invite_token: None,
         })
         .send()
         .await
@@ -168,6 +177,7 @@ async fn consume_replay_is_rejected() {
         .post(app.url("/auth/signup/request"))
         .json(&SignupRequest {
             email: "replay@example.com".into(),
+            invite_token: None,
         })
         .send()
         .await
@@ -295,6 +305,160 @@ async fn signup_finish_emits_set_cookie() {
     assert_eq!(me.status(), StatusCode::OK);
     // Sanity-check the header constant stays imported.
     let _ = header::SET_COOKIE;
+
+    app.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Signup gating policy (HTTP surface)
+// ---------------------------------------------------------------------------
+
+enum StubOutcome {
+    DenySilently,
+    Deny,
+}
+
+/// Test [`SignupPolicy`] returning a preset decision and recording the
+/// invite token doorman handed it, so the HTTP tests can assert both the
+/// wire-level denial behavior and the verbatim token pass-through.
+struct StubPolicy {
+    outcome: StubOutcome,
+    tokens: Mutex<Vec<Option<String>>>,
+}
+
+impl StubPolicy {
+    fn new(outcome: StubOutcome) -> Arc<Self> {
+        Arc::new(Self {
+            outcome,
+            tokens: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn tokens(&self) -> Vec<Option<String>> {
+        self.tokens.lock().expect("policy tokens lock").clone()
+    }
+}
+
+#[async_trait]
+impl SignupPolicy for StubPolicy {
+    async fn evaluate(
+        &self,
+        _email: &str,
+        invite_token: Option<&str>,
+        _context: &SessionContext,
+    ) -> Result<SignupDecision> {
+        self.tokens
+            .lock()
+            .expect("policy tokens lock")
+            .push(invite_token.map(ToOwned::to_owned));
+        match self.outcome {
+            StubOutcome::DenySilently => Ok(SignupDecision::DenySilently),
+            StubOutcome::Deny => Ok(SignupDecision::Deny {
+                reason: Some("no invite".into()),
+            }),
+        }
+    }
+}
+
+async fn app_with_policy(policy: Arc<StubPolicy>) -> TestApp {
+    TestApp::start_with(Router::new(), false, move |b| {
+        b.signup(SignupConfig {
+            url_template: SIGNUP_URL.to_string(),
+            rate_limits: SignupRateLimits::disabled(),
+            policy: policy.clone(),
+            ..SignupConfig::default()
+        })
+    })
+    .await
+}
+
+#[tokio::test]
+async fn deny_silently_returns_204_and_sends_no_email() {
+    let policy = StubPolicy::new(StubOutcome::DenySilently);
+    let app = app_with_policy(policy).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(app.url("/auth/signup/request"))
+        .json(&SignupRequest {
+            email: "blocked@example.com".into(),
+            invite_token: None,
+        })
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NO_CONTENT,
+        "silent denial is indistinguishable from an accepted request",
+    );
+    assert_eq!(app.email.sent().len(), 0, "no link sent on silent denial");
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn deny_returns_403_with_code_and_sends_no_email() {
+    let policy = StubPolicy::new(StubOutcome::Deny);
+    let app = app_with_policy(policy).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(app.url("/auth/signup/request"))
+        .json(&SignupRequest {
+            email: "blocked@example.com".into(),
+            invite_token: None,
+        })
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["error"]["code"], "signup_not_allowed");
+    assert!(
+        !body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no invite"),
+        "host reason must not reach the wire",
+    );
+    assert_eq!(app.email.sent().len(), 0, "no link sent on denial");
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn invite_token_reaches_policy_verbatim_from_the_wire() {
+    let policy = StubPolicy::new(StubOutcome::DenySilently);
+    let app = app_with_policy(policy.clone()).await;
+    let client = reqwest::Client::new();
+
+    let with_token = client
+        .post(app.url("/auth/signup/request"))
+        .json(&SignupRequest {
+            email: "invited@example.com".into(),
+            invite_token: Some("opaque-invite-blob-123".into()),
+        })
+        .send()
+        .await
+        .expect("request with token");
+    assert_eq!(with_token.status(), StatusCode::NO_CONTENT);
+
+    // Omitting the field entirely must still parse (serde default) and arrive
+    // as `None` at the policy.
+    let without_token = client
+        .post(app.url("/auth/signup/request"))
+        .json(&serde_json::json!({ "email": "walkin@example.com" }))
+        .send()
+        .await
+        .expect("request without token");
+    assert_eq!(without_token.status(), StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        policy.tokens(),
+        vec![Some("opaque-invite-blob-123".to_owned()), None],
+        "token crosses the wire byte-for-byte; omission arrives as None",
+    );
 
     app.shutdown().await;
 }

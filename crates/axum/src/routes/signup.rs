@@ -38,7 +38,9 @@ async fn request(
     RequestContext(context): RequestContext,
     Json(body): Json<SignupRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
-    manager(&state).request_signup(&body.email, context).await?;
+    manager(&state)
+        .request_signup(&body.email, body.invite_token.as_deref(), context)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

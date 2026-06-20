@@ -428,7 +428,7 @@ pub async fn register_passkey(
 /// registered user with a passkey.
 pub async fn provision_user(h: &Harness, email: &str) -> User {
     h.signup
-        .request_signup(email, SessionContext::default())
+        .request_signup(email, None, SessionContext::default())
         .await
         .expect("signup request");
     let signup_email = h

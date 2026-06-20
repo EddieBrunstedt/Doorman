@@ -317,6 +317,7 @@ impl SignupClient {
             .post(app.url("/auth/signup/request"))
             .json(&SignupRequest {
                 email: email.into(),
+                invite_token: None,
             })
             .send()
             .await

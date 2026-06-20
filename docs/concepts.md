@@ -36,13 +36,14 @@ Recovery is the one flow where someone holding only the user's email can mint a 
 
 doorman-core is framework-agnostic. It defines the behaviour as **managers** (`SessionManager`, `PasskeyManager`, `SignupManager`, `RecoveryManager`, `AccountManager`) that depend on a small set of host-provided **traits**:
 
-| Trait                                                                                                    | Responsibility                                      |
-| -------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| `UserStore`, `SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`, `PasskeyChallengeStore` | Persistence. Bundled together as `Storage`.         |
-| `EmailSender`                                                                                            | Deliver signup/recovery links and security notices. |
-| `AuditSink`                                                                                              | Receive security-significant events.                |
-| `RateLimiter`                                                                                            | Throttle sensitive endpoints.                       |
-| `Clock`                                                                                                  | Supply "now" (real or mocked in tests).             |
+| Trait                                                                                                    | Responsibility                                                                         |
+| -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `UserStore`, `SessionStore`, `VerificationTokenStore`, `PasskeyCredentialStore`, `PasskeyChallengeStore` | Persistence. Bundled together as `Storage`.                                            |
+| `EmailSender`                                                                                            | Deliver signup/recovery links and security notices.                                    |
+| `AuditSink`                                                                                              | Receive security-significant events.                                                   |
+| `RateLimiter`                                                                                            | Throttle sensitive endpoints.                                                          |
+| `Clock`                                                                                                  | Supply "now" (real or mocked in tests).                                                |
+| `SignupPolicy`                                                                                           | Gate whether a signup attempt may proceed (allowlist / invite-only). Defaults to open. |
 
 First-party adapters implement the five storage traits: `doorman-sqlx` (SQLite, Postgres, MySQL/MariaDB), `doorman-dynamodb`, `doorman-mongodb`, `doorman-redb`, and `doorman-redis` (ephemeral stores only). `doorman-axum` wires the managers behind an HTTP router, extractors, a session layer, and a CSRF layer. See [integration.md](integration.md) for how to plug in your own implementations.
 

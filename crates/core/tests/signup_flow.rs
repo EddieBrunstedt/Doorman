@@ -1,17 +1,18 @@
 mod common;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::Duration as ChronoDuration;
 use doorman_core::audit::AuditEventKind;
 use doorman_core::clock::Clock;
 use doorman_core::email::{Email, EmailTemplates};
-use doorman_core::error::Error;
+use doorman_core::error::{Error, Result, StorageError};
 use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
-use doorman_core::signup::{SignupConfig, SignupRateLimits};
+use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy, SignupRateLimits};
 use doorman_core::storage::{User, UserStore};
 use doorman_test_support::MockClock;
 
@@ -24,7 +25,7 @@ use common::{
 async fn request_provisions_user_for_new_email() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("Alice@Example.com", SessionContext::default())
+        .request_signup("Alice@Example.com", None, SessionContext::default())
         .await
         .expect("request");
 
@@ -49,7 +50,7 @@ async fn request_for_existing_email_is_silent_and_audited() {
     let h = Harness::fresh();
     // First request creates the user.
     h.signup
-        .request_signup("alice@example.com", SessionContext::default())
+        .request_signup("alice@example.com", None, SessionContext::default())
         .await
         .expect("first request");
     let emails_before = h.email.sent().len();
@@ -57,7 +58,7 @@ async fn request_for_existing_email_is_silent_and_audited() {
 
     // Second request: user exists → silent no-op, no new email or token.
     h.signup
-        .request_signup("alice@example.com", SessionContext::default())
+        .request_signup("alice@example.com", None, SessionContext::default())
         .await
         .expect("silent ok");
     assert_eq!(h.email.sent().len(), emails_before, "no extra email sent");
@@ -83,7 +84,7 @@ async fn request_for_existing_email_is_silent_and_audited() {
 async fn consume_verifies_email_and_starts_passkey_registration() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("user@example.com", SessionContext::default())
+        .request_signup("user@example.com", None, SessionContext::default())
         .await
         .expect("request");
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
@@ -118,7 +119,7 @@ async fn consume_verifies_email_and_starts_passkey_registration() {
 async fn consume_then_finish_registers_passkey_and_issues_session() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("alice@example.com", SessionContext::default())
+        .request_signup("alice@example.com", None, SessionContext::default())
         .await
         .expect("request");
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
@@ -176,7 +177,7 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
 async fn notification_send_failure_does_not_undo_successful_finish() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("notify-fails@example.com", SessionContext::default())
+        .request_signup("notify-fails@example.com", None, SessionContext::default())
         .await
         .expect("request");
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
@@ -219,7 +220,7 @@ async fn notification_send_failure_does_not_undo_successful_finish() {
 async fn consume_rejects_replayed_token() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("u@example.com", SessionContext::default())
+        .request_signup("u@example.com", None, SessionContext::default())
         .await
         .expect("request");
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
@@ -242,7 +243,7 @@ async fn signup_token_cannot_be_consumed_by_recovery() {
     // the purpose binds at consumption, not just at mint time.
     let h = Harness::fresh();
     h.signup
-        .request_signup("cross@example.com", SessionContext::default())
+        .request_signup("cross@example.com", None, SessionContext::default())
         .await
         .expect("request");
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
@@ -302,7 +303,7 @@ async fn consume_rejects_expired_token() {
         })
         .build();
     h.signup
-        .request_signup("u@example.com", SessionContext::default())
+        .request_signup("u@example.com", None, SessionContext::default())
         .await
         .expect("request");
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
@@ -322,7 +323,7 @@ async fn request_rejects_invalid_email() {
     let h = Harness::fresh();
     let err = h
         .signup
-        .request_signup("not-an-email", SessionContext::default())
+        .request_signup("not-an-email", None, SessionContext::default())
         .await
         .expect_err("invalid");
     assert!(matches!(err, Error::InvalidEmail));
@@ -351,16 +352,16 @@ async fn rate_limit_per_ip_blocks_after_budget() {
         user_agent: None,
     };
     h.signup
-        .request_signup("a@example.com", ctx.clone())
+        .request_signup("a@example.com", None, ctx.clone())
         .await
         .expect("1");
     h.signup
-        .request_signup("b@example.com", ctx.clone())
+        .request_signup("b@example.com", None, ctx.clone())
         .await
         .expect("2");
     let err = h
         .signup
-        .request_signup("c@example.com", ctx)
+        .request_signup("c@example.com", None, ctx)
         .await
         .expect_err("limited");
     assert!(matches!(err, Error::RateLimited { .. }));
@@ -388,6 +389,7 @@ async fn rate_limit_per_identifier_blocks_across_ips() {
         h.signup
             .request_signup(
                 "target@example.com",
+                None,
                 SessionContext {
                     ip: Some(ip.into()),
                     user_agent: None,
@@ -401,6 +403,7 @@ async fn rate_limit_per_identifier_blocks_across_ips() {
         .signup
         .request_signup(
             "target@example.com",
+            None,
             SessionContext {
                 ip: Some("3.3.3.3".into()),
                 user_agent: None,
@@ -422,12 +425,12 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
 
     // Unknown address, transport healthy -> Ok (provisions + sends link).
     h.signup
-        .request_signup("fresh@example.com", SessionContext::default())
+        .request_signup("fresh@example.com", None, SessionContext::default())
         .await
         .expect("unknown address Ok");
     // Same address again, now registered, transport healthy -> Ok (silent).
     h.signup
-        .request_signup("fresh@example.com", SessionContext::default())
+        .request_signup("fresh@example.com", None, SessionContext::default())
         .await
         .expect("known address Ok");
 
@@ -436,11 +439,11 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
     // registered address that sends nothing.
     h.email.fail_after_successful_sends(h.email.sent().len());
     h.signup
-        .request_signup("another@example.com", SessionContext::default())
+        .request_signup("another@example.com", None, SessionContext::default())
         .await
         .expect("unknown address Ok despite send failure");
     h.signup
-        .request_signup("fresh@example.com", SessionContext::default())
+        .request_signup("fresh@example.com", None, SessionContext::default())
         .await
         .expect("known address Ok despite send failure");
 
@@ -473,7 +476,7 @@ async fn custom_emails_override_signup_subject_and_html() {
     let h = Harness::builder().emails(Arc::new(BrandedEmails)).build();
 
     h.signup
-        .request_signup("user@example.com", SessionContext::default())
+        .request_signup("user@example.com", None, SessionContext::default())
         .await
         .expect("request");
 
@@ -482,4 +485,265 @@ async fn custom_emails_override_signup_subject_and_html() {
     assert_eq!(sent[0].subject, "Acme signup");
     assert!(sent[0].body_text.starts_with("Open "));
     assert!(sent[0].body_html.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Signup gating policy
+// ---------------------------------------------------------------------------
+
+/// What the [`StubPolicy`] should return on each call.
+enum StubOutcome {
+    Allow,
+    DenySilently,
+    Deny(Option<String>),
+    /// Surface a store-style failure so the manager propagates it.
+    Error,
+}
+
+/// One recorded invocation of the stub policy.
+#[derive(Clone)]
+struct StubCall {
+    email: String,
+    invite_token: Option<String>,
+}
+
+/// Test [`SignupPolicy`] that returns a preset outcome and records the
+/// arguments doorman handed it, so a test can assert both the decision wiring
+/// and the verbatim invite-token pass-through.
+struct StubPolicy {
+    outcome: StubOutcome,
+    calls: Mutex<Vec<StubCall>>,
+}
+
+impl StubPolicy {
+    fn new(outcome: StubOutcome) -> Arc<Self> {
+        Arc::new(Self {
+            outcome,
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn calls(&self) -> Vec<StubCall> {
+        self.calls.lock().expect("policy calls lock").clone()
+    }
+}
+
+#[async_trait]
+impl SignupPolicy for StubPolicy {
+    async fn evaluate(
+        &self,
+        email: &str,
+        invite_token: Option<&str>,
+        _context: &SessionContext,
+    ) -> Result<SignupDecision> {
+        self.calls
+            .lock()
+            .expect("policy calls lock")
+            .push(StubCall {
+                email: email.to_owned(),
+                invite_token: invite_token.map(ToOwned::to_owned),
+            });
+        match &self.outcome {
+            StubOutcome::Allow => Ok(SignupDecision::Allow),
+            StubOutcome::DenySilently => Ok(SignupDecision::DenySilently),
+            StubOutcome::Deny(reason) => Ok(SignupDecision::Deny {
+                reason: reason.clone(),
+            }),
+            StubOutcome::Error => Err(Error::Storage(StorageError::msg("invite store down"))),
+        }
+    }
+}
+
+fn harness_with_policy(policy: Arc<dyn SignupPolicy>) -> Harness {
+    Harness::builder()
+        .signup_config(SignupConfig {
+            policy,
+            ..signup_config()
+        })
+        .build()
+}
+
+#[tokio::test]
+async fn default_open_policy_completes_signup() {
+    // The default `SignupConfig` wires `OpenSignupPolicy`; the harness config
+    // inherits it via `..SignupConfig::default()`. A regression in the default
+    // wiring (e.g. a deny-by-default) would break this.
+    let h = Harness::fresh();
+    h.signup
+        .request_signup("open@example.com", None, SessionContext::default())
+        .await
+        .expect("default-open request succeeds");
+
+    assert_eq!(h.email.sent().len(), 1, "signup link sent");
+    assert!(
+        h.users
+            .find_user_by_email("open@example.com")
+            .await
+            .expect("find user")
+            .is_some(),
+        "user provisioned under the open policy"
+    );
+}
+
+#[tokio::test]
+async fn deny_silently_returns_ok_without_email_or_user() {
+    let policy = StubPolicy::new(StubOutcome::DenySilently);
+    let h = harness_with_policy(policy.clone());
+
+    h.signup
+        .request_signup("blocked@example.com", None, SessionContext::default())
+        .await
+        .expect("silent denial returns Ok");
+
+    assert_eq!(h.email.sent().len(), 0, "no link sent on silent denial");
+    assert_eq!(h.tokens.len(), 0, "no token stored on silent denial");
+    assert!(
+        h.users
+            .find_user_by_email("blocked@example.com")
+            .await
+            .expect("find user")
+            .is_none(),
+        "no user provisioned on silent denial"
+    );
+    assert!(
+        matches!(
+            kinds(&h.audit.events()).last(),
+            Some(AuditEventKind::SignupDenied)
+        ),
+        "silent denial is audited"
+    );
+}
+
+#[tokio::test]
+async fn deny_returns_typed_error_without_email_or_user() {
+    let policy = StubPolicy::new(StubOutcome::Deny(Some("not on the allowlist".into())));
+    let h = harness_with_policy(policy.clone());
+
+    let err = h
+        .signup
+        .request_signup("blocked@example.com", None, SessionContext::default())
+        .await
+        .expect_err("deny surfaces a typed error");
+    assert!(matches!(err, Error::SignupNotAllowed));
+
+    assert_eq!(h.email.sent().len(), 0, "no link sent on denial");
+    assert!(
+        h.users
+            .find_user_by_email("blocked@example.com")
+            .await
+            .expect("find user")
+            .is_none(),
+        "no user provisioned on denial"
+    );
+    assert!(matches!(
+        kinds(&h.audit.events()).last(),
+        Some(AuditEventKind::SignupDenied)
+    ));
+}
+
+#[tokio::test]
+async fn invite_token_is_passed_through_verbatim() {
+    let policy = StubPolicy::new(StubOutcome::Allow);
+    let h = harness_with_policy(policy.clone());
+
+    h.signup
+        .request_signup(
+            "invited@example.com",
+            Some("opaque-invite-blob-123"),
+            SessionContext::default(),
+        )
+        .await
+        .expect("request");
+    h.signup
+        .request_signup("walkin@example.com", None, SessionContext::default())
+        .await
+        .expect("request");
+
+    let calls = policy.calls();
+    assert_eq!(calls.len(), 2, "policy evaluated on every request");
+    assert_eq!(calls[0].email, "invited@example.com");
+    assert_eq!(
+        calls[0].invite_token.as_deref(),
+        Some("opaque-invite-blob-123"),
+        "token handed to the policy byte-for-byte",
+    );
+    assert_eq!(calls[1].invite_token, None, "absent token arrives as None");
+}
+
+#[tokio::test]
+async fn policy_error_propagates_and_provisions_nothing() {
+    let policy = StubPolicy::new(StubOutcome::Error);
+    let h = harness_with_policy(policy.clone());
+
+    let err = h
+        .signup
+        .request_signup("err@example.com", None, SessionContext::default())
+        .await
+        .expect_err("policy store failure propagates");
+    assert!(matches!(err, Error::Storage(_)));
+
+    assert_eq!(
+        h.email.sent().len(),
+        0,
+        "no link sent when the policy errors"
+    );
+    assert!(
+        h.users
+            .find_user_by_email("err@example.com")
+            .await
+            .expect("find user")
+            .is_none(),
+        "no user provisioned when the policy errors"
+    );
+}
+
+#[tokio::test]
+async fn denied_attempt_still_consumes_rate_limit_budget() {
+    // The gate runs after rate limiting, so a denied attempt spends budget. A
+    // per-IP budget of 1 paired with an always-deny policy means the first
+    // request is denied by the policy and the second is rejected by the limiter
+    // — proving the limiter was hit before the policy on the first call.
+    let clock_for_limiter = Arc::new(MockClock::new(ts(2026, 1, 1)));
+    let limiter = Arc::new(InMemoryRateLimiter::new(
+        clock_for_limiter as Arc<dyn Clock>,
+    )) as Arc<dyn RateLimiter>;
+    let policy = StubPolicy::new(StubOutcome::Deny(None));
+    let h = Harness::builder()
+        .signup_limiter(limiter)
+        .signup_config(SignupConfig {
+            rate_limits: SignupRateLimits {
+                request_per_ip: Some(RateLimitPolicy::new(1, Duration::from_secs(60 * 60))),
+                ..SignupRateLimits::disabled()
+            },
+            policy: policy.clone(),
+            ..signup_config()
+        })
+        .build();
+
+    let ctx = SessionContext {
+        ip: Some("7.7.7.7".into()),
+        user_agent: None,
+    };
+
+    let first = h
+        .signup
+        .request_signup("a@example.com", None, ctx.clone())
+        .await
+        .expect_err("first attempt denied by policy");
+    assert!(matches!(first, Error::SignupNotAllowed));
+
+    let second = h
+        .signup
+        .request_signup("b@example.com", None, ctx)
+        .await
+        .expect_err("second attempt rejected by the spent budget");
+    assert!(matches!(second, Error::RateLimited { .. }));
+
+    // The limiter, not the policy, rejected the second attempt: the policy saw
+    // exactly one call.
+    assert_eq!(
+        policy.calls().len(),
+        1,
+        "policy not reached once budget spent"
+    );
 }

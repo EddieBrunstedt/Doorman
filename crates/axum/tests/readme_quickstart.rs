@@ -152,6 +152,7 @@ async fn readme_quickstart_drives_signup_login_recovery() {
         .post(url("/auth/signup/request"))
         .json(&SignupRequest {
             email: "alice@example.com".into(),
+            invite_token: None,
         })
         .send()
         .await
