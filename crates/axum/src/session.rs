@@ -20,6 +20,7 @@ use std::task::{Context, Poll};
 use axum::body::Body;
 use axum::http::{HeaderMap, Request};
 use axum::response::Response;
+use doorman_core::Error;
 use doorman_core::clock::Clock;
 use doorman_core::metrics::{MetricEvent, Metrics};
 use doorman_core::session::SessionManager;
@@ -32,6 +33,7 @@ use tracing::Instrument;
 use crate::cache::SessionCache;
 use crate::cookies::{bearer_token, read_cookie};
 use crate::csrf::{self, CsrfConfig};
+use crate::error::error_response;
 
 /// Successfully resolved authentication state for a request.
 ///
@@ -163,6 +165,24 @@ where
                             && let Ok(Some(user)) =
                                 state.user_store.find_user_by_id(session.user_id).await
                         {
+                            // Read-time disable gate. A disabled account is
+                            // refused outright (403) rather than silently
+                            // dropped to unauthenticated, so the host can tell
+                            // "disabled" from "no session". The shared
+                            // `AccountStatus::is_active` predicate is the single
+                            // place the enum is interpreted. Rejecting here,
+                            // before the cache insert below, also keeps a
+                            // disabled user from ever entering the cache.
+                            //
+                            // Immediacy depends on the write-time cache
+                            // invalidation wired in with the operator `disable`
+                            // flow: a warm cache hit (the branch above) serves a
+                            // still-active snapshot and can mask a fresh disable
+                            // for up to the cache TTL until that invalidation
+                            // evicts the entry.
+                            if !user.status.is_active() {
+                                return Ok(error_response(&Error::AccountDisabled));
+                            }
                             let span = tracing::Span::current();
                             span.record("session_id", tracing::field::display(session.id));
                             span.record("user_id", tracing::field::display(user.id));

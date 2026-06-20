@@ -90,6 +90,12 @@ pub enum Error {
     )]
     RecoveryCooldownActive,
 
+    /// The account has been disabled by an operator. Both authentication and
+    /// recovery refuse a disabled account until it is re-enabled; this is a
+    /// deliberate refusal, distinct from a missing or expired session.
+    #[error("account is disabled")]
+    AccountDisabled,
+
     /// A configured per-user resource cap was reached.
     #[error("per-user limit for {resource} reached ({limit})")]
     ResourceLimitExceeded {

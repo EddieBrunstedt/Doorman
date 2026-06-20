@@ -222,6 +222,23 @@ impl TestApp {
         format!("http://{}{}", self.addr, path)
     }
 
+    /// Flip a user's account status directly through the store, bypassing the
+    /// operator surface. The enforcement tests use this to prove the read-time
+    /// gate holds independently of how the status came to be set.
+    pub async fn set_user_status(&self, user_id: UserId, status: AccountStatus) {
+        let mut user = self
+            .user_store
+            .find_user_by_id(user_id)
+            .await
+            .expect("find user")
+            .expect("user exists");
+        user.status = status;
+        self.user_store
+            .update_user(user)
+            .await
+            .expect("update user status");
+    }
+
     pub async fn shutdown(self) {
         let _ = self.shutdown.send(());
         let _ = self.handle.await;
