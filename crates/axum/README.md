@@ -4,7 +4,7 @@ Axum HTTP integration for [doorman](../../README.md): the `AuthService` router, 
 
 This is the supported user-facing integration. Hand `AuthService::builder` a `Storage` value (e.g. from [`doorman-sqlx`](../sqlx)), configure the relying party and email transport, mount `auth.router()`, and apply `auth.session_layer()`.
 
-```rust,ignore
+```rust
 let auth = AuthService::builder(storage.all_stores())
     .email(Arc::new(TerminalEmailSender))
     .passkey(PasskeyConfig::from_origin(origin.clone(), "Example")?)

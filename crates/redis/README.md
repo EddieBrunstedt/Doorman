@@ -14,7 +14,7 @@ doorman-redis = "0.1"
 doorman-sqlx = { version = "0.1", features = ["postgres"] }
 ```
 
-```rust,ignore
+```rust
 use doorman_core::storage::Storage;
 use doorman_redis::RedisStorage;
 use doorman_sqlx::PostgresStorage;
@@ -51,7 +51,7 @@ The rate limiter is not a store, so it is wired separately from the `Storage` li
 
 `connect(url)` opens a multiplexed, auto-reconnecting `ConnectionManager` — the right default for the short, single-round-trip operations these stores issue, with no pool to size. Hosts who want to bring their own connection (TLS, auth, timeouts, or a custom pool) have two seams:
 
-```rust,ignore
+```rust
 // Configure the client yourself, then let the adapter open the manager.
 let client = redis::Client::open("rediss://user:pass@host:6379")?;
 let redis = RedisStorage::from_client(client).await?;

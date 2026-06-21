@@ -6,7 +6,7 @@ How to wire doorman into an Axum application, swap in your own stores, and brand
 
 The shortest route is `doorman-sqlx` for storage plus the high-level `AuthService::builder`. This is the quickstart from the [top-level README](../README.md):
 
-```rust,ignore
+```rust
 use std::sync::Arc;
 use axum::{routing::get, Router};
 use doorman::prelude::*;
@@ -67,7 +67,7 @@ For a single backend, depend on one of the first-party adapters — `doorman-sql
 
 `Storage` is a struct of per-trait `Arc<dyn>` fields, so backends can be mixed by naming each one in the literal. The common production split is SQL for the system-of-record stores plus `doorman-redis` for the ephemeral stores and a shared rate limiter — the latter being the only way a multi-replica deployment gets instant cross-process session revoke and one rate-limit budget:
 
-```rust,ignore
+```rust
 let pg = PostgresStorage::connect(pg_url).await?;
 pg.migrate().await?;
 let redis = RedisStorage::connect("redis://localhost:6379").await?;
@@ -96,7 +96,7 @@ The traits deal in **opaque bytes and primitives** — they have no `webauthn-rs
 
 Assemble the five into a `Storage`:
 
-```rust,ignore
+```rust
 let storage = Storage {
     users: Arc::new(my_user_store),
     sessions: Arc::new(my_session_store),
@@ -110,7 +110,7 @@ let storage = Storage {
 
 `InMemoryStorage` is a supported testing adapter that lives in `doorman-core` and is held to the same conformance and semver guarantees as the shipped database adapters. It fills all five stores from one process-local handle, so a host's integration test can stand up a real `AuthService` with no database, container, or migration step — `InMemoryStorage::new().all_stores()` drops straight into the same builder the quickstart uses:
 
-```rust,ignore
+```rust
 use std::sync::Arc;
 use axum::{routing::get, Router};
 use doorman::prelude::*;
@@ -152,7 +152,7 @@ The handle starts empty and is lost when the test process exits; for a shared pr
 
 `.email(...)` sets the **transport**; `.emails(...)` sets the **renderer**. Implement `EmailSender` to deliver mail through your provider (lettre, Resend, SES, …):
 
-```rust,ignore
+```rust
 use async_trait::async_trait;
 use doorman::core::email::{Email, EmailSender};
 use doorman::core::error::EmailResult;
@@ -189,7 +189,7 @@ With the session layer applied, handlers can extract:
 - `AuthSession` — the resolved session plus helpers (e.g. `is_in_recovery_cooldown`, answered through the configured clock).
 - `RequestContext` — IP / user-agent captured from request headers.
 
-```rust,ignore
+```rust
 use axum::Json;
 use doorman::prelude::*;
 

@@ -8,7 +8,7 @@ Every check takes a `doorman_core::storage::Storage` and asserts the contract th
 
 Add it under `[dev-dependencies]` and call it from a test that stands up your adapter and hands the suite a populated `Storage`:
 
-```rust,ignore
+```rust
 #[tokio::test]
 async fn my_adapter_conformance() {
     let storage = MyStorage::connect(url).await.expect("connect");

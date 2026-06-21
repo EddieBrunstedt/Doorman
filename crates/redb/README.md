@@ -11,7 +11,7 @@ redb embedded storage adapter for the [doorman](https://codeberg.org/EddieBrunst
 doorman-redb = "0.1"
 ```
 
-```rust,ignore
+```rust
 use doorman_redb::RedbStorage;
 
 let storage = RedbStorage::open("doorman.redb")?;

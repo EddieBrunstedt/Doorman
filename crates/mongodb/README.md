@@ -14,7 +14,7 @@ doorman-mongodb = "0.1"
 mongodb = "3"
 ```
 
-```rust,ignore
+```rust
 use doorman_mongodb::MongoDbStorage;
 
 let client = mongodb::Client::with_uri_str("mongodb://localhost:27017").await?;

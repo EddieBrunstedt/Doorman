@@ -23,7 +23,7 @@ Sessions, verification tokens, and passkey ceremony challenges expire by timesta
 
 One call sweeps all three time-limited stores:
 
-```rust,ignore
+```rust
 use chrono::Utc;
 
 let summary = storage.purge_all_expired(Utc::now()).await?;
@@ -37,7 +37,7 @@ tracing::info!(
 
 For a background sweeper, enable the `background-purge` feature on `doorman-core` and spawn the bundled task — it sweeps on an interval (first sweep immediate), logs per-pass counts, and continues past a store error:
 
-```rust,ignore
+```rust
 // requires doorman-core feature "background-purge"
 use std::time::Duration;
 doorman_core::purge::spawn_purge_task(storage.clone(), clock, Duration::from_secs(3600));
@@ -51,7 +51,7 @@ The in-process sweeper assumes a long-lived process. On a frozen or short-lived 
 
 Enable the `purge-runner` feature on `doorman` and call `doorman::ops::run_purge` from a tiny host-owned binary. The runner is backend-blind: it parses two optional flags (`--now <rfc3339>`, `--json`), sweeps via `purge_all_expired`, prints the per-store `PurgeSummary`, and sets the process exit code (non-zero on a malformed flag or a store error, so a scheduler treats a failed sweep as a failed job).
 
-```rust,ignore
+```rust
 // requires the `doorman` feature "purge-runner"
 // bins/purge/src/main.rs — the host's whole purge binary
 #[tokio::main]

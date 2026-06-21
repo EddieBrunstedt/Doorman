@@ -15,7 +15,7 @@ aws-config = "1"
 aws-sdk-dynamodb = "1"
 ```
 
-```rust,ignore
+```rust
 use doorman_dynamodb::DynamoDbStorage;
 
 let config = aws_config::load_from_env().await;

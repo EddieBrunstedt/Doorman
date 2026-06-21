@@ -83,7 +83,7 @@ What remains is a **narrow check-then-`add_passkey` TOCTOU** and the general abs
 
 doorman ships **no operator HTTP router** — mounted or unmounted. There is no type-level way to force a host's authorization middleware in front of an Axum `Router`, so shipping one would hand hosts a footgun that undercuts the type-level boundary the `operator()` accessor establishes. Hosts wire their own routes — or CLI / job entry points — with their own authorization in front, then call the flow:
 
-```rust,ignore
+```rust
 use doorman::core::audit::OperatorActor;
 
 async fn delete_user_route(
@@ -133,5 +133,3 @@ Notices never use the self-service "was this you?" copy — that copy tells a us
 **Audit.** `disable` emits two operator-attributed rows: `OperatorDisabledAccount` for the status change, plus the `OperatorRevokedAllSessions` row from the session sweep. `enable` emits a single `OperatorEnabledAccount`. None of this is wired to a route — as with the rest of the operator surface the host owns any HTTP entry point and puts its own authorization in front.
 
 **Notification.** The subject notice is **quiet by default**: `NotificationPolicy::account_disabled` defaults to `Suppress`. Opt in by constructing the `OperatorManager` (or the high-level builder) with `account_disabled: OperatorNotice::Send`, and the subject receives the operator-aware "your account was disabled by an administrator" copy. `enable` sends no notice.
-</content>
-</invoke>
