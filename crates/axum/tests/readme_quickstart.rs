@@ -1,11 +1,12 @@
-//! Exercises the README quickstart wiring end to end.
+//! Drives the README quickstart wiring end to end.
 //!
-//! The first test pins that the documented snippet still type-checks. The
-//! second stands the very same wiring up on a real socket and drives a full
-//! signup -> passkey login -> recovery round trip against it, so the
-//! quickstart is verified to *work*, not merely to compile. The only
-//! departure from the literal snippet is swapping the terminal email sender
-//! for a capturing one, so the test can read the verification links the
+//! The documented snippet's *compilation* is guaranteed by the doctest in the
+//! umbrella crate (`crates/doorman/src/lib.rs`), which cargo-rdme keeps in
+//! sync with the README. This test stands the very same wiring up on a real
+//! socket and drives a full signup -> passkey login -> recovery round trip
+//! against it, so the quickstart is verified to *work*, not merely to compile.
+//! The only departure from the literal snippet is swapping the terminal email
+//! sender for a capturing one, so the test can read the verification links the
 //! flows mail out.
 
 mod common;
@@ -28,46 +29,6 @@ use doorman_test_support::CapturingEmailSender;
 use tokio::net::TcpListener;
 use url::Url;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
-
-#[tokio::test]
-async fn readme_quickstart_snippet_compiles() -> std::result::Result<(), Box<dyn std::error::Error>>
-{
-    async fn me(user: AuthUser) -> String {
-        format!("hello, {}", user.0.id)
-    }
-
-    let storage = SqliteStorage::connect("sqlite::memory:").await?;
-    storage.migrate().await?;
-    let origin: Url = "http://localhost:3000".parse()?;
-    let base = origin.as_str().trim_end_matches('/');
-    let auth = AuthService::builder(storage.all_stores())
-        .email(Arc::new(TerminalEmailSender))
-        .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
-        .reauthentication(ReauthPolicy::disabled())
-        .audit(Arc::new(NoopAuditSink))
-        .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
-        .signup(SignupConfig {
-            url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"),
-            ..Default::default()
-        })
-        .recovery(RecoveryConfig {
-            url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"),
-            ..Default::default()
-        })
-        .account(AccountConfig {
-            url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"),
-            ..Default::default()
-        })
-        .external_origin(origin)
-        .cookie(CookieConfig::default())
-        .build()?;
-    let app = Router::new()
-        .merge(auth.router())
-        .route("/api/me", get(me))
-        .layer(auth.session_layer());
-    let _ = app;
-    Ok(())
-}
 
 /// The relying-party origin the quickstart configures. The WebAuthn
 /// authenticator signs against this; HTTP requests go to the bound address.

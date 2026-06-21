@@ -1,82 +1,134 @@
-//! `doorman` — the front door to the doorman authentication library.
+//! **Passkey-only authentication for Rust web apps.** doorman gives an [Axum](https://github.com/tokio-rs/axum) application a single, modern way to log in — discoverable passkeys (WebAuthn) — backed by email links that exist only to onboard and recover accounts.
 //!
-//! doorman is an opinionated, passkey-only authentication stack. The
-//! implementation is split across several crates:
+//! There are no passwords, no OAuth providers, no TOTP codes, and no general-purpose "email me a login link". Every account is anchored to one or more passkeys; email is used only to prove control of an address during signup, account recovery, and email changes.
 //!
-//! - [`doorman_core`] — framework-agnostic primitives: storage traits,
-//!   managers, clock/email/audit/rate-limiter collaborators.
-//! - `doorman_axum` — the supported HTTP integration for Axum.
-//! - `doorman_sqlx` — SQLx storage adapters (SQLite, Postgres, and
-//!   MySQL/MariaDB).
-//! - `doorman_redis` — Redis/Valkey adapter for the ephemeral stores and the
-//!   shared rate limiter.
-//! - `doorman_dynamodb` — Amazon DynamoDB adapter, filling all five stores from
-//!   a single table for AWS-native / serverless deployments.
-//! - `doorman_mongodb` — MongoDB adapter, filling all five stores from one
-//!   database.
-//! - `doorman_redb` — redb embedded key-value adapter, filling all five stores
-//!   from a single local file (a pure-Rust adapter).
+//! > doorman is pre-1.0. The public API is in good shape but breaking changes can still land before 1.0.
 //!
-//! This crate is the front door: depend on it once and pull the pieces you
-//! need in behind features instead of tracking the underlying crates
-//! separately and keeping their versions in lock-step.
+//! ## Why passkey-only?
+//!
+//! Passwords are the root of most account-security problems: reuse, phishing, leaks, and the endless reset machinery built to paper over them. Passkeys are phishing-resistant by construction (the credential is bound to your site's origin) and need no shared secret on the server.
+//!
+//! doorman commits to that model fully instead of bolting passkeys onto a password system:
+//!
+//! - **One way in.** Returning users authenticate with a discoverable passkey — no username, no password, no second factor to juggle.
+//! - **Email is a recovery channel, not a login.** A signup or recovery link only ever _starts a passkey registration_; it never issues a session by itself. A leaked email link cannot, on its own, log anyone in.
+//! - **Lost-device recovery without a help desk.** Users recover through a verified email link that enrolls a fresh passkey, gated by a cool-down that disables destructive actions while a recovery is fresh.
+//!
+//! ## How it works
+//!
+//! doorman ships the server half of three WebAuthn ceremonies plus account management, wired into ready-to-mount Axum routes:
+//!
+//! | Flow        | What the user does                                                                  | What doorman does                                                                                                                   |
+//! | ----------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+//! | **Sign up** | Enters an email, clicks the emailed link, registers a passkey                       | Mails a single-use link → the link starts passkey registration → on finish, registers the first passkey and _then_ issues a session |
+//! | **Sign in** | Picks a passkey in the browser prompt                                               | Identifies the user from the WebAuthn response — no email or username needed (discoverable credentials)                             |
+//! | **Recover** | Enters an email, clicks the link, registers a new passkey                           | Mails a recovery link → the link enrolls a fresh passkey → issues a session restricted by a post-recovery cool-down                 |
+//! | **Manage**  | Lists/adds/removes passkeys, lists/revokes sessions, changes email, deletes account | Enforces the cool-down on destructive actions and sends security-notification emails                                                |
+//!
+//! Sessions are **server-side and opaque**: the cookie (or bearer token) is a random handle to a row doorman owns, so revocation is instant and there is no token to forge or decode.
+//!
+//! ## Quickstart
 //!
 //! ```toml
 //! [dependencies]
-//! doorman = { version = "0.1", features = ["axum", "sqlite"] }
+//! doorman = { git = "https://codeberg.org/EddieBrunstedt/Doorman", features = ["axum", "sqlite"] }
+//! axum = "0.8"
+//! tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 //! ```
 //!
-//! ## Features
+//! `doorman` is an **umbrella crate**: one dependency, one version to bump. It re-exports the framework-agnostic core, the Axum integration, and the storage adapters behind features (`doorman::core`, `doorman::axum`, `doorman::sqlx`, `doorman::redis`, …). The `prelude` pulls in everything a typical host needs in one line.
 //!
-//! - `axum` — re-export `doorman-axum` at `doorman::axum`.
-//! - `sqlite` — re-export `doorman-sqlx` (SQLite adapter) at `doorman::sqlx`.
-//! - `postgres` — re-export `doorman-sqlx` (Postgres adapter) at `doorman::sqlx`.
-//! - `mysql` — re-export `doorman-sqlx` (MySQL/MariaDB adapter) at `doorman::sqlx`.
-//! - `redis` — re-export `doorman-redis` at `doorman::redis`.
-//! - `valkey` — alias for `redis`; the same adapter addresses either server, so
-//!   this just lets a host name the one it runs.
-//! - `dynamodb` — re-export `doorman-dynamodb` at `doorman::dynamodb`.
-//! - `mongodb` — re-export `doorman-mongodb` at `doorman::mongodb`.
-//! - `redb` — re-export `doorman-redb` at `doorman::redb`.
-//! - `file-email` — bundled `.eml` file email transport for local development.
-//! - `purge-runner` — the generic one-shot purge runner `ops::run_purge` for
-//!   hosts that sweep expired rows from an external scheduler. Off by default.
-//!
-//! [`doorman::core`](core) is always available. The [`prelude`] re-exports the
-//! richest available prelude (axum's when the `axum` feature is on, core's
-//! otherwise) plus the storage adapters for every enabled storage feature.
-//!
-//! Redis holds only the ephemeral, TTL-bearing stores plus the rate limiter, so
-//! it is paired with a SQL backend rather than used alone — the documented
-//! mixed-backend path is a SQL feature **and** `redis`. See `doorman::redis` for
-//! the per-trait `Storage` wiring.
-//!
-//! ## Example
-//!
-//! ```ignore
+//! ```rust,no_run
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! use std::sync::Arc;
 //!
+//! use axum::{routing::get, Router};
 //! use doorman::prelude::*;
+//! use doorman::core::memory::InMemoryRateLimiter;
 //! use doorman::core::verification::TOKEN_PLACEHOLDER;
+//! use url::Url;
 //!
-//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-//! let storage = SqliteStorage::connect("sqlite::memory:").await?;
+//! // 1. Open storage and run migrations.
+//! let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").await?;
 //! storage.migrate().await?;
 //!
-//! let origin = "https://app.example.com".parse()?;
+//! // 2. Build the auth service.
+//! let origin: Url = "https://app.example.com".parse()?;
 //! let base = origin.as_str().trim_end_matches('/');
 //! let auth = AuthService::builder(storage.all_stores())
-//!     .email(Arc::new(TerminalEmailSender))
+//!     .email(Arc::new(TerminalEmailSender)) // dev transport; swap for production
 //!     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
-//!     .reauthentication(ReauthPolicy::required_for([ReauthAction::DeleteAccount, ReauthAction::RemovePasskey]))
-//!     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
-//!     .recovery(RecoveryConfig { url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
-//!     .external_origin(origin)
+//!     .audit(Arc::new(NoopAuditSink)) // discards events; wire a durable sink in prod
+//!     .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock)))) // per-process; share a backend across replicas
+//!     .signup(SignupConfig {
+//!         url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"),
+//!         ..Default::default()
+//!     })
+//!     .recovery(RecoveryConfig {
+//!         url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"),
+//!         ..Default::default()
+//!     })
+//!     .account(AccountConfig {
+//!         url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"),
+//!         ..Default::default()
+//!     })
+//!     .reauthentication(ReauthPolicy::required_for([ // required decision; or ReauthPolicy::disabled()
+//!         ReauthAction::DeleteAccount,
+//!         ReauthAction::RemovePasskey,
+//!     ]))
+//!     .external_origin(origin) // enables CSRF origin checks; required CSRF decision
 //!     .cookie(CookieConfig::default())
 //!     .build()?;
-//! # let _ = auth;
-//! # Ok(()) }
+//!
+//! // 3. Mount the routes and the session middleware.
+//! let app = Router::new()
+//!     .merge(auth.router()) // all /auth/* endpoints
+//!     .route("/api/me", get(me)) // your own handlers
+//!     .layer(auth.session_layer()); // resolves the session for extractors
+//! # let _ = app;
+//! # Ok(())
+//! # }
+//! #
+//! # async fn me(_user: doorman::prelude::AuthUser) -> String {
+//! #     String::new()
+//! # }
 //! ```
+//!
+//! `auth.router()` mounts every endpoint under `/auth`. `auth.session_layer()` resolves the session cookie or bearer token on each request so your handlers can use the extractors:
+//!
+//! ```rust,no_run
+//! use doorman::prelude::*;
+//!
+//! // Requires a valid session — returns 401 otherwise.
+//! async fn me(user: AuthUser) -> String {
+//!     format!("hello, {}", user.0.id)
+//! }
+//!
+//! // Present whether or not the request is authenticated.
+//! async fn maybe(user: OptionalAuthUser) { /* ... */ }
+//!
+//! // The full session context (user + session + recovery cool-down state).
+//! async fn whoami(auth: AuthSession) { /* ... */ }
+//! ```
+//!
+//! `TerminalEmailSender` prints emails to stdout for local development. In production, implement `EmailSender` for your transactional email provider and keep `CookieConfig { secure: true, .. }`.
+//!
+//! ### Run the example app
+//!
+//! ```sh
+//! cargo run -p doorman-minimal-app
+//! ```
+//!
+//! Open <http://localhost:3000>. Signup and recovery emails are printed to the terminal — copy the link from stdout and finish the flow in the browser. The example uses SQLite, the bundled router, and a single static HTML page with no frontend build step.
+//!
+//! ## Cargo features
+//!
+//! `doorman` bundles every crate behind a feature flag; enable only what you wire up.
+//!
+//! - `axum` — the Axum HTTP integration (the supported user-facing surface), exposed at `doorman::axum`.
+//! - **Storage adapters** — `sqlite`, `postgres`, `mysql`, `redis` (with its `valkey` alias), `dynamodb`, `mongodb`, `redb`; choose one per store, and mix backends if you like.
+//! - `file-email` — bundled `.eml` file email transport for local development.
+//! - `purge-runner` — the generic one-shot purge runner (`doorman::ops::run_purge`) for hosts that sweep expired rows from an external scheduler.
 
 // Every public item in this crate carries rustdoc. Scoped to this crate on
 // purpose — kept out of the workspace lints so the requirement never fires on

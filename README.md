@@ -1,5 +1,7 @@
 # doorman
 
+<!-- cargo-rdme start -->
+
 **Passkey-only authentication for Rust web apps.** doorman gives an [Axum](https://github.com/tokio-rs/axum) application a single, modern way to log in — discoverable passkeys (WebAuthn) — backed by email links that exist only to onboard and recover accounts.
 
 There are no passwords, no OAuth providers, no TOTP codes, and no general-purpose "email me a login link". Every account is anchored to one or more passkeys; email is used only to prove control of an address during signup, account recovery, and email changes.
@@ -114,6 +116,17 @@ cargo run -p doorman-minimal-app
 ```
 
 Open <http://localhost:3000>. Signup and recovery emails are printed to the terminal — copy the link from stdout and finish the flow in the browser. The example uses SQLite, the bundled router, and a single static HTML page with no frontend build step.
+
+## Cargo features
+
+`doorman` bundles every crate behind a feature flag; enable only what you wire up.
+
+- `axum` — the Axum HTTP integration (the supported user-facing surface), exposed at `doorman::axum`.
+- **Storage adapters** — `sqlite`, `postgres`, `mysql`, `redis` (with its `valkey` alias), `dynamodb`, `mongodb`, `redb`; choose one per store, and mix backends if you like.
+- `file-email` — bundled `.eml` file email transport for local development.
+- `purge-runner` — the generic one-shot purge runner (`doorman::ops::run_purge`) for hosts that sweep expired rows from an external scheduler.
+
+<!-- cargo-rdme end -->
 
 ## HTTP endpoints
 

@@ -1,12 +1,16 @@
 # Continuous integration for doorman on Forgejo Actions (Codeberg).
 #
 # The runner is a self-hosted machine exposed under the `native` label. It
-# already carries the full toolchain — a rustup with the stable and 1.94
+# already carries most of the toolchain — a rustup with the stable and 1.94
 # toolchains, dprint, cargo-deny, and a Docker daemon for the testcontainers
-# conformance tests — so the pipeline installs nothing. It runs the host tools
-# directly and reuses one warm build cache, instead of the old design that
-# recompiled the whole dependency tree from a cold cache in a fresh container
-# for every job (and rebuilt dprint and cargo-deny from source each run).
+# conformance tests. The one tool the pipeline installs itself is cargo-rdme
+# (pinned below): keeping it self-contained means the README-sync check never
+# assumes a runner has it pre-baked. `cargo install` is idempotent, so it builds
+# once on a cold cache and is a fast no-op on every run after. Otherwise it runs
+# the host tools directly and reuses one warm build cache, instead of the old
+# design that recompiled the whole dependency tree from a cold cache in a fresh
+# container for every job (and rebuilt dprint and cargo-deny from source each
+# run).
 
 name: ci
 
@@ -50,6 +54,13 @@ jobs:
         run: cargo fmt --all --check
       - name: dprint (Markdown/TOML/YAML/JSON)
         run: dprint check
+      # Pinned so CI and a contributor's local cargo-rdme generate identical
+      # output (a version skew would make `--check` fail spuriously). Keep this
+      # in sync with the version you run locally.
+      - name: install cargo-rdme (pinned)
+        run: cargo install cargo-rdme --version 2.0.0 --locked
+      - name: cargo-rdme (README in sync with crate docs)
+        run: cargo rdme --workspace-project doorman --readme-path README.md --intralinks-strip-links --heading-base-level 0 --check
 
       - name: clippy (all targets, all features)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
