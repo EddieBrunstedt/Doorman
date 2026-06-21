@@ -32,11 +32,8 @@ use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 #[tokio::test]
 async fn readme_quickstart_snippet_compiles() -> std::result::Result<(), Box<dyn std::error::Error>>
 {
-    async fn me(auth: AuthSession) -> String {
-        auth.user
-            .email
-            .clone()
-            .unwrap_or_else(|| "unknown".to_owned())
+    async fn me(user: AuthUser) -> String {
+        format!("hello, {}", user.0.id)
     }
 
     let storage = SqliteStorage::connect("sqlite::memory:").await?;

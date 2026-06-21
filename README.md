@@ -45,19 +45,21 @@ use std::sync::Arc;
 
 use axum::{routing::get, Router};
 use doorman::prelude::*;
+use doorman::core::memory::InMemoryRateLimiter;
 use doorman::core::verification::TOKEN_PLACEHOLDER;
+use url::Url;
 
 // 1. Open storage and run migrations.
 let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").await?;
 storage.migrate().await?;
 
 // 2. Build the auth service.
-let origin = "https://app.example.com".parse()?;
+let origin: Url = "https://app.example.com".parse()?;
 let base = origin.as_str().trim_end_matches('/');
 let auth = AuthService::builder(storage.all_stores())
-    .email(Arc::new(TerminalEmailSender))                       // dev transport; swap for production
+    .email(Arc::new(TerminalEmailSender)) // dev transport; swap for production
     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
-    .audit(Arc::new(NoopAuditSink))                             // discards events; wire a durable sink in prod
+    .audit(Arc::new(NoopAuditSink)) // discards events; wire a durable sink in prod
     .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock)))) // per-process; share a backend across replicas
     .signup(SignupConfig {
         url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"),
@@ -71,19 +73,19 @@ let auth = AuthService::builder(storage.all_stores())
         url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"),
         ..Default::default()
     })
-    .reauthentication(ReauthPolicy::required_for([   // required decision; or ReauthPolicy::disabled()
+    .reauthentication(ReauthPolicy::required_for([ // required decision; or ReauthPolicy::disabled()
         ReauthAction::DeleteAccount,
         ReauthAction::RemovePasskey,
     ]))
-    .external_origin(origin)        // enables CSRF origin checks; required CSRF decision
+    .external_origin(origin) // enables CSRF origin checks; required CSRF decision
     .cookie(CookieConfig::default())
     .build()?;
 
 // 3. Mount the routes and the session middleware.
 let app = Router::new()
-    .merge(auth.router())               // all /auth/* endpoints
-    .route("/api/me", get(me))          // your own handlers
-    .layer(auth.session_layer());       // resolves the session for extractors
+    .merge(auth.router()) // all /auth/* endpoints
+    .route("/api/me", get(me)) // your own handlers
+    .layer(auth.session_layer()); // resolves the session for extractors
 ```
 
 `auth.router()` mounts every endpoint under `/auth`. `auth.session_layer()` resolves the session cookie or bearer token on each request so your handlers can use the extractors:
@@ -93,7 +95,7 @@ use doorman::prelude::*;
 
 // Requires a valid session — returns 401 otherwise.
 async fn me(user: AuthUser) -> String {
-    format!("hello, {}", user.id)
+    format!("hello, {}", user.0.id)
 }
 
 // Present whether or not the request is authenticated.
@@ -128,6 +130,37 @@ Every route is mounted under `/auth` by `auth.router()`:
 
 The `request → consume → finish` shape is shared by signup and recovery: `request` emails a link, `consume` redeems that link and starts a passkey ceremony, and `finish` completes the ceremony and issues a session.
 
+## Operator actions
+
+Support and admin flows that act on _another_ user — disable or enable an account, delete it, revoke its sessions, remove a passkey — live on `OperatorManager`, reached through `auth.state().operator()`. They are deliberately **not** mounted by `auth.router()`: doorman performs no authorization of its own, so you write the handler and put your admin check in front. Every flow records an operator-attributed audit trail ([`docs/operators.md`](docs/operators.md)).
+
+```rust
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use doorman::prelude::{AuthState, OperatorActor, UserId};
+
+async fn disable_user(
+    State(state): State<AuthState>,
+    admin: AdminUser,
+    Path(target): Path<UserId>,
+) -> Result<StatusCode, AppError> {
+    let actor = OperatorActor::new(admin.id, None, None, None)?;
+    state.operator().disable(target, actor).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+```
+
+`AdminUser` and `AppError` are your own extractor and error type. Authorization runs while `AdminUser` is extracted, so an unauthorized request is rejected before the handler body executes. Mount the route on a sub-router carrying the auth state, then merge it alongside `auth.router()`:
+
+```rust
+use axum::routing::post;
+use axum::Router;
+
+let admin_routes = Router::new()
+    .route("/admin/users/{id}/disable", post(disable_user))
+    .with_state(auth.state().clone());
+```
+
 ## The recovery cool-down
 
 Recovery is the one place a passkey can be added without proving possession of an existing one, so doorman treats freshly recovered sessions as lower-trust. After recovery, the new session — and the passkey it created — carry a **post-recovery cool-down** (24 hours by default). While it is active, doorman blocks the actions an attacker would use to lock out the real owner:
@@ -146,6 +179,7 @@ Encourage every user to register at least two passkeys — for example a platfor
 - **Email-gated signup, recovery, and email change** with single-use, hashed-at-rest, purpose-bound tokens.
 - **Server-side opaque sessions** with instant revocation, presented as cookies or bearer tokens.
 - **Passkey-bound post-recovery cool-down** for destructive account actions.
+- **Operator actions** for support/admin tooling — disable/enable, delete, session revocation, passkey removal — core-only with a two-record audit trail; you own the route and its authorization.
 - **Security-notification emails** for recovery, passkey add/remove, email change, and high-risk session revocations.
 - **CSRF origin checks** for cookie-authenticated state-changing requests.
 - **Pluggable collaborators** — audit sink, rate limiter, metrics, clock, and email renderer — wired explicitly at build time, so the development-only choices are visible in the code rather than silent defaults.
