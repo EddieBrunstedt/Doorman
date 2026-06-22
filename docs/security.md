@@ -52,6 +52,12 @@ doorman requires user verification on every passkey ceremony. `webauthn-rs` requ
 
 This is **intentionally not configurable**. Exposing a "preferred vs. required" setting would imply control over what the browser is asked to do, which doorman cannot guarantee without rewriting the WebAuthn challenge `webauthn-rs` produces; the honest, fail-closed stance is to enforce verification at finish and own it as a fixed invariant. The trade-off is deliberate: in the unlikely event a future `webauthn-rs` loosened its request-side default, doorman would reject the affected (non-verified) logins rather than silently accept them. A unit-test canary asserts the upstream request-side default remains `Required`, so such a change surfaces at CI time on a version bump instead of weakening this guarantee unnoticed.
 
+## No attestation, and no authenticator allow/deny-list
+
+doorman requests **no attestation** at registration (`AttestationConveyancePreference::None`), the privacy-preserving default for passkeys. The `aaguid` field on `StoredPasskey` / `PasskeySummary` is populated only when an authenticator volunteers attestation metadata unprompted; for the common discoverable-credential flow it is `None`.
+
+Restricting registration to approved authenticator models (an AAGUID allow- or deny-list) is therefore **intentionally not supported**. Done honestly it would require flipping attestation on for every registration — accepting the privacy and UX cost — and validating each attestation statement against trust anchors via the FIDO Metadata Service; keying policy off the opportunistic, mostly-`None`, unverified AAGUID instead would be a security feature in name only. A host that genuinely needs this can read `aaguid` and `backup_eligible` from `PasskeySummary` and enforce its own policy out of band.
+
 ## Signup
 
 `/auth/signup/request` returns the same response whether the address is new or already registered. For a new address, doorman stores a single-use token hash and sends a signup email. Consuming the token marks the email verified and starts passkey registration. The session is issued only after `/auth/signup/finish` successfully registers that passkey.
