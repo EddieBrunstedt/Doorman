@@ -120,6 +120,27 @@ pub struct PasskeyConfig {
     pub rp_origin: Url,
     /// Display name shown to users in the platform's passkey UI.
     pub rp_name: String,
+    /// Extra origins to accept during passkey ceremonies, in addition to
+    /// `rp_origin`.
+    ///
+    /// Every ceremony carries the origin the browser or app was at, and the
+    /// server only completes one whose origin it trusts. By default that is
+    /// just `rp_origin`. Adding an entry here is a deliberate statement that
+    /// the origin is also you, and that your users' passkeys should be honored
+    /// when a ceremony arrives from it. Two cases call for it:
+    ///
+    /// - **Native mobile apps**, whose platform WebAuthn APIs report an
+    ///   app-specific origin (e.g. `android:apk-key-hash:...`) rather than your
+    ///   `https://` web origin.
+    /// - **Related Origin Requests**, where one relying party (a single
+    ///   `rp_id`) spans genuinely different registrable domains (e.g.
+    ///   `https://example.co.uk` alongside `https://example.com`).
+    ///
+    /// This is only doorman's half. The matching client-side setup — Android
+    /// asset links / iOS associated domains, or a `/.well-known/webauthn`
+    /// document for Related Origin Requests — is the host's to serve, and is
+    /// what makes the client actually send the origin. Defaults to empty.
+    pub additional_origins: Vec<Url>,
     /// How long an unfinished ceremony stays valid. Defaults to 5 minutes,
     /// matching the W3C recommended authenticator timeout.
     pub challenge_lifetime: Duration,
@@ -153,6 +174,7 @@ impl PasskeyConfig {
             rp_id: rp_id.into(),
             rp_origin,
             rp_name: rp_name.into(),
+            additional_origins: Vec::new(),
             challenge_lifetime: Self::DEFAULT_CHALLENGE_LIFETIME,
             rate_limits: PasskeyRateLimits::default(),
             max_credentials_per_user: None,
@@ -1156,9 +1178,17 @@ fn user_id_from_handle(response: &PublicKeyCredential) -> Result<Option<UserId>>
 /// handle configured against the same `rp_id` / origin, so the construction
 /// lives here once.
 pub(crate) fn build_webauthn(config: &PasskeyConfig) -> Result<Webauthn> {
-    WebauthnBuilder::new(&config.rp_id, &config.rp_origin)
+    let mut builder = WebauthnBuilder::new(&config.rp_id, &config.rp_origin)
         .map_err(|e| Error::InvalidRelyingParty(e.to_string()))?
-        .rp_name(&config.rp_name)
+        .rp_name(&config.rp_name);
+    // Appended verbatim, with no scheme/host validation: native-app
+    // (`android:`/app-specific) and Related-Origin entries are legitimately
+    // non-`https`, so a "must be https" check here would reject valid input.
+    // Keeping these correct and minimal is the host's responsibility.
+    for origin in &config.additional_origins {
+        builder = builder.append_allowed_origin(origin);
+    }
+    builder
         .build()
         .map_err(|e| Error::InvalidRelyingParty(e.to_string()))
 }
@@ -1241,6 +1271,71 @@ mod tests {
         assert_eq!(c.rp_id, "app.example.com");
         assert_eq!(c.rp_name, "Example");
         assert_eq!(c.challenge_lifetime, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn config_defaults_to_no_additional_origins() {
+        let c = PasskeyConfig::new(
+            "example.com",
+            Url::parse("https://example.com").expect("valid url"),
+            "Example",
+        );
+        assert!(c.additional_origins.is_empty());
+    }
+
+    #[test]
+    fn build_webauthn_trusts_only_the_primary_origin_by_default() {
+        let config = PasskeyConfig::from_origin(
+            Url::parse("https://example.com").expect("valid url"),
+            "Example",
+        )
+        .expect("origin has a host");
+
+        let webauthn = build_webauthn(&config).expect("webauthn builds");
+        assert_eq!(webauthn.get_allowed_origins(), &[config.rp_origin]);
+    }
+
+    #[test]
+    fn build_webauthn_trusts_additional_origins() {
+        let mut config = PasskeyConfig::from_origin(
+            Url::parse("https://example.com").expect("valid url"),
+            "Example",
+        )
+        .expect("origin has a host");
+        let related = Url::parse("https://example.co.uk").expect("valid url");
+        config.additional_origins = vec![related.clone()];
+
+        let webauthn = build_webauthn(&config).expect("webauthn builds");
+        let allowed = webauthn.get_allowed_origins();
+        assert!(
+            allowed.contains(&config.rp_origin),
+            "the primary origin stays trusted"
+        );
+        assert!(
+            allowed.contains(&related),
+            "an additional origin becomes trusted"
+        );
+    }
+
+    #[test]
+    fn build_webauthn_trusts_a_native_app_origin() {
+        // The native-app case the docs call out: a non-`https`, hostless
+        // `android:` origin must survive the `Url` round-trip and reach the
+        // allowed set unchanged.
+        let mut config = PasskeyConfig::from_origin(
+            Url::parse("https://example.com").expect("valid url"),
+            "Example",
+        )
+        .expect("origin has a host");
+        let android = Url::parse("android:apk-key-hash:pNxxqHowXQk").expect("valid url");
+        assert_eq!(android.host_str(), None, "the app origin is hostless");
+        config.additional_origins = vec![android.clone()];
+
+        let webauthn = build_webauthn(&config).expect("webauthn builds");
+        assert!(
+            webauthn.get_allowed_origins().contains(&android),
+            "the native-app origin becomes trusted"
+        );
     }
 
     #[test]
