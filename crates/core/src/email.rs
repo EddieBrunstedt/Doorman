@@ -72,7 +72,7 @@ pub struct TerminalEmailSender;
 impl EmailSender for TerminalEmailSender {
     async fn send(&self, email: Email) -> EmailResult<()> {
         println!(
-            "\n--- doorman email ---\nTo: {}\nSubject: {}\n\n{}\n--- end doorman email ---\n",
+            "\n--- doorman email: start ---\nTo: {}\nSubject: {}\n\n{}\n--- doorman email: end ---\n",
             email.to, email.subject, email.body_text
         );
         Ok(())
