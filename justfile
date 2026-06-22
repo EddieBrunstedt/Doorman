@@ -8,6 +8,11 @@
 default:
     @just --list
 
+# Run the minimal-app example (examples/minimal-app). Extra args pass through
+# to the binary.
+minimal-app *args:
+    cargo run -p doorman-minimal-app {{ args }}
+
 # Remove Cargo build artifacts.
 clean:
     cargo clean
