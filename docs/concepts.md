@@ -24,6 +24,31 @@ A successful passkey assertion mints a **session**: a row in the session store k
 
 This is the opposite trade from a stateless JWT: doorman pays a storage read per request (mitigated by the session cache) to buy instant revocation and hash-at-rest tokens.
 
+## Session lifetime: absolute cap and idle timeout
+
+A session is governed by two configurable bounds (`SessionConfig`):
+
+- **`absolute_lifetime`** — a hard cap measured from `created_at`. The session dies here no matter how active it is (default 30 days).
+- **`idle_timeout`** — an optional idle window. `None` (the default) means pure absolute expiry: the deadline never moves. `Some(d)` makes the session expire `d` after its **last use**, sliding the deadline forward on each use.
+
+The **effective expiry** is the earlier of the two: `min(created_at + absolute_lifetime, last_used_at + idle_timeout)`. The crucial design choice is that `Session.expires_at` stores this already-`min`'d effective deadline rather than the raw absolute cap. On each use the session is touched and `expires_at` is rewritten to the new `min(...)`, capped at the absolute lifetime so a slide never extends a session past its hard limit. `last_used_at` is recorded alongside as the legible "last active" field. Because `expires_at` already carries the idle deadline, validation stays a single comparison (`now >= expires_at`) and the existing absolute-expiry purge reclaims idle-dead rows unchanged — there is no separate idle sweep.
+
+Touch writes are throttled so an active session writes at most once per cache-TTL window rather than on every request, and with `idle_timeout = None` there are no touch writes at all — the behaviour is byte-for-byte the fixed-lifetime path.
+
+When sliding is enabled, doorman refreshes the session cookie's `Max-Age` on a sliding response so a browser client's local expiry tracks the server's slid deadline. Bearer-token clients track expiry themselves and get no cookie refresh.
+
+### Build-time invariants
+
+When `idle_timeout` is `Some(d)`, the builder fails closed at `build()` time (rather than misbehaving at runtime) unless all of the following hold:
+
+- `d` is non-zero and `<= MAX_LIFETIME` (the same bound the absolute lifetime is held to);
+- `d <= absolute_lifetime` — the idle window cannot outlive the hard cap;
+- `cache.ttl < d` — a **liveness** requirement. Touches fire only on a cache miss, and misses only occur after a cached entry ages past the cache TTL. If `ttl >= idle_timeout`, a continuously-active user is served by cache hits (which never touch) right up to the idle deadline, so the session idles out in storage with no touch ever sliding it and the active user is logged out. Sliding only works when a miss-driven touch can fire before the idle deadline. A comfortable margin (e.g. `ttl <= d / 2`) is recommended.
+
+### The cache re-checks expiry on hit
+
+The session-resolution cache holds a short-TTL snapshot of the resolved session and short-circuits storage on a hit. To keep this correct under both absolute and idle expiry, the cache-hit path re-checks the snapshot's `expires_at` against the clock in memory: a hit whose effective deadline has already passed is treated as a miss and dropped, so an expired session is never served from a still-warm entry independent of the cache TTL. This is a free in-memory comparison and protects the **security** property (an expired session is never served); the **liveness** property (an active session staying alive) is what the `cache.ttl < idle_timeout` invariant above guarantees.
+
 ## Opaque verification tokens
 
 Signup, recovery, and email-change links carry an **opaque verification token** — the same 256-bit random / SHA-256-at-rest scheme as sessions, but single-use and short-lived. Each token is bound to a **purpose** (`Signup`, `Recovery`, `EmailChange`) at mint time _and_ re-checked at consumption, so a leaked signup link cannot be redeemed on the recovery endpoint or vice versa.
