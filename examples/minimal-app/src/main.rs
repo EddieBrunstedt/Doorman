@@ -1,6 +1,6 @@
 //! Minimal Axum application using doorman with SQLite storage.
 
-use std::{env, net::SocketAddr, sync::Arc};
+use std::{env, io::IsTerminal, net::SocketAddr, sync::Arc};
 
 use axum::{Json, Router, extract::State, response::Html, routing::get};
 use doorman_axum::prelude::*;
@@ -16,7 +16,11 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let _ = tracing_subscriber::fmt::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_target(false)
+        .compact()
+        .try_init();
 
     let database_url = env::var("DATABASE_URL")
         .unwrap_or_else(|_| "sqlite://doorman-minimal-app.db?mode=rwc".to_owned());
