@@ -24,7 +24,7 @@
 //!   drops every entry belonging to that user.
 //! - Time-based: every entry carries an `inserted_at` and is treated as
 //!   stale once the configured TTL has elapsed. TTL must be kept well below
-//!   [`SessionConfig::lifetime`] so that a session that is revoked through a
+//!   [`SessionConfig::absolute_lifetime`] so that a session that is revoked through a
 //!   path the hook doesn't cover (e.g. someone calling
 //!   `SessionStore::delete_session` directly) still expires in bounded time.
 //!
@@ -42,7 +42,7 @@
 //! [`revoke_by_id`]: crate::session::SessionManager::revoke_by_id
 //! [`SessionManager::revoke_all_for_user`]: crate::session::SessionManager::revoke_all_for_user
 //! [`SessionInvalidationHook`]: crate::session::SessionInvalidationHook
-//! [`SessionConfig::lifetime`]: crate::session::SessionConfig::lifetime
+//! [`SessionConfig::absolute_lifetime`]: crate::session::SessionConfig::absolute_lifetime
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -63,7 +63,7 @@ pub const SHARD_COUNT: usize = 16;
 pub const DEFAULT_CACHE_CAPACITY: usize = 1024;
 
 /// Default freshness window for a cached entry. Picked to be well below
-/// the typical `SessionConfig::lifetime` (30 days by default) so that a
+/// the typical `SessionConfig::absolute_lifetime` (30 days by default) so that a
 /// revocation made through an unhooked path still self-heals quickly.
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(60);
 
@@ -324,6 +324,10 @@ mod tests {
             user_id,
             token_hash: token_hash(0),
             created_at: Utc
+                .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            last_used_at: Utc
                 .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
                 .single()
                 .expect("valid timestamp"),

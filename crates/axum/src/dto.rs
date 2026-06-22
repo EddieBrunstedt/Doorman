@@ -384,6 +384,7 @@ mod tests {
             user_id: UserId::new(),
             token_hash: TokenHash([0u8; 32]),
             created_at: now,
+            last_used_at: now,
             expires_at: now,
             ip: None,
             user_agent: ua.map(ToOwned::to_owned),

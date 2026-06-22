@@ -621,7 +621,7 @@ fn host_prefixed_cookie_with_correct_attributes_builds() {
 fn zero_session_lifetime_is_rejected() {
     let err = valid_builder()
         .session(SessionConfig {
-            lifetime: Duration::ZERO,
+            absolute_lifetime: Duration::ZERO,
             ..SessionConfig::default()
         })
         .build()
@@ -630,7 +630,7 @@ fn zero_session_lifetime_is_rejected() {
         matches!(
             err,
             Some(BuilderError::InvalidLifetime {
-                field: "session lifetime",
+                field: "session absolute_lifetime",
                 ..
             })
         ),
@@ -664,7 +664,7 @@ fn zero_signup_token_lifetime_is_rejected() {
 fn cookie_max_age_exceeding_session_lifetime_is_rejected() {
     let err = valid_builder()
         .session(SessionConfig {
-            lifetime: Duration::from_secs(60 * 60),
+            absolute_lifetime: Duration::from_secs(60 * 60),
             ..SessionConfig::default()
         })
         .cookie(CookieConfig {

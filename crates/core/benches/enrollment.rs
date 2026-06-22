@@ -57,7 +57,7 @@ fn signup_manager() -> SignupManager {
         clock.clone(),
         audit.clone(),
         SessionConfig {
-            lifetime: Duration::from_secs(60 * 60),
+            absolute_lifetime: Duration::from_secs(60 * 60),
             ..SessionConfig::default()
         },
     );

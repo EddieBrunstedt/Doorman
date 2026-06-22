@@ -40,13 +40,14 @@ impl SessionStore for AuditedSessions {
         // later found by the delegated `find_session_by_token_hash`.
         let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at, ip, user_agent, recovery_cooldown_until)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cooldown_until)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.0.as_bytes().to_vec())
         .bind(session.user_id.0.as_bytes().to_vec())
         .bind(session.token_hash.0.to_vec())
         .bind(session.created_at)
+        .bind(session.last_used_at)
         .bind(session.expires_at)
         .bind(&session.ip)
         .bind(&session.user_agent)
@@ -62,6 +63,10 @@ impl SessionStore for AuditedSessions {
             .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(())
+    }
+
+    async fn touch_session(&self, session: &Session) -> StorageResult<()> {
+        self.inner.touch_session(session).await
     }
 
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
@@ -149,6 +154,7 @@ async fn override_create_session_reuses_bundled_reads() {
         user_id,
         token_hash: hash_token("composability-token"),
         created_at: now,
+        last_used_at: now,
         expires_at: now + Duration::hours(1),
         ip: None,
         user_agent: None,

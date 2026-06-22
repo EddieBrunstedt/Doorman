@@ -48,6 +48,17 @@ impl SessionStore for DynamoSessionStore {
         self.client.put(model::session_item(&session)).await
     }
 
+    async fn touch_session(&self, session: &Session) -> StorageResult<()> {
+        // Conditional put guarded by `attribute_exists(pk)`: it rewrites the
+        // whole item — including the native TTL attribute (TTL coupling) and
+        // the slid `last_used_at`/`expires_at` — only if the row still exists,
+        // so a session revoked between resolution and touch is never
+        // resurrected.
+        self.client
+            .put_if_exists(model::session_item(session))
+            .await
+    }
+
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
         let items = self
             .client

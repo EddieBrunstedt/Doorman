@@ -158,6 +158,21 @@ pub enum AssemblyError {
         /// The maximum permitted value.
         max: Duration,
     },
+    /// The configured session idle timeout is invalid relative to the absolute
+    /// lifetime or the session-resolution cache TTL. Sliding idle expiry only
+    /// works when a cache-miss touch can fire before the idle deadline, so the
+    /// build refuses a configuration that would silently log active users out.
+    /// The `idle_timeout` must be greater than zero, at most
+    /// [`MAX_LIFETIME`], at most the session's
+    /// `absolute_lifetime`, and strictly greater than the cache `ttl` (a
+    /// comfortable margin such as `ttl <= idle_timeout / 2` is recommended).
+    #[error("session idle_timeout ({idle_timeout:?}) is invalid: {reason}")]
+    IdleTimeoutInvalid {
+        /// The rejected idle timeout.
+        idle_timeout: Duration,
+        /// Why it was rejected.
+        reason: &'static str,
+    },
 }
 
 /// Reject a zero or implausibly large lifetime before it reaches a manager
@@ -168,6 +183,42 @@ fn validate_lifetime(field: &'static str, value: Duration) -> Result<(), Assembl
             field,
             value,
             max: MAX_LIFETIME,
+        });
+    }
+    Ok(())
+}
+
+/// Reject a session idle timeout that cannot slide a session forward in time.
+///
+/// Sliding idle expiry depends on a cache-miss touch firing *before* the idle
+/// deadline. Misses only occur after a cache entry ages past `cache_ttl`, so an
+/// idle window at or below the TTL would let a continuously-active user idle
+/// out in storage with no touch ever sliding them — a silent logout. The build
+/// therefore requires `cache_ttl < idle_timeout`, plus the same zero/`MAX_LIFETIME`
+/// bound the absolute lifetime gets and `idle_timeout <= absolute_lifetime`.
+/// Bounding the idle path before any `chrono::Duration::from_std` also keeps the
+/// later slide arithmetic from overflowing.
+fn validate_idle_timeout(
+    idle_timeout: Duration,
+    absolute_lifetime: Duration,
+    cache_ttl: Duration,
+) -> Result<(), AssemblyError> {
+    if idle_timeout.is_zero() || idle_timeout > MAX_LIFETIME {
+        return Err(AssemblyError::IdleTimeoutInvalid {
+            idle_timeout,
+            reason: "must be greater than zero and at most MAX_LIFETIME",
+        });
+    }
+    if idle_timeout > absolute_lifetime {
+        return Err(AssemblyError::IdleTimeoutInvalid {
+            idle_timeout,
+            reason: "must not exceed the session absolute_lifetime",
+        });
+    }
+    if cache_ttl >= idle_timeout {
+        return Err(AssemblyError::IdleTimeoutInvalid {
+            idle_timeout,
+            reason: "must be strictly greater than the cache ttl so a cache-miss touch can slide the session before it idles out",
         });
     }
     Ok(())
@@ -429,10 +480,24 @@ impl AuthCoreBuilder {
         reject_placeholder_url("signup", &signup_config.url_template)?;
         reject_placeholder_url("recovery", &recovery_config.url_template)?;
         reject_placeholder_url("account email change", &account_config.url_template)?;
-        validate_lifetime("session lifetime", session_config.lifetime)?;
+        validate_lifetime(
+            "session absolute_lifetime",
+            session_config.absolute_lifetime,
+        )?;
         validate_lifetime("signup token_lifetime", signup_config.token_lifetime)?;
         validate_lifetime("recovery token_lifetime", recovery_config.token_lifetime)?;
         validate_lifetime("account token_lifetime", account_config.token_lifetime)?;
+
+        // Resolve the cache config up-front: its TTL gates the idle-timeout
+        // invariant and seeds the manager's touch throttle below.
+        let cache_config = self.cache_config.unwrap_or_default();
+        if let Some(idle_timeout) = session_config.idle_timeout {
+            validate_idle_timeout(
+                idle_timeout,
+                session_config.absolute_lifetime,
+                cache_config.ttl,
+            )?;
+        }
 
         let notifier = SecurityEmailNotifier::new(email.clone(), emails.clone());
 
@@ -442,7 +507,8 @@ impl AuthCoreBuilder {
         // routed through manager logout / revoke paths evict the cache for
         // free. The security notifier is installed the same way — before the
         // manager is cloned into `CoreDeps` — so every clone carries it.
-        let cache = SessionCache::new(self.cache_config.unwrap_or_default());
+        let cache_ttl = cache_config.ttl;
+        let cache = SessionCache::new(cache_config);
 
         let session_manager = SessionManager::new(
             self.storage.sessions.clone(),
@@ -450,6 +516,9 @@ impl AuthCoreBuilder {
             audit.clone(),
             session_config,
         )
+        // Align the idle-slide touch throttle with the cache-miss cadence: a
+        // touch fires at most once per TTL window per active session.
+        .with_touch_granularity(cache_ttl)
         .with_invalidation_hook(cache.invalidator())
         .with_security_notifier(notifier.clone());
 

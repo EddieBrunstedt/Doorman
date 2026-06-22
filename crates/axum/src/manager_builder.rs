@@ -196,16 +196,31 @@ pub enum BuilderError {
         /// The maximum permitted value.
         max: std::time::Duration,
     },
-    /// The session cookie `Max-Age` outlives the session lifetime, so the
-    /// browser would keep sending a cookie whose session is already dead.
+    /// The session cookie `Max-Age` outlives the window the server will keep
+    /// the session alive, so the browser would keep replaying a cookie whose
+    /// session is already dead. The bound is the session `absolute_lifetime`
+    /// normally, but the idle window when sliding is on: a sliding session is
+    /// only refreshed up to the idle deadline, so the cookie must not outlive
+    /// that.
     #[error(
         "cookie Max-Age ({cookie_max_age:?}) exceeds the session lifetime ({session_lifetime:?})"
     )]
     CookieMaxAgeExceedsSessionLifetime {
         /// The configured cookie `Max-Age`.
         cookie_max_age: std::time::Duration,
-        /// The session lifetime it exceeds.
+        /// The session lifetime it exceeds — the absolute lifetime, or the
+        /// idle window when sliding is enabled.
         session_lifetime: std::time::Duration,
+    },
+    /// The configured session idle timeout is invalid relative to the absolute
+    /// lifetime or the session-resolution cache TTL. Surfaced from
+    /// [`AssemblyError::IdleTimeoutInvalid`].
+    #[error("session idle_timeout ({idle_timeout:?}) is invalid: {reason}")]
+    IdleTimeoutInvalid {
+        /// The rejected idle timeout.
+        idle_timeout: std::time::Duration,
+        /// Why it was rejected.
+        reason: &'static str,
     },
 }
 
@@ -235,6 +250,13 @@ impl From<AssemblyError> for BuilderError {
             AssemblyError::InvalidLifetime { field, value, max } => {
                 BuilderError::InvalidLifetime { field, value, max }
             }
+            AssemblyError::IdleTimeoutInvalid {
+                idle_timeout,
+                reason,
+            } => BuilderError::IdleTimeoutInvalid {
+                idle_timeout,
+                reason,
+            },
         }
     }
 }
@@ -444,7 +466,7 @@ impl ManagerBuilder {
         let layer_state = Arc::new(SessionLayerState {
             session_manager: session_manager.clone(),
             user_store: user_store.clone(),
-            cookie_name: cookie_config.session_cookie_name.clone(),
+            cookie: (*cookie_config).clone(),
             cache: cache.clone(),
             csrf: csrf_config,
             metrics,

@@ -60,6 +60,7 @@ fn make_session(
         user_id,
         token_hash,
         created_at: now,
+        last_used_at: now,
         expires_at,
         ip: None,
         user_agent: None,

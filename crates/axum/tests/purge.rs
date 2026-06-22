@@ -85,6 +85,7 @@ async fn purge_expired_sweeps_the_builder_storage_and_matches_a_direct_sweep() {
         user_id,
         token_hash: TokenHash([tag; 32]),
         created_at: now - Duration::hours(2),
+        last_used_at: now - Duration::hours(2),
         expires_at,
         ip: None,
         user_agent: None,

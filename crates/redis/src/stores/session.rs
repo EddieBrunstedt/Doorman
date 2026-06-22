@@ -63,6 +63,55 @@ impl SessionStore for RedisSessionStore {
         Ok(())
     }
 
+    async fn touch_session(&self, session: &Session) -> StorageResult<()> {
+        let keys = self.client.keys();
+        let session_key = keys.session(session.id);
+        let hash_key = keys.session_hash_index(&session.token_hash);
+        let mut conn = self.client.conn();
+
+        // Read the current row, bump its two timestamps, and write back. A
+        // `SET ... XX` only writes when the key still exists, so a session
+        // deleted between this GET and SET makes the write a no-op rather than
+        // resurrecting a revoked session.
+        let Some(mut current) = client::get_json::<Session>(&mut conn, &session_key).await? else {
+            return Ok(());
+        };
+        current.last_used_at = session.last_used_at;
+        current.expires_at = session.expires_at;
+        let json = client::to_json(&current)?;
+
+        // TTL coupling: rewrite the eviction timer on both the row and its hash
+        // index to the new `expires_at`, so the backend does not evict the row
+        // at the stale deadline mid-session. `PEXPIREAT` on a missing key is a
+        // no-op, keeping the whole touch conditional on the row's existence.
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        if let Some(ms) = client::ttl_at_ms(current.expires_at) {
+            pipe.cmd("SET")
+                .arg(&session_key)
+                .arg(&json)
+                .arg("XX")
+                .arg("PXAT")
+                .arg(ms)
+                .ignore();
+            pipe.cmd("PEXPIREAT").arg(&hash_key).arg(ms).ignore();
+        } else {
+            // No future-dated TTL to layer on (the conformance suite's fixed
+            // instants sit in the real past); still write the slid row under
+            // `XX` so the field reflects the new deadline.
+            pipe.cmd("SET")
+                .arg(&session_key)
+                .arg(&json)
+                .arg("XX")
+                .ignore();
+        }
+        let _: () = pipe
+            .query_async(&mut conn)
+            .await
+            .map_err(StorageError::new)?;
+        Ok(())
+    }
+
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
         let keys = self.client.keys();
         let hash_key = keys.session_hash_index(hash);

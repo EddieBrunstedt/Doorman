@@ -54,6 +54,10 @@ impl SessionStore for AuditedSessions {
         Ok(())
     }
 
+    async fn touch_session(&self, session: &Session) -> StorageResult<()> {
+        self.inner.touch_session(session).await
+    }
+
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
         self.inner.find_session_by_token_hash(hash).await
     }
@@ -141,6 +145,7 @@ async fn override_create_session_reuses_bundled_reads() {
         user_id,
         token_hash: hash_token("composability-token"),
         created_at: now,
+        last_used_at: now,
         expires_at: now + Duration::hours(1),
         ip: None,
         user_agent: None,

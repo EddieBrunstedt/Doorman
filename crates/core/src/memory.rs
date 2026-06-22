@@ -273,6 +273,19 @@ impl SessionStore for InMemorySessionStore {
         Ok(())
     }
 
+    async fn touch_session(&self, session: &Session) -> StorageResult<()> {
+        // Conditional write: mutate only if the id is still present. A session
+        // deleted between resolution and touch must not be resurrected, so an
+        // absent id is a no-op (never an insert). The in-memory store has no
+        // auto-eviction, so only the two timestamps are rewritten.
+        let mut state = self.write();
+        if let Some(existing) = state.by_id.get_mut(&session.id) {
+            existing.last_used_at = session.last_used_at;
+            existing.expires_at = session.expires_at;
+        }
+        Ok(())
+    }
+
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
         let state = self.read();
         Ok(state

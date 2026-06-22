@@ -328,7 +328,15 @@ impl AuthServiceBuilder {
     /// [`AssemblyError`]: doorman_core::assembly::AssemblyError
     pub fn build(self) -> Result<AuthService, BuilderError> {
         let session_config = self.session_config.unwrap_or_default();
-        let session_lifetime = session_config.lifetime;
+        // The window the session cookie may legitimately cover. With sliding
+        // renewal on, each use refreshes the cookie to at most one idle window
+        // and a session never survives one idle window of inactivity, so the
+        // cookie `Max-Age` is checked against the idle window. With sliding off
+        // the bound is the absolute lifetime, exactly as before. (Core
+        // guarantees `idle_timeout <= absolute_lifetime`.)
+        let session_lifetime = session_config
+            .idle_timeout
+            .unwrap_or(session_config.absolute_lifetime);
         let cookie_config = self.cookie_config.unwrap_or_default();
 
         // Keep a handle to the composite storage before it is consumed by the

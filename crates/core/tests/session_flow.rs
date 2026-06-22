@@ -30,7 +30,7 @@ fn fresh_manager() -> (
         Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
         audit.clone() as Arc<dyn AuditSink>,
         SessionConfig {
-            lifetime: Duration::from_secs(60 * 60),
+            absolute_lifetime: Duration::from_secs(60 * 60),
             ..SessionConfig::default()
         },
     );
@@ -66,6 +66,7 @@ fn session_active_recovery_cooldown_until_filters_expired_deadlines() {
         user_id: UserId::new(),
         token_hash: hash_token("cooldown"),
         created_at: now,
+        last_used_at: now,
         expires_at: now + ChronoDuration::hours(1),
         ip: None,
         user_agent: None,
@@ -208,7 +209,8 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
         clock.clone() as Arc<dyn Clock>,
         audit.clone() as Arc<dyn AuditSink>,
         SessionConfig {
-            lifetime: Duration::from_secs(60 * 60),
+            absolute_lifetime: Duration::from_secs(60 * 60),
+            idle_timeout: None,
             max_sessions_per_user: NonZeroU32::new(2),
         },
     );
@@ -305,7 +307,7 @@ async fn expired_session_fails_validation_and_logs() {
         clock.clone() as Arc<dyn Clock>,
         audit.clone() as Arc<dyn AuditSink>,
         SessionConfig {
-            lifetime: Duration::from_secs(60),
+            absolute_lifetime: Duration::from_secs(60),
             ..SessionConfig::default()
         },
     );
@@ -391,7 +393,7 @@ async fn list_for_user_returns_only_active_sessions_for_that_user() {
         clock.clone() as Arc<dyn Clock>,
         audit.clone() as Arc<dyn AuditSink>,
         SessionConfig {
-            lifetime: Duration::from_secs(60),
+            absolute_lifetime: Duration::from_secs(60),
             ..SessionConfig::default()
         },
     );
@@ -526,7 +528,7 @@ async fn revoke_others_for_user_sends_notice_in_core() {
         Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
         audit as Arc<dyn AuditSink>,
         SessionConfig {
-            lifetime: Duration::from_secs(60 * 60),
+            absolute_lifetime: Duration::from_secs(60 * 60),
             ..SessionConfig::default()
         },
     )
@@ -567,7 +569,7 @@ async fn revoke_owned_session_notifies_only_for_other_sessions() {
         Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
         audit as Arc<dyn AuditSink>,
         SessionConfig {
-            lifetime: Duration::from_secs(60 * 60),
+            absolute_lifetime: Duration::from_secs(60 * 60),
             ..SessionConfig::default()
         },
     )
@@ -703,7 +705,7 @@ async fn revoke_others_for_user_allowed_once_recovery_cooldown_lapses() {
             // A lifetime longer than the cool-down so the sessions survive the
             // clock advance and the action's success reflects the gate, not
             // session expiry.
-            lifetime: Duration::from_secs(60 * 60 * 24 * 7),
+            absolute_lifetime: Duration::from_secs(60 * 60 * 24 * 7),
             ..SessionConfig::default()
         },
     );
@@ -754,7 +756,7 @@ async fn revoke_owned_session_allowed_once_recovery_cooldown_lapses() {
         clock.clone() as Arc<dyn Clock>,
         audit.clone() as Arc<dyn AuditSink>,
         SessionConfig {
-            lifetime: Duration::from_secs(60 * 60 * 24 * 7),
+            absolute_lifetime: Duration::from_secs(60 * 60 * 24 * 7),
             ..SessionConfig::default()
         },
     );
@@ -823,7 +825,7 @@ async fn purge_expired_deletes_only_expired() {
         clock.clone() as Arc<dyn Clock>,
         audit.clone() as Arc<dyn AuditSink>,
         SessionConfig {
-            lifetime: Duration::from_secs(60),
+            absolute_lifetime: Duration::from_secs(60),
             ..SessionConfig::default()
         },
     );
@@ -1081,6 +1083,7 @@ async fn session_store_rejects_id_and_hash_collisions() {
         user_id: UserId::new(),
         token_hash: hash_token("abc"),
         created_at: ts(2026, 1, 1),
+        last_used_at: ts(2026, 1, 1),
         expires_at: ts(2026, 1, 1) + ChronoDuration::hours(1),
         ip: None,
         user_agent: None,

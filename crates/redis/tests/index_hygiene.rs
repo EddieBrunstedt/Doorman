@@ -49,6 +49,7 @@ fn session(user_id: UserId, token: &str, now: DateTime<Utc>) -> Session {
         user_id,
         token_hash: hash_token(token),
         created_at: now,
+        last_used_at: now,
         expires_at: now + Duration::hours(1),
         ip: None,
         user_agent: None,

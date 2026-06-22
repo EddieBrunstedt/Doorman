@@ -46,6 +46,34 @@ impl SessionStore for MongoSessionStore {
         Ok(())
     }
 
+    async fn touch_session(&self, session: &Session) -> StorageResult<()> {
+        // `update_one` without `upsert` is inherently safe against the
+        // resurrection hazard: a session deleted between resolution and touch
+        // matches no document, so the update affects zero rows rather than
+        // recreating it. The TTL index reads `expires_at`/`ttl` live, so
+        // rewriting them is all the TTL coupling MongoDB needs.
+        let filter = doc! { "_id": model::session_id_str(session.id) };
+        let mut set = doc! {
+            "last_used_at": to_bson_dt(session.last_used_at),
+            "expires_at": to_bson_dt(session.expires_at),
+        };
+        let mut update = doc! {};
+        // Mirror `session_to_doc`: the `ttl` field (which drives the TTL index)
+        // is present only for future-dated expiries. Set it when the slid
+        // deadline is in the future, otherwise drop any stale `ttl`.
+        match model::ttl_bson(session.expires_at) {
+            Some(ttl) => {
+                set.insert("ttl", ttl);
+            }
+            None => {
+                update.insert("$unset", doc! { "ttl": "" });
+            }
+        }
+        update.insert("$set", set);
+        self.coll.update_one(filter, update).await.map_err(err)?;
+        Ok(())
+    }
+
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
         let hash_bin = Bson::Binary(Binary {
             subtype: BinarySubtype::Generic,

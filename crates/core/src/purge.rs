@@ -115,6 +115,7 @@ mod tests {
             user_id,
             token_hash: TokenHash([tag; 32]),
             created_at: now - chrono::Duration::hours(2),
+            last_used_at: now - chrono::Duration::hours(2),
             expires_at,
             ip: None,
             user_agent: None,

@@ -216,6 +216,7 @@ mod tests {
             user_id: user.id,
             token_hash: hash_token("cooldown-token"),
             created_at: start,
+            last_used_at: start,
             expires_at: start + Duration::days(30),
             ip: None,
             user_agent: None,

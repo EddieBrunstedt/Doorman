@@ -50,6 +50,40 @@ impl SessionStore for RedbSessionStore {
         .map_err(db::err)?
     }
 
+    async fn touch_session(&self, session: &Session) -> StorageResult<()> {
+        let db = self.handle.db();
+        let session = session.clone();
+        tokio::task::spawn_blocking(move || {
+            let key = session.id.0.to_string();
+            let wtxn = db.begin_write().map_err(db::err)?;
+            {
+                let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
+                // Conditional write: read the row first and re-insert the slid
+                // timestamps only if it still exists. A session deleted between
+                // resolution and touch must not be resurrected, so an absent id
+                // is a no-op (never an insert). redb has no native eviction, so
+                // only the two timestamps change; the hash and user indexes
+                // already point at this id and need no update.
+                let existing = match sessions.get(key.as_str()).map_err(db::err)? {
+                    Some(guard) => Some(db::decode::<Session>(guard.value())?),
+                    None => None,
+                };
+                if let Some(mut existing) = existing {
+                    existing.last_used_at = session.last_used_at;
+                    existing.expires_at = session.expires_at;
+                    let bytes = db::encode(&existing)?;
+                    sessions
+                        .insert(key.as_str(), bytes.as_slice())
+                        .map_err(db::err)?;
+                }
+            }
+            wtxn.commit().map_err(db::err)?;
+            Ok(())
+        })
+        .await
+        .map_err(db::err)?
+    }
+
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
         let hash_hex = db::token_hash_hex(hash);
         let db = self.handle.db();

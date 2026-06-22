@@ -231,6 +231,7 @@ pub(crate) fn session_to_doc(session: &Session) -> Document {
         "user_id": session.user_id.0.to_string(),
         "token_hash": token_hash_bin,
         "created_at": to_bson_dt(session.created_at),
+        "last_used_at": to_bson_dt(session.last_used_at),
         "expires_at": to_bson_dt(session.expires_at),
     };
     if let Some(ip) = &session.ip {
@@ -254,6 +255,7 @@ pub(crate) fn session_from_doc(doc: &Document) -> StorageResult<Session> {
         user_id: UserId(get_uuid(doc, "user_id")?),
         token_hash: get_token_hash(doc, "token_hash")?,
         created_at: get_dt(doc, "created_at")?,
+        last_used_at: get_dt(doc, "last_used_at")?,
         expires_at: get_dt(doc, "expires_at")?,
         ip: get_opt_str(doc, "ip")?,
         user_agent: get_opt_str(doc, "user_agent")?,

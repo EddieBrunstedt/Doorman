@@ -33,7 +33,7 @@ fn session_manager() -> SessionManager {
         Arc::new(SystemClock) as Arc<dyn Clock>,
         Arc::new(NoopAuditSink) as Arc<dyn AuditSink>,
         SessionConfig {
-            lifetime: Duration::from_secs(60 * 60),
+            absolute_lifetime: Duration::from_secs(60 * 60),
             ..SessionConfig::default()
         },
     )

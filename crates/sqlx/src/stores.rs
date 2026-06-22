@@ -252,18 +252,41 @@ macro_rules! sqlx_stores {
                 session: $crate::stores::__reexport::Session,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at, ip, user_agent, recovery_cooldown_until)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO sessions (id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cooldown_until)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(session.id.0))
                     .bind($crate::common::uuid_to_bytes(session.user_id.0))
                     .bind($crate::common::token_hash_bytes(&session.token_hash))
                     .bind($ts(session.created_at))
+                    .bind($ts(session.last_used_at))
                     .bind($ts(session.expires_at))
                     .bind(&session.ip)
                     .bind(&session.user_agent)
                     .bind($ts(session.recovery_cooldown_until))
+                    .execute(&self.pool)
+                    .await
+                    .map_err($crate::common::storage)?;
+                Ok(())
+            }
+
+            async fn touch_session(
+                &self,
+                session: &$crate::stores::__reexport::Session,
+            ) -> $crate::stores::__reexport::StorageResult<()> {
+                // A plain `UPDATE ... WHERE id = ?` is inherently safe against
+                // the resurrection hazard: a session deleted between resolution
+                // and touch matches no row, so the update affects zero rows
+                // rather than recreating it. SQL backends have no native
+                // eviction, so only the two slid timestamps are written.
+                let sql = $ph(
+                    "UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE id = ?",
+                );
+                ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+                    .bind($ts(session.last_used_at))
+                    .bind($ts(session.expires_at))
+                    .bind($crate::common::uuid_to_bytes(session.id.0))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage)?;
@@ -277,7 +300,7 @@ macro_rules! sqlx_stores {
                 Option<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
-                    "SELECT id, user_id, token_hash, created_at, expires_at, ip, user_agent, recovery_cooldown_until
+                    "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cooldown_until
                      FROM sessions WHERE token_hash = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -295,7 +318,7 @@ macro_rules! sqlx_stores {
                 Option<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
-                    "SELECT id, user_id, token_hash, created_at, expires_at, ip, user_agent, recovery_cooldown_until
+                    "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cooldown_until
                      FROM sessions WHERE id = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -314,7 +337,7 @@ macro_rules! sqlx_stores {
                 Vec<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
-                    "SELECT id, user_id, token_hash, created_at, expires_at, ip, user_agent, recovery_cooldown_until
+                    "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cooldown_until
                      FROM sessions WHERE user_id = ? AND expires_at > ?",
                 );
                 let rows = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -397,6 +420,7 @@ macro_rules! sqlx_stores {
                 ),
                 token_hash: $crate::common::token_hash_from_bytes(&hash_bytes)?,
                 created_at: row.try_get("created_at").map_err($crate::common::storage)?,
+                last_used_at: row.try_get("last_used_at").map_err($crate::common::storage)?,
                 expires_at: row.try_get("expires_at").map_err($crate::common::storage)?,
                 ip: row.try_get("ip").map_err($crate::common::storage)?,
                 user_agent: row.try_get("user_agent").map_err($crate::common::storage)?,

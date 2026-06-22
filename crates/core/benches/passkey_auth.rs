@@ -86,7 +86,7 @@ async fn build_scaffold() -> Scaffold {
         clock.clone(),
         audit.clone(),
         SessionConfig {
-            lifetime: Duration::from_secs(60 * 60),
+            absolute_lifetime: Duration::from_secs(60 * 60),
             ..SessionConfig::default()
         },
     );

@@ -16,9 +16,10 @@
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use axum::body::Body;
-use axum::http::{HeaderMap, Request};
+use axum::http::{HeaderMap, Request, header};
 use axum::response::Response;
 use doorman_core::Error;
 use doorman_core::clock::Clock;
@@ -31,7 +32,8 @@ use tower_service::Service;
 use tracing::Instrument;
 
 use crate::cache::SessionCache;
-use crate::cookies::{bearer_token, read_cookie};
+use crate::config::CookieConfig;
+use crate::cookies::{bearer_token, read_cookie, session_cookie_with_max_age};
 use crate::csrf::{self, CsrfConfig};
 use crate::error::error_response;
 
@@ -64,7 +66,10 @@ pub struct AuthContext {
 pub(crate) struct SessionLayerState {
     pub(crate) session_manager: SessionManager,
     pub(crate) user_store: Arc<dyn UserStore>,
-    pub(crate) cookie_name: String,
+    /// Full cookie attribute set (name, Secure, SameSite, Path, …). Held so a
+    /// sliding-renewal refresh can re-emit the session cookie with every
+    /// attribute matching the one issued at login, only changing `Max-Age`.
+    pub(crate) cookie: CookieConfig,
     pub(crate) cache: SessionCache,
     pub(crate) csrf: Option<CsrfConfig>,
     pub(crate) metrics: Arc<dyn MetricSink>,
@@ -132,20 +137,34 @@ where
         );
         Box::pin(
             async move {
+                let cookie_name = &state.cookie.session_cookie_name;
                 if let Some(config) = state.csrf.as_ref()
-                    && csrf::should_reject(req.method(), req.headers(), &state.cookie_name, config)
+                    && csrf::should_reject(req.method(), req.headers(), cookie_name, config)
                 {
                     return Ok(csrf::rejection_response());
                 }
 
-                if let Some(token) = extract_token(req.headers(), &state.cookie_name) {
+                // When sliding renewal refreshes a cookie-sourced session, hold
+                // the `Set-Cookie` to append after the inner service runs so the
+                // browser's expiry tracks the slid server deadline.
+                let mut cookie_refresh: Option<axum::http::HeaderValue> = None;
+                if let Some((token, source)) = extract_token(req.headers(), cookie_name) {
                     // Hash the token exactly once per request; both the cache
                     // lookup and the on-miss validate path are keyed by hash.
                     let token_hash = hash_token(&token);
+                    let now = state.session_manager.clock().now();
+                    // A cached entry whose effective deadline has passed is
+                    // treated as a miss: the in-memory expiry re-check makes the
+                    // cache self-correcting independent of its TTL, so an expired
+                    // session is never served from a still-warm entry.
+                    let cached = state
+                        .cache
+                        .get(&token_hash)
+                        .filter(|cached| cached.session.expires_at > now);
                     // Cache hit short-circuits both the session lookup and the
                     // user-store fetch. On miss, fall through to the canonical
                     // validate path and seed the cache with the result.
-                    if let Some(cached) = state.cache.get(&token_hash) {
+                    if let Some(cached) = cached {
                         state.metrics.record(MetricEvent::CacheHit);
                         let span = tracing::Span::current();
                         span.record("session_id", tracing::field::display(cached.session.id));
@@ -191,6 +210,22 @@ where
                             state
                                 .cache
                                 .insert(token_hash, session.clone(), user.clone());
+                            // Slide the cookie only for cookie-sourced tokens and
+                            // only when an idle window is configured. Bearer
+                            // clients track expiry themselves, and with sliding
+                            // off the cookie behaviour is byte-for-byte unchanged.
+                            if source == TokenSource::Cookie
+                                && state.session_manager.idle_timeout().is_some()
+                            {
+                                let remaining = (session.expires_at - now)
+                                    .to_std()
+                                    .unwrap_or(Duration::ZERO);
+                                cookie_refresh = Some(session_cookie_with_max_age(
+                                    &state.cookie,
+                                    &token,
+                                    remaining,
+                                ));
+                            }
                             req.extensions_mut().insert(AuthContext {
                                 user,
                                 session,
@@ -200,22 +235,38 @@ where
                         }
                     }
                 }
-                inner.call(req).await
+                let mut response = inner.call(req).await?;
+                if let Some(cookie) = cookie_refresh {
+                    response.headers_mut().append(header::SET_COOKIE, cookie);
+                }
+                Ok(response)
             }
             .instrument(span),
         )
     }
 }
 
-/// Extract a session token from the request. Bearer header wins over the
-/// cookie when both are present — non-browser clients (mobile, CLI) tend
-/// to use only the header and shouldn't be tripped up by a stale cookie
-/// that happened to ride along.
-pub(crate) fn extract_token(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
+/// Where a request's session token came from. The cookie is refreshed on a
+/// slide only for [`Cookie`](TokenSource::Cookie)-sourced tokens; bearer
+/// clients manage their own token lifetime.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TokenSource {
+    Cookie,
+    Bearer,
+}
+
+/// Extract a session token (and its source) from the request. Bearer header
+/// wins over the cookie when both are present — non-browser clients (mobile,
+/// CLI) tend to use only the header and shouldn't be tripped up by a stale
+/// cookie that happened to ride along.
+pub(crate) fn extract_token(
+    headers: &HeaderMap,
+    cookie_name: &str,
+) -> Option<(String, TokenSource)> {
     if let Some(token) = bearer_token(headers) {
-        return Some(token.to_owned());
+        return Some((token.to_owned(), TokenSource::Bearer));
     }
-    read_cookie(headers, cookie_name)
+    read_cookie(headers, cookie_name).map(|token| (token, TokenSource::Cookie))
 }
 
 #[cfg(test)]
@@ -236,7 +287,7 @@ mod tests {
         );
         assert_eq!(
             extract_token(&headers, "doorman_session"),
-            Some("header-token".into())
+            Some(("header-token".into(), TokenSource::Bearer))
         );
     }
 
@@ -249,7 +300,7 @@ mod tests {
         );
         assert_eq!(
             extract_token(&headers, "doorman_session"),
-            Some("cookie-token".into())
+            Some(("cookie-token".into(), TokenSource::Cookie))
         );
     }
 
@@ -269,7 +320,7 @@ mod tests {
         );
         assert_eq!(
             extract_token(&headers, "doorman_session"),
-            Some("cookie-token".into())
+            Some(("cookie-token".into(), TokenSource::Cookie))
         );
     }
 }

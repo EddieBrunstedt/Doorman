@@ -29,7 +29,9 @@ pub struct CookieConfig {
     /// navigations but not on cross-site sub-requests.
     pub same_site: SameSite,
     /// `Max-Age` for the session cookie. Should typically match the
-    /// configured [`SessionConfig::lifetime`](doorman_core::session::SessionConfig).
+    /// configured [`SessionConfig::absolute_lifetime`](doorman_core::session::SessionConfig)
+    /// (or, when sliding renewal is on, the
+    /// [`idle_timeout`](doorman_core::session::SessionConfig::idle_timeout)).
     /// Defaults to the
     /// [`SessionConfig`](doorman_core::session::SessionConfig) default lifetime
     /// (30 days) — the figure is named once in

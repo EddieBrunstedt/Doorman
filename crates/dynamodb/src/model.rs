@@ -200,6 +200,7 @@ pub(crate) fn session_item(session: &Session) -> Item {
         client::b(session.token_hash.0.to_vec()),
     );
     put_ts(&mut item, "created_at", session.created_at);
+    put_ts(&mut item, "last_used_at", session.last_used_at);
     put_ts(&mut item, client::EXPIRES_AT, session.expires_at);
     put_opt_s(&mut item, "ip", session.ip.as_deref());
     put_opt_s(&mut item, "user_agent", session.user_agent.as_deref());
@@ -226,6 +227,7 @@ pub(crate) fn session_from_item(item: &Item) -> StorageResult<Session> {
         user_id: UserId(client::get_uuid(item, "user_id")?),
         token_hash: client::get_token_hash(item, "token_hash")?,
         created_at: client::get_ts(item, "created_at")?,
+        last_used_at: client::get_ts(item, "last_used_at")?,
         expires_at: client::get_ts(item, client::EXPIRES_AT)?,
         ip: client::get_opt_s(item, "ip")?,
         user_agent: client::get_opt_s(item, "user_agent")?,

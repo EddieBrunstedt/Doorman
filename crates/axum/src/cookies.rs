@@ -57,6 +57,28 @@ pub fn session_cookie(config: &CookieConfig, value: &str) -> HeaderValue {
     )
 }
 
+/// Build a `Set-Cookie` header value for the session cookie with an explicit
+/// `Max-Age`, rather than the configured default.
+///
+/// Used by the session layer when sliding renewal refreshes the cookie so the
+/// browser's expiry tracks the server's effective deadline
+/// (`session.expires_at - now`) instead of the fixed login `Max-Age`.
+pub fn session_cookie_with_max_age(
+    config: &CookieConfig,
+    value: &str,
+    max_age: Duration,
+) -> HeaderValue {
+    encode(
+        build_cookie(
+            &config.session_cookie_name,
+            value.to_owned(),
+            config,
+            Some(max_age),
+        )
+        .build(),
+    )
+}
+
 /// Build a `Set-Cookie` header value that clears the session cookie.
 pub fn clear_session_cookie(config: &CookieConfig) -> HeaderValue {
     encode(clear_cookie(&config.session_cookie_name, config))

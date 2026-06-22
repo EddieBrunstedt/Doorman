@@ -218,9 +218,20 @@ pub struct Session {
     pub user_id: UserId,
     /// SHA-256 hash of the bearer token; the plaintext is never stored.
     pub token_hash: TokenHash,
-    /// When the session was created.
+    /// When the session was created. The absolute anchor: the session dies
+    /// at `created_at + absolute_lifetime` regardless of activity.
     pub created_at: DateTime<Utc>,
-    /// When the session expires; enforced on read.
+    /// When the session last validated and slid its idle deadline forward.
+    /// Set to `created_at` at issuance and rewritten on each material touch.
+    /// Not consulted for enforcement — [`expires_at`](Self::expires_at) already
+    /// carries the effective deadline — but it is the "last active" field a
+    /// session listing surfaces and what makes the three-bound model legible.
+    pub last_used_at: DateTime<Utc>,
+    /// The effective, already-`min`'d expiry deadline; enforced on read with a
+    /// single `now >= expires_at` comparison. With an idle timeout configured
+    /// this is `min(created_at + absolute_lifetime, last_used_at + idle_timeout)`
+    /// and slides forward on use; without one it is `created_at + absolute_lifetime`
+    /// and never moves.
     pub expires_at: DateTime<Utc>,
     /// Client IP captured at creation, if available.
     pub ip: Option<String>,
@@ -267,6 +278,8 @@ pub struct SessionSummary {
     pub user_id: UserId,
     /// When the session was created, matching [`Session::created_at`].
     pub created_at: DateTime<Utc>,
+    /// When the session was last used, matching [`Session::last_used_at`].
+    pub last_used_at: DateTime<Utc>,
     /// When the session expires, matching [`Session::expires_at`].
     pub expires_at: DateTime<Utc>,
     /// Client IP captured at creation, mirroring [`Session::ip`].
@@ -304,6 +317,19 @@ pub trait UserStore: Send + Sync {
 pub trait SessionStore: Send + Sync {
     /// Insert a new session row.
     async fn create_session(&self, session: Session) -> StorageResult<()>;
+
+    /// Persist a slid session deadline on use. The caller passes a `session`
+    /// it has just resolved with `last_used_at` and `expires_at` already updated
+    /// to the new values; the store writes those (and, for backends with native
+    /// auto-eviction, the eviction timer) for the matching row.
+    ///
+    /// MUST be a conditional write: if no row with `session.id` currently
+    /// exists, this is a no-op returning `Ok(())`. It MUST NOT create a row —
+    /// see "the resurrection hazard" below.
+    ///
+    /// The caller treats failures as best-effort (see `validate_by_hash`): a
+    /// storage error here MUST NOT fail an otherwise-valid request.
+    async fn touch_session(&self, session: &Session) -> StorageResult<()>;
 
     /// Resolve a session by its token hash, or `None` if absent. The hot
     /// per-request lookup.
@@ -725,6 +751,7 @@ mod tests {
             user_id: UserId::new(),
             token_hash: hash_token("a-session-token"),
             created_at: ts(1_000),
+            last_used_at: ts(1_000),
             expires_at: ts(2_000),
             ip: Some("203.0.113.7".to_string()),
             user_agent: Some("doorman-test/1.0".to_string()),

@@ -52,6 +52,8 @@ pub async fn run(storage: &Storage) {
     verification_token_purge_and_delete(storage).await;
     sessions_crud_and_queries(storage).await;
     sessions_purge_expired(storage).await;
+    session_touch_slides_deadline(storage).await;
+    session_touch_does_not_resurrect(storage).await;
     passkey_credentials_cooldown_round_trip(storage).await;
     passkey_credentials_bulk_delete_for_user(storage).await;
     passkey_registration_cooldown_round_trip(storage).await;
@@ -86,6 +88,7 @@ async fn sessions_list_excludes_expired(storage: &Storage) {
         user_id,
         token_hash: hash_token(token),
         created_at: now - Duration::hours(2),
+        last_used_at: now - Duration::hours(2),
         expires_at,
         ip: None,
         user_agent: None,
@@ -424,6 +427,7 @@ async fn sessions_crud_and_queries(storage: &Storage) {
         user_id: owner,
         token_hash: hash_token(token),
         created_at: now,
+        last_used_at: now,
         expires_at: now + Duration::hours(1),
         ip: Some("203.0.113.1".into()),
         user_agent: Some("agent".into()),
@@ -537,6 +541,7 @@ async fn sessions_purge_expired(storage: &Storage) {
         user_id,
         token_hash: hash_token("expired-session"),
         created_at: now - Duration::hours(2),
+        last_used_at: now - Duration::hours(2),
         expires_at: now - Duration::hours(1),
         ip: None,
         user_agent: None,
@@ -547,6 +552,7 @@ async fn sessions_purge_expired(storage: &Storage) {
         user_id,
         token_hash: hash_token("live-session"),
         created_at: now,
+        last_used_at: now,
         expires_at: now + Duration::hours(1),
         ip: None,
         user_agent: None,
@@ -578,6 +584,159 @@ async fn sessions_purge_expired(storage: &Storage) {
             .expect("find live")
             .is_some(),
         "the live session survived the purge",
+    );
+}
+
+/// `SessionStore::touch_session` persists the slid `last_used_at` and
+/// `expires_at` for a present session — visible through both resolution paths —
+/// while leaving every other field unchanged.
+async fn session_touch_slides_deadline(storage: &Storage) {
+    let created_at = ts(2026, 1, 1);
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "touch-slide@example.com"))
+        .await
+        .expect("user");
+
+    let sessions = &storage.sessions;
+    let token_hash = hash_token("touch-slide");
+    let original = Session {
+        id: SessionId::new(),
+        user_id,
+        token_hash,
+        created_at,
+        last_used_at: created_at,
+        // Future-dated so the row is never evicted out from under the read
+        // assertions on TTL-bearing backends.
+        expires_at: ts(2099, 1, 1),
+        ip: Some("203.0.113.9".into()),
+        user_agent: Some("touch-agent".into()),
+        recovery_cooldown_until: Some(ts(2099, 6, 1)),
+    };
+    sessions
+        .create_session(original.clone())
+        .await
+        .expect("create session");
+
+    let new_last_used_at = ts(2026, 2, 1);
+    let new_expires_at = ts(2099, 3, 1);
+    let slid = Session {
+        last_used_at: new_last_used_at,
+        expires_at: new_expires_at,
+        ..original.clone()
+    };
+    sessions.touch_session(&slid).await.expect("touch session");
+
+    // Both resolution paths reflect the slid timestamps.
+    let by_id = sessions
+        .find_session_by_id(original.id)
+        .await
+        .expect("find by id")
+        .expect("session present after touch");
+    assert_eq!(by_id.last_used_at, new_last_used_at, "last_used_at slid");
+    assert_eq!(by_id.expires_at, new_expires_at, "expires_at slid");
+
+    let by_hash = sessions
+        .find_session_by_token_hash(&token_hash)
+        .await
+        .expect("find by hash")
+        .expect("session present after touch by hash");
+    assert_eq!(by_hash.last_used_at, new_last_used_at);
+    assert_eq!(by_hash.expires_at, new_expires_at);
+
+    // Every other field is untouched.
+    assert_eq!(by_id.id, original.id);
+    assert_eq!(by_id.token_hash, original.token_hash);
+    assert_eq!(by_id.created_at, original.created_at);
+    assert_eq!(by_id.ip, original.ip);
+    assert_eq!(by_id.user_agent, original.user_agent);
+    assert_eq!(
+        by_id.recovery_cooldown_until,
+        original.recovery_cooldown_until,
+    );
+
+    sessions
+        .delete_session(original.id)
+        .await
+        .expect("cleanup session");
+}
+
+/// Anti-resurrection: touching a session id that does not exist (deleted, or
+/// never created) returns `Ok` and MUST NOT create a row. This is the security
+/// contract that stops a touch racing a revoke from bringing a session back.
+async fn session_touch_does_not_resurrect(storage: &Storage) {
+    let created_at = ts(2026, 1, 1);
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "touch-resurrect@example.com"))
+        .await
+        .expect("user");
+
+    let sessions = &storage.sessions;
+
+    // Case 1: an id that was never created.
+    let phantom = Session {
+        id: SessionId::new(),
+        user_id,
+        token_hash: hash_token("touch-never-created"),
+        created_at,
+        last_used_at: created_at,
+        expires_at: ts(2099, 1, 1),
+        ip: None,
+        user_agent: None,
+        recovery_cooldown_until: None,
+    };
+    sessions
+        .touch_session(&phantom)
+        .await
+        .expect("touch of never-created id is Ok");
+    assert!(
+        sessions
+            .find_session_by_id(phantom.id)
+            .await
+            .expect("find never-created")
+            .is_none(),
+        "touching a never-created id must not create a row",
+    );
+
+    // Case 2: an id created then deleted, touched afterwards.
+    let revoked = Session {
+        token_hash: hash_token("touch-after-delete"),
+        ..phantom.clone()
+    };
+    let revoked = Session {
+        id: SessionId::new(),
+        ..revoked
+    };
+    sessions
+        .create_session(revoked.clone())
+        .await
+        .expect("create revoked");
+    sessions
+        .delete_session(revoked.id)
+        .await
+        .expect("delete revoked");
+    sessions
+        .touch_session(&revoked)
+        .await
+        .expect("touch of deleted id is Ok");
+    assert!(
+        sessions
+            .find_session_by_id(revoked.id)
+            .await
+            .expect("find deleted")
+            .is_none(),
+        "touching a deleted id must not resurrect the session",
+    );
+    assert!(
+        sessions
+            .find_session_by_token_hash(&revoked.token_hash)
+            .await
+            .expect("find deleted by hash")
+            .is_none(),
+        "the resurrected row must not be reachable by token hash either",
     );
 }
 

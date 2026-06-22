@@ -178,7 +178,7 @@ impl HarnessBuilder {
             signup: signup_config(),
             recovery: recovery_config(),
             session_config: SessionConfig {
-                lifetime: Duration::from_secs(60 * 60),
+                absolute_lifetime: Duration::from_secs(60 * 60),
                 ..SessionConfig::default()
             },
             passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
@@ -392,6 +392,7 @@ fn plain_session(h: &Harness, user_id: UserId, cooldown: Option<DateTime<Utc>>) 
         user_id,
         token_hash: hash_token("test-session-token"),
         created_at: now,
+        last_used_at: now,
         expires_at: now + chrono::Duration::hours(1),
         ip: None,
         user_agent: None,
