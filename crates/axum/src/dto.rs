@@ -146,7 +146,7 @@ fn device_label(ua: &str) -> Option<String> {
 /// session cookie on the same response, so browser clients can ignore
 /// the body field; non-browser clients (mobile, CLI) read it instead
 /// of trying to manage cookies.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AuthResponse {
     /// The authenticated user.
     pub user: UserDto,
@@ -154,6 +154,19 @@ pub struct AuthResponse {
     pub session: SessionDto,
     /// Raw bearer token, also set as an HttpOnly cookie on the same response.
     pub token: String,
+}
+
+impl std::fmt::Debug for AuthResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `token` is a live bearer credential; redact it from Debug so it
+        // cannot leak via an accidental `?response`. It still serializes
+        // normally over the wire — redaction only affects `Debug`.
+        f.debug_struct("AuthResponse")
+            .field("user", &self.user)
+            .field("session", &self.session)
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 impl AuthResponse {
@@ -390,6 +403,39 @@ mod tests {
             user_agent: ua.map(ToOwned::to_owned),
             recovery_cooldown_until: None,
         }
+    }
+
+    /// The raw bearer token rides `AuthResponse` so non-cookie clients can
+    /// read it, but it must never render through `Debug` — an accidental
+    /// `?response` in a handler log would otherwise leak a live credential.
+    /// Serialization is unaffected; only `Debug` is redacted.
+    #[test]
+    fn auth_response_debug_redacts_token() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+            .single()
+            .expect("valid timestamp");
+        let response = AuthResponse {
+            user: UserDto {
+                id: UserId::new(),
+                email: Some("user@example.com".to_string()),
+                email_verified: true,
+                created_at: now,
+                passkey_count: 1,
+            },
+            session: SessionDto::from_session(&session_with_ua(None), true),
+            token: "super-secret-bearer-token".to_string(),
+        };
+
+        let rendered = format!("{response:?}");
+        assert!(
+            !rendered.contains("super-secret-bearer-token"),
+            "Debug output leaked the cleartext token: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"), "expected redaction marker");
+        // Serialization still carries the real token for non-cookie clients.
+        let json = serde_json::to_string(&response).expect("serialize");
+        assert!(json.contains("super-secret-bearer-token"));
     }
 
     #[test]

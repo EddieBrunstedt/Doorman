@@ -79,10 +79,12 @@ pub struct AuthSession {
 impl std::fmt::Debug for AuthSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // `Clock` is not `Debug`; omit it rather than require the bound.
+        // `token` is a live bearer credential — redact it so it cannot leak
+        // into logs via an accidental `?session`.
         f.debug_struct("AuthSession")
             .field("user", &self.user)
             .field("session", &self.session)
-            .field("token", &self.token)
+            .field("token", &"<redacted>")
             .finish_non_exhaustive()
     }
 }
@@ -235,5 +237,55 @@ mod tests {
         // past the deadline and it reports inactive.
         clock.advance(Duration::hours(24) + Duration::seconds(1));
         assert!(!auth.is_in_recovery_cooldown());
+    }
+
+    /// `AuthSession` carries the raw bearer token so self-logout can revoke
+    /// the current session, but its `Debug` must redact it — an accidental
+    /// `?session` in a handler log would otherwise leak a live credential.
+    #[test]
+    fn auth_session_debug_redacts_token() {
+        use chrono::{Duration, TimeZone, Utc};
+        use doorman_core::storage::{AccountStatus, Session, SessionId, UserId};
+        use doorman_core::token::hash_token;
+        use doorman_test_support::MockClock;
+
+        let start = Utc
+            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+            .single()
+            .expect("valid timestamp");
+        let user = User {
+            id: UserId::new(),
+            email: Some("alice@example.com".into()),
+            email_verified_at: Some(start),
+            status: AccountStatus::Active,
+            created_at: start,
+            updated_at: start,
+        };
+        let session = Session {
+            id: SessionId::new(),
+            user_id: user.id,
+            token_hash: hash_token("super-secret-bearer-token"),
+            created_at: start,
+            last_used_at: start,
+            expires_at: start + Duration::days(30),
+            ip: None,
+            user_agent: None,
+            recovery_cooldown_until: None,
+        };
+        let auth = AuthSession {
+            user: Arc::new(user),
+            session: Arc::new(session),
+            token: "super-secret-bearer-token".into(),
+            clock: Arc::new(MockClock::new(start)),
+        };
+
+        let rendered = format!("{auth:?}");
+        assert!(
+            !rendered.contains("super-secret-bearer-token"),
+            "Debug output leaked the cleartext token: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"), "expected redaction marker");
+        // The token is still readable through the public field for revoke.
+        assert_eq!(auth.token, "super-secret-bearer-token");
     }
 }
