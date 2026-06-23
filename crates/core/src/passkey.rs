@@ -1141,7 +1141,7 @@ fn require_discoverable_credential(ccr: &mut CreationChallengeResponse) -> Resul
         .authenticator_selection
         .as_mut()
         .ok_or_else(|| {
-            Error::Webauthn("passkey registration is missing authenticator selection".to_string())
+            Error::Internal("passkey registration is missing authenticator selection".to_string())
         })?;
     selection.require_resident_key = true;
     selection.resident_key = Some(ResidentKeyRequirement::Required);
@@ -1187,32 +1187,32 @@ pub(crate) fn build_webauthn(config: &PasskeyConfig) -> Result<Webauthn> {
 }
 
 fn encode_credential(passkey: &Passkey) -> Result<Vec<u8>> {
-    serde_json::to_vec(passkey).map_err(|e| Error::Webauthn(format!("serialise credential: {e}")))
+    serde_json::to_vec(passkey).map_err(|e| Error::Internal(format!("serialise credential: {e}")))
 }
 
 pub(crate) fn decode_credential(bytes: &[u8]) -> Result<Passkey> {
     serde_json::from_slice(bytes)
-        .map_err(|e| Error::Webauthn(format!("deserialise credential: {e}")))
+        .map_err(|e| Error::Internal(format!("deserialise credential: {e}")))
 }
 
 fn encode_registration_state(state: &PasskeyRegistration) -> Result<Vec<u8>> {
     serde_json::to_vec(state)
-        .map_err(|e| Error::Webauthn(format!("serialise registration state: {e}")))
+        .map_err(|e| Error::Internal(format!("serialise registration state: {e}")))
 }
 
 fn decode_registration_state(bytes: &[u8]) -> Result<PasskeyRegistration> {
     serde_json::from_slice(bytes)
-        .map_err(|e| Error::Webauthn(format!("deserialise registration state: {e}")))
+        .map_err(|e| Error::Internal(format!("deserialise registration state: {e}")))
 }
 
 fn encode_authentication_state(state: &DiscoverableAuthentication) -> Result<Vec<u8>> {
     serde_json::to_vec(state)
-        .map_err(|e| Error::Webauthn(format!("serialise authentication state: {e}")))
+        .map_err(|e| Error::Internal(format!("serialise authentication state: {e}")))
 }
 
 fn decode_authentication_state(bytes: &[u8]) -> Result<DiscoverableAuthentication> {
     serde_json::from_slice(bytes)
-        .map_err(|e| Error::Webauthn(format!("deserialise authentication state: {e}")))
+        .map_err(|e| Error::Internal(format!("deserialise authentication state: {e}")))
 }
 
 /// Encode the allow-list-scoped [`PasskeyAuthentication`] ceremony state used
@@ -1223,12 +1223,12 @@ fn decode_authentication_state(bytes: &[u8]) -> Result<DiscoverableAuthenticatio
 pub(crate) fn encode_passkey_authentication_state(
     state: &PasskeyAuthentication,
 ) -> Result<Vec<u8>> {
-    serde_json::to_vec(state).map_err(|e| Error::Webauthn(format!("serialise reauth state: {e}")))
+    serde_json::to_vec(state).map_err(|e| Error::Internal(format!("serialise reauth state: {e}")))
 }
 
 pub(crate) fn decode_passkey_authentication_state(bytes: &[u8]) -> Result<PasskeyAuthentication> {
     serde_json::from_slice(bytes)
-        .map_err(|e| Error::Webauthn(format!("deserialise reauth state: {e}")))
+        .map_err(|e| Error::Internal(format!("deserialise reauth state: {e}")))
 }
 
 pub(crate) fn challenge_lifetime(d: Duration) -> chrono::Duration {

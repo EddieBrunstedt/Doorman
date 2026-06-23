@@ -75,9 +75,19 @@ pub enum Error {
     #[error("passkey ceremony did not include user verification")]
     UserVerificationRequired,
 
-    /// A WebAuthn ceremony failed verification for some other reason.
+    /// A WebAuthn ceremony failed verification for some other reason. This is a
+    /// client-facing rejection of the presented assertion/registration; the
+    /// detail comes from `webauthn-rs` and is safe to surface.
     #[error("webauthn ceremony failed: {0}")]
     Webauthn(String),
+
+    /// An internal invariant broke — e.g. a stored opaque blob (credential or
+    /// ceremony state) failed to (de)serialise, or a library handle we built
+    /// ourselves returned an unexpected shape. The caller did nothing wrong, so
+    /// this maps to a server error and the detail is for operators, not clients
+    /// (the HTTP layer logs it and returns an opaque message).
+    #[error("internal error: {0}")]
+    Internal(String),
 
     /// The relying-party configuration (origin / rp_id / rp_name) is invalid.
     #[error("invalid relying party configuration: {0}")]

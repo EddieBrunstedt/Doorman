@@ -93,6 +93,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::PasskeyPossibleCompromise => (StatusCode::FORBIDDEN, "passkey_possible_compromise"),
         Error::UserVerificationRequired => (StatusCode::BAD_REQUEST, "user_verification_required"),
         Error::Webauthn(_) => (StatusCode::BAD_REQUEST, "webauthn_error"),
+        Error::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         Error::InvalidRelyingParty(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "invalid_relying_party")
         }
@@ -199,6 +200,11 @@ mod tests {
                 "webauthn_error",
             ),
             (
+                Error::Internal("x".to_owned()),
+                S::INTERNAL_SERVER_ERROR,
+                "internal_error",
+            ),
+            (
                 Error::InvalidRelyingParty("x".to_owned()),
                 S::INTERNAL_SERVER_ERROR,
                 "invalid_relying_party",
@@ -250,6 +256,26 @@ mod tests {
         );
         assert!(
             body.contains("storage_error"),
+            "stable code missing from body: {body}"
+        );
+    }
+
+    /// `Error::Internal` carries opaque-blob (de)serialisation detail meant for
+    /// operators only; like other 5xx it must be coarsened, never surfaced.
+    #[test]
+    fn internal_variant_does_not_leak_detail() {
+        let secret = "deserialise credential: unexpected token at byte 0xdeadbeef";
+        let response = error_response(&Error::Internal(secret.to_owned()));
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let bytes = body_bytes(response);
+        let body = std::str::from_utf8(&bytes).expect("utf8 body");
+        assert!(
+            !body.contains("deadbeef") && !body.contains("deserialise credential"),
+            "internal detail leaked into response body: {body}"
+        );
+        assert!(
+            body.contains("internal_error"),
             "stable code missing from body: {body}"
         );
     }
