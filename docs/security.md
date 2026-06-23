@@ -119,10 +119,13 @@ The challenge is scoped to the session user's own credentials (the allow-list-sc
 
 - Session tokens are 256 bits of OS-CSPRNG output, URL-safe base64 encoded.
 - Only SHA-256 token hashes are persisted.
-- In-process token-hash equality is constant-time (`subtle`).
+- In-process token-hash equality is constant-time (`subtle`), so a comparison cannot leak the matched-prefix length through timing.
+- The cleartext bearer token is **redacted from `Debug`**. The types that briefly carry it — `IssuedSession` in the core, `AuthSession` and `AuthResponse` in `doorman-axum` — render the field as `<redacted>`, so an accidental `tracing::debug!(?session)` cannot spill a live credential into logs. Serialization (the JSON response body) is unaffected; only `Debug` is redacted.
 - Expiry is enforced server-side.
 - Revocation is immediate because sessions are opaque server-side rows, not self-contained bearer claims.
 - The Axum layer accepts either the HttpOnly cookie or an `Authorization: Bearer` token, parsed through one shared bearer-token helper so the session and CSRF layers agree on what counts as bearer auth.
+
+**In-memory secret zeroization is a deliberate non-goal.** doorman does not scrub cleartext tokens from memory on drop (no `zeroize`). A freshly minted bearer token necessarily propagates into buffers the library does not own — the JSON response body, the `Set-Cookie` header, the runtime's TLS/socket buffers — so zeroizing only the library's own copy would leave the same secret resident elsewhere and buy partial, easily-overstated coverage at the cost of a `zeroize` type in the public API. The load-bearing controls are the ones above: hash-at-rest (a memory or database snapshot yields no usable token), constant-time comparison, redacted `Debug`, single-use semantics, and high entropy. A host with a hard in-memory-secret-scrubbing requirement is operating a threat model (defending against a same-host memory-disclosure attacker) that this paragraph and the "compromised host process" exclusion in the threat model place out of scope.
 
 On the DynamoDB adapter, bulk revocation — "log out everywhere", "sign out everywhere else", account deletion, and recovery's other-session sweep — is best-effort under write-after-write. Those paths enumerate the user's sessions (and verification tokens and registration ceremonies) through an eventually-consistent `owner-index` GSI, so a row created moments before the revoke may not yet be visible to the GSI and can survive it; it is reclaimed on a later revoke or by the expiry purge / native TTL. Single-session revocation and expiry are unaffected. Hosts that need hard, immediate "revoke all" should prefer a SQL system-of-record for sessions (which deletes by the authoritative table in one statement), optionally paired with Redis for ephemerals.
 
