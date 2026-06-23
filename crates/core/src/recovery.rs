@@ -311,7 +311,6 @@ impl RecoveryManager {
             self.flow
                 .audit_recovery_failed(None, RecoveryFailureReason::UnknownEmail, &context)
                 .await;
-            tracing::info!(outcome = "unknown_email", "recovery request (silent)");
             return Ok(());
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
@@ -332,10 +331,6 @@ impl RecoveryManager {
                     &context,
                 )
                 .await;
-            tracing::info!(
-                outcome = "account_disabled",
-                "recovery request refused (silent)"
-            );
             return Ok(());
         }
 
@@ -377,7 +372,6 @@ impl RecoveryManager {
                 },
             )
             .await;
-        tracing::info!(outcome = "sent", "recovery email sent");
         Ok(())
     }
 

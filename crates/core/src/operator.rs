@@ -34,7 +34,7 @@
 use std::sync::Arc;
 
 use crate::account::AccountManager;
-use crate::audit::{Actor, AuditEvent, AuditEventKind, AuditSink, OperatorActor};
+use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, OperatorActor};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
@@ -120,7 +120,7 @@ pub struct OperatorManager {
     account: AccountManager,
     notifier: SecurityEmailNotifier,
     clock: Arc<dyn Clock>,
-    audit: Arc<dyn AuditSink>,
+    audit: AuditDispatch,
     notifications: NotificationPolicy,
 }
 
@@ -212,7 +212,6 @@ impl OperatorManager {
             .delete_registrations_for_user(target_user_id)
             .await?;
 
-        tracing::info!(outcome = "deleted", "operator account delete");
         Ok(())
     }
 
@@ -264,11 +263,12 @@ impl OperatorManager {
         // The underlying revoke-all primitive is silent, so the bulk-revoke
         // accountability row is emitted here, exactly as `revoke_all_sessions`
         // does for the standalone flow.
-        self.sessions.revoke_all_for_user(target_user_id).await?;
+        let revoked_count = self.sessions.revoke_all_for_user(target_user_id).await?;
         self.emit_operator(
             actor.clone(),
             AuditEventKind::OperatorRevokedAllSessions {
                 user_id: target_user_id,
+                revoked_count,
             },
         )
         .await;
@@ -285,7 +285,6 @@ impl OperatorManager {
             self.notifier.operator_account_disabled(&user).await;
         }
 
-        tracing::info!(outcome = "disabled", "operator account disable");
         Ok(())
     }
 
@@ -323,7 +322,6 @@ impl OperatorManager {
         )
         .await;
 
-        tracing::info!(outcome = "enabled", "operator account enable");
         Ok(())
     }
 
@@ -387,7 +385,6 @@ impl OperatorManager {
             )
             .await?;
 
-        tracing::info!(outcome = "removed", "operator passkey remove");
         Ok(())
     }
 
@@ -435,6 +432,7 @@ impl OperatorManager {
             actor,
             AuditEventKind::OperatorRevokedAllSessions {
                 user_id: target_user_id,
+                revoked_count: count,
             },
         )
         .await;
@@ -443,11 +441,6 @@ impl OperatorManager {
             self.notifier.operator_sessions_revoked(&user).await;
         }
 
-        tracing::info!(
-            count,
-            outcome = "revoked_all",
-            "operator session revoke-all"
-        );
         Ok(count)
     }
 
@@ -477,7 +470,6 @@ impl OperatorManager {
             .revoke_session_for_target(target_user_id, session_id, Actor::Operator(actor))
             .await?;
 
-        tracing::info!(outcome = "revoked", "operator session revoke");
         Ok(())
     }
 

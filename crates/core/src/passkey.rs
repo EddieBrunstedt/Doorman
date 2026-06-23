@@ -27,7 +27,7 @@ use webauthn_rs::prelude::{
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
 
-use crate::audit::{Actor, AuditEvent, AuditEventKind, AuditSink, AuthFailureReason};
+use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, AuthFailureReason};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
@@ -210,7 +210,7 @@ pub struct PasskeyManager {
     sessions: SessionManager,
     reauth: ReauthManager,
     clock: Arc<dyn Clock>,
-    audit: Arc<dyn AuditSink>,
+    audit: AuditDispatch,
     notifier: SecurityEmailNotifier,
     rate_limiter: Arc<dyn RateLimiter>,
     metrics: Arc<dyn MetricSink>,
@@ -274,8 +274,9 @@ impl PasskeyManager {
         &self.clock
     }
 
-    /// Borrow the audit sink, so the enrollment flow emits to the same one.
-    pub(crate) fn audit(&self) -> &Arc<dyn AuditSink> {
+    /// Borrow the audit dispatch, so the enrollment flow emits (and traces)
+    /// through the same one.
+    pub(crate) fn audit(&self) -> &AuditDispatch {
         &self.audit
     }
 
@@ -562,7 +563,6 @@ impl PasskeyManager {
                 .passkey_registered(&user, credential.name.as_deref())
                 .await;
         }
-        tracing::info!(outcome = "registered", "passkey registered");
         Ok(credential)
     }
 
@@ -704,13 +704,11 @@ impl PasskeyManager {
         let Some(stored) = self.challenges.take_authentication(challenge_id).await? else {
             self.emit_auth_failure(now, &context, None, AuthFailureReason::InvalidChallenge)
                 .await;
-            tracing::warn!(outcome = "invalid_challenge", "passkey login failed");
             return Err(Error::InvalidPasskeyChallenge);
         };
         if stored.expires_at <= now {
             self.emit_auth_failure(now, &context, None, AuthFailureReason::ExpiredChallenge)
                 .await;
-            tracing::warn!(outcome = "expired_challenge", "passkey login failed");
             return Err(Error::InvalidPasskeyChallenge);
         }
 
@@ -722,7 +720,6 @@ impl PasskeyManager {
         else {
             self.emit_auth_failure(now, &context, None, AuthFailureReason::UnknownCredential)
                 .await;
-            tracing::warn!(outcome = "credential_not_found", "passkey login failed");
             return Err(Error::PasskeyNotFound);
         };
 
@@ -743,7 +740,6 @@ impl PasskeyManager {
                     AuthFailureReason::UserHandleMismatch,
                 )
                 .await;
-                tracing::warn!(outcome = "user_handle_unverified", "passkey login failed");
                 return Err(Error::PasskeyOwnershipMismatch);
             }
         }
@@ -771,7 +767,6 @@ impl PasskeyManager {
                     AuthFailureReason::CounterRegression,
                 )
                 .await;
-                tracing::warn!(outcome = "counter_regression", "passkey login failed");
                 return Err(Error::PasskeyPossibleCompromise);
             }
             Err(e) => {
@@ -782,7 +777,6 @@ impl PasskeyManager {
                     AuthFailureReason::BadAssertion,
                 )
                 .await;
-                tracing::warn!(outcome = "bad_assertion", "passkey login failed");
                 return Err(Error::Webauthn(e.to_string()));
             }
         };
@@ -795,10 +789,6 @@ impl PasskeyManager {
                 AuthFailureReason::UserVerificationMissing,
             )
             .await;
-            tracing::warn!(
-                outcome = "user_verification_missing",
-                "passkey login failed"
-            );
             return Err(Error::UserVerificationRequired);
         }
 
@@ -831,7 +821,6 @@ impl PasskeyManager {
             })
             .await;
 
-        tracing::info!(outcome = "succeeded", "passkey login succeeded");
         match active_recovery_cooldown_until {
             Some(cooldown_until) => {
                 self.sessions
@@ -980,7 +969,6 @@ impl PasskeyManager {
                 kind: AuditEventKind::CredentialRenamed { user_id },
             })
             .await;
-        tracing::info!(outcome = "renamed", "passkey renamed");
         Ok(credential)
     }
 
@@ -1041,7 +1029,6 @@ impl PasskeyManager {
                 PasskeyRemovalNotice::Suppressed => {}
             }
         }
-        tracing::info!(outcome = "removed", "passkey removed");
         Ok(())
     }
 }

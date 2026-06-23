@@ -485,7 +485,7 @@ async fn operator_revoke_all_emits_audit_with_operator_actor() {
         .find(|e| {
             matches!(
                 e.kind,
-                AuditEventKind::OperatorRevokedAllSessions { user_id } if user_id == user.id
+                AuditEventKind::OperatorRevokedAllSessions { user_id, .. } if user_id == user.id
             )
         })
         .expect("an OperatorRevokedAllSessions event was emitted");
@@ -675,7 +675,7 @@ async fn operator_disable_emits_status_and_revoke_audit_with_operator_actor() {
     assert!(
         h.audit.events().iter().any(|e| matches!(
             e.kind,
-            AuditEventKind::OperatorRevokedAllSessions { user_id } if user_id == user.id
+            AuditEventKind::OperatorRevokedAllSessions { user_id, .. } if user_id == user.id
         )),
         "the session sweep emits OperatorRevokedAllSessions",
     );

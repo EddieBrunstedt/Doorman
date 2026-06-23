@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::audit::{Actor, AuditEvent, AuditEventKind, AuditSink};
+use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::{Email, EmailSender, EmailTemplates};
@@ -88,7 +88,7 @@ pub struct AccountManager {
     sessions: SessionManager,
     reauth: ReauthManager,
     clock: Arc<dyn Clock>,
-    audit: Arc<dyn AuditSink>,
+    audit: AuditDispatch,
     email: Arc<dyn EmailSender>,
     emails: Arc<dyn EmailTemplates>,
     config: AccountConfig,
@@ -223,7 +223,6 @@ impl AccountManager {
             AuditEventKind::EmailChangeRequested { user_id: user.id },
         )
         .await;
-        tracing::info!(outcome = "requested", "email change requested");
         Ok(())
     }
 
@@ -279,7 +278,6 @@ impl AccountManager {
             AuditEventKind::EmailChangeCompleted { user_id: user.id },
         )
         .await;
-        tracing::info!(outcome = "completed", "email change completed");
         Ok(user)
     }
 
@@ -365,7 +363,6 @@ impl AccountManager {
                 kind: AuditEventKind::AccountDeleted { user_id },
             })
             .await;
-        tracing::info!(outcome = "deleted", "account deleted");
         Ok(())
     }
 }

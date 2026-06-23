@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use crate::audit::AuditSink;
+use crate::audit::{AuditDispatch, AuditSink};
 use crate::clock::Clock;
 use crate::email::{EmailSender, EmailTemplates, SecurityEmailNotifier};
 use crate::metrics::{MetricSink, NoopMetricSink};
@@ -42,8 +42,11 @@ use crate::storage::{
 pub struct CoreDeps {
     /// Clock used for every timestamp and expiry comparison.
     pub clock: Arc<dyn Clock>,
-    /// Sink that receives security audit events.
-    pub audit: Arc<dyn AuditSink>,
+    /// Dispatch that traces every audit event on the `doorman::audit` target
+    /// and forwards it to the host's sink. The raw [`AuditSink`] is wrapped
+    /// here (at [`new`](Self::new)) and never exposed, so a manager cannot emit
+    /// to the sink without the matching tracing line.
+    pub audit: AuditDispatch,
     /// Transport for signup / recovery links and best-effort security
     /// notifications.
     pub email: Arc<dyn EmailSender>,
@@ -113,7 +116,7 @@ impl CoreDeps {
     ) -> Self {
         Self {
             clock,
-            audit,
+            audit: AuditDispatch::new(audit),
             email,
             emails,
             notifier,

@@ -4,6 +4,10 @@
 //! Hosts provide an [`AuditSink`] that persists or forwards them to a
 //! durable log; [`NoopAuditSink`] exists only as a development default.
 
+use std::fmt;
+use std::fmt::Write as _;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -255,16 +259,19 @@ pub enum AuditEventKind {
         reason: ReauthFailureReason,
     },
     /// An operator revoked **every** session belonging to a user at once
-    /// (the bulk "sign the account out everywhere" operator flow). Carries
-    /// only the subject's `user_id` — the flow is a set delete with no single
-    /// `session_id` to name, mirroring [`AccountDeleted`](Self::AccountDeleted)
-    /// rather than the per-session [`SessionRevoked`](Self::SessionRevoked).
-    /// The self-service bulk revoke is silent; only the operator path records
-    /// this row, so the [`Actor::Operator`] it carries is the accountability
-    /// trail for the most consequential operator mutation.
+    /// (the bulk "sign the account out everywhere" operator flow). The flow is
+    /// a set delete with no single `session_id` to name, mirroring
+    /// [`AccountDeleted`](Self::AccountDeleted) rather than the per-session
+    /// [`SessionRevoked`](Self::SessionRevoked); `revoked_count` records how
+    /// many were swept so the row carries the scale of the action and not just
+    /// that it happened. The self-service bulk revoke is silent; only the
+    /// operator path records this row, so the [`Actor::Operator`] it carries is
+    /// the accountability trail for the most consequential operator mutation.
     OperatorRevokedAllSessions {
         /// The user whose sessions were all revoked.
         user_id: UserId,
+        /// How many live sessions the sweep deleted.
+        revoked_count: u64,
     },
     /// An operator disabled an account, freezing it: a reversible hold that
     /// both auth and recovery refuse until it is re-enabled. The disable flow
@@ -306,6 +313,65 @@ pub enum AuditEventKind {
         /// The user whose sessions were listed.
         user_id: UserId,
     },
+}
+
+/// Relative severity of an [`AuditEventKind`], used by [`AuditDispatch`] to
+/// pick the tracing level for the event's log line: failed, rejected, or
+/// expired attempts warn; everything else is informational.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditSeverity {
+    /// Routine or successful activity.
+    Info,
+    /// A failed, rejected, or expired attempt worth surfacing at `warn`.
+    Warn,
+}
+
+impl AuditEventKind {
+    /// The *subject* this event concerns, when one has been resolved. Lifted to
+    /// a flat field on the `doorman::audit` tracing line so a log backend can
+    /// filter by user without parsing the event payload. `None` for the
+    /// pre-resolution failures and for [`SignupDenied`](Self::SignupDenied),
+    /// which fires before any user is provisioned.
+    pub fn user_id(&self) -> Option<UserId> {
+        match self {
+            Self::SessionCreated { user_id, .. }
+            | Self::SessionRevoked { user_id, .. }
+            | Self::SessionExpired { user_id, .. }
+            | Self::LoginSucceeded { user_id }
+            | Self::CredentialAdded { user_id }
+            | Self::CredentialRemoved { user_id }
+            | Self::CredentialRenamed { user_id }
+            | Self::SignupRequested { user_id }
+            | Self::SignupConsumed { user_id }
+            | Self::RecoveryConsumed { user_id }
+            | Self::EmailChangeRequested { user_id }
+            | Self::EmailChangeCompleted { user_id }
+            | Self::AccountDeleted { user_id }
+            | Self::ReauthSucceeded { user_id }
+            | Self::ReauthFailed { user_id, .. }
+            | Self::OperatorRevokedAllSessions { user_id, .. }
+            | Self::OperatorDisabledAccount { user_id }
+            | Self::OperatorEnabledAccount { user_id }
+            | Self::OperatorListedPasskeys { user_id }
+            | Self::OperatorListedSessions { user_id } => Some(*user_id),
+            Self::AuthenticationFailed { user_id, .. }
+            | Self::RecoveryRequested { user_id }
+            | Self::RecoveryFailed { user_id, .. } => *user_id,
+            Self::SignupDenied => None,
+        }
+    }
+
+    /// Severity used to pick the tracing level for this event's audit log line.
+    pub fn severity(&self) -> AuditSeverity {
+        match self {
+            Self::AuthenticationFailed { .. }
+            | Self::RecoveryFailed { .. }
+            | Self::ReauthFailed { .. }
+            | Self::SessionExpired { .. }
+            | Self::SignupDenied => AuditSeverity::Warn,
+            _ => AuditSeverity::Info,
+        }
+    }
 }
 
 /// Why a passkey authentication attempt did not succeed. Pairs with
@@ -401,4 +467,109 @@ pub struct NoopAuditSink;
 #[async_trait]
 impl AuditSink for NoopAuditSink {
     async fn emit(&self, _event: AuditEvent) {}
+}
+
+/// The single seam every audit event passes through.
+///
+/// Wrapping the [`AuditSink`] (kept private) makes *audit-without-tracing*
+/// unrepresentable: [`emit`](Self::emit) always writes a structured line on the
+/// `doorman::audit` tracing target **and** forwards the event to the sink, so
+/// an audit event can never be recorded without a matching log line — even a
+/// [`NoopAuditSink`] still leaves a tracing trail. Managers hold this rather
+/// than a bare `Arc<dyn AuditSink>`, so no code path can reach the sink to emit
+/// without the trace.
+#[derive(Clone)]
+pub struct AuditDispatch {
+    sink: Arc<dyn AuditSink>,
+}
+
+impl AuditDispatch {
+    /// Wrap a host [`AuditSink`] in the tracing-plus-emit dispatch.
+    pub fn new(sink: Arc<dyn AuditSink>) -> Self {
+        Self { sink }
+    }
+
+    /// Trace the event on the `doorman::audit` target, then forward it to the
+    /// sink. The level comes from [`AuditEventKind::severity`]; the subject
+    /// ([`user_id`](AuditEventKind::user_id)) and the actor are lifted to flat
+    /// fields. The actor's host-supplied (and never doorman-verified) operator /
+    /// network metadata is escaped before it is written, so it cannot forge log
+    /// structure.
+    pub async fn emit(&self, event: AuditEvent) {
+        let actor = ActorDisplay(&event.actor);
+        let user_id = event.kind.user_id();
+        match event.kind.severity() {
+            AuditSeverity::Info => tracing::info!(
+                target: "doorman::audit",
+                kind = ?event.kind,
+                user_id = ?user_id,
+                %actor,
+            ),
+            AuditSeverity::Warn => tracing::warn!(
+                target: "doorman::audit",
+                kind = ?event.kind,
+                user_id = ?user_id,
+                %actor,
+            ),
+        }
+        self.sink.emit(event).await;
+    }
+}
+
+/// Renders an [`Actor`] for the `doorman::audit` tracing line with every
+/// host-supplied field escaped. Both the operator descriptor and the subject's
+/// network metadata are derived from attacker-influenceable input and are never
+/// verified by doorman, so control characters (notably newlines) are escaped to
+/// prevent log forging.
+struct ActorDisplay<'a>(&'a Actor);
+
+impl fmt::Display for ActorDisplay<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Actor::Subject { ip, user_agent } => {
+                f.write_str("subject")?;
+                if let Some(ip) = ip {
+                    write!(f, " ip={}", Escaped(ip))?;
+                }
+                if let Some(user_agent) = user_agent {
+                    write!(f, " ua={}", Escaped(user_agent))?;
+                }
+                Ok(())
+            }
+            Actor::Operator(op) => {
+                write!(f, "operator id={}", Escaped(&op.id))?;
+                if let Some(correlation_id) = &op.correlation_id {
+                    write!(f, " correlation_id={}", Escaped(correlation_id))?;
+                }
+                if let Some(ip) = &op.ip {
+                    write!(f, " ip={}", Escaped(ip))?;
+                }
+                if let Some(user_agent) = &op.user_agent {
+                    write!(f, " ua={}", Escaped(user_agent))?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Writes a string with control characters (newlines, carriage returns, tabs,
+/// and other C0/C1 controls) rendered via their escapes, leaving every other
+/// character — including legitimate Unicode — verbatim. Keeps untrusted audit
+/// metadata from injecting structure into a text log line.
+struct Escaped<'a>(&'a str);
+
+impl fmt::Display for Escaped<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for ch in self.0.chars() {
+            if ch.is_control() {
+                for escaped in ch.escape_default() {
+                    f.write_char(escaped)?;
+                }
+            } else {
+                f.write_char(ch)?;
+            }
+        }
+        Ok(())
+    }
 }

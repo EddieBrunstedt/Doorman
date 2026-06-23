@@ -57,7 +57,9 @@ use webauthn_rs::prelude::{
     Passkey, PublicKeyCredential, RequestChallengeResponse, Webauthn, WebauthnError,
 };
 
-use crate::audit::{Actor, AuditEvent, AuditEventKind, AuditSink, ReauthFailureReason};
+use crate::audit::{
+    Actor, AuditDispatch, AuditEvent, AuditEventKind, AuditSink, ReauthFailureReason,
+};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::passkey::{
@@ -163,7 +165,7 @@ pub struct ReauthManager {
     credentials: Arc<dyn PasskeyCredentialStore>,
     challenges: Arc<dyn PasskeyChallengeStore>,
     clock: Arc<dyn Clock>,
-    audit: Arc<dyn AuditSink>,
+    audit: AuditDispatch,
     challenge_lifetime: std::time::Duration,
     policy: ReauthPolicy,
 }
@@ -190,7 +192,7 @@ impl ReauthManager {
             credentials,
             challenges,
             clock,
-            audit,
+            audit: AuditDispatch::new(audit),
             challenge_lifetime: config.challenge_lifetime,
             policy,
         })
@@ -292,13 +294,11 @@ impl ReauthManager {
         else {
             self.emit_failed(now, context, user_id, ReauthFailureReason::InvalidChallenge)
                 .await;
-            tracing::warn!(outcome = "invalid_challenge", "reauth failed");
             return Err(Error::ReauthRequired);
         };
         if stored.expires_at <= now {
             self.emit_failed(now, context, user_id, ReauthFailureReason::InvalidChallenge)
                 .await;
-            tracing::warn!(outcome = "expired_challenge", "reauth failed");
             return Err(Error::ReauthRequired);
         }
 
@@ -319,13 +319,11 @@ impl ReauthManager {
                     ReauthFailureReason::CounterRegression,
                 )
                 .await;
-                tracing::warn!(outcome = "counter_regression", "reauth failed");
                 return Err(Error::PasskeyPossibleCompromise);
             }
             Err(e) => {
                 self.emit_failed(now, context, user_id, ReauthFailureReason::BadAssertion)
                     .await;
-                tracing::warn!(outcome = "bad_assertion", "reauth failed");
                 return Err(Error::Webauthn(e.to_string()));
             }
         };
@@ -338,7 +336,6 @@ impl ReauthManager {
                 ReauthFailureReason::UserVerificationMissing,
             )
             .await;
-            tracing::warn!(outcome = "user_verification_missing", "reauth failed");
             return Err(Error::UserVerificationRequired);
         }
 
@@ -361,7 +358,6 @@ impl ReauthManager {
                     ReauthFailureReason::OwnershipMismatch,
                 )
                 .await;
-                tracing::warn!(outcome = "ownership_mismatch", "reauth failed");
                 return Err(Error::PasskeyOwnershipMismatch);
             }
         }
@@ -376,7 +372,6 @@ impl ReauthManager {
                 kind: AuditEventKind::ReauthSucceeded { user_id },
             })
             .await;
-        tracing::info!(outcome = "succeeded", "reauth succeeded");
         Ok(())
     }
 

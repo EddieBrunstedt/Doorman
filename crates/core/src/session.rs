@@ -11,7 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::audit::{Actor, AuditEvent, AuditEventKind, AuditSink};
+use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
@@ -113,7 +113,7 @@ impl SessionInvalidationHook for NoopSessionInvalidationHook {
 pub struct SessionManager {
     sessions: Arc<dyn SessionStore>,
     clock: Arc<dyn Clock>,
-    audit: Arc<dyn AuditSink>,
+    audit: AuditDispatch,
     /// The invalidation observer, held behind a shared, mutable cell that
     /// every `clone()` aliases. Installing a hook through any handle (see
     /// [`SessionManager::set_invalidation_hook`]) is therefore visible to
@@ -147,7 +147,7 @@ impl SessionManager {
         Self {
             sessions,
             clock,
-            audit,
+            audit: AuditDispatch::new(audit),
             invalidation_hook: Arc::new(RwLock::new(Arc::new(NoopSessionInvalidationHook))),
             notifier: None,
             config,
@@ -301,7 +301,6 @@ impl SessionManager {
             })
             .await;
 
-        tracing::info!(session_id = %session.id, outcome = "created", "session created");
         Ok(IssuedSession { session, token })
     }
 
@@ -366,7 +365,6 @@ impl SessionManager {
                     },
                 })
                 .await;
-            tracing::warn!(outcome = "expired", "session validate failed");
             return Err(Error::SessionExpired);
         }
 
@@ -681,12 +679,6 @@ impl SessionManager {
                 },
             })
             .await;
-        tracing::info!(
-            user_id = %session.user_id,
-            session_id = %session.id,
-            outcome = "revoked",
-            "session revoked",
-        );
         Ok(())
     }
 }
