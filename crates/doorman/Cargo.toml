@@ -7,6 +7,7 @@ documentation = "https://docs.rs/doorman"
 edition.workspace = true
 keywords = ["authentication", "passkey", "webauthn", "axum", "auth"]
 license.workspace = true
+readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
 description = "Opinionated passkey-only authentication for Rust web apps. Umbrella crate re-exporting doorman-core, doorman-axum, doorman-sqlx, doorman-redis, doorman-dynamodb, doorman-mongodb, and doorman-redb behind features."

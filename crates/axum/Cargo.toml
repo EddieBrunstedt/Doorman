@@ -7,6 +7,7 @@ documentation = "https://docs.rs/doorman-axum"
 edition.workspace = true
 keywords = ["authentication", "passkey", "webauthn", "axum", "auth"]
 license.workspace = true
+readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
 description = "Axum HTTP integration for the doorman authentication library."
