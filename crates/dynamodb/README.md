@@ -77,8 +77,6 @@ The adapter does not bundle an HTTP client or a TLS stack of its own — the hos
 cargo test -p doorman-dynamodb
 ```
 
-`just test-dynamodb` wraps this command.
-
 ## License
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.

@@ -88,4 +88,4 @@ cargo test -p doorman-sqlx --features postgres
 cargo test -p doorman-sqlx --features mysql   # MySQL + MariaDB
 ```
 
-Running both the MySQL and MariaDB suites is what catches MySQL/MariaDB drift mechanically. `just test-postgres` and `just test-mysql` wrap these commands.
+Running both the MySQL and MariaDB suites is what catches MySQL/MariaDB drift mechanically.

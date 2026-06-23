@@ -97,7 +97,7 @@ A running Docker daemon is therefore a prerequisite:
 cargo test -p doorman-redis
 ```
 
-`just test-redis` wraps this command. Each test gets its own fresh container, so there is no shared state and no destructive `FLUSHDB`.
+Each test gets its own fresh container, so there is no shared state and no destructive `FLUSHDB`.
 
 ## License
 
