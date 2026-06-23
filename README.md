@@ -180,13 +180,18 @@ let admin_routes = Router::new()
 
 Recovery is always available and cannot be disabled — `AuthCore` always builds the recovery manager and `auth.router()` always mounts the recovery routes. It is the escape hatch for a user who has lost every passkey, so it is the one flow allowed to enroll a passkey without proving possession of an existing one (it also bypasses the per-user passkey cap for that reason).
 
-Because recovery can add a passkey without proving possession of an existing one, doorman treats freshly recovered sessions as lower-trust. After recovery, the new session — and the passkey it created — carry a **post-recovery cool-down** (24 hours by default). While it is active, doorman blocks the actions an attacker would use to lock out the real owner:
+Because recovery can add a passkey without proving possession of an existing one, doorman treats freshly recovered sessions as lower-trust. After recovery, the new session — and the passkey it created — carry a **post-recovery cool-down** (24 hours by default). The cool-down is stamped **only** by recovery; an ordinary passkey sign-in carries none. While it is active, doorman blocks the actions an attacker would use to lock out the real owner, and leaves the rest alone:
 
-- deleting passkeys
-- revoking _other_ sessions, and "sign out everywhere else"
-- changing the account email or deleting the account
+| Action                                          | During cool-down |
+| ----------------------------------------------- | ---------------- |
+| Remove a passkey                                | 🚫 blocked       |
+| Revoke _other_ sessions / "sign out everywhere" | 🚫 blocked       |
+| Change account email                            | 🚫 blocked       |
+| Delete account                                  | 🚫 blocked       |
+| Add a passkey                                   | ✅ allowed       |
+| Sign out of _your own_ current session          | ✅ allowed       |
 
-Adding passkeys and signing out of _your own_ current session stay allowed throughout. A passkey added during the cool-down inherits the same deadline; pre-existing passkeys are never restricted, so the legitimate owner simply signs in with one of theirs and waits the window out (or the attacker is shut out the moment the owner revokes the recovery session).
+A passkey added during the cool-down inherits the same deadline; pre-existing passkeys are never restricted, so the legitimate owner simply signs in with one of theirs and waits the window out (or the attacker is shut out the moment the owner revokes the recovery session).
 
 Encourage every user to register at least two passkeys — for example a platform passkey plus a hardware key or password-manager backup. The `UserDto.passkey_count` field is there so hosts can render that nudge.
 
@@ -205,7 +210,7 @@ Enrolling a credential that lives on a _different_ device — registering from y
 - **Operator actions** for support/admin tooling — disable/enable, delete, session revocation, passkey removal — core-only with a two-record audit trail; you own the route and its authorization.
 - **Security-notification emails** for recovery, passkey add/remove, email change, and high-risk session revocations.
 - **CSRF origin checks** for cookie-authenticated state-changing requests.
-- **Pluggable collaborators** — audit sink, rate limiter, metrics, clock, and email renderer — wired explicitly at build time, so the development-only choices are visible in the code rather than silent defaults.
+- **Pluggable collaborators** — audit sink, rate limiter, metrics, clock, and email renderer — wired explicitly at build time, so each is visible in the code.
 - **A session-resolution cache** so the hot authenticated-request path doesn't hit storage every time.
 
 ## Storage backends
