@@ -117,8 +117,12 @@ impl OperatorActor {
 }
 
 /// Specific security event captured in an [`AuditEvent`].
+///
+/// `#[non_exhaustive]` so new event kinds can be audited without breaking host
+/// [`AuditSink`] implementations — match with a trailing `_ => {}` arm.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum AuditEventKind {
     /// A new session was minted for a user.
     SessionCreated {
@@ -377,8 +381,12 @@ impl AuditEventKind {
 /// Why a passkey authentication attempt did not succeed. Pairs with
 /// [`AuditEventKind::AuthenticationFailed`] for after-the-fact triage and
 /// alerting.
+///
+/// `#[non_exhaustive]` so new rejection reasons can be added without breaking
+/// host matches — include a trailing `_ => {}` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum AuthFailureReason {
     /// The presented challenge id did not resolve to an outstanding
     /// authentication ceremony (unknown or already consumed).
@@ -410,8 +418,12 @@ pub enum AuthFailureReason {
 /// Mirrors the security-significant subset of [`AuthFailureReason`]; a missing
 /// proof is not represented because it is the ordinary `reauth_required`
 /// handshake rather than a failed attempt.
+///
+/// `#[non_exhaustive]` so new rejection reasons can be added without breaking
+/// host matches — include a trailing `_ => {}` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ReauthFailureReason {
     /// The presented challenge id did not resolve to an outstanding
     /// re-authentication ceremony, or it had already expired.
@@ -432,8 +444,12 @@ pub enum ReauthFailureReason {
 }
 
 /// Why a recovery attempt did not succeed.
+///
+/// `#[non_exhaustive]` so new rejection reasons can be added without breaking
+/// host matches — include a trailing `_ => {}` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RecoveryFailureReason {
     /// The request endpoint was asked to recover an email address that is
     /// not in the user table.
