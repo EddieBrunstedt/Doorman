@@ -26,6 +26,10 @@
 // purpose — kept out of the workspace lints so the requirement never fires on
 // test/bench helpers.
 #![deny(missing_docs)]
+// Lock in rustdoc quality alongside the coverage above: broken intra-doc links,
+// malformed code blocks, bare URLs, and the rest of the rustdoc lint group warn
+// here and become hard errors under the `-D warnings` doc gate.
+#![warn(rustdoc::all)]
 
 #[cfg(any(feature = "sqlite", feature = "postgres", feature = "mysql"))]
 mod common;
