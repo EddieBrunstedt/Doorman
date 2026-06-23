@@ -8,7 +8,7 @@ use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::TokenHash;
 use uuid::Uuid;
 
-pub(crate) fn storage<E: std::fmt::Display>(e: E) -> StorageError {
+pub(crate) fn storage_err<E: std::fmt::Display>(e: E) -> StorageError {
     StorageError::msg(e.to_string())
 }
 
@@ -117,7 +117,7 @@ pub(crate) fn uuid_to_bytes(u: Uuid) -> Vec<u8> {
 }
 
 pub(crate) fn uuid_from_row(b: Vec<u8>) -> StorageResult<Uuid> {
-    Uuid::from_slice(&b).map_err(storage)
+    Uuid::from_slice(&b).map_err(storage_err)
 }
 
 pub(crate) use doorman_core::encoding::{

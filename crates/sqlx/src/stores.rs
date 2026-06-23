@@ -134,7 +134,7 @@ macro_rules! sqlx_stores {
                     .bind($ts(user.updated_at))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(())
             }
 
@@ -152,7 +152,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(id.0))
                     .fetch_optional(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 row.map(row_to_user).transpose()
             }
 
@@ -170,7 +170,7 @@ macro_rules! sqlx_stores {
                     .bind(email)
                     .fetch_optional(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 row.map(row_to_user).transpose()
             }
 
@@ -192,7 +192,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(user.id.0))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 if result.rows_affected() == 0 {
                     return Err($crate::stores::__reexport::StorageError::msg("user not found"));
                 }
@@ -208,7 +208,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(id.0))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(())
             }
         }
@@ -217,23 +217,23 @@ macro_rules! sqlx_stores {
             row: $row,
         ) -> $crate::stores::__reexport::StorageResult<$crate::stores::__reexport::User> {
             use ::sqlx::Row as _;
-            let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage)?;
-            let status_str: String = row.try_get("status").map_err($crate::common::storage)?;
+            let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage_err)?;
+            let status_str: String = row.try_get("status").map_err($crate::common::storage_err)?;
             let disabled_at: ::core::option::Option<
                 $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
-            > = row.try_get("disabled_at").map_err($crate::common::storage)?;
+            > = row.try_get("disabled_at").map_err($crate::common::storage_err)?;
             Ok($crate::stores::__reexport::User {
                 id: $crate::stores::__reexport::UserId($crate::common::uuid_from_row(id_bytes)?),
-                email: row.try_get("email").map_err($crate::common::storage)?,
+                email: row.try_get("email").map_err($crate::common::storage_err)?,
                 email_verified_at: row
                     .try_get("email_verified_at")
-                    .map_err($crate::common::storage)?,
+                    .map_err($crate::common::storage_err)?,
                 status: $crate::stores::__reexport::account_status_from_parts(
                     &status_str,
                     disabled_at,
                 )?,
-                created_at: row.try_get("created_at").map_err($crate::common::storage)?,
-                updated_at: row.try_get("updated_at").map_err($crate::common::storage)?,
+                created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
+                updated_at: row.try_get("updated_at").map_err($crate::common::storage_err)?,
             })
         }
 
@@ -267,7 +267,7 @@ macro_rules! sqlx_stores {
                     .bind($ts(session.recovery_cooldown_until))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(())
             }
 
@@ -289,7 +289,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(session.id.0))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(())
             }
 
@@ -307,7 +307,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::token_hash_bytes(hash))
                     .fetch_optional(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 row.map(row_to_session).transpose()
             }
 
@@ -325,7 +325,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(id.0))
                     .fetch_optional(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 row.map(row_to_session).transpose()
             }
 
@@ -345,7 +345,7 @@ macro_rules! sqlx_stores {
                     .bind($ts(now))
                     .fetch_all(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 rows.into_iter().map(row_to_session).collect()
             }
 
@@ -358,7 +358,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(id.0))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(())
             }
 
@@ -371,7 +371,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(user_id.0))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(result.rows_affected())
             }
 
@@ -386,7 +386,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(except.0))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(result.rows_affected())
             }
 
@@ -399,7 +399,7 @@ macro_rules! sqlx_stores {
                     .bind($ts(now))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(result.rows_affected())
             }
         }
@@ -408,9 +408,9 @@ macro_rules! sqlx_stores {
             row: $row,
         ) -> $crate::stores::__reexport::StorageResult<$crate::stores::__reexport::Session> {
             use ::sqlx::Row as _;
-            let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage)?;
-            let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage)?;
-            let hash_bytes: Vec<u8> = row.try_get("token_hash").map_err($crate::common::storage)?;
+            let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage_err)?;
+            let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage_err)?;
+            let hash_bytes: Vec<u8> = row.try_get("token_hash").map_err($crate::common::storage_err)?;
             Ok($crate::stores::__reexport::Session {
                 id: $crate::stores::__reexport::SessionId(
                     $crate::common::uuid_from_row(id_bytes)?,
@@ -419,14 +419,14 @@ macro_rules! sqlx_stores {
                     $crate::common::uuid_from_row(user_id_bytes)?,
                 ),
                 token_hash: $crate::common::token_hash_from_bytes(&hash_bytes)?,
-                created_at: row.try_get("created_at").map_err($crate::common::storage)?,
-                last_used_at: row.try_get("last_used_at").map_err($crate::common::storage)?,
-                expires_at: row.try_get("expires_at").map_err($crate::common::storage)?,
-                ip: row.try_get("ip").map_err($crate::common::storage)?,
-                user_agent: row.try_get("user_agent").map_err($crate::common::storage)?,
+                created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
+                last_used_at: row.try_get("last_used_at").map_err($crate::common::storage_err)?,
+                expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,
+                ip: row.try_get("ip").map_err($crate::common::storage_err)?,
+                user_agent: row.try_get("user_agent").map_err($crate::common::storage_err)?,
                 recovery_cooldown_until: row
                     .try_get("recovery_cooldown_until")
-                    .map_err($crate::common::storage)?,
+                    .map_err($crate::common::storage_err)?,
             })
         }
 
@@ -457,7 +457,7 @@ macro_rules! sqlx_stores {
                     .bind($ts(token.expires_at))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(())
             }
 
@@ -495,7 +495,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::purpose_to_str(purpose))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(result.rows_affected())
             }
 
@@ -508,7 +508,7 @@ macro_rules! sqlx_stores {
                     .bind($ts(now))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(result.rows_affected())
             }
         }
@@ -519,18 +519,18 @@ macro_rules! sqlx_stores {
             $crate::stores::__reexport::VerificationToken,
         > {
             use ::sqlx::Row as _;
-            let hash_bytes: Vec<u8> = row.try_get("token_hash").map_err($crate::common::storage)?;
-            let purpose_str: String = row.try_get("purpose").map_err($crate::common::storage)?;
-            let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage)?;
+            let hash_bytes: Vec<u8> = row.try_get("token_hash").map_err($crate::common::storage_err)?;
+            let purpose_str: String = row.try_get("purpose").map_err($crate::common::storage_err)?;
+            let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage_err)?;
             Ok($crate::stores::__reexport::VerificationToken {
                 token_hash: $crate::common::token_hash_from_bytes(&hash_bytes)?,
                 purpose: $crate::common::purpose_from_str(&purpose_str)?,
                 user_id: $crate::stores::__reexport::UserId(
                     $crate::common::uuid_from_row(user_id_bytes)?,
                 ),
-                new_email: row.try_get("new_email").map_err($crate::common::storage)?,
-                created_at: row.try_get("created_at").map_err($crate::common::storage)?,
-                expires_at: row.try_get("expires_at").map_err($crate::common::storage)?,
+                new_email: row.try_get("new_email").map_err($crate::common::storage_err)?,
+                created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
+                expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,
             })
         }
 
@@ -568,7 +568,7 @@ macro_rules! sqlx_stores {
                     .bind($ts(credential.recovery_cooldown_until))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(())
             }
 
@@ -597,7 +597,7 @@ macro_rules! sqlx_stores {
                     .bind(&credential.credential_id)
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 if result.rows_affected() == 0 {
                     return Err($crate::stores::__reexport::StorageError::msg(
                         "passkey credential not found",
@@ -621,7 +621,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(user_id.0))
                     .fetch_all(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 rows.into_iter().map(row_to_passkey).collect()
             }
 
@@ -642,7 +642,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(user_id.0))
                     .fetch_all(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 rows.into_iter().map(row_to_passkey_summary).collect()
             }
 
@@ -661,7 +661,7 @@ macro_rules! sqlx_stores {
                     .bind(credential_id)
                     .fetch_optional(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 row.map(row_to_passkey).transpose()
             }
 
@@ -674,7 +674,7 @@ macro_rules! sqlx_stores {
                     .bind(credential_id)
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(())
             }
 
@@ -687,7 +687,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(user_id.0))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(result.rows_affected())
             }
         }
@@ -703,27 +703,27 @@ macro_rules! sqlx_stores {
         > {
             use ::sqlx::Row as _;
             let credential_id: Vec<u8> =
-                row.try_get("credential_id").map_err($crate::common::storage)?;
-            let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage)?;
-            let aaguid: Option<String> = row.try_get("aaguid").map_err($crate::common::storage)?;
-            let transports: String = row.try_get("transports").map_err($crate::common::storage)?;
+                row.try_get("credential_id").map_err($crate::common::storage_err)?;
+            let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage_err)?;
+            let aaguid: Option<String> = row.try_get("aaguid").map_err($crate::common::storage_err)?;
+            let transports: String = row.try_get("transports").map_err($crate::common::storage_err)?;
             Ok($crate::stores::__reexport::PasskeySummary {
                 credential_id,
                 user_id: $crate::stores::__reexport::UserId(
                     $crate::common::uuid_from_row(user_id_bytes)?,
                 ),
-                name: row.try_get("name").map_err($crate::common::storage)?,
-                created_at: row.try_get("created_at").map_err($crate::common::storage)?,
-                last_used_at: row.try_get("last_used_at").map_err($crate::common::storage)?,
+                name: row.try_get("name").map_err($crate::common::storage_err)?,
+                created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
+                last_used_at: row.try_get("last_used_at").map_err($crate::common::storage_err)?,
                 aaguid: $crate::common::aaguid_from_str(aaguid)?,
                 transports: $crate::common::transports_from_str(&transports),
                 backup_eligible: row
                     .try_get("backup_eligible")
-                    .map_err($crate::common::storage)?,
-                backup_state: row.try_get("backup_state").map_err($crate::common::storage)?,
+                    .map_err($crate::common::storage_err)?,
+                backup_state: row.try_get("backup_state").map_err($crate::common::storage_err)?,
                 recovery_cooldown_until: row
                     .try_get("recovery_cooldown_until")
-                    .map_err($crate::common::storage)?,
+                    .map_err($crate::common::storage_err)?,
             })
         }
 
@@ -731,7 +731,7 @@ macro_rules! sqlx_stores {
             row: $row,
         ) -> $crate::stores::__reexport::StorageResult<$crate::stores::__reexport::StoredPasskey> {
             use ::sqlx::Row as _;
-            let passkey: Vec<u8> = row.try_get("passkey").map_err($crate::common::storage)?;
+            let passkey: Vec<u8> = row.try_get("passkey").map_err($crate::common::storage_err)?;
             let meta = row_to_passkey_summary(row)?;
             Ok($crate::stores::__reexport::StoredPasskey {
                 credential_id: meta.credential_id,
@@ -775,7 +775,7 @@ macro_rules! sqlx_stores {
                     .bind($ts(value.recovery_cooldown_until))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(())
             }
 
@@ -806,7 +806,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(user_id.0))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(res.rows_affected())
             }
 
@@ -820,7 +820,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(user_id.0))
                     .fetch_one(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(count.max(0) as u64)
             }
 
@@ -839,7 +839,7 @@ macro_rules! sqlx_stores {
                     .bind($ts(value.expires_at))
                     .execute(&self.pool)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 Ok(())
             }
 
@@ -865,20 +865,20 @@ macro_rules! sqlx_stores {
                 &self,
                 now: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
             ) -> $crate::stores::__reexport::StorageResult<u64> {
-                let mut tx = self.pool.begin().await.map_err($crate::common::storage)?;
+                let mut tx = self.pool.begin().await.map_err($crate::common::storage_err)?;
                 let reg_sql = $ph("DELETE FROM passkey_registrations WHERE expires_at <= ?");
                 let reg = ::sqlx::query(::sqlx::AssertSqlSafe(reg_sql))
                     .bind($ts(now))
                     .execute(&mut *tx)
                     .await
-                    .map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
                 let auth_sql = $ph("DELETE FROM passkey_authentications WHERE expires_at <= ?");
                 let auth = ::sqlx::query(::sqlx::AssertSqlSafe(auth_sql))
                     .bind($ts(now))
                     .execute(&mut *tx)
                     .await
-                    .map_err($crate::common::storage)?;
-                tx.commit().await.map_err($crate::common::storage)?;
+                    .map_err($crate::common::storage_err)?;
+                tx.commit().await.map_err($crate::common::storage_err)?;
                 Ok(reg.rows_affected() + auth.rows_affected())
             }
         }
@@ -889,9 +889,9 @@ macro_rules! sqlx_stores {
             $crate::stores::__reexport::StoredPasskeyRegistration,
         > {
             use ::sqlx::Row as _;
-            let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage)?;
-            let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage)?;
-            let state: Vec<u8> = row.try_get("state").map_err($crate::common::storage)?;
+            let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage_err)?;
+            let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage_err)?;
+            let state: Vec<u8> = row.try_get("state").map_err($crate::common::storage_err)?;
             Ok($crate::stores::__reexport::StoredPasskeyRegistration {
                 id: $crate::stores::__reexport::PasskeyChallengeId(
                     $crate::common::uuid_from_row(id_bytes)?,
@@ -900,11 +900,11 @@ macro_rules! sqlx_stores {
                     $crate::common::uuid_from_row(user_id_bytes)?,
                 ),
                 state,
-                created_at: row.try_get("created_at").map_err($crate::common::storage)?,
-                expires_at: row.try_get("expires_at").map_err($crate::common::storage)?,
+                created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
+                expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,
                 recovery_cooldown_until: row
                     .try_get("recovery_cooldown_until")
-                    .map_err($crate::common::storage)?,
+                    .map_err($crate::common::storage_err)?,
             })
         }
 
@@ -914,15 +914,15 @@ macro_rules! sqlx_stores {
             $crate::stores::__reexport::StoredPasskeyAuthentication,
         > {
             use ::sqlx::Row as _;
-            let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage)?;
-            let state: Vec<u8> = row.try_get("state").map_err($crate::common::storage)?;
+            let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage_err)?;
+            let state: Vec<u8> = row.try_get("state").map_err($crate::common::storage_err)?;
             Ok($crate::stores::__reexport::StoredPasskeyAuthentication {
                 id: $crate::stores::__reexport::PasskeyChallengeId(
                     $crate::common::uuid_from_row(id_bytes)?,
                 ),
                 state,
-                created_at: row.try_get("created_at").map_err($crate::common::storage)?,
-                expires_at: row.try_get("expires_at").map_err($crate::common::storage)?,
+                created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
+                expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,
             })
         }
     };
@@ -966,7 +966,7 @@ macro_rules! sqlx_take {
             $(.bind($bind))*
             .fetch_optional(&$pool)
             .await
-            .map_err($crate::common::storage)?;
+            .map_err($crate::common::storage_err)?;
         row.map($map).transpose()
     }};
     (
@@ -979,7 +979,7 @@ macro_rules! sqlx_take {
         binds: [$($bind:expr),* $(,)?],
         map: $map:path $(,)?
     ) => {{
-        let mut tx = $pool.begin().await.map_err($crate::common::storage)?;
+        let mut tx = $pool.begin().await.map_err($crate::common::storage_err)?;
         let select_sql = $ph(concat!(
             "SELECT ", $cols, " FROM ", $table, " WHERE ", $filter, " FOR UPDATE",
         ));
@@ -987,9 +987,9 @@ macro_rules! sqlx_take {
             $(.bind($bind))*
             .fetch_optional(&mut *tx)
             .await
-            .map_err($crate::common::storage)?;
+            .map_err($crate::common::storage_err)?;
         let Some(row) = row else {
-            tx.rollback().await.map_err($crate::common::storage)?;
+            tx.rollback().await.map_err($crate::common::storage_err)?;
             return Ok(None);
         };
         let parsed = $map(row)?;
@@ -998,8 +998,8 @@ macro_rules! sqlx_take {
             $(.bind($bind))*
             .execute(&mut *tx)
             .await
-            .map_err($crate::common::storage)?;
-        tx.commit().await.map_err($crate::common::storage)?;
+            .map_err($crate::common::storage_err)?;
+        tx.commit().await.map_err($crate::common::storage_err)?;
         Ok(Some(parsed))
     }};
 }
