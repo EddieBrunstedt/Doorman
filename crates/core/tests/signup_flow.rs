@@ -289,6 +289,38 @@ async fn consume_rejects_replayed_token() {
 }
 
 #[tokio::test]
+async fn consume_rejects_tampered_token_and_leaves_the_real_one_usable() {
+    // A bit-flipped token hashes to a value that isn't in the store, so it is
+    // rejected as invalid — and, crucially, the tamper attempt neither consumes
+    // nor invalidates the genuine token, which still redeems afterwards (no
+    // replay or denial-of-service vector from guessing near a real token).
+    let h = Harness::fresh();
+    h.signup
+        .request_signup("u@example.com", None, SessionContext::default())
+        .await
+        .expect("request");
+    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
+
+    let mut chars: Vec<char> = token.chars().collect();
+    chars[0] = if chars[0] == 'a' { 'b' } else { 'a' };
+    let tampered: String = chars.into_iter().collect();
+    assert_ne!(tampered, token, "tamper actually changed the token");
+
+    let err = h
+        .signup
+        .consume_signup(&tampered, SessionContext::default())
+        .await
+        .expect_err("tampered token rejected");
+    assert!(matches!(err, Error::InvalidVerificationToken));
+
+    assert_eq!(h.tokens.len(), 1, "tamper did not consume the real token");
+    h.signup
+        .consume_signup(&token, SessionContext::default())
+        .await
+        .expect("genuine token still redeems after the tamper attempt");
+}
+
+#[tokio::test]
 async fn signup_token_cannot_be_consumed_by_recovery() {
     // A token minted for signup must never redeem on the recovery flow:
     // the purpose binds at consumption, not just at mint time.

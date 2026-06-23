@@ -454,6 +454,83 @@ async fn finish_authentication_rejects_mismatched_user_handle() {
 }
 
 #[tokio::test]
+async fn finish_authentication_rejects_tampered_signature() {
+    // Flip a byte of the assertion signature after the authenticator produced
+    // it: the user handle still resolves the owner, but webauthn-rs's signature
+    // check fails, so no session is minted and the failure is audited against
+    // the credential owner as a bad assertion.
+    let h = Harness::fresh();
+    let user = make_user(&h, "tamper@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+
+    let (auth_id, rcr) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
+    let mut assertion = wa.do_authentication(rcr, &cred.credential_id);
+
+    let mut signature = assertion.response.signature.as_ref().to_vec();
+    signature[0] ^= 0x01;
+    assertion.response.signature = signature.as_slice().into();
+
+    let err = h
+        .passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect_err("tampered signature must be rejected");
+    assert!(matches!(err, Error::Webauthn(_)));
+    assert_eq!(h.sessions.len(), 0, "no session minted on a bad assertion");
+
+    let events = kinds(&h.audit.events());
+    assert!(
+        events.iter().any(|k| matches!(
+            k,
+            AuditEventKind::AuthenticationFailed {
+                user_id: Some(uid),
+                reason: AuthFailureReason::BadAssertion,
+            } if *uid == user.id
+        )),
+        "tampered signature audited as a bad assertion against the owner"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. })),
+        "no login-succeeded event on a tampered assertion"
+    );
+}
+
+#[tokio::test]
+async fn finish_registration_rejects_tampered_attestation() {
+    // Corrupting the attestation response after the authenticator signed it
+    // must abort the ceremony: webauthn-rs rejects the credential and nothing
+    // is written to the store.
+    let h = Harness::fresh();
+    let user = make_user(&h, "tamper-reg@example.com").await;
+    let mut wa = authenticator();
+
+    let (challenge_id, ccr) = h.passkey.start_registration(user.id).await.expect("start");
+    let mut response = wa.do_registration(ccr);
+
+    let mut attestation = response.response.attestation_object.as_ref().to_vec();
+    attestation[0] ^= 0x01;
+    response.response.attestation_object = attestation.as_slice().into();
+
+    let err = h
+        .passkey
+        .finish_registration(challenge_id, &response, None, SessionContext::default())
+        .await
+        .expect_err("tampered attestation must be rejected");
+    assert!(matches!(err, Error::Webauthn(_)));
+    assert!(
+        h.credentials.is_empty(),
+        "no credential written for a tampered attestation"
+    );
+}
+
+#[tokio::test]
 async fn finish_authentication_rejects_counter_regression_and_audits_it() {
     // A non-advancing signature counter is webauthn-rs's clone/rollback
     // signal. We simulate a credential whose recorded counter is already
