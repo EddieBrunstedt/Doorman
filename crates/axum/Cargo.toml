@@ -24,18 +24,18 @@ workspace = true
 all-features = true
 
 [dependencies]
-async-trait.workspace = true
 axum = { version = "0.8", default-features = false, features = ["json", "query", "tokio", "http1"] }
 base64.workspace = true
 chrono.workspace = true
 cookie = "0.18"
 doorman-core = { path = "../core", version = "0.1.0" }
 http = "1"
-lru.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tower = { version = "0.5", default-features = false }
+# The `SessionLayer` / `CsrfLayer` middleware implement the `Layer` / `Service`
+# traits directly from these thin trait-only crates; the full `tower` crate is a
+# dev-dependency, used only by the benches.
 tower-layer = "0.3"
 tower-service = "0.3"
 tracing.workspace = true
@@ -44,6 +44,7 @@ uuid.workspace = true
 webauthn-rs.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 criterion.workspace = true
 doorman-sqlx = { path = "../sqlx", version = "0.1.0", features = ["sqlite"] }
 doorman-test-support = { path = "../test-support" }

@@ -1269,7 +1269,6 @@ dependencies = [
  "doorman-sqlx",
  "doorman-test-support",
  "http 1.4.2",
- "lru",
  "proptest",
  "reqwest",
  "serde",
