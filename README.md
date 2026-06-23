@@ -278,6 +278,14 @@ examples/minimal-app/  runnable Axum + SQLite app
 examples/web-client/   browser-side WebAuthn helper reference
 ```
 
+## Versioning and MSRV
+
+doorman follows [Semantic Versioning](https://semver.org/). Every published crate (`doorman`, `doorman-core`, `doorman-axum`, and the storage adapters) shares one workspace version and is released in lockstep, so a given `doorman` release pins matching adapter versions. Notable changes are recorded in [`CHANGELOG.md`](CHANGELOG.md) (Keep a Changelog format).
+
+**Pre-1.0:** while the version is `0.x`, the public API is not yet stable. Per Cargo's semver rules a minor bump (`0.x` → `0.(x+1)`) may contain breaking changes, and this project uses minor bumps for exactly that — breaking changes land freely as the surface is refined toward `1.0`. Patch releases (`0.x.y` → `0.x.(y+1)`) stay backwards compatible. Pin a minor version if you need stability between upgrades.
+
+**MSRV:** the minimum supported Rust version is **1.94**, driven by the dependency tree (sqlx 0.9 requires 1.94). CI and `just msrv` enforce it against the pinned `1.94.1` toolchain. An MSRV bump is treated as a routine change, not a breaking one, and may occur in a minor (pre-1.0) release; it will be noted in the changelog.
+
 ## Development
 
 The repo ships a [`justfile`](justfile) so the inner loop needs no manual setup. Install [`just`](https://github.com/casey/just) and Docker, then:
