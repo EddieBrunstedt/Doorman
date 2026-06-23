@@ -50,7 +50,7 @@
 //!
 //! // 1. Open storage and run migrations.
 //! let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").await?;
-//! storage.migrate().await?;
+//! storage.migrate().await?; // applies pending embedded migrations; idempotent, safe on every boot
 //!
 //! // 2. Build the auth service.
 //! let origin: Url = "https://app.example.com".parse()?;

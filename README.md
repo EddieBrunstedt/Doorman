@@ -53,7 +53,7 @@ use url::Url;
 
 // 1. Open storage and run migrations.
 let storage = SqliteStorage::connect("sqlite:///var/lib/app/auth.db?mode=rwc").await?;
-storage.migrate().await?;
+storage.migrate().await?; // applies pending embedded migrations; idempotent, safe on every boot
 
 // 2. Build the auth service.
 let origin: Url = "https://app.example.com".parse()?;
@@ -145,7 +145,9 @@ The `request → consume → finish` shape is shared by signup and recovery: `re
 
 ## Operator actions
 
-Support and admin flows that act on _another_ user — disable or enable an account, delete it, revoke its sessions, remove a passkey — live on `OperatorManager`, reached through `auth.state().operator()`. They are deliberately **not** mounted by `auth.router()`: doorman performs no authorization of its own, so you write the handler and put your admin check in front. Every flow records an operator-attributed audit trail ([`docs/operators.md`](docs/operators.md)).
+`OperatorManager` is the user-management API: manage accounts by calling it, not by mutating doorman's tables directly — it keeps the storage invariants and the audit trail intact. Support and admin flows that act on _another_ user — disable or enable an account, delete it, revoke one or all of its sessions, remove a passkey, list its passkeys or sessions — all live here, reached through `auth.state().operator()`.
+
+These flows are deliberately **not** mounted by `auth.router()`, and doorman performs no authorization of its own: an operator action is unauthenticated as far as the library is concerned, so you write the handler and put your own admin check in front of it. Every flow records an operator-attributed audit trail ([`docs/operators.md`](docs/operators.md)).
 
 ```rust
 use axum::extract::{Path, State};
@@ -176,7 +178,9 @@ let admin_routes = Router::new()
 
 ## The recovery cool-down
 
-Recovery is the one place a passkey can be added without proving possession of an existing one, so doorman treats freshly recovered sessions as lower-trust. After recovery, the new session — and the passkey it created — carry a **post-recovery cool-down** (24 hours by default). While it is active, doorman blocks the actions an attacker would use to lock out the real owner:
+Recovery is always available and cannot be disabled — `AuthCore` always builds the recovery manager and `auth.router()` always mounts the recovery routes. It is the escape hatch for a user who has lost every passkey, so it is the one flow allowed to enroll a passkey without proving possession of an existing one (it also bypasses the per-user passkey cap for that reason).
+
+Because recovery can add a passkey without proving possession of an existing one, doorman treats freshly recovered sessions as lower-trust. After recovery, the new session — and the passkey it created — carry a **post-recovery cool-down** (24 hours by default). While it is active, doorman blocks the actions an attacker would use to lock out the real owner:
 
 - deleting passkeys
 - revoking _other_ sessions, and "sign out everywhere else"
@@ -185,6 +189,12 @@ Recovery is the one place a passkey can be added without proving possession of a
 Adding passkeys and signing out of _your own_ current session stay allowed throughout. A passkey added during the cool-down inherits the same deadline; pre-existing passkeys are never restricted, so the legitimate owner simply signs in with one of theirs and waits the window out (or the attacker is shut out the moment the owner revokes the recovery session).
 
 Encourage every user to register at least two passkeys — for example a platform passkey plus a hardware key or password-manager backup. The `UserDto.passkey_count` field is there so hosts can render that nudge.
+
+## Adding another device
+
+Registering a passkey on a new device is the ordinary authenticated flow, **not** recovery: an already–signed-in user calls `POST /auth/passkey/register/start` then `POST /auth/passkey/register/finish` (with `GET /auth/passkey` to list and `DELETE /auth/passkey/{credential_id}` to remove). No email link is involved and no cool-down applies — recovery exists only for the user who has lost _every_ passkey.
+
+Enrolling a credential that lives on a _different_ device — registering from your laptop using the passkey on your phone, say — is driven by the browser and platform, not by doorman: WebAuthn's hybrid transport (the QR-code / Bluetooth caBLE hand-off) and platform passkey sync (iCloud Keychain, Google Password Manager) move credentials across devices below the application layer. doorman only ever sees the finished registration, so cross-device enrollment is outside its scope.
 
 ## What's in the box
 
@@ -238,8 +248,8 @@ To support a database doorman doesn't ship, implement the five traits yourself. 
 - **Re-authentication** — required decision. Pass `ReauthPolicy::required_for([..])` to require a fresh passkey assertion before the destructive actions (delete account, email-change request, passkey removal), or `ReauthPolicy::disabled()` to opt out explicitly.
 - **URL templates** — required. The stock `example.invalid` signup / recovery / account templates are rejected; set real ones that carry the `{token}` placeholder.
 - **Cookies** — session cookies are always `HttpOnly`; `Secure` (default on) and `SameSite` (default `Lax`) are the configurable knobs. The only setting to relax for local HTTP development is `secure = false` — a `Secure` cookie is dropped over plain `http://`.
-- **Maintenance** — run storage migrations and periodically purge expired sessions, verification tokens, and passkey challenges.
-- **Monitoring** — watch recovery requests/completions, passkey add/remove events, high-risk session revocations, and failed WebAuthn ceremonies. Optionally wire a `MetricSink` implementation.
+- **Maintenance** — run storage migrations on boot, then sweep expired sessions, verification tokens, and passkey challenges. Either call `Storage::purge_all_expired(now)` from your own scheduler, or enable the `background-purge` feature on `doorman-core` and let `spawn_purge_task` run the sweep on an interval for you. See [`docs/operations.md`](docs/operations.md) for both, including the external-scheduler (`purge-runner`) variant for serverless hosts.
+- **Monitoring** — doorman _emits_ signals; the watching and alerting are yours — the library never stores or evaluates them. Security events flow to the `AuditSink` (recovery requests/completions, passkey add/remove, high-risk session revocations, failed WebAuthn ceremonies); operational metrics flow to an optional `MetricSink` — login successes, auth failures, ceremony latency, and the axum session-cache hit/miss. Wire either into your own observability stack.
 - **Backup passkeys** — prompt users with `passkey_count < 2` to add one.
 
 ## Layering
