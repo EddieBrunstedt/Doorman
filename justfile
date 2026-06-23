@@ -83,14 +83,21 @@ clippy:
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 
-# Isolated feature builds CI runs (default build and one driver/backend at a
-# time) to catch `#[cfg(feature)]` breaks the all-features clippy run hides.
+# Feature-combination builds, to catch `#[cfg(feature)]` breaks the all-features
+# clippy run hides (a default build, a driver/backend enabled alone, two
+# adapters pulling a shared dep at odds). The all-features run sees none of
+# these. Needs cargo-hack (`cargo install cargo-hack`).
+#
+# `--depth 2` is the deliberate cut: the umbrella crate has 11 features, so a
+# full powerset is 2^11 combinations, but feature-unification breaks surface
+# pairwise (two adapters, or one adapter + a transport), and every pair is
+# covered at depth 2 (78 combos) — a triple breaking when all its pairs build is
+# vanishingly unlikely. doorman-sqlx has only three driver features, so it gets
+# the full powerset for free.
 check-features:
     cargo check --workspace --locked
-    cargo check -p doorman-sqlx --features sqlite --locked
-    cargo check -p doorman-sqlx --features postgres --locked
-    cargo check -p doorman-sqlx --features mysql --locked
-    cargo check -p doorman --features axum,sqlite --locked
+    cargo hack check -p doorman --feature-powerset --depth 2 --locked
+    cargo hack check -p doorman-sqlx --feature-powerset --locked
 
 # Keep `1.94` in sync with `rust-version` in the manifest. The check below uses
 # the pinned 1.94.1 toolchain, which must be installed via rustup.
