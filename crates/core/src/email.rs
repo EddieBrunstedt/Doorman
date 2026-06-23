@@ -14,7 +14,6 @@
 //! lifecycle, and high-risk session revocation events. The default copy
 //! describes a passkey-driven flow; hosts override [`EmailTemplates`] to brand it.
 
-use std::any::Any;
 #[cfg(feature = "file-email")]
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -48,13 +47,8 @@ pub struct Email {
 }
 
 /// Transport for sending rendered transactional emails.
-///
-/// The [`Any`] supertrait lets a composition layer (e.g. the axum builder's
-/// startup sanity checks) downcast a boxed sender to recognise the bundled
-/// dev-only transports; it places no burden on host implementations, which
-/// get the blanket `Any` impl for free.
 #[async_trait]
-pub trait EmailSender: Send + Sync + Any {
+pub trait EmailSender: Send + Sync {
     /// Deliver one rendered email. Link-delivery sends are awaited and their
     /// errors propagate; security-notice sends are best-effort (see
     /// [`SecurityEmailNotifier`]).

@@ -9,7 +9,6 @@
 //! [`Error::RateLimited`](crate::error::Error::RateLimited) when the
 //! configured budget is exhausted.
 
-use std::any::Any;
 use std::borrow::Cow;
 use std::fmt;
 use std::time::Duration;
@@ -133,13 +132,8 @@ impl RateLimitPolicy {
 }
 
 /// Backend interface for charging and enforcing rate-limit policies.
-///
-/// The [`Any`] supertrait lets a composition layer (e.g. the axum builder's
-/// startup sanity checks) downcast a boxed limiter to recognise the bundled
-/// [`NoopRateLimiter`] / [`InMemoryRateLimiter`](crate::memory::InMemoryRateLimiter)
-/// defaults; host implementations get the blanket `Any` impl for free.
 #[async_trait]
-pub trait RateLimiter: Send + Sync + Any {
+pub trait RateLimiter: Send + Sync {
     /// Charge a single attempt against `key` under `policy`.
     ///
     /// The implementation is responsible for tracking attempts per key
@@ -177,14 +171,6 @@ impl RateLimiter for NoopRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::any::Any;
-    use std::sync::Arc;
-
-    #[test]
-    fn noop_limiter_downcasts_to_its_concrete_type() {
-        let limiter: Arc<dyn RateLimiter> = Arc::new(NoopRateLimiter);
-        assert!((limiter.as_ref() as &dyn Any).is::<NoopRateLimiter>());
-    }
 
     #[test]
     fn key_canonical_renders_operation_and_dimensions_in_order() {
@@ -205,23 +191,5 @@ mod tests {
         let account = RateLimitKey::new("op").with("account", "v");
         assert_ne!(ip.canonical(), account.canonical());
         assert_ne!(ip, account);
-    }
-
-    #[test]
-    fn custom_limiter_does_not_masquerade_as_noop() {
-        struct MyLimiter;
-        #[async_trait]
-        impl RateLimiter for MyLimiter {
-            async fn check_and_charge(
-                &self,
-                _key: &RateLimitKey,
-                _policy: RateLimitPolicy,
-            ) -> StorageResult<RateLimitDecision> {
-                Ok(RateLimitDecision::Allowed)
-            }
-        }
-
-        let limiter: Arc<dyn RateLimiter> = Arc::new(MyLimiter);
-        assert!(!(limiter.as_ref() as &dyn Any).is::<NoopRateLimiter>());
     }
 }
