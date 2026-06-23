@@ -211,7 +211,7 @@ doorman's persistence is defined by five small traits in `doorman-core`: `UserSt
 | `redis` / `valkey`              | Redis or Valkey                       | _Ephemeral_ stores (sessions, tokens, challenges) + a shared cross-replica rate limiter |
 | _(built into `doorman-core`)_   | `InMemoryStorage`                     | Process-local store for tests and ephemeral deployments; fills all five stores          |
 
-Because a backend is chosen **per trait** via the `Storage` struct, you can mix them. The intended mixed deployment is a SQL backend for the system-of-record stores (users and passkey credentials) paired with `doorman-redis` for the ephemeral, TTL-bearing stores and a shared rate limiter:
+Because a backend is chosen **per trait** via the `Storage` struct, you can mix them. A single-node app needs only one persistent backend — `doorman-sqlx`, `doorman-redb`, `doorman-mongodb`, or `doorman-dynamodb` — to fill all five stores; no Redis is required. Redis only enters for a multi-node deployment: pair a persistent backend for the system-of-record stores (users and passkey credentials) with `doorman-redis` for the ephemeral, TTL-bearing stores (sessions, tokens, challenges) and a shared cross-replica rate limiter:
 
 ```rust
 let storage = Storage {
@@ -223,7 +223,7 @@ let storage = Storage {
 };
 ```
 
-Redis intentionally does **not** implement `UserStore` or `PasskeyCredentialStore` — that data never expires and wants relational guarantees — so `RedisStorage` is always assembled alongside a SQL adapter. See [`crates/redis/README.md`](crates/redis/README.md).
+Redis intentionally does **not** implement `UserStore` or `PasskeyCredentialStore` — that data never expires and must be durable — so `RedisStorage` is always assembled alongside one of the persistent backends. See [`crates/redis/README.md`](crates/redis/README.md).
 
 To support a database doorman doesn't ship, implement the five traits yourself. The published `doorman-conformance` crate holds the contract tests every adapter is verified against, so a custom store can be checked the same way the first-party ones are.
 
@@ -232,12 +232,12 @@ To support a database doorman doesn't ship, implement the five traits yourself. 
 `AuthService::builder().build()` is strict by default: there is no silent insecure default, so every footgun is a choice you make explicitly at the call site rather than a warning you have to remember to act on. The build fails closed (returns a `BuilderError`) until each of these is wired:
 
 - **Email** — required. Use `TerminalEmailSender` / `FileEmailSender` for local development, or a real `EmailSender` in production (used for both the link emails and the security notifications).
-- **Audit** — required. Wire a durable `AuditSink`, or pass `NoopAuditSink` explicitly to discard security events.
+- **Audit** — required. Wire a durable `AuditSink`, or pass `NoopAuditSink` explicitly. Every audit event is also written to the `doorman::audit` `tracing` target, so even `NoopAuditSink` still leaves a structured log trail — it only discards the _durable_ sink record.
 - **Rate limiting** — required. Wire a shared `RateLimiter` (e.g. the Redis one) for multi-replica deployments, the per-process `InMemoryRateLimiter` for a single process, or `NoopRateLimiter` to disable enforcement deliberately.
 - **Origin & CSRF** — required decision. Set `external_origin` to the exact public origin (which enables the CSRF origin checks for browser cookie flows), or opt out explicitly with `CsrfConfig::disabled()`.
 - **Re-authentication** — required decision. Pass `ReauthPolicy::required_for([..])` to require a fresh passkey assertion before the destructive actions (delete account, email-change request, passkey removal), or `ReauthPolicy::disabled()` to opt out explicitly.
 - **URL templates** — required. The stock `example.invalid` signup / recovery / account templates are rejected; set real ones that carry the `{token}` placeholder.
-- **Cookies** — keep `secure`, `HttpOnly`, `SameSite` session cookies anywhere but local HTTP development.
+- **Cookies** — session cookies are always `HttpOnly`; `Secure` (default on) and `SameSite` (default `Lax`) are the configurable knobs. The only setting to relax for local HTTP development is `secure = false` — a `Secure` cookie is dropped over plain `http://`.
 - **Maintenance** — run storage migrations and periodically purge expired sessions, verification tokens, and passkey challenges.
 - **Monitoring** — watch recovery requests/completions, passkey add/remove events, high-risk session revocations, and failed WebAuthn ceremonies. Optionally wire a `MetricSink` implementation.
 - **Backup passkeys** — prompt users with `passkey_count < 2` to add one.
