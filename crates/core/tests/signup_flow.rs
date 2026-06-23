@@ -46,38 +46,89 @@ async fn request_provisions_user_for_new_email() {
 }
 
 #[tokio::test]
-async fn request_for_existing_email_is_silent_and_audited() {
+async fn request_for_credentialed_email_is_silent_and_audited() {
     let h = Harness::fresh();
-    // First request creates the user.
-    h.signup
-        .request_signup("alice@example.com", None, SessionContext::default())
-        .await
-        .expect("first request");
+    // A fully registered user (≥1 credential) provisioned through the ceremony.
+    provision_user(&h, "alice@example.com").await;
     let emails_before = h.email.sent().len();
     let tokens_before = h.tokens.len();
+    let signup_requested_before = kinds(&h.audit.events())
+        .into_iter()
+        .filter(|k| matches!(k, AuditEventKind::SignupRequested { .. }))
+        .count();
 
-    // Second request: user exists → silent no-op, no new email or token.
+    // Re-request: the account already holds a credential → silent no-op, no new
+    // email or token. The legitimate user signs in or recovers instead.
     h.signup
         .request_signup("alice@example.com", None, SessionContext::default())
         .await
         .expect("silent ok");
     assert_eq!(h.email.sent().len(), emails_before, "no extra email sent");
     assert_eq!(h.tokens.len(), tokens_before, "no extra token created");
-    // Only the user record is observable; no duplicate user.
-    let only = h
+
+    // The silent attempt is still audited as a signup request.
+    let signup_requested = kinds(&h.audit.events())
+        .into_iter()
+        .filter(|k| matches!(k, AuditEventKind::SignupRequested { .. }))
+        .count();
+    assert_eq!(
+        signup_requested,
+        signup_requested_before + 1,
+        "silent request still audited",
+    );
+}
+
+#[tokio::test]
+async fn request_for_passkeyless_user_reissues_signup_link() {
+    let h = Harness::fresh();
+    // First request provisions the user; no passkey is ever registered, so the
+    // account holds zero credentials (a botched first enrollment).
+    h.signup
+        .request_signup("alice@example.com", None, SessionContext::default())
+        .await
+        .expect("first request");
+    assert_eq!(h.email.sent().len(), 1, "first link sent");
+    assert_eq!(h.tokens.len(), 1, "first token stored");
+    let first_token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
+
+    // Second request to the same passkey-less account: re-issue a fresh link
+    // rather than silently no-op (which would force the user into recovery).
+    h.signup
+        .request_signup("alice@example.com", None, SessionContext::default())
+        .await
+        .expect("reissue");
+    assert_eq!(h.email.sent().len(), 2, "fresh link re-sent");
+    assert_eq!(
+        h.tokens.len(),
+        1,
+        "prior token invalidated, one fresh token"
+    );
+
+    // The reissued link carries a new token and the original is invalidated.
+    let second_token = token_from_email(&h.email.sent()[1].body_text, SIGNUP_URL);
+    assert_ne!(first_token, second_token, "a fresh token was minted");
+    let err = h
+        .signup
+        .consume_signup(&first_token, SessionContext::default())
+        .await
+        .expect_err("prior token no longer valid");
+    assert!(matches!(err, Error::InvalidVerificationToken));
+
+    // No duplicate user was created.
+    let user = h
         .users
         .find_user_by_email("alice@example.com")
         .await
         .expect("find user")
         .expect("user present");
-    let _ = only;
+    let _ = user;
 
-    // Audit emitted on both attempts.
-    let signup_requested: Vec<_> = kinds(&h.audit.events())
+    // Both requests audited as signup requests.
+    let signup_requested = kinds(&h.audit.events())
         .into_iter()
         .filter(|k| matches!(k, AuditEventKind::SignupRequested { .. }))
-        .collect();
-    assert_eq!(signup_requested.len(), 2, "both requests audited");
+        .count();
+    assert_eq!(signup_requested, 2, "both requests audited");
 }
 
 #[tokio::test]

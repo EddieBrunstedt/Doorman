@@ -30,8 +30,8 @@ use crate::passkey::PasskeyManager;
 use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::session::{IssuedSession, SessionContext};
 use crate::storage::{
-    PasskeyChallengeId, StoredPasskey, User, UserId, UserStore, VerificationPurpose,
-    VerificationToken, VerificationTokenStore,
+    PasskeyChallengeId, PasskeyCredentialStore, StoredPasskey, User, UserId, UserStore,
+    VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
 use crate::token::{generate_token, hash_token};
 
@@ -274,6 +274,10 @@ impl EnrollmentFlow {
 
     pub(crate) fn users(&self) -> &Arc<dyn UserStore> {
         self.passkey.users()
+    }
+
+    pub(crate) fn credentials(&self) -> &Arc<dyn PasskeyCredentialStore> {
+        self.passkey.credentials()
     }
 
     pub(crate) fn tokens(&self) -> &Arc<dyn VerificationTokenStore> {

@@ -256,6 +256,12 @@ impl PasskeyManager {
         &self.users
     }
 
+    /// Borrow the credential store, so the enrollment flow can inspect a
+    /// user's existing passkeys (e.g. count them) against the same one.
+    pub(crate) fn credentials(&self) -> &Arc<dyn PasskeyCredentialStore> {
+        &self.credentials
+    }
+
     /// Borrow the session manager this passkey manager mints sessions
     /// through, so the enrollment flow issues sessions against the same one.
     pub(crate) fn sessions(&self) -> &SessionManager {

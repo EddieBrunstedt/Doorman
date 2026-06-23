@@ -83,11 +83,50 @@ async fn full_signup_round_trip_cookie_path() {
 }
 
 #[tokio::test]
-async fn signup_request_for_existing_email_is_silent() {
+async fn signup_request_for_credentialed_email_is_silent() {
+    let app = TestApp::start(Router::new(), false).await;
+    let cookie_client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .expect("client");
+
+    // Full signup leaves the user with a passkey on their account.
+    SignupClient::new(&app)
+        .signup(&cookie_client, &app, "alice@example.com")
+        .await;
+    let emails_before = app.email.sent().len();
+
+    // Second request for the now-credentialed email → silent, no new email.
+    let again = reqwest::Client::new()
+        .post(app.url("/auth/signup/request"))
+        .json(&SignupRequest {
+            email: "alice@example.com".into(),
+            invite_token: None,
+        })
+        .send()
+        .await
+        .expect("second request");
+    assert_eq!(
+        again.status(),
+        StatusCode::NO_CONTENT,
+        "response is identical for an already-registered email",
+    );
+    assert_eq!(
+        app.email.sent().len(),
+        emails_before,
+        "no email queued for an already-credentialed email",
+    );
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn signup_request_for_passkeyless_user_reissues_link() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
-    // First request creates the user record.
+    // First request creates the user record but no passkey is enrolled, so the
+    // account holds zero credentials.
     let initial = client
         .post(app.url("/auth/signup/request"))
         .json(&SignupRequest {
@@ -100,7 +139,8 @@ async fn signup_request_for_existing_email_is_silent() {
     assert_eq!(initial.status(), StatusCode::NO_CONTENT);
     assert_eq!(app.email.sent().len(), 1, "first request sent one email");
 
-    // Second request: same email → silent, no new email.
+    // Second request: the passkey-less account gets a fresh link rather than a
+    // silent no-op, while the response shape stays identical (204).
     let again = client
         .post(app.url("/auth/signup/request"))
         .json(&SignupRequest {
@@ -110,15 +150,11 @@ async fn signup_request_for_existing_email_is_silent() {
         .send()
         .await
         .expect("second request");
-    assert_eq!(
-        again.status(),
-        StatusCode::NO_CONTENT,
-        "response is identical for already-registered email",
-    );
+    assert_eq!(again.status(), StatusCode::NO_CONTENT);
     assert_eq!(
         app.email.sent().len(),
-        1,
-        "no second email queued for already-registered email",
+        2,
+        "fresh link re-sent to the passkey-less user",
     );
 
     app.shutdown().await;

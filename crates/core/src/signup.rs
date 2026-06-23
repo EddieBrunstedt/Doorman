@@ -212,9 +212,13 @@ impl SignupManager {
 
     /// Issue a signup link to `email`. Returns `Ok(())` regardless of
     /// whether the email is already registered, so the endpoint cannot be
-    /// used to enumerate accounts. When the email is registered we audit
-    /// the attempt and silently no-op; when it is not, we provision a new
-    /// (unverified) user, store a single-use token, and email the link.
+    /// used to enumerate accounts. When the email is unregistered we
+    /// provision a new (unverified) user, store a single-use token, and
+    /// email the link. When it is registered but the account holds zero
+    /// credentials — a botched or abandoned first enrollment — we re-issue a
+    /// fresh signup link rather than forcing the user into recovery. Only a
+    /// registered account with at least one credential audits the attempt
+    /// and silently no-ops.
     ///
     /// `invite_token` is an optional, opaque, host-defined value handed
     /// verbatim to the configured [`SignupPolicy`]. doorman never parses,
@@ -289,10 +293,58 @@ impl SignupManager {
             .find_user_by_email(&email_normalized)
             .await?
         {
-            // Existing account: silent success preserves enumeration
-            // resistance. The legitimate user falls back to passkey
-            // sign-in or uses the recovery flow to enrol a new passkey.
             tracing::Span::current().record("user_id", tracing::field::display(existing.id));
+
+            // A user row with zero credentials never finished its first
+            // enrollment (a botched first passkey, or a user who deleted their
+            // last one). Forcing them into recovery — and its cooldown — for
+            // what is still a first enrollment is wrong, so re-issue a fresh
+            // signup link instead of silently no-opping. The response shape is
+            // unchanged (`Ok(())` + best-effort send), so sending to a
+            // zero-credential existing address stays observationally identical
+            // to a brand-new signup and adds no enumeration oracle.
+            let credential_count = self
+                .flow
+                .credentials()
+                .list_passkey_summaries_for_user(existing.id)
+                .await?
+                .len();
+            if credential_count == 0 {
+                // Same invalidate-prior / store-fresh / send path the
+                // new-user branch below takes. The signup-request rate limit
+                // enforced above already covers this send, so it cannot be
+                // used to email-bomb the address.
+                let url = verification::issue_link(
+                    self.flow.tokens().as_ref(),
+                    existing.id,
+                    VerificationPurpose::Signup,
+                    None,
+                    self.config.token_lifetime,
+                    &self.config.url_template,
+                    now,
+                )
+                .await?;
+                let email = self.flow.emails().signup_email(&existing, &url);
+                self.flow.send_best_effort(email, "signup link").await;
+                self.flow
+                    .emit(
+                        &context,
+                        AuditEventKind::SignupRequested {
+                            user_id: existing.id,
+                        },
+                    )
+                    .await;
+                tracing::info!(
+                    outcome = "reissued",
+                    "signup email re-sent to passkey-less user"
+                );
+                return Ok(());
+            }
+
+            // Existing account with at least one credential: silent success
+            // preserves enumeration resistance. The legitimate user falls back
+            // to passkey sign-in or uses the recovery flow to enrol a new
+            // passkey.
             self.flow
                 .emit(
                     &context,
