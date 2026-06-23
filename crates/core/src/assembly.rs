@@ -60,11 +60,11 @@ use crate::verification::{EnrollmentFlow, TOKEN_PLACEHOLDER};
 /// well below the point where converting to a `chrono::Duration` overflows,
 /// and far past any sane session or verification-link validity. A value
 /// above this is almost certainly a units mistake, so the build rejects it.
-pub const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 10);
+pub(crate) const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 10);
 
 /// Host (DNS suffix) reserved for documentation/examples. A `url_template`
 /// still pointing here is the stock default the host never replaced.
-pub const PLACEHOLDER_URL_HOST: &str = "example.invalid";
+pub(crate) const PLACEHOLDER_URL_HOST: &str = "example.invalid";
 
 /// Errors returned when the framework-agnostic auth engine is incompletely
 /// or invalidly configured through [`AuthCore::builder`].
@@ -162,8 +162,8 @@ pub enum AssemblyError {
     /// lifetime or the session-resolution cache TTL. Sliding idle expiry only
     /// works when a cache-miss touch can fire before the idle deadline, so the
     /// build refuses a configuration that would silently log active users out.
-    /// The `idle_timeout` must be greater than zero, at most
-    /// [`MAX_LIFETIME`], at most the session's
+    /// The `idle_timeout` must be greater than zero, at most the ten-year
+    /// lifetime ceiling, at most the session's
     /// `absolute_lifetime`, and strictly greater than the cache `ttl` (a
     /// comfortable margin such as `ttl <= idle_timeout / 2` is recommended).
     #[error("session idle_timeout ({idle_timeout:?}) is invalid: {reason}")]

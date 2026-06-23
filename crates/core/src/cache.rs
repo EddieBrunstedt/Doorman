@@ -30,7 +30,7 @@
 //!
 //! ## Sharding
 //!
-//! The cache is split into [`SHARD_COUNT`] independent `Mutex<LruCache>`
+//! The cache is split into `SHARD_COUNT` independent `Mutex<LruCache>`
 //! shards, selected by the top byte of the (uniformly distributed) token
 //! hash. Lookups on distinct tokens almost always land in different shards,
 //! so they take different locks and do not serialize against one another —
@@ -57,7 +57,7 @@ use crate::storage::{Session, SessionId, TokenHash, User, UserId};
 /// Number of independent lock-striped shards the cache is split across.
 /// A power of two so the shard index is a cheap mask of the token-hash
 /// prefix byte.
-pub const SHARD_COUNT: usize = 16;
+pub(crate) const SHARD_COUNT: usize = 16;
 
 /// Default number of entries the cache will keep before LRU-evicting.
 pub const DEFAULT_CACHE_CAPACITY: usize = 1024;

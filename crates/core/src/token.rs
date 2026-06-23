@@ -20,7 +20,7 @@ use subtle::ConstantTimeEq;
 
 /// Length of the random token in bytes. 256 bits of entropy. Shared by
 /// session tokens and verification tokens (see `generate_token`).
-pub const TOKEN_BYTES: usize = 32;
+pub(crate) const TOKEN_BYTES: usize = 32;
 
 /// SHA-256 digest of a token. Tokens are stored keyed by hash so that a
 /// database breach does not yield usable tokens. Equality is constant-time

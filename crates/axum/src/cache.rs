@@ -9,6 +9,5 @@
 //! hosts and benches that reach the cache through `doorman_axum`.
 
 pub use doorman_core::cache::{
-    CachedAuth, DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, SHARD_COUNT, SessionCache,
-    SessionCacheConfig,
+    CachedAuth, DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, SessionCache, SessionCacheConfig,
 };
