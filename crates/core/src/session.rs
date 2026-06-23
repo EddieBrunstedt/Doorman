@@ -4,6 +4,7 @@
 //! hashes, validates incoming tokens, and revokes sessions immediately via
 //! the configured [`SessionStore`].
 
+use std::fmt;
 use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -21,12 +22,26 @@ pub use crate::token::hash_token;
 
 /// A session that has just been issued, paired with the plaintext token to
 /// hand back to the client. The token is never persisted in plaintext.
-#[derive(Debug, Clone)]
+///
+/// The cleartext `token` is a live bearer credential, so the [`Debug`] impl
+/// redacts it: an accidental `tracing::debug!(?issued)` cannot spill a usable
+/// session token into logs. The field is still public — the host reads it once
+/// to set the cookie / response body — but it never renders itself.
+#[derive(Clone)]
 pub struct IssuedSession {
     /// The persisted session row.
     pub session: Session,
     /// The plaintext bearer token to return to the client once. Never stored.
     pub token: String,
+}
+
+impl fmt::Debug for IssuedSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IssuedSession")
+            .field("session", &self.session)
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Default session lifetime (30 days). The single source for the figure:
@@ -767,6 +782,41 @@ mod tests {
 
         // The owning projection drops the same field.
         assert_eq!(SessionSummary::from(session.clone()), summary);
+    }
+
+    /// The cleartext bearer token must never render through `Debug`: an
+    /// accidental `?issued` in a log line would otherwise spill a live
+    /// session credential. The field is still public and serializes/derefs
+    /// normally; only its `Debug` rendering is redacted.
+    #[test]
+    fn issued_session_debug_redacts_token() {
+        use chrono::{TimeZone, Utc};
+
+        let now = Utc.timestamp_opt(1_000, 0).single().expect("ts");
+        let session = Session {
+            id: SessionId::new(),
+            user_id: UserId::new(),
+            token_hash: hash_token("does-not-matter"),
+            created_at: now,
+            last_used_at: now,
+            expires_at: now,
+            ip: None,
+            user_agent: None,
+            recovery_cooldown_until: None,
+        };
+        let issued = IssuedSession {
+            session,
+            token: "super-secret-bearer-token".to_string(),
+        };
+
+        let rendered = format!("{issued:?}");
+        assert!(
+            !rendered.contains("super-secret-bearer-token"),
+            "Debug output leaked the cleartext token: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"), "expected redaction marker");
+        // The token is still readable through the public field.
+        assert_eq!(issued.token, "super-secret-bearer-token");
     }
 
     #[derive(Default)]
