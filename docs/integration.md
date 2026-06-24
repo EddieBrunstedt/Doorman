@@ -106,6 +106,10 @@ let storage = Storage {
 };
 ```
 
+## Storing your own data against a doorman user
+
+Key your tables on the doorman `UserId` and reference `users(id) ON DELETE CASCADE` — provided your tables live in the **same SQL database** as doorman's `users` store. Then **delete through doorman**: `AccountManager::delete_account` (self-service) or the operator delete ends in a single `DELETE FROM users`, which the database cascades to both doorman's rows and yours, atomically, while preserving doorman's session-cache invalidation and the `AccountDeleted` audit event. Do not invert it — a host-issued `DELETE FROM users` reaches around doorman, skipping the cache hook (stale sessions resolve until their TTL) and the audit event. For data in a separate database or a non-SQL backend there is no shared transaction (the storage traits are per-concern and engine-agnostic — see [operators.md](operators.md#non-atomicity--deleted-is-not-atomically-or-instantaneously-global)): order deletes so doorman goes last, or soft-delete and reconcile on a sweep.
+
 ## Testing your integration with `InMemoryStorage`
 
 `InMemoryStorage` is a supported testing adapter that lives in `doorman-core` and is held to the same conformance and semver guarantees as the shipped database adapters. It fills all five stores from one process-local handle, so a host's integration test can stand up a real `AuthService` with no database, container, or migration step — `InMemoryStorage::new().all_stores()` drops straight into the same builder the quickstart uses:
