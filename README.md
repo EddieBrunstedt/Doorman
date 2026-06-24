@@ -264,18 +264,18 @@ doorman is batteries-included and Axum-first. The auth engine and its assembly l
 ## Workspace layout
 
 ```text
-crates/doorman/      umbrella crate re-exporting the others behind features
-crates/core/         framework-agnostic managers, storage traits, email/audit/rate-limit/metrics traits
-crates/axum/         Axum router, extractors, session layer, CSRF layer
-crates/sqlx/         SQLite / Postgres / MySQL / MariaDB storage adapter
-crates/redis/        Redis/Valkey ephemeral stores + shared rate limiter
-crates/dynamodb/     Amazon DynamoDB storage adapter
-crates/mongodb/      MongoDB storage adapter
-crates/redb/         redb embedded key-value storage adapter
-crates/conformance/  shared storage-adapter conformance suite
-crates/test-support/ test-only collaborators (mock clock, capturing sinks)
-examples/minimal-app/  runnable Axum + SQLite app
-examples/web-client/   browser-side WebAuthn helper reference
+crates/doorman/         umbrella crate re-exporting the others behind features
+crates/core/            framework-agnostic managers, storage traits, email/audit/rate-limit/metrics traits
+crates/axum/            Axum router, extractors, session layer, CSRF layer
+crates/sqlx/            SQLite / Postgres / MySQL / MariaDB storage adapter
+crates/redis/           Redis/Valkey ephemeral stores + shared rate limiter
+crates/dynamodb/        Amazon DynamoDB storage adapter
+crates/mongodb/         MongoDB storage adapter
+crates/redb/            redb embedded key-value storage adapter
+crates/conformance/     shared storage-adapter conformance suite
+crates/test-support/    test-only collaborators (mock clock, capturing sinks)
+examples/minimal-app/   runnable Axum + SQLite app
+examples/web-client/    browser-side WebAuthn helper reference
 ```
 
 ## Versioning and MSRV
