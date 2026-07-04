@@ -71,8 +71,15 @@ pub(crate) fn normalize_email(email: &str) -> String {
 
 /// Cheap structural validation. Not an RFC-compliant parser; just enough
 /// to reject obviously malformed input before it reaches storage.
+///
+/// Control characters are rejected outright: a CR/LF (or NUL) embedded in an
+/// address is never legitimate and, left in, would be handed verbatim to the
+/// configured [`EmailSender`](crate::email::EmailSender) as the recipient —
+/// an email-header-injection vector for any transport that is not itself
+/// defensive. Trimming only strips surrounding whitespace, so an interior
+/// newline survives normalization; this guard is what closes it library-wide.
 pub(crate) fn validate_email(email: &str) -> Result<()> {
-    if email.is_empty() || !email.contains('@') {
+    if email.is_empty() || !email.contains('@') || email.chars().any(char::is_control) {
         return Err(Error::InvalidEmail);
     }
     Ok(())
@@ -574,5 +581,18 @@ mod tests {
         assert!(validate_email("nope").is_err());
         assert!(validate_email("").is_err());
         assert!(validate_email("a@b").is_ok());
+    }
+
+    #[test]
+    fn validate_email_rejects_embedded_control_characters() {
+        // A CR/LF (or NUL) inside the address is an email-header-injection
+        // vector once it reaches the transport as the recipient. Normalization
+        // trims only the ends, so an interior control char must be rejected
+        // here rather than surviving into the `To:` line.
+        assert!(validate_email("a@b.com\r\nBcc: victim@evil.com").is_err());
+        assert!(validate_email("a@b.com\nSubject: spoofed").is_err());
+        assert!(validate_email("a@b.com\0").is_err());
+        // A plain address with no control characters still passes.
+        assert!(validate_email("user@example.com").is_ok());
     }
 }
