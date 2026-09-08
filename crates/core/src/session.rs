@@ -90,7 +90,12 @@ impl Default for SessionConfig {
 /// Request metadata captured when an auth flow creates or audits a session.
 #[derive(Debug, Clone, Default)]
 pub struct SessionContext {
-    /// Client IP, if the host captured one.
+    /// Canonical client IP from a trusted source, if the host captured one.
+    /// Core treats this as an opaque rate-limit key and session/audit metadata;
+    /// callers must validate and normalize it (for example with
+    /// `IpAddr::to_canonical().to_string()`) and establish its provenance.
+    /// `None` skips per-IP rate limits even when configured. HTTP integrations
+    /// should require identity before invoking managers with per-IP protection.
     pub ip: Option<String>,
     /// Client user-agent, if the host captured one.
     pub user_agent: Option<String>,

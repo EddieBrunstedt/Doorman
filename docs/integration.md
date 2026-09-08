@@ -34,6 +34,12 @@ let app = Router::new()
     .merge(auth.router())
     .route("/api/me", get(me))
     .layer(auth.session_layer());
+
+let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+axum::serve(
+    listener,
+    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+).await?;
 ```
 
 - `auth.router()` mounts the passkey, signup, recovery, session, and account routes under `/auth`.
@@ -191,7 +197,7 @@ With the session layer applied, handlers can extract:
 - `AuthUser` — a newtype around `Arc<User>`; rejects with `401` if there is no valid session.
 - `OptionalAuthUser` — `Some`/`None`, never rejects.
 - `AuthSession` — the resolved session plus helpers (e.g. `is_in_recovery_cooldown`, answered through the configured clock).
-- `RequestContext` — IP / user-agent captured from request headers.
+- `RequestContext` — client IP from trusted request extensions, plus the untrusted `User-Agent` header. Requires `ClientIp` or `ConnectInfo<SocketAddr>`; see below.
 
 ```rust
 use axum::Json;
@@ -202,3 +208,43 @@ async fn me(user: AuthUser) -> Json<UserDto> {
     Json(UserDto::from_user(&user.0, 0))
 }
 ```
+
+## Client identity and proxies
+
+Every route using `RequestContext` resolves one client IP for rate-limit keys, session records, and audit events. Resolution has this precedence:
+
+1. `doorman::axum::ClientIp(IpAddr)` in request extensions, supplied by trusted host middleware.
+2. Axum's `ConnectInfo<std::net::SocketAddr>` in request extensions, supplied by `into_make_service_with_connect_info::<SocketAddr>()` when serving the router.
+3. If neither is present, reject with **500** and code **`internal_error`**, log the missing-metadata diagnostic, and do not run the handler.
+
+Identity is required even if the route's rate-limit policies are disabled. Disabling a policy with `None` still disables that limit; it does not opt out of the HTTP identity contract. Core managers remain transport-independent: direct callers may supply `SessionContext { ip: None, .. }`, which skips per-IP checks. Direct callers must establish provenance and validate/canonicalize any IP they do supply.
+
+Only the IP enters the bucket, never the source port. IPv6 addresses use their canonical textual form, and IPv4-mapped IPv6 addresses normalize to IPv4. `ClientIp` wraps `std::net::IpAddr`, so textual input must parse successfully before insertion. `User-Agent` remains ordinary untrusted metadata.
+
+### Direct connections
+
+Use the server setup in the quickstart above. Doorman ignores `Forwarded`, `X-Forwarded-For`, `X-Real-IP`, and other forwarding headers, regardless of whether they are single, repeated, conflicting, malformed, or contain multiple hops. Headers cannot supply missing identity or override socket identity.
+
+### Behind a proxy or a custom transport
+
+Doorman delegates proxy resolution to the host. Without host middleware, requests are attributed to the immediate socket peer, so clients behind the same proxy share its rate-limit bucket. Insert a `ClientIp` extension **per request**, before doorman's handlers run, when the host has resolved a trustworthy end-client address. It overrides socket metadata and also works for transports without a socket address.
+
+```rust
+use std::net::IpAddr;
+use axum::extract::Request;
+use doorman::axum::ClientIp;
+
+// Call from trusted host middleware after validating the peer and resolving
+// the deployment's forwarding chain. The IP is already parsed, not a header.
+fn attach_resolved_client_ip(request: &mut Request, resolved_ip: IpAddr) {
+    request.extensions_mut().insert(ClientIp(resolved_ip));
+}
+```
+
+The host resolver must verify the immediate peer against its configured trusted proxies before accepting forwarding information. It must define the accepted header and resolve the chain from the trusted end (typically right to left, stopping at the first untrusted hop), so attacker-supplied prefixes cannot select the identity. It must also define how malformed, duplicate, and conflicting headers are rejected. Do not insert an unchecked leftmost forwarding value. If trusted resolution fails, reject the request in that middleware; do not fall back to an attacker-controlled value. An ordinary HTTP client cannot set a Rust request extension, but host middleware can undermine this boundary if it blindly copies a header into it.
+
+### Migration and tests
+
+Hosts must serve with `into_make_service_with_connect_info::<SocketAddr>()` or supply the trusted extension. Replace any reliance on doorman parsing forwarding headers with host middleware that follows the trust contract above. Proxy deployments also need the resolver configured for their actual topology.
+
+Tests using `tower::ServiceExt::oneshot` must insert server metadata into the request, for example `request.extensions_mut().insert(axum::extract::ConnectInfo(peer_socket_addr))`, or a trusted `ClientIp`. These are request extensions, not HTTP headers. Test the server's `into_make_service_with_connect_info` setup over a real socket as well.

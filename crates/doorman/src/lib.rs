@@ -85,7 +85,13 @@
 //!     .merge(auth.router()) // all /auth/* endpoints
 //!     .route("/api/me", get(me)) // your own handlers
 //!     .layer(auth.session_layer()); // resolves the session for extractors
-//! # let _ = app;
+//!
+//! // 4. Supply socket identity for rate limits and session/audit metadata.
+//! let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+//! axum::serve(
+//!     listener,
+//!     app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+//! ).await?;
 //! # Ok(())
 //! # }
 //! #
@@ -110,6 +116,8 @@
 //! // The full session context (user + session + recovery cool-down state).
 //! async fn whoami(auth: AuthSession) { /* ... */ }
 //! ```
+//!
+//! Forwarding headers are ignored. Behind a proxy, use trusted host middleware to insert `ClientIp`; see [client identity](https://codeberg.org/EddieBrunstedt/Doorman/src/branch/main/docs/integration.md#client-identity-and-proxies). Requests requiring identity return `500 internal_error` when neither `ClientIp` nor socket metadata is present.
 //!
 //! `TerminalEmailSender` prints emails to stdout for local development. In production, implement `EmailSender` for your transactional email provider and keep `CookieConfig { secure: true, .. }`.
 //!

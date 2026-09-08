@@ -88,12 +88,15 @@ async fn readme_quickstart_drives_signup_login_recovery() {
     let addr = listener.local_addr().expect("addr");
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                let _ = shutdown_rx.await;
-            })
-            .await
-            .expect("serve");
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .expect("serve");
     });
 
     // A non-cookie client: every authenticated call uses a bearer token, so

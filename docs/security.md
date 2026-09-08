@@ -143,6 +143,8 @@ Security-significant events are emitted to `AuditSink`: signup request and consu
 
 Managers consult `RateLimiter` before sensitive endpoints, including the passkey authentication start/finish endpoints (per-IP and per-credential). The limiter key is structured (operation + ordered dimensions) so layered limits are expressible. The built-in in-memory limiter is correct only inside one process; multi-node deployments need a shared backend.
 
+Axum routes derive client identity from a trusted `ClientIp` extension or the socket peer, ignore forwarding headers, and reject missing identity with `500 internal_error`. Hosts behind proxies must explicitly resolve trusted client identity; see [client identity and proxies](integration.md#client-identity-and-proxies). Direct core callers must supply a trusted, canonical IP in `SessionContext` to enforce per-IP policies; `None` skips those checks.
+
 Configurable per-user resource caps are available (all opt-in): maximum active sessions (evicts oldest), maximum credentials, and maximum outstanding registration challenges (both reject at the limit rather than evicting, so a relied-on authenticator is never silently dropped).
 
 ## Email transport

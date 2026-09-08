@@ -1,13 +1,13 @@
 //! Request extractors.
 //!
-//! All four play against the same per-request [`AuthContext`] (populated
-//! by [`SessionLayer`](crate::session::SessionLayer)) and the request
-//! headers; they never reach back into storage themselves.
+//! Authentication extractors read the per-request [`AuthContext`] populated
+//! by [`SessionLayer`](crate::session::SessionLayer). [`RequestContext`] reads
+//! trusted connection metadata and the user-agent header. None access storage.
 
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use axum::extract::FromRequestParts;
-use axum::http::HeaderMap;
+use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::header::USER_AGENT;
 use axum::http::request::Parts;
 use doorman_core::Error;
@@ -115,81 +115,70 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthSession {
     }
 }
 
-/// Extractor that builds a [`SessionContext`] from the request headers.
-/// Walks `X-Forwarded-For` (first hop) → `X-Real-IP` for the client IP and
-/// `User-Agent` for the UA. Never rejects.
+/// Client IP resolved by trusted host middleware and inserted into request
+/// extensions before routing to doorman. Takes precedence over
+/// [`ConnectInfo<SocketAddr>`], including when no socket metadata is available.
+///
+/// This is a host trust boundary, not a header extractor. Behind proxies, the
+/// host must authenticate the immediate peer, resolve the forwarding chain
+/// according to its deployment's trust policy, and parse the result as an
+/// [`IpAddr`] before inserting this value. Never copy an unchecked client header
+/// into this extension. Doorman does not interpret forwarding headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientIp(pub IpAddr);
+
+/// Extractor that builds a [`SessionContext`] with a trusted client IP.
+///
+/// Uses [`ClientIp`] from request extensions first, otherwise the socket IP
+/// from [`ConnectInfo<SocketAddr>`]. Serve the router with
+/// [`into_make_service_with_connect_info::<SocketAddr>()`](axum::Router::into_make_service_with_connect_info)
+/// to supply socket metadata. Forwarding headers are always ignored. Addresses
+/// are canonicalized, including converting IPv4-mapped IPv6 addresses to IPv4;
+/// source ports never form part of the identity. `User-Agent` is untrusted metadata.
+///
+/// Rejects with `500 internal_error` if neither extension is present. This is a
+/// server integration error, even when rate-limit policies are disabled: every
+/// route using this extractor requires identity for consistent rate limits,
+/// sessions, and audit events. Core managers accept optional IPs separately.
 #[derive(Debug, Clone)]
 pub struct RequestContext(pub SessionContext);
 
 impl<S: Send + Sync> FromRequestParts<S> for RequestContext {
-    type Rejection = std::convert::Infallible;
+    type Rejection = ErrorResponse;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        Ok(RequestContext(session_context_from_headers(&parts.headers)))
+        let ip = parts
+            .extensions
+            .get::<ClientIp>()
+            .map(|client| client.0)
+            .or_else(|| {
+                parts
+                    .extensions
+                    .get::<ConnectInfo<SocketAddr>>()
+                    .map(|peer| peer.0.ip())
+            })
+            .ok_or_else(|| {
+                ErrorResponse(Error::Internal(
+                    "client IP unavailable: serve with ConnectInfo<SocketAddr> or insert a trusted ClientIp extension"
+                        .to_owned(),
+                ))
+            })?;
+        let user_agent = parts
+            .headers
+            .get(USER_AGENT)
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_owned)
+            .filter(|s| !s.is_empty());
+        Ok(RequestContext(SessionContext {
+            ip: Some(ip.to_canonical().to_string()),
+            user_agent,
+        }))
     }
-}
-
-pub(crate) fn session_context_from_headers(headers: &HeaderMap) -> SessionContext {
-    let ip = headers
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|h| h.to_str().ok())
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-        });
-    let user_agent = headers
-        .get(USER_AGENT)
-        .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_owned())
-        .filter(|s| !s.is_empty());
-    SessionContext { ip, user_agent }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
-
-    #[test]
-    fn xff_takes_first_hop() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-forwarded-for",
-            HeaderValue::from_static("203.0.113.5, 10.0.0.1"),
-        );
-        let ctx = session_context_from_headers(&headers);
-        assert_eq!(ctx.ip.as_deref(), Some("203.0.113.5"));
-    }
-
-    #[test]
-    fn x_real_ip_used_when_no_xff() {
-        let mut headers = HeaderMap::new();
-        headers.insert("x-real-ip", HeaderValue::from_static("198.51.100.7"));
-        let ctx = session_context_from_headers(&headers);
-        assert_eq!(ctx.ip.as_deref(), Some("198.51.100.7"));
-    }
-
-    #[test]
-    fn user_agent_is_captured() {
-        let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0"));
-        let ctx = session_context_from_headers(&headers);
-        assert_eq!(ctx.user_agent.as_deref(), Some("Mozilla/5.0"));
-        assert!(ctx.ip.is_none());
-    }
-
-    #[test]
-    fn empty_headers_yield_empty_context() {
-        let ctx = session_context_from_headers(&HeaderMap::new());
-        assert!(ctx.ip.is_none());
-        assert!(ctx.user_agent.is_none());
-    }
 
     #[test]
     fn auth_session_cooldown_answers_through_injected_clock() {

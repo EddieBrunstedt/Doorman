@@ -8,7 +8,7 @@ This file tracks the workspace as a whole; every published crate (`doorman`, `do
 
 ## [Unreleased]
 
-Initial development toward the first `0.1.0` release. Until then the public API is unstable and every release may contain breaking changes (see the versioning policy). Highlights of the surface staged for `0.1.0`:
+Initial development toward the first `0.1.0` release. Highlights:
 
 ### Added
 
@@ -19,6 +19,7 @@ Initial development toward the first `0.1.0` release. Until then the public API 
 - Always-on account recovery as the all-passkeys-lost escape hatch, with a configurable cool-down.
 - `OperatorManager` backend-only administration API (disable/enable/delete, remove-passkey, revoke-sessions, list).
 - Security controls: opaque single-use tokens hashed at rest, constant-time token comparison, redacted `Debug` for token-bearing types, fail-closed builder validation, CSRF same-origin checks, and configurable rate limits.
+- Trusted client identity for Axum rate limits, sessions, and audit events: socket metadata or a host-supplied `ClientIp` extension, canonical IP addresses, ignored forwarding headers, and rejection when identity is missing. See [client identity and proxies](docs/integration.md#client-identity-and-proxies).
 - Audit emission funneled through a single dispatch that always writes a `doorman::audit` tracing event alongside the `AuditSink`, so an audit trail exists even with `NoopAuditSink`.
 - Background expiry purge via `Storage::purge_all_expired` and the `background-purge` feature's `spawn_purge_task`.
 - Optional `MetricSink` signals: logins, auth failures, ceremony latency, and axum session-cache hit/miss.

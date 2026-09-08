@@ -38,6 +38,12 @@
 //!     .merge(auth.router())
 //!     .route("/api/me", axum::routing::get(me))
 //!     .layer(auth.session_layer());
+//!
+//! let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+//! axum::serve(
+//!     listener,
+//!     app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+//! ).await?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
@@ -75,7 +81,7 @@ pub use cache::{DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, SessionCache, Session
 pub use config::CookieConfig;
 pub use csrf::{CsrfConfig, CsrfLayer};
 pub use error::{ErrorBody, ErrorPayload, ErrorResponse};
-pub use extractors::{AuthSession, AuthUser, OptionalAuthUser, RequestContext};
+pub use extractors::{AuthSession, AuthUser, ClientIp, OptionalAuthUser, RequestContext};
 pub use manager_builder::{BuilderError, ManagerBuilder};
 pub use session::{AuthContext, SessionLayer};
 pub use state::AuthState;
@@ -128,7 +134,10 @@ impl AuthService {
     /// A `Router` carrying every auth endpoint, scoped under the
     /// `/auth` prefix. Merge it into the application router. The router
     /// is returned with its state already applied (`Router<()>`), so the
-    /// host can `.merge` or `.nest` freely.
+    /// host can `.merge` or `.nest` freely. Routes using [`RequestContext`]
+    /// require [`ClientIp`] or `ConnectInfo<SocketAddr>` in request extensions;
+    /// serve with [`Router::into_make_service_with_connect_info`] to supply the
+    /// socket address. Missing identity is a `500 internal_error`.
     pub fn router(&self) -> Router {
         Router::new().nest("/auth", routes::router(self.state.clone()))
     }
