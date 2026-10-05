@@ -49,10 +49,12 @@ pub(crate) fn to_bson_dt(dt: DateTime<Utc>) -> BsonDateTime {
     BsonDateTime::from_millis(dt.timestamp_millis())
 }
 
-/// Convert a BSON `Date` back to `chrono::DateTime<Utc>`.
-pub(crate) fn from_bson_dt(dt: BsonDateTime) -> DateTime<Utc> {
+/// Convert a BSON `Date` read from field `key` back to
+/// `chrono::DateTime<Utc>`. BSON's range is wider than chrono's, so a date
+/// beyond chrono's is an error.
+fn from_bson_dt(key: &str, dt: BsonDateTime) -> StorageResult<DateTime<Utc>> {
     DateTime::from_timestamp_millis(dt.timestamp_millis())
-        .expect("bson DateTime millis always fit in chrono")
+        .ok_or_else(|| StorageError::msg(format!("field `{key}` is out of chrono's date range")))
 }
 
 /// The TTL field value: `Some(date)` when `expires_at` is in the future,
@@ -96,7 +98,7 @@ pub(crate) fn get_opt_str(doc: &Document, key: &str) -> StorageResult<Option<Str
 
 pub(crate) fn get_dt(doc: &Document, key: &str) -> StorageResult<DateTime<Utc>> {
     match doc.get(key) {
-        Some(Bson::DateTime(dt)) => Ok(from_bson_dt(*dt)),
+        Some(Bson::DateTime(dt)) => from_bson_dt(key, *dt),
         Some(_) => Err(wrong_type(key, "DateTime")),
         None => Err(missing(key)),
     }
@@ -105,7 +107,7 @@ pub(crate) fn get_dt(doc: &Document, key: &str) -> StorageResult<DateTime<Utc>> 
 pub(crate) fn get_opt_dt(doc: &Document, key: &str) -> StorageResult<Option<DateTime<Utc>>> {
     match doc.get(key) {
         None | Some(Bson::Null) => Ok(None),
-        Some(Bson::DateTime(dt)) => Ok(Some(from_bson_dt(*dt))),
+        Some(Bson::DateTime(dt)) => from_bson_dt(key, *dt).map(Some),
         Some(_) => Err(wrong_type(key, "DateTime")),
     }
 }
@@ -420,4 +422,18 @@ pub(crate) fn pkauth_from_doc(doc: &Document) -> StorageResult<StoredPasskeyAuth
         created_at: get_dt(doc, "created_at")?,
         expires_at: get_dt(doc, "expires_at")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn date_outside_chronos_range_is_an_error() {
+        // BSON dates span ±292M years, chrono only ±262k: a stored date
+        // beyond chrono's range must fail the read, not panic.
+        let doc = doc! { "at": BsonDateTime::MAX };
+        assert!(get_dt(&doc, "at").is_err());
+        assert!(get_opt_dt(&doc, "at").is_err());
+    }
 }
