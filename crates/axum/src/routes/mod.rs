@@ -33,21 +33,23 @@ pub(crate) fn auth_success(
     status: StatusCode,
     cookie_config: &CookieConfig,
     body: AuthResponse,
-) -> Response {
-    let cookie = session_cookie(cookie_config, &body.token);
+) -> Result<Response, ErrorResponse> {
+    let cookie = session_cookie(cookie_config, &body.token)?;
     let mut response = (status, Json(body)).into_response();
     response.headers_mut().insert(header::SET_COOKIE, cookie);
-    response
+    Ok(response)
 }
 
 /// Build a `204 No Content` response that clears the session cookie, so the
 /// browser stops replaying a token the server just invalidated. Shared by
 /// logout, logout-all, and account deletion.
-pub(crate) fn no_content_clearing_session_cookie(cookie_config: &CookieConfig) -> Response {
-    let cookie = clear_session_cookie(cookie_config);
+pub(crate) fn no_content_clearing_session_cookie(
+    cookie_config: &CookieConfig,
+) -> Result<Response, ErrorResponse> {
+    let cookie = clear_session_cookie(cookie_config)?;
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(header::SET_COOKIE, cookie);
-    response
+    Ok(response)
 }
 
 /// Parse a client-supplied challenge id string into a
@@ -97,11 +99,11 @@ pub(crate) async fn enrollment_success(
     outcome: EnrollmentOutcome,
 ) -> Result<Response, ErrorResponse> {
     let passkey_count = state.passkey.count_passkeys(outcome.user.id).await?;
-    Ok(auth_success(
+    auth_success(
         StatusCode::OK,
         state.cookie_config(),
         AuthResponse::from_issued(outcome.user, outcome.session, passkey_count),
-    ))
+    )
 }
 
 pub(crate) fn router(state: AuthState) -> Router {

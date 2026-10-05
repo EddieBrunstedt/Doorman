@@ -15,6 +15,8 @@
 //!   is explicitly configured
 //! - a `__Host-`/`__Secure-` cookie name without the attributes its prefix
 //!   requires → [`BuilderError::InvalidCookiePrefix`]
+//! - a cookie name, path or domain with a control character →
+//!   [`BuilderError::InvalidCookieAttributes`]
 //! - a cookie `Max-Age` longer than the session can go unused →
 //!   [`BuilderError::CookieMaxAgeExceedsSessionLifetime`]
 
@@ -27,6 +29,7 @@ use url::Url;
 
 use crate::AuthService;
 use crate::config::CookieConfig;
+use crate::cookies::clear_session_cookie;
 use crate::csrf::CsrfConfig;
 use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::AuthState;
@@ -61,6 +64,10 @@ pub enum BuilderError {
         /// The attribute requirement that was not met.
         requirement: &'static str,
     },
+    /// A session cookie attribute (name, `Path` or `Domain`) carries a
+    /// control character, so the cookie can't be sent as a header.
+    #[error("the session cookie name, path or domain contains a control character")]
+    InvalidCookieAttributes,
     /// The session cookie `Max-Age` outlives the window the server will keep
     /// the session alive, so the browser would keep replaying a cookie whose
     /// session is already dead. The bound is
@@ -150,6 +157,11 @@ impl AuthServiceBuilder {
         let core = self.core;
         let cookie_config = self.cookie_config.unwrap_or_default();
         validate_cookie_prefix(&cookie_config)?;
+        // Every cookie attribute comes from the config, so if the cleared
+        // cookie encodes, every session cookie does too.
+        if clear_session_cookie(&cookie_config).is_err() {
+            return Err(BuilderError::InvalidCookieAttributes);
+        }
 
         // A sliding session's cookie is refreshed to at most one idle window
         // per use, and the session never survives one idle window unused, so

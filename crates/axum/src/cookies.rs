@@ -11,6 +11,8 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use cookie::time::OffsetDateTime;
 use cookie::{Cookie, CookieBuilder};
 
+use doorman_core::Error;
+
 use crate::config::CookieConfig;
 
 /// Find the value of the cookie named `name` in the request headers.
@@ -45,7 +47,7 @@ pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Build a `Set-Cookie` header value for the session cookie.
-pub fn session_cookie(config: &CookieConfig, value: &str) -> HeaderValue {
+pub fn session_cookie(config: &CookieConfig, value: &str) -> Result<HeaderValue, Error> {
     encode(
         build_cookie(
             &config.session_cookie_name,
@@ -67,7 +69,7 @@ pub fn session_cookie_with_max_age(
     config: &CookieConfig,
     value: &str,
     max_age: Duration,
-) -> HeaderValue {
+) -> Result<HeaderValue, Error> {
     encode(
         build_cookie(
             &config.session_cookie_name,
@@ -80,7 +82,7 @@ pub fn session_cookie_with_max_age(
 }
 
 /// Build a `Set-Cookie` header value that clears the session cookie.
-pub fn clear_session_cookie(config: &CookieConfig) -> HeaderValue {
+pub fn clear_session_cookie(config: &CookieConfig) -> Result<HeaderValue, Error> {
     encode(clear_cookie(&config.session_cookie_name, config))
 }
 
@@ -119,12 +121,15 @@ fn clear_cookie(name: &str, config: &CookieConfig) -> Cookie<'static> {
     builder.build()
 }
 
-fn encode(cookie: Cookie<'_>) -> HeaderValue {
-    // `Display` on a cookie produces the exact `Set-Cookie` value (no
-    // header name prefix). We pass it through HeaderValue::from_str which
-    // validates ASCII / no CR-LF.
+/// Render a cookie as a `Set-Cookie` value. `Display` produces the exact
+/// value (no header name prefix), and `HeaderValue::from_str` refuses control
+/// characters. The token values are always header-safe, so only a
+/// `CookieConfig` carrying control characters can fail here, and
+/// [`AuthServiceBuilder::build`](crate::AuthServiceBuilder::build) refuses
+/// such a config.
+fn encode(cookie: Cookie<'_>) -> Result<HeaderValue, Error> {
     HeaderValue::from_str(&cookie.to_string())
-        .expect("cookie attributes only contain header-safe characters")
+        .map_err(|_| Error::Internal("cookie attributes are not header-safe".to_owned()))
 }
 
 #[cfg(test)]
@@ -204,7 +209,7 @@ mod tests {
 
     #[test]
     fn session_cookie_has_expected_attributes() {
-        let value = session_cookie(&cfg(), "tok");
+        let value = session_cookie(&cfg(), "tok").expect("encodes");
         let s = value.to_str().expect("ascii header value");
         assert!(s.contains("doorman_session=tok"));
         assert!(s.contains("HttpOnly"));
@@ -218,7 +223,7 @@ mod tests {
 
     #[test]
     fn session_cookie_is_secure_when_configured() {
-        let value = session_cookie(&secure_cfg(), "tok");
+        let value = session_cookie(&secure_cfg(), "tok").expect("encodes");
         let s = value.to_str().expect("ascii header value");
         assert!(s.contains("doorman_session=tok"));
         assert!(s.contains("Secure"));
@@ -229,7 +234,7 @@ mod tests {
 
     #[test]
     fn clear_session_cookie_sets_zero_max_age() {
-        let value = clear_session_cookie(&cfg());
+        let value = clear_session_cookie(&cfg()).expect("encodes");
         let s = value.to_str().expect("ascii header value");
         assert!(s.contains("doorman_session="));
         assert!(s.contains("Max-Age=0"));
@@ -237,7 +242,7 @@ mod tests {
 
     #[test]
     fn clear_session_cookie_is_secure_when_configured() {
-        let value = clear_session_cookie(&secure_cfg());
+        let value = clear_session_cookie(&secure_cfg()).expect("encodes");
         let s = value.to_str().expect("ascii header value");
         assert!(s.contains("doorman_session="));
         assert!(s.contains("Max-Age=0"));

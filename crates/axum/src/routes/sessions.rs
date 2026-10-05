@@ -39,7 +39,7 @@ async fn logout(
     auth: AuthSession,
 ) -> Result<Response, ErrorResponse> {
     state.session_manager.revoke(&auth.token).await?;
-    Ok(no_content_clearing_session_cookie(&state.cookie_config))
+    no_content_clearing_session_cookie(&state.cookie_config)
 }
 
 /// "Log out everywhere": revoke *every* session the caller has, including the
@@ -58,7 +58,7 @@ async fn logout_all(
         .session_manager
         .revoke_all_for_user(auth.user.id)
         .await?;
-    Ok(no_content_clearing_session_cookie(&state.cookie_config))
+    no_content_clearing_session_cookie(&state.cookie_config)
 }
 
 async fn list(

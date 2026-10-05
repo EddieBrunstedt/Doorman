@@ -233,6 +233,21 @@ fn host_prefixed_cookie_with_correct_attributes_builds() {
 }
 
 #[test]
+fn cookie_attributes_a_header_cannot_carry_are_rejected() {
+    let err = valid_builder()
+        .cookie(CookieConfig {
+            path: "/\n".to_string(),
+            ..CookieConfig::default()
+        })
+        .build()
+        .err();
+    assert!(
+        matches!(err, Some(BuilderError::InvalidCookieAttributes)),
+        "expected InvalidCookieAttributes for a path with a newline, got: {err:?}"
+    );
+}
+
+#[test]
 fn cookie_max_age_exceeding_session_lifetime_is_rejected() {
     let core = core_builder(Arc::new(CapturingEmailSender::new()))
         .session(SessionConfig {

@@ -85,11 +85,11 @@ async fn authenticate_finish(
         .finish_authentication(challenge_id, &body.response, context)
         .await?;
     let passkey_count = manager(&state).count_passkeys(outcome.user.id).await?;
-    Ok(auth_success(
+    auth_success(
         StatusCode::OK,
         state.cookie_config(),
         AuthResponse::from_issued(outcome.user, outcome.session, passkey_count),
-    ))
+    )
 }
 
 async fn list(

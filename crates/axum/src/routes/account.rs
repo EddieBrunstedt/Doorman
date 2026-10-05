@@ -79,5 +79,5 @@ async fn delete_account(
         .account
         .delete_account(&auth.session, proof, context)
         .await?;
-    Ok(no_content_clearing_session_cookie(&state.cookie_config))
+    no_content_clearing_session_cookie(&state.cookie_config)
 }

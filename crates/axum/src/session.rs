@@ -159,11 +159,16 @@ where
                                     - state.resolver.clock().now())
                                 .to_std()
                                 .unwrap_or(Duration::ZERO);
-                                cookie_refresh = Some(session_cookie_with_max_age(
-                                    &state.cookie,
-                                    &token,
-                                    remaining,
-                                ));
+                                // Unreachable after a successful build, which
+                                // refuses a config the cookie can't encode; the
+                                // request still proceeds, just without a refresh.
+                                match session_cookie_with_max_age(&state.cookie, &token, remaining)
+                                {
+                                    Ok(cookie) => cookie_refresh = Some(cookie),
+                                    Err(err) => {
+                                        tracing::error!(error = %err, "session cookie refresh skipped");
+                                    }
+                                }
                             }
                             req.extensions_mut().insert(AuthContext {
                                 user: resolved.user,
