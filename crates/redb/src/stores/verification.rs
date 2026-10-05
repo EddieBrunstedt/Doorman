@@ -15,7 +15,7 @@ use doorman_core::error::StorageResult;
 use doorman_core::storage::{
     TokenHash, UserId, VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
-use redb::{ReadableDatabase as _, ReadableTable as _};
+use redb::ReadableTable as _;
 
 use crate::db::{self, RedbHandle};
 
@@ -138,10 +138,14 @@ impl VerificationTokenStore for RedbVerificationTokenStore {
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
         let db = self.handle.db();
         tokio::task::spawn_blocking(move || {
-            let expired: Vec<(String, VerificationToken)> = {
-                let rtxn = db.begin_read().map_err(db::err)?;
-                let vtokens_tbl = rtxn.open_table(db::VTOKENS).map_err(db::err)?;
-                vtokens_tbl
+            let wtxn = db.begin_write().map_err(db::err)?;
+            let count = {
+                let mut vtokens = wtxn.open_table(db::VTOKENS).map_err(db::err)?;
+                let mut user_idx = wtxn.open_table(db::USER_VTOKENS_IDX).map_err(db::err)?;
+
+                // Scan inside the write transaction so the expiry check and the
+                // removal see the same row (redb serializes writers).
+                let expired: Vec<(String, VerificationToken)> = vtokens
                     .iter()
                     .map_err(db::err)?
                     .map(|r| {
@@ -152,31 +156,15 @@ impl VerificationTokenStore for RedbVerificationTokenStore {
                         })
                     })
                     .filter(|r| r.as_ref().map_or(true, |(_, t)| t.expires_at <= now))
-                    .collect::<StorageResult<_>>()?
-            };
+                    .collect::<StorageResult<_>>()?;
 
-            if expired.is_empty() {
-                return Ok(0);
-            }
-
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let count = {
-                let mut vtokens = wtxn.open_table(db::VTOKENS).map_err(db::err)?;
-                let mut user_idx = wtxn.open_table(db::USER_VTOKENS_IDX).map_err(db::err)?;
-
-                let mut n = 0u64;
                 for (key, token) in &expired {
-                    if vtokens.remove(key.as_str()).map_err(db::err)?.is_some() {
-                        let user_idx_key = db::user_vtokens_idx_key(
-                            token.user_id,
-                            token.purpose,
-                            &token.token_hash,
-                        );
-                        user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
-                        n += 1;
-                    }
+                    vtokens.remove(key.as_str()).map_err(db::err)?;
+                    let user_idx_key =
+                        db::user_vtokens_idx_key(token.user_id, token.purpose, &token.token_hash);
+                    user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
-                n
+                expired.len() as u64
             };
             wtxn.commit().map_err(db::err)?;
             Ok(count)

@@ -190,11 +190,15 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
         let db = self.handle.db();
         tokio::task::spawn_blocking(move || {
-            // Collect expired registration keys and their user_ids (for index cleanup).
-            let expired_regs: Vec<(String, StoredPasskeyRegistration)> = {
-                let rtxn = db.begin_read().map_err(db::err)?;
-                let pkregs_tbl = rtxn.open_table(db::PKREGS).map_err(db::err)?;
-                pkregs_tbl
+            let wtxn = db.begin_write().map_err(db::err)?;
+            let count = {
+                let mut pkregs = wtxn.open_table(db::PKREGS).map_err(db::err)?;
+                let mut user_idx = wtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
+                let mut pkauths = wtxn.open_table(db::PKAUTHS).map_err(db::err)?;
+
+                // Scan inside the write transaction so the expiry check and the
+                // removal see the same row (redb serializes writers).
+                let expired_regs: Vec<(String, StoredPasskeyRegistration)> = pkregs
                     .iter()
                     .map_err(db::err)?
                     .map(|r| {
@@ -205,14 +209,9 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
                         })
                     })
                     .filter(|r| r.as_ref().map_or(true, |(_, reg)| reg.expires_at <= now))
-                    .collect::<StorageResult<_>>()?
-            };
+                    .collect::<StorageResult<_>>()?;
 
-            // Collect expired authentication keys.
-            let expired_auths: Vec<String> = {
-                let rtxn = db.begin_read().map_err(db::err)?;
-                let pkauths_tbl = rtxn.open_table(db::PKAUTHS).map_err(db::err)?;
-                pkauths_tbl
+                let expired_auths: Vec<String> = pkauths
                     .iter()
                     .map_err(db::err)?
                     .map(|r| {
@@ -224,33 +223,17 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
                     })
                     .filter(|r| r.as_ref().map_or(true, |(_, a)| a.expires_at <= now))
                     .map(|r| r.map(|(k, _)| k))
-                    .collect::<StorageResult<_>>()?
-            };
+                    .collect::<StorageResult<_>>()?;
 
-            if expired_regs.is_empty() && expired_auths.is_empty() {
-                return Ok(0);
-            }
-
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let count = {
-                let mut pkregs = wtxn.open_table(db::PKREGS).map_err(db::err)?;
-                let mut user_idx = wtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
-                let mut pkauths = wtxn.open_table(db::PKAUTHS).map_err(db::err)?;
-
-                let mut n = 0u64;
                 for (key, reg) in &expired_regs {
-                    if pkregs.remove(key.as_str()).map_err(db::err)?.is_some() {
-                        let user_idx_key = db::user_pkregs_idx_key(reg.user_id, reg.id);
-                        user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
-                        n += 1;
-                    }
+                    pkregs.remove(key.as_str()).map_err(db::err)?;
+                    let user_idx_key = db::user_pkregs_idx_key(reg.user_id, reg.id);
+                    user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
                 for key in &expired_auths {
-                    if pkauths.remove(key.as_str()).map_err(db::err)?.is_some() {
-                        n += 1;
-                    }
+                    pkauths.remove(key.as_str()).map_err(db::err)?;
                 }
-                n
+                (expired_regs.len() + expired_auths.len()) as u64
             };
             wtxn.commit().map_err(db::err)?;
             Ok(count)

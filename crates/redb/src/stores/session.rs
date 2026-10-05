@@ -279,11 +279,16 @@ impl SessionStore for RedbSessionStore {
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
         let db = self.handle.db();
         tokio::task::spawn_blocking(move || {
-            // Read pass: find all expired sessions.
-            let expired: Vec<(String, Session)> = {
-                let rtxn = db.begin_read().map_err(db::err)?;
-                let sessions_tbl = rtxn.open_table(db::SESSIONS).map_err(db::err)?;
-                sessions_tbl
+            let wtxn = db.begin_write().map_err(db::err)?;
+            let count = {
+                let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
+                let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
+                let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
+
+                // Scan inside the write transaction: redb serializes writers, so
+                // no `touch_session` can slide a row between this expiry check
+                // and its removal, and the index keys come from the row removed.
+                let expired: Vec<(String, Session)> = sessions
                     .iter()
                     .map_err(db::err)?
                     .map(|r| {
@@ -294,31 +299,16 @@ impl SessionStore for RedbSessionStore {
                         })
                     })
                     .filter(|r| r.as_ref().map_or(true, |(_, s)| s.expires_at <= now))
-                    .collect::<StorageResult<_>>()?
-            };
+                    .collect::<StorageResult<_>>()?;
 
-            if expired.is_empty() {
-                return Ok(0);
-            }
-
-            // Write pass: delete each expired session and its index entries.
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let count = {
-                let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
-                let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
-                let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
-
-                let mut n = 0u64;
                 for (key, session) in &expired {
-                    if sessions.remove(key.as_str()).map_err(db::err)?.is_some() {
-                        let hash_hex = db::token_hash_hex(&session.token_hash);
-                        let user_idx_key = db::user_sessions_idx_key(session.user_id, session.id);
-                        hash_idx.remove(hash_hex.as_str()).map_err(db::err)?;
-                        user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
-                        n += 1;
-                    }
+                    sessions.remove(key.as_str()).map_err(db::err)?;
+                    let hash_hex = db::token_hash_hex(&session.token_hash);
+                    let user_idx_key = db::user_sessions_idx_key(session.user_id, session.id);
+                    hash_idx.remove(hash_hex.as_str()).map_err(db::err)?;
+                    user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
-                n
+                expired.len() as u64
             };
             wtxn.commit().map_err(db::err)?;
             Ok(count)
