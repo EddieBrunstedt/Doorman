@@ -204,46 +204,18 @@ impl SessionStore for RedisSessionStore {
         Ok(())
     }
 
-    async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let keys = self.client.keys();
-        let user_key = keys.user_sessions(user_id);
-        let mut conn = self.client.conn();
-
-        let members = client::smembers(&mut conn, &user_key).await?;
-        if members.is_empty() {
-            return Ok(0);
-        }
-        let session_keys: Vec<String> = members.iter().map(|m| keys.session_key_for(m)).collect();
-        let rows: Vec<Option<Session>> = client::mget_json(&mut conn, &session_keys).await?;
-
-        let mut del_keys = Vec::new();
-        let mut removed = 0u64;
-        for (member, row) in members.iter().zip(rows) {
-            if let Some(session) = row {
-                del_keys.push(keys.session_key_for(member));
-                del_keys.push(keys.session_hash_index(&session.token_hash));
-                removed += 1;
-            }
-        }
-        // SREM exactly the members read, dangling ones included. Dropping the
-        // whole SET would also drop a session created after the SMEMBERS,
-        // leaving it resolvable but unlisted and beyond any later revoke.
-        client::del(&mut conn, &del_keys).await?;
-        client::srem(&mut conn, &user_key, &members).await?;
-        Ok(removed)
-    }
-
-    async fn delete_other_sessions_for_user(
+    async fn delete_sessions_for_user(
         &self,
         user_id: UserId,
-        except: SessionId,
+        except: Option<SessionId>,
     ) -> StorageResult<u64> {
         let keys = self.client.keys();
         let user_key = keys.user_sessions(user_id);
-        let except = except.0.to_string();
+        let except = except.map(|id| id.0.to_string());
         let mut conn = self.client.conn();
 
-        let members = client::smembers(&mut conn, &user_key).await?;
+        let mut members = client::smembers(&mut conn, &user_key).await?;
+        members.retain(|m| Some(m) != except.as_ref());
         if members.is_empty() {
             return Ok(0);
         }
@@ -251,23 +223,30 @@ impl SessionStore for RedisSessionStore {
         let rows: Vec<Option<Session>> = client::mget_json(&mut conn, &session_keys).await?;
 
         let mut del_keys = Vec::new();
-        let mut srem_members = Vec::new();
         let mut removed = 0u64;
-        for (member, row) in members.iter().zip(rows) {
-            if *member == except {
-                continue;
-            }
-            // SREM every other member (so dangling ones are reclaimed too), but
-            // only count the sessions that actually existed as removed.
-            srem_members.push(member.clone());
+        for (session_key, row) in session_keys.into_iter().zip(rows) {
+            // Every member read is SREMed below, dangling ones included, but
+            // only the sessions that actually existed count as removed.
             if let Some(session) = row {
-                del_keys.push(keys.session_key_for(member));
+                del_keys.push(session_key);
                 del_keys.push(keys.session_hash_index(&session.token_hash));
                 removed += 1;
             }
         }
-        client::del(&mut conn, &del_keys).await?;
-        client::srem(&mut conn, &user_key, &srem_members).await?;
+
+        // SREM exactly the members read, never the whole SET: a session created
+        // after the SMEMBERS keeps its membership, so it stays listed and the
+        // next revoke reaches it. Rows and memberships go in one MULTI/EXEC.
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        if !del_keys.is_empty() {
+            pipe.cmd("DEL").arg(&del_keys).ignore();
+        }
+        pipe.cmd("SREM").arg(&user_key).arg(&members).ignore();
+        let _: () = pipe
+            .query_async(&mut conn)
+            .await
+            .map_err(StorageError::new)?;
         Ok(removed)
     }
 

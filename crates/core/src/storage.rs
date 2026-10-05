@@ -385,16 +385,22 @@ pub trait SessionStore: Send + Sync {
     /// Delete a single session by id.
     async fn delete_session(&self, id: SessionId) -> StorageResult<()>;
 
-    /// Delete every session belonging to `user_id`, returning the number
-    /// removed. Backs "log out everywhere" and account deletion.
-    async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64>;
-
-    /// Delete every session belonging to `user_id` *except* the one with
-    /// `except`. Implementations return the number of sessions removed.
-    async fn delete_other_sessions_for_user(
+    /// Delete every session belonging to `user_id` except the one with id
+    /// `except`, if given, returning the number of sessions removed. Backs
+    /// "log out everywhere" and account deletion (`except: None`) and "sign
+    /// out everywhere else" (`except: Some(current)`).
+    ///
+    /// Concurrency guarantee: every session of the user that exists when the
+    /// call starts, other than `except`, is deleted. A session created while
+    /// the call runs is either deleted, or left fully indexed: found by
+    /// [`find_session_by_token_hash`](Self::find_session_by_token_hash),
+    /// listed by [`list_for_user`](Self::list_for_user), and deleted by the
+    /// next call. The call MUST NOT leave a session that still resolves but
+    /// that the user's listing, and therefore every later revoke, misses.
+    async fn delete_sessions_for_user(
         &self,
         user_id: UserId,
-        except: SessionId,
+        except: Option<SessionId>,
     ) -> StorageResult<u64>;
 
     /// Delete every session whose `expires_at` is at or before `now`,

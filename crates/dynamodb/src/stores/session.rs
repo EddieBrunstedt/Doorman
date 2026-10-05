@@ -6,9 +6,8 @@
 //! DynamoDB maintains both indexes, so a delete or a TTL eviction drops the
 //! index entries for free, with no dangling-member bookkeeping.
 //!
-//! The bulk-delete paths ([`delete_sessions_for_user`](DynamoSessionStore::delete_sessions_for_user),
-//! [`delete_other_sessions_for_user`](DynamoSessionStore::delete_other_sessions_for_user))
-//! enumerate the user's sessions through the `owner-index` GSI, and GSI reads
+//! The bulk-delete path ([`delete_sessions_for_user`](DynamoSessionStore::delete_sessions_for_user))
+//! enumerates the user's sessions through the `owner-index` GSI, and GSI reads
 //! are eventually consistent. A session created immediately before a bulk revoke
 //! may not yet be visible to the GSI, so it can survive that revoke and is
 //! reclaimed only on a later revoke or by
@@ -139,18 +138,12 @@ impl SessionStore for DynamoSessionStore {
         self.client.delete(&model::session_pk(id)).await
     }
 
-    async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        self.client
-            .delete_owned(&model::user_sessions_key(user_id))
-            .await
-    }
-
-    async fn delete_other_sessions_for_user(
+    async fn delete_sessions_for_user(
         &self,
         user_id: UserId,
-        except: SessionId,
+        except: Option<SessionId>,
     ) -> StorageResult<u64> {
-        let except_pk = model::session_pk(except);
+        let except_pk = except.map(model::session_pk);
         let items = self
             .client
             .query_owner(&model::user_sessions_key(user_id))
@@ -158,7 +151,7 @@ impl SessionStore for DynamoSessionStore {
         let mut keys = Vec::new();
         for item in &items {
             let pk = client::item_pk(item)?;
-            if pk != except_pk {
+            if Some(&pk) != except_pk.as_ref() {
                 keys.push(pk);
             }
         }

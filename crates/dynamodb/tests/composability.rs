@@ -93,18 +93,12 @@ impl SessionStore for AuditedSessions {
         self.inner.delete_session(id).await
     }
 
-    async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        self.inner.delete_sessions_for_user(user_id).await
-    }
-
-    async fn delete_other_sessions_for_user(
+    async fn delete_sessions_for_user(
         &self,
         user_id: UserId,
-        except: SessionId,
+        except: Option<SessionId>,
     ) -> StorageResult<u64> {
-        self.inner
-            .delete_other_sessions_for_user(user_id, except)
-            .await
+        self.inner.delete_sessions_for_user(user_id, except).await
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {

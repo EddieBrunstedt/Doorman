@@ -6,8 +6,7 @@
 //! - **`token_hash` unique index** — the hot per-request lookup by hashed
 //!   bearer token. `find_session_by_token_hash` hits this index with a single
 //!   `find_one`.
-//! - **`user_id` index** — backs `list_for_user`, `delete_sessions_for_user`,
-//!   and `delete_other_sessions_for_user`.
+//! - **`user_id` index** — backs `list_for_user` and `delete_sessions_for_user`.
 //!
 //! The `ttl` field is written only for future-dated expiries (see
 //! `model::ttl_bson`), driving the TTL index without sweeping past-dated
@@ -127,21 +126,18 @@ impl SessionStore for MongoSessionStore {
         Ok(())
     }
 
-    async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let filter = doc! { "user_id": user_id.0.to_string() };
-        let result = self.coll.delete_many(filter).await.map_err(err)?;
-        Ok(result.deleted_count)
-    }
-
-    async fn delete_other_sessions_for_user(
+    async fn delete_sessions_for_user(
         &self,
         user_id: UserId,
-        except: SessionId,
+        except: Option<SessionId>,
     ) -> StorageResult<u64> {
-        let filter = doc! {
-            "user_id": user_id.0.to_string(),
-            "_id": { "$ne": model::session_id_str(except) },
-        };
+        // `deleteMany` removes each matching document atomically with its index
+        // entries, so a session inserted concurrently is either deleted or left
+        // whole.
+        let mut filter = doc! { "user_id": user_id.0.to_string() };
+        if let Some(except) = except {
+            filter.insert("_id", doc! { "$ne": model::session_id_str(except) });
+        }
         let result = self.coll.delete_many(filter).await.map_err(err)?;
         Ok(result.deleted_count)
     }

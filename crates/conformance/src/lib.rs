@@ -666,9 +666,9 @@ async fn sessions_crud_and_queries(storage: &Storage) {
         "list returns only this user's sessions"
     );
 
-    // delete_other_sessions_for_user keeps the exception, removes the rest.
+    // delete_sessions_for_user with an exception keeps it, removes the rest.
     let removed = sessions
-        .delete_other_sessions_for_user(user_id, keep.id)
+        .delete_sessions_for_user(user_id, Some(keep.id))
         .await
         .expect("delete others");
     assert_eq!(removed, 3, "every session except the exception was removed");
@@ -688,9 +688,9 @@ async fn sessions_crud_and_queries(storage: &Storage) {
             .is_some()
     );
 
-    // delete_sessions_for_user clears the rest for this user.
+    // delete_sessions_for_user without one clears the rest for this user.
     let removed = sessions
-        .delete_sessions_for_user(user_id)
+        .delete_sessions_for_user(user_id, None)
         .await
         .expect("delete all");
     assert_eq!(removed, 1, "the surviving session was removed");
@@ -933,7 +933,8 @@ const REVOKE_ROUNDS: usize = 8;
 
 /// A bulk revoke racing session creation never half-removes a session. Every
 /// session that survives the revoke is still listed for its user and is
-/// removed by the next revoke. An adapter that drops its whole per-user index
+/// removed by the next revoke. Odd rounds revoke with an exception, which must
+/// survive its round. An adapter that drops its whole per-user index
 /// after enumerating it would orphan a session created in between: the
 /// session still resolves, but no listing or later revoke can reach it.
 async fn session_revoke_races_creation(storage: &Storage) {
@@ -968,6 +969,14 @@ async fn session_revoke_races_creation(storage: &Storage) {
 
     let mut created = Vec::new();
     for round in 0..REVOKE_ROUNDS {
+        let kept = session(format!("revoke-race-{round}-kept"));
+        storage
+            .sessions
+            .create_session(kept.clone())
+            .await
+            .expect("create kept session");
+        let except = (round % 2 == 1).then_some(kept.id);
+
         let batch: Vec<Session> = (0..RACERS)
             .map(|i| session(format!("revoke-race-{round}-{i}")))
             .collect();
@@ -976,7 +985,7 @@ async fn session_revoke_races_creation(storage: &Storage) {
         let sessions = storage.sessions.clone();
         tasks.push(tokio::spawn(async move {
             sessions
-                .delete_sessions_for_user(user_id)
+                .delete_sessions_for_user(user_id, except)
                 .await
                 .expect("revoke");
         }));
@@ -984,6 +993,19 @@ async fn session_revoke_races_creation(storage: &Storage) {
         for task in tasks {
             task.await.expect("race task");
         }
+
+        let kept_resolves = storage
+            .sessions
+            .find_session_by_token_hash(&kept.token_hash)
+            .await
+            .expect("find kept session")
+            .is_some();
+        assert_eq!(
+            kept_resolves,
+            except.is_some(),
+            "a revoke deletes the pre-existing session unless it is the exception",
+        );
+        created.push(kept);
         created.extend(batch);
     }
 
@@ -1010,7 +1032,7 @@ async fn session_revoke_races_creation(storage: &Storage) {
 
     let removed = storage
         .sessions
-        .delete_sessions_for_user(user_id)
+        .delete_sessions_for_user(user_id, None)
         .await
         .expect("second revoke");
     assert_eq!(
@@ -1881,7 +1903,7 @@ async fn owner_indexes_track_removals(storage: &Storage) {
     );
     assert_eq!(
         sessions
-            .delete_other_sessions_for_user(user_id, kept.id)
+            .delete_sessions_for_user(user_id, Some(kept.id))
             .await
             .expect("delete other sessions"),
         1,
@@ -1889,7 +1911,7 @@ async fn owner_indexes_track_removals(storage: &Storage) {
     );
     assert_eq!(
         sessions
-            .delete_sessions_for_user(user_id)
+            .delete_sessions_for_user(user_id, None)
             .await
             .expect("delete sessions"),
         1,

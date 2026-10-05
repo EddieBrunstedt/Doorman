@@ -192,57 +192,20 @@ impl SessionStore for RedbSessionStore {
         .map_err(db::err)?
     }
 
-    async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let prefix = db::user_sessions_prefix(user_id);
-            let end = db::prefix_end(&prefix);
-
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let removed = {
-                let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
-                let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
-                let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
-
-                let idx_keys: Vec<String> = {
-                    user_idx
-                        .range(prefix.as_str()..end.as_str())
-                        .map_err(db::err)?
-                        .map(|r| r.map_err(db::err).map(|(k, _)| k.value().to_owned()))
-                        .collect::<StorageResult<_>>()?
-                };
-
-                let mut count = 0u64;
-                for idx_key in &idx_keys {
-                    let sid = session_id_from_idx_key(idx_key)?;
-                    if let Some(guard) = sessions.remove(sid).map_err(db::err)? {
-                        let session: Session = db::decode(guard.value())?;
-                        let hash_hex = db::token_hash_hex(&session.token_hash);
-                        hash_idx.remove(hash_hex.as_str()).map_err(db::err)?;
-                        count += 1;
-                    }
-                    user_idx.remove(idx_key.as_str()).map_err(db::err)?;
-                }
-                count
-            };
-            wtxn.commit().map_err(db::err)?;
-            Ok(removed)
-        })
-        .await
-        .map_err(db::err)?
-    }
-
-    async fn delete_other_sessions_for_user(
+    async fn delete_sessions_for_user(
         &self,
         user_id: UserId,
-        except: SessionId,
+        except: Option<SessionId>,
     ) -> StorageResult<u64> {
         let db = self.handle.db();
         tokio::task::spawn_blocking(move || {
             let prefix = db::user_sessions_prefix(user_id);
             let end = db::prefix_end(&prefix);
-            let except_key = except.0.to_string();
+            let except_key = except.map(|id| id.0.to_string());
 
+            // One write transaction: redb serializes writers, so a concurrent
+            // create commits either before this sweep (and is deleted) or after
+            // it (and is untouched).
             let wtxn = db.begin_write().map_err(db::err)?;
             let removed = {
                 let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
@@ -260,7 +223,7 @@ impl SessionStore for RedbSessionStore {
                 let mut count = 0u64;
                 for idx_key in &idx_keys {
                     let sid = session_id_from_idx_key(idx_key)?;
-                    if sid == except_key.as_str() {
+                    if except_key.as_deref() == Some(sid) {
                         continue;
                     }
                     if let Some(guard) = sessions.remove(sid).map_err(db::err)? {

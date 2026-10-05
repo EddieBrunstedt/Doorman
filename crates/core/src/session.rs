@@ -476,7 +476,10 @@ impl SessionManager {
     /// user-sessions-invalidated hook when any were removed. Returns the count.
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn revoke_all_for_user(&self, user_id: UserId) -> Result<u64> {
-        let count = self.sessions.delete_sessions_for_user(user_id).await?;
+        let count = self
+            .sessions
+            .delete_sessions_for_user(user_id, None)
+            .await?;
         // Only notify the invalidation hook when something was actually
         // revoked, matching `revoke_others_for_user`'s guarded shape — a
         // zero-count sweep evicts nothing, so there is nothing to invalidate.
@@ -578,7 +581,7 @@ impl SessionManager {
         self.ensure_not_in_recovery_cooldown(current_session)?;
         let count = self
             .sessions
-            .delete_other_sessions_for_user(user.id, current_session.id)
+            .delete_sessions_for_user(user.id, Some(current_session.id))
             .await?;
         if count > 0 {
             self.invalidation_hook()

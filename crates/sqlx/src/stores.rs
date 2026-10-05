@@ -407,28 +407,29 @@ macro_rules! sqlx_stores {
             async fn delete_sessions_for_user(
                 &self,
                 user_id: $crate::stores::__reexport::UserId,
+                except: Option<$crate::stores::__reexport::SessionId>,
             ) -> $crate::stores::__reexport::StorageResult<u64> {
-                let sql = $ph("DELETE FROM sessions WHERE user_id = ?");
-                let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind($crate::common::uuid_to_bytes(user_id.0))
-                    .execute(&self.pool)
-                    .await
-                    .map_err($crate::common::storage_err)?;
-                Ok(result.rows_affected())
-            }
-
-            async fn delete_other_sessions_for_user(
-                &self,
-                user_id: $crate::stores::__reexport::UserId,
-                except: $crate::stores::__reexport::SessionId,
-            ) -> $crate::stores::__reexport::StorageResult<u64> {
-                let sql = $ph("DELETE FROM sessions WHERE user_id = ? AND id != ?");
-                let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind($crate::common::uuid_to_bytes(user_id.0))
-                    .bind($crate::common::uuid_to_bytes(except.0))
-                    .execute(&self.pool)
-                    .await
-                    .map_err($crate::common::storage_err)?;
+                // One DELETE statement: a concurrently inserted row is either
+                // matched by it or left untouched, never half-removed.
+                let user = $crate::common::uuid_to_bytes(user_id.0);
+                let result = match except {
+                    None => {
+                        let sql = $ph("DELETE FROM sessions WHERE user_id = ?");
+                        ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+                            .bind(user)
+                            .execute(&self.pool)
+                            .await
+                    }
+                    Some(except) => {
+                        let sql = $ph("DELETE FROM sessions WHERE user_id = ? AND id != ?");
+                        ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+                            .bind(user)
+                            .bind($crate::common::uuid_to_bytes(except.0))
+                            .execute(&self.pool)
+                            .await
+                    }
+                }
+                .map_err($crate::common::storage_err)?;
                 Ok(result.rows_affected())
             }
 

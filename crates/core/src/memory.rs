@@ -358,18 +358,14 @@ impl SessionStore for InMemorySessionStore {
         Ok(())
     }
 
-    async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        Ok(self.write().remove_where(|_, s| s.user_id == user_id))
-    }
-
-    async fn delete_other_sessions_for_user(
+    async fn delete_sessions_for_user(
         &self,
         user_id: UserId,
-        except: SessionId,
+        except: Option<SessionId>,
     ) -> StorageResult<u64> {
         Ok(self
             .write()
-            .remove_where(|id, s| s.user_id == user_id && *id != except))
+            .remove_where(|id, s| s.user_id == user_id && Some(*id) != except))
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
