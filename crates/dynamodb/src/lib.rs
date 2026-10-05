@@ -33,10 +33,12 @@
 //! ## Eventual consistency
 //!
 //! Reads of the system-of-record (users, passkey credentials) and of a user's
-//! sessions are strongly-consistent. The other per-user collection listings
-//! and the token-hash session lookup read a GSI, which is eventually
-//! consistent: a row is normally visible within milliseconds of its write but
-//! not guaranteed to be on the very next read.
+//! sessions are strongly-consistent. The token-hash session lookup finds the
+//! session id through a GSI and then reads the row strongly-consistently, so a
+//! revoked session never resolves, though a session created moments earlier may
+//! not resolve yet. The other per-user collection listings read a GSI, which is
+//! eventually consistent: a row is normally visible within milliseconds of its
+//! write but not guaranteed to be on the very next read.
 //!
 //! ## Usage
 //!

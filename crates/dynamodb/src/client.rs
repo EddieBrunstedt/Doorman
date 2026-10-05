@@ -14,9 +14,9 @@
 //! Two global secondary indexes back the secondary access patterns:
 //!
 //! - **`lookup-index`** ([`GSI1PK`]) — point lookups by a non-unique-constrained
-//!   secondary key, currently a session's token hash. GSIs are eventually
-//!   consistent, which is acceptable here: the manager re-resolves and a stale
-//!   read self-heals on the next request.
+//!   secondary key, currently a session's token hash. The GSI is eventually
+//!   consistent, so the session store confirms each hit against the row with a
+//!   strongly-consistent read.
 //! - **`owner-index`** ([`GSI2PK`]) — the per-user collections (a user's
 //!   passkeys, verification tokens of a purpose, and registration ceremonies)
 //!   that back the listing, counting, and bulk-delete paths. A user's sessions

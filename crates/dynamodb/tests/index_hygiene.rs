@@ -1,13 +1,14 @@
-//! DynamoDB-specific checks on the session index item: the dangling-id
-//! reclamation paths the conformance suite cannot reach.
+//! DynamoDB-specific checks on stale index state that the conformance suite
+//! cannot reach.
 //!
 //! The shared suite pins its fixtures to fixed past timestamps, so no row ever
-//! carries a native TTL and none is evicted behind the store's back: an index
-//! id never goes dangling. This test simulates that eviction: a session row is
-//! deleted directly over the raw client while its id stays in the user's index
-//! item, then the store API is driven over the orphaned id.
+//! carries a native TTL and none is evicted behind the store's back, and
+//! DynamoDB Local's GSIs need not lag the way a real table's do. These tests
+//! simulate both: a session row deleted over the raw client while its id stays
+//! in the user's index item, and a `lookup-index` entry that outlives the row
+//! it was projected from.
 //!
-//! Self-contained: it starts a throwaway DynamoDB Local container via
+//! Self-contained: each test starts a throwaway DynamoDB Local container via
 //! `testcontainers`, so it needs a running Docker daemon and nothing else.
 
 use aws_sdk_dynamodb::Client;
@@ -19,6 +20,7 @@ use doorman_core::session::hash_token;
 use doorman_core::storage::{Session, SessionId, UserId};
 use doorman_dynamodb::DynamoDbStorage;
 use testcontainers_modules::dynamodb_local::DynamoDb;
+use testcontainers_modules::testcontainers::ContainerAsync;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
 const TABLE: &str = "doorman-index-hygiene";
@@ -67,9 +69,9 @@ async fn indexed_ids(client: &Client, user_id: UserId) -> Option<Vec<String>> {
     Some(ids)
 }
 
-#[tokio::test]
-async fn dangling_session_ids_are_reclaimed() {
-    // `_node` keeps the container alive until the end of the test.
+/// Start DynamoDB Local and provision the table. The returned container must
+/// stay alive for the duration of the test.
+async fn start() -> (ContainerAsync<DynamoDb>, Client, DynamoDbStorage) {
     let node = DynamoDb::default()
         .start()
         .await
@@ -89,6 +91,12 @@ async fn dangling_session_ids_are_reclaimed() {
     let client = Client::from_conf(config);
     let storage = DynamoDbStorage::new(client.clone(), TABLE);
     storage.create_table().await.expect("create table");
+    (node, client, storage)
+}
+
+#[tokio::test]
+async fn dangling_session_ids_are_reclaimed() {
+    let (_node, client, storage) = start().await;
     let sessions = storage.session_store();
 
     let now = Utc::now();
@@ -143,5 +151,58 @@ async fn dangling_session_ids_are_reclaimed() {
         indexed_ids(&client, user_id).await,
         None,
         "the emptied index item is deleted",
+    );
+}
+
+/// A revoked session never resolves, even while the `lookup-index` still holds
+/// an entry for its token hash. On a real table the GSI lags the base table, so
+/// right after a revoke the index can still return the deleted row's projection.
+#[tokio::test]
+async fn revoked_session_never_resolves_from_a_stale_lookup_entry() {
+    let (_node, client, storage) = start().await;
+    let sessions = storage.session_store();
+
+    let now = Utc::now();
+    let revoked = session(UserId::new(), "stale-lookup", now);
+    sessions
+        .create_session(revoked.clone())
+        .await
+        .expect("create session");
+
+    // Copy the row under another key so the lookup-index keeps an entry for
+    // its token hash once the row itself is gone, as a lagging GSI would.
+    let mut stale = client
+        .get_item()
+        .table_name(TABLE)
+        .key("pk", AttributeValue::S(format!("session#{}", revoked.id.0)))
+        .consistent_read(true)
+        .send()
+        .await
+        .expect("get session row")
+        .item
+        .expect("session row present");
+    stale.insert(
+        "pk".to_string(),
+        AttributeValue::S(format!("stale#{}", revoked.id.0)),
+    );
+    client
+        .put_item()
+        .table_name(TABLE)
+        .set_item(Some(stale))
+        .send()
+        .await
+        .expect("put stale lookup entry");
+
+    sessions
+        .delete_session(revoked.id)
+        .await
+        .expect("revoke session");
+    assert!(
+        sessions
+            .find_session_by_token_hash(&revoked.token_hash)
+            .await
+            .expect("find by hash")
+            .is_none(),
+        "a revoked session must not resolve from a stale lookup entry",
     );
 }

@@ -1,7 +1,10 @@
 //! DynamoDB-backed [`SessionStore`].
 //!
 //! A session is one item under `session#<id>` carrying a `lookup-index` GSI key
-//! on its hashed bearer token, the hot per-request lookup. A user's sessions are
+//! on its hashed bearer token, the hot per-request lookup. The GSI lags the
+//! table, so [`find_session_by_token_hash`](DynamoSessionStore::find_session_by_token_hash)
+//! takes only the session id from it and then reads the row
+//! strongly-consistently: a revoked session never resolves. A user's sessions are
 //! found through their **session index item** under `usess#<uid>`, which holds
 //! the user's session ids as a string set.
 //!
@@ -240,10 +243,14 @@ impl SessionStore for DynamoSessionStore {
             .client
             .query_lookup(&model::session_hash_key(hash))
             .await?;
-        match items.first() {
-            Some(item) => Ok(Some(model::session_from_item(item)?)),
-            None => Ok(None),
-        }
+        let Some(item) = items.first() else {
+            return Ok(None);
+        };
+        // The GSI lags the table and can still return a deleted row's
+        // projection, so resolve the row itself with a strongly-consistent read:
+        // a revoked session never resolves.
+        let id = SessionId(client::get_uuid(item, "id")?);
+        self.find_session_by_id(id).await
     }
 
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>> {
