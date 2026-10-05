@@ -22,6 +22,7 @@ use doorman_core::storage::{
 };
 
 use crate::client::{self, RedisClient};
+use crate::stores;
 
 /// Passkey-challenge store backed by a Redis/Valkey connection.
 pub(crate) struct RedisPasskeyChallengeStore {
@@ -134,35 +135,17 @@ impl PasskeyChallengeStore for RedisPasskeyChallengeStore {
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
         let keys = self.client.keys();
         let mut conn = self.client.conn();
-        let mut removed = 0u64;
 
         // Registrations: reachable through their per-user SETs, which is also
         // where dangling members are reclaimed.
-        let set_keys = client::scan_all(&mut conn, &keys.user_pkregs_pattern()).await?;
-        for set_key in set_keys {
-            let members = client::smembers(&mut conn, &set_key).await?;
-            if members.is_empty() {
-                continue;
-            }
-            let reg_keys: Vec<String> = members.iter().map(|m| keys.pkreg_key_for(m)).collect();
-            let rows: Vec<Option<StoredPasskeyRegistration>> =
-                client::mget_json(&mut conn, &reg_keys).await?;
-
-            let mut del_keys = Vec::new();
-            let mut srem_members = Vec::new();
-            for (member, row) in members.iter().zip(rows) {
-                match row {
-                    Some(reg) if reg.expires_at <= now => {
-                        del_keys.push(keys.pkreg_key_for(member));
-                        srem_members.push(member.clone());
-                    }
-                    Some(_) => {}
-                    None => srem_members.push(member.clone()),
-                }
-            }
-            client::del(&mut conn, &del_keys).await?;
-            removed += client::srem(&mut conn, &set_key, &srem_members).await?;
-        }
+        let mut removed = stores::purge_index_sets::<StoredPasskeyRegistration>(
+            &mut conn,
+            keys,
+            &keys.user_pkregs_pattern(),
+            |id| keys.pkreg_key_for(id),
+            now,
+        )
+        .await?;
 
         // Authentications carry no index, so scan the rows directly and delete
         // the expired ones.

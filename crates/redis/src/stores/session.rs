@@ -21,6 +21,7 @@ use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 
 use crate::client::{self, RedisClient};
+use crate::stores;
 
 /// Session store backed by a Redis/Valkey connection.
 pub(crate) struct RedisSessionStore {
@@ -265,38 +266,16 @@ impl SessionStore for RedisSessionStore {
         let keys = self.client.keys();
         let mut conn = self.client.conn();
 
-        // Every session is reachable through exactly one user SET, so scanning
+        // Every session is reachable through exactly one user SET, so sweeping
         // the SETs reaches every row and is also where dangling members are
-        // reclaimed. The returned count is the number of members reclaimed
-        // (expired rows plus already-evicted ones), as the `SessionStore`
-        // contract permits for key-value adapters.
-        let set_keys = client::scan_all(&mut conn, &keys.user_sessions_pattern()).await?;
-        let mut removed = 0u64;
-        for set_key in set_keys {
-            let members = client::smembers(&mut conn, &set_key).await?;
-            if members.is_empty() {
-                continue;
-            }
-            let session_keys: Vec<String> =
-                members.iter().map(|m| keys.session_key_for(m)).collect();
-            let rows: Vec<Option<Session>> = client::mget_json(&mut conn, &session_keys).await?;
-
-            let mut del_keys = Vec::new();
-            let mut srem_members = Vec::new();
-            for (member, row) in members.iter().zip(rows) {
-                match row {
-                    Some(session) if session.expires_at <= now => {
-                        del_keys.push(keys.session_key_for(member));
-                        del_keys.push(keys.session_hash_index(&session.token_hash));
-                        srem_members.push(member.clone());
-                    }
-                    Some(_) => {}
-                    None => srem_members.push(member.clone()),
-                }
-            }
-            client::del(&mut conn, &del_keys).await?;
-            removed += client::srem(&mut conn, &set_key, &srem_members).await?;
-        }
-        Ok(removed)
+        // reclaimed.
+        stores::purge_index_sets::<Session>(
+            &mut conn,
+            keys,
+            &keys.user_sessions_pattern(),
+            |id| keys.session_key_for(id),
+            now,
+        )
+        .await
     }
 }

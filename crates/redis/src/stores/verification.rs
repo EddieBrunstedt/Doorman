@@ -21,6 +21,7 @@ use doorman_core::storage::{
 
 use crate::client::{self, RedisClient};
 use crate::keys;
+use crate::stores;
 
 /// Verification-token store backed by a Redis/Valkey connection.
 pub(crate) struct RedisVerificationTokenStore {
@@ -106,39 +107,18 @@ impl VerificationTokenStore for RedisVerificationTokenStore {
         let keys = self.client.keys();
         let mut conn = self.client.conn();
 
-        // The purpose lives in the SET key, so iterate the known purposes and
-        // scan each purpose's SETs; that pins the purpose needed to rebuild
-        // each value key exactly.
+        // The purpose lives in the SET key, so sweep each purpose's SETs in
+        // turn; that pins the purpose needed to rebuild each value key exactly.
         let mut removed = 0u64;
         for purpose in keys::ALL_PURPOSES {
-            let set_keys = client::scan_all(&mut conn, &keys.user_vtokens_pattern(purpose)).await?;
-            for set_key in set_keys {
-                let members = client::smembers(&mut conn, &set_key).await?;
-                if members.is_empty() {
-                    continue;
-                }
-                let vtoken_keys: Vec<String> = members
-                    .iter()
-                    .map(|hex| keys.vtoken_key_for(purpose, hex))
-                    .collect();
-                let rows: Vec<Option<VerificationToken>> =
-                    client::mget_json(&mut conn, &vtoken_keys).await?;
-
-                let mut del_keys = Vec::new();
-                let mut srem_members = Vec::new();
-                for (member, row) in members.iter().zip(rows) {
-                    match row {
-                        Some(token) if token.expires_at <= now => {
-                            del_keys.push(keys.vtoken_key_for(purpose, member));
-                            srem_members.push(member.clone());
-                        }
-                        Some(_) => {}
-                        None => srem_members.push(member.clone()),
-                    }
-                }
-                client::del(&mut conn, &del_keys).await?;
-                removed += client::srem(&mut conn, &set_key, &srem_members).await?;
-            }
+            removed += stores::purge_index_sets::<VerificationToken>(
+                &mut conn,
+                keys,
+                &keys.user_vtokens_pattern(purpose),
+                |hex| keys.vtoken_key_for(purpose, hex),
+                now,
+            )
+            .await?;
         }
         Ok(removed)
     }
