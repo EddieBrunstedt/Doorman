@@ -12,7 +12,7 @@ use doorman_core::storage::{AccountStatus, UserStore};
 use common::{
     ACCOUNT_URL, Harness, assert_last_redemption_unknown, authenticator, kinds,
     last_email_change_token, make_user, passkey_count, provision_user, restricted_session_for,
-    session_count, session_for, token_from_email,
+    session_count, session_for, token_from_email, within_deadline,
 };
 
 #[tokio::test]
@@ -105,6 +105,96 @@ async fn email_change_happy_path() {
             .any(|k| matches!(k, AuditEventKind::EmailChangeCompleted { .. })),
         "confirm emits an audit event",
     );
+}
+
+#[tokio::test]
+async fn email_change_confirm_refuses_address_claimed_since_request() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "owner@example.com").await;
+    let session = session_for(&h, &user);
+    h.account
+        .request_email_change(
+            &user,
+            &session,
+            "wanted@example.com",
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("request email change");
+    let token = last_email_change_token(&h);
+    let holder = make_user(&h, "wanted@example.com").await;
+
+    let err = h
+        .account
+        .confirm_email_change(&token, SessionContext::default())
+        .await
+        .expect_err("an address claimed since the request is refused");
+    assert!(matches!(err, Error::EmailAlreadyInUse), "got {err:?}");
+    let owner = h
+        .users
+        .find_user_by_email("wanted@example.com")
+        .await
+        .expect("find holder")
+        .expect("holder keeps the address");
+    assert_eq!(owner.id, holder.id);
+}
+
+#[tokio::test]
+async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "owner@example.com").await;
+    let session = session_for(&h, &user);
+    h.account
+        .request_email_change(
+            &user,
+            &session,
+            "wanted@example.com",
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("request email change");
+    let token = last_email_change_token(&h);
+
+    // The signup reads the address as free, then the confirm claims it
+    // before the signup provisions it.
+    let release = h.user_store.hold_email_lookups(1);
+    let (signed_up, confirmed) = within_deadline(async {
+        tokio::join!(
+            h.signup
+                .request_signup("wanted@example.com", None, SessionContext::default()),
+            async {
+                let confirmed = h
+                    .account
+                    .confirm_email_change(&token, SessionContext::default())
+                    .await;
+                release.wait().await;
+                confirmed
+            },
+        )
+    })
+    .await;
+
+    let updated = confirmed.expect("the confirm lands first");
+    assert_eq!(updated.email.as_deref(), Some("wanted@example.com"));
+    // The signup that lost the race answers as it would for an address that
+    // was already registered: silent success, and no link.
+    signed_up.expect("the signup that lost the race still succeeds");
+    assert!(
+        h.email
+            .sent()
+            .iter()
+            .all(|e| e.to != "wanted@example.com" || e.subject == "Confirm your new email address"),
+        "no signup link goes to the claimed address",
+    );
+    let owner = h
+        .users
+        .find_user_by_email("wanted@example.com")
+        .await
+        .expect("find holder")
+        .expect("the confirmed account holds the address");
+    assert_eq!(owner.id, user.id);
 }
 
 #[tokio::test]

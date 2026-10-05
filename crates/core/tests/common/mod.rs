@@ -18,11 +18,12 @@
 
 #![allow(dead_code)]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::sync::Barrier;
 
 use doorman_core::account::{AccountConfig, AccountManager};
 use doorman_core::assembly::{AssemblyError, AuthCore};
@@ -110,10 +111,13 @@ pub fn recovery_config() -> RecoveryConfig {
 }
 
 /// The harness's [`UserStore`]: the in-memory store, counting lookups by id
-/// so a test can pin how often a flow reads the user.
+/// so a test can pin how often a flow reads the user, and able to hold
+/// lookups by email so a test can race two flows on one address.
 pub struct CountingUserStore {
     inner: Arc<InMemoryUserStore>,
     reads_by_id: AtomicUsize,
+    /// The barrier the next email lookups wait at, and how many still will.
+    email_hold: Mutex<Option<(Arc<Barrier>, usize)>>,
 }
 
 impl CountingUserStore {
@@ -124,6 +128,16 @@ impl CountingUserStore {
 
     pub fn reset(&self) {
         self.reads_by_id.store(0, Ordering::SeqCst);
+    }
+
+    /// Hold the next `lookups` lookups by email: each reads, then waits
+    /// until the test waits on the returned barrier too. A test holds the
+    /// racers' reads this way, runs whatever should land in between, then
+    /// releases them, so every held racer has read before any of them writes.
+    pub fn hold_email_lookups(&self, lookups: usize) -> Arc<Barrier> {
+        let barrier = Arc::new(Barrier::new(lookups + 1));
+        *self.email_hold.lock().expect("email hold lock") = Some((barrier.clone(), lookups));
+        barrier
     }
 }
 
@@ -139,7 +153,18 @@ impl UserStore for CountingUserStore {
     }
 
     async fn find_user_by_email(&self, email: &str) -> StorageResult<Option<User>> {
-        self.inner.find_user_by_email(email).await
+        let barrier = match &mut *self.email_hold.lock().expect("email hold lock") {
+            Some((barrier, left)) if *left > 0 => {
+                *left -= 1;
+                Some(barrier.clone())
+            }
+            _ => None,
+        };
+        let found = self.inner.find_user_by_email(email).await;
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
+        }
+        found
     }
 
     async fn set_user_status(
@@ -337,6 +362,7 @@ impl HarnessBuilder {
         let user_store = Arc::new(CountingUserStore {
             inner: users.clone(),
             reads_by_id: AtomicUsize::new(0),
+            email_hold: Mutex::new(None),
         });
 
         let storage = Storage {
@@ -395,6 +421,14 @@ impl Default for HarnessBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Await `race`, failing the test instead of hanging if a held lookup is
+/// never released.
+pub async fn within_deadline<T>(race: impl Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(10), race)
+        .await
+        .expect("the race finishes; is a held lookup never released?")
 }
 
 /// How many live sessions `user_id` holds, read through the session manager.

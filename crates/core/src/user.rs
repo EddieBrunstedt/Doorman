@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, StorageErrorKind};
 use crate::session::SessionManager;
 use crate::storage::{
     AccountStatus, PasskeyChallengeStore, PasskeyCredentialStore, User, UserId, UserStore,
@@ -116,8 +116,11 @@ impl UserRecords {
         Ok(self.users.find_user_by_email(email).await?)
     }
 
-    /// Create an active user with an unverified `email` and return it.
-    pub(crate) async fn create_unverified(&self, email: &str) -> Result<User> {
+    /// Create an active user with an unverified `email` and return it, or
+    /// `None` if another user already holds `email`. The store's uniqueness
+    /// rule decides, so of two concurrent creates for one address exactly
+    /// one gets the user.
+    pub(crate) async fn create_unverified(&self, email: &str) -> Result<Option<User>> {
         let now = self.now();
         let user = User {
             id: UserId::new(),
@@ -127,8 +130,11 @@ impl UserRecords {
             created_at: now,
             updated_at: now,
         };
-        self.users.create_user(user.clone()).await?;
-        Ok(user)
+        match self.users.create_user(user.clone()).await {
+            Ok(()) => Ok(Some(user)),
+            Err(e) if e.kind() == StorageErrorKind::Conflict => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Record `user`'s current address as verified, unless it already is.
@@ -143,18 +149,20 @@ impl UserRecords {
     /// stored afterwards.
     ///
     /// Refuses with [`Error::EmailAlreadyInUse`] when another user holds
-    /// `email`. The returned user is re-read rather than patched, so it
-    /// reflects any change another flow made in between.
+    /// `email`, and with [`Error::UserNotFound`] when `user_id` is gone. The
+    /// store's uniqueness rule decides, so a concurrent claim on `email`
+    /// cannot slip in between a check and the write. The returned user is
+    /// re-read rather than patched, so it reflects any change another flow
+    /// made in between.
     pub(crate) async fn change_email(&self, user_id: UserId, email: &str) -> Result<User> {
-        if let Some(existing) = self.users.find_user_by_email(email).await?
-            && existing.id != user_id
-        {
-            return Err(Error::EmailAlreadyInUse);
+        match self.users.set_user_email(user_id, email, self.now()).await {
+            Ok(()) => self.find(user_id).await,
+            Err(e) => Err(match e.kind() {
+                StorageErrorKind::Conflict => Error::EmailAlreadyInUse,
+                StorageErrorKind::NotFound => Error::UserNotFound,
+                _ => e.into(),
+            }),
         }
-        self.users
-            .set_user_email(user_id, email, self.now())
-            .await?;
-        self.find(user_id).await
     }
 
     /// Disable `user_id` and revoke every live session, returning how many

@@ -289,53 +289,70 @@ impl SignupManager {
         }
 
         let now = self.flow.now();
-        if let Some(existing) = self.flow.records().find_by_email(&email_normalized).await? {
-            tracing::Span::current().record("user_id", tracing::field::display(existing.id));
-
-            // A user row with zero credentials never finished its first
-            // enrollment (a botched first passkey, or a user who deleted their
-            // last one). Forcing them into recovery — and its cooldown — for
-            // what is still a first enrollment is wrong, so re-issue a fresh
-            // signup link instead of silently no-opping. The response shape is
-            // unchanged (`Ok(())` + best-effort send), so sending to a
-            // zero-credential existing address stays observationally identical
-            // to a brand-new signup and adds no enumeration oracle.
-            if !self.flow.has_passkey(existing.id).await? {
-                // The signup-request rate limit enforced above already covers
-                // this send, so it cannot be used to email-bomb the address.
-                self.send_link(&existing, now, &context).await?;
-                tracing::info!(
-                    outcome = "reissued",
-                    "signup email re-sent to passkey-less user"
-                );
-                return Ok(());
-            }
-
-            // Existing account with at least one credential: silent success
-            // preserves enumeration resistance. The legitimate user falls back
-            // to passkey sign-in or uses the recovery flow to enrol a new
-            // passkey.
-            self.flow
-                .emit(
-                    &context,
-                    AuditEventKind::SignupRequested {
-                        user_id: existing.id,
-                    },
-                )
-                .await;
-            tracing::info!(outcome = "already_registered", "signup request (silent)");
-            return Ok(());
+        let records = self.flow.records();
+        if let Some(existing) = records.find_by_email(&email_normalized).await? {
+            return self.request_for_existing(&existing, now, &context).await;
         }
-
-        let user = self
-            .flow
-            .records()
-            .create_unverified(&email_normalized)
-            .await?;
+        let Some(user) = records.create_unverified(&email_normalized).await? else {
+            // A concurrent request provisioned the address after the lookup
+            // above. Answer as if its row had been there all along, so the
+            // race ends as the two requests arriving in turn would.
+            return match records.find_by_email(&email_normalized).await? {
+                Some(existing) => self.request_for_existing(&existing, now, &context).await,
+                // Gone again already: nothing to send, and the response stays
+                // the silent success every other branch returns.
+                None => Ok(()),
+            };
+        };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
         self.send_link(&user, now, &context).await?;
         tracing::info!(outcome = "sent", "signup email sent");
+        Ok(())
+    }
+
+    /// Answer a signup request for an address `existing` already holds.
+    async fn request_for_existing(
+        &self,
+        existing: &User,
+        now: DateTime<Utc>,
+        context: &SessionContext,
+    ) -> Result<()> {
+        tracing::Span::current().record("user_id", tracing::field::display(existing.id));
+
+        // A user row with zero credentials never finished its first
+        // enrollment (a botched first passkey, or a user who deleted their
+        // last one). Forcing them into recovery — and its cooldown — for
+        // what is still a first enrollment is wrong, so re-issue a fresh
+        // signup link instead of silently no-opping. The response shape is
+        // unchanged (`Ok(())` + best-effort send), so sending to a
+        // zero-credential existing address stays observationally identical
+        // to a brand-new signup and adds no enumeration oracle.
+        if !self.flow.has_passkey(existing.id).await? {
+            // The signup-request rate limit enforced by `request_signup`
+            // already covers this send, so it cannot be used to email-bomb
+            // the address.
+            self.send_link(existing, now, context).await?;
+            tracing::info!(
+                outcome = "reissued",
+                "signup email re-sent to passkey-less user"
+            );
+            return Ok(());
+        }
+
+        // Existing account with at least one credential: silent success
+        // preserves enumeration resistance. The legitimate user falls back
+        // to passkey sign-in or uses the recovery flow to enrol a new
+        // passkey.
+        self.flow
+            .emit(
+                context,
+                AuditEventKind::SignupRequested {
+                    user_id: existing.id,
+                },
+            )
+            .await;
+        tracing::info!(outcome = "already_registered", "signup request (silent)");
         Ok(())
     }
 

@@ -20,7 +20,7 @@ use doorman_test_support::MockClock;
 
 use common::{
     Harness, RECOVERY_URL, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds, passkey_count,
-    provision_user, rp_origin, session_count, signup_config, token_from_email, ts,
+    provision_user, rp_origin, session_count, signup_config, token_from_email, ts, within_deadline,
 };
 
 #[tokio::test]
@@ -50,6 +50,37 @@ async fn request_provisions_user_for_new_email() {
         .consume_signup(&token, SessionContext::default())
         .await
         .expect("token persisted: the emailed link redeems");
+}
+
+#[tokio::test]
+async fn concurrent_requests_for_one_new_email_both_succeed() {
+    let h = Harness::fresh();
+    // Both requests read the address before either provisions it, so the
+    // second create collides with the first.
+    let release = h.user_store.hold_email_lookups(2);
+
+    let (first, second, _) = within_deadline(async {
+        tokio::join!(
+            h.signup
+                .request_signup("race@example.com", None, SessionContext::default()),
+            h.signup
+                .request_signup("race@example.com", None, SessionContext::default()),
+            release.wait(),
+        )
+    })
+    .await;
+    first.expect("first request");
+    second.expect("the request that lost the race still succeeds");
+
+    // The loser ends as a request arriving second would: the address has no
+    // passkey yet, so it re-sends the link, superseding the first.
+    let sent = h.email.sent();
+    assert_eq!(sent.len(), 2, "one link per request");
+    let token = token_from_email(&sent[1].body_text, SIGNUP_URL);
+    h.signup
+        .consume_signup(&token, SessionContext::default())
+        .await
+        .expect("the latest link redeems");
 }
 
 #[tokio::test]
