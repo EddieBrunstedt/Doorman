@@ -82,19 +82,35 @@ impl DynamoUserStore {
         for (name, value) in values {
             request = request.expression_attribute_values(name, value);
         }
-        request.send().await.map_err(client::err)?;
+        request
+            .send()
+            .await
+            .map_err(|e| client::condition_err(e, || StorageError::not_found("user not found")))?;
         Ok(())
     }
 
-    async fn transact(&self, items: Vec<TransactWriteItem>) -> StorageResult<()> {
-        self.client
+    /// Run `items` as one transaction. If it is cancelled by failed
+    /// conditions, `on_conditions` maps the positions of the items whose
+    /// condition failed to the error to report.
+    async fn transact(
+        &self,
+        items: Vec<TransactWriteItem>,
+        on_conditions: impl FnOnce(&[usize]) -> StorageError,
+    ) -> StorageResult<()> {
+        let result = self
+            .client
             .inner()
             .transact_write_items()
             .set_transact_items(Some(items))
             .send()
-            .await
-            .map_err(client::err)?;
-        Ok(())
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => match client::failed_conditions(&e).as_slice() {
+                [] => Err(client::err(e)),
+                failed => Err(on_conditions(failed)),
+            },
+        }
     }
 }
 
@@ -105,7 +121,12 @@ impl UserStore for DynamoUserStore {
         if let Some(email) = user.email.as_deref() {
             writes.push(self.put_new(model::email_item(email, user.id))?);
         }
-        self.transact(writes).await
+        // Every condition guards a fresh key, so any failure is a taken id
+        // or address.
+        self.transact(writes, |_| {
+            StorageError::conflict("user id or email already exists")
+        })
+        .await
     }
 
     async fn find_user_by_id(&self, id: UserId) -> StorageResult<Option<User>> {
@@ -167,7 +188,7 @@ impl UserStore for DynamoUserStore {
         // being current, so a concurrent email change aborts this transaction
         // rather than orphaning a guard.
         let Some(current) = self.client.get(&model::user_pk(id)).await? else {
-            return Err(StorageError::msg("user not found"));
+            return Err(StorageError::not_found("user not found"));
         };
         let old_email = model::user_from_item(&current)?.email;
 
@@ -209,13 +230,24 @@ impl UserStore for DynamoUserStore {
             .map_err(client::err)?;
 
         let mut writes = vec![TransactWriteItem::builder().update(update).build()];
+        let mut new_guard = None;
         if old_email.as_deref() != Some(email) {
             if let Some(old) = old_email.as_deref() {
                 writes.push(self.delete(model::email_pk(old))?);
             }
+            new_guard = Some(writes.len());
             writes.push(self.put_new(model::email_item(email, id))?);
         }
-        self.transact(writes).await
+        self.transact(writes, |failed| {
+            if new_guard.is_some_and(|guard| failed.contains(&guard)) {
+                StorageError::conflict("email already in use")
+            } else {
+                // The user row's condition failed: the user was deleted, or
+                // its address changed, since it was read above.
+                StorageError::msg("user changed during the email change")
+            }
+        })
+        .await
     }
 
     async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {

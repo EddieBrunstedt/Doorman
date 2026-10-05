@@ -21,18 +21,26 @@ use std::time::Duration;
 
 use doorman_core::error::{StorageError, StorageResult};
 use mongodb::bson::doc;
+use mongodb::error::{ErrorKind, WriteFailure};
 use mongodb::options::IndexOptions;
 use mongodb::{Collection, Database, IndexModel};
 
 /// BSON document type alias for `Collection<Document>`.
 pub(crate) type Coll = Collection<mongodb::bson::Document>;
 
-/// Wrap a MongoDB driver error as an opaque [`StorageError`].
-pub(crate) fn err<E>(e: E) -> StorageError
-where
-    E: std::error::Error + Send + Sync + 'static,
-{
-    StorageError::new(e)
+/// The server's error code for a write that breaks a unique index.
+const DUPLICATE_KEY: i32 = 11000;
+
+/// Map a MongoDB driver error to a [`StorageError`], reporting a write that
+/// breaks a unique index (`_id` or the partial `email` index) as
+/// [`StorageErrorKind::Conflict`](doorman_core::error::StorageErrorKind::Conflict).
+pub(crate) fn err(e: mongodb::error::Error) -> StorageError {
+    match e.kind.as_ref() {
+        ErrorKind::Write(WriteFailure::WriteError(write)) if write.code == DUPLICATE_KEY => {
+            StorageError::conflict(e.to_string())
+        }
+        _ => StorageError::new(e),
+    }
 }
 
 /// A cloneable handle to a MongoDB database.

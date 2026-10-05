@@ -143,7 +143,7 @@ impl DynamoSessionStore {
                 .attributes
                 .is_some_and(|item| !item.contains_key(SESSION_IDS)),
             // No index item, so there is nothing to remove.
-            Err(e) if is_condition_failure(&e) => false,
+            Err(e) if client::is_condition_failure(&e) => false,
             Err(e) => return Err(client::err(e)),
         };
         if !emptied {
@@ -162,20 +162,10 @@ impl DynamoSessionStore {
         match deleted {
             Ok(_) => Ok(()),
             // A concurrent create re-filled the item; keep it.
-            Err(e) if is_condition_failure(&e) => Ok(()),
+            Err(e) if client::is_condition_failure(&e) => Ok(()),
             Err(e) => Err(client::err(e)),
         }
     }
-}
-
-/// Whether `e` is a failed condition expression.
-fn is_condition_failure<E>(e: &aws_sdk_dynamodb::error::SdkError<E>) -> bool
-where
-    E: aws_sdk_dynamodb::error::ProvideErrorMetadata,
-{
-    e.as_service_error()
-        .and_then(|svc| svc.code())
-        .is_some_and(|code| code == "ConditionalCheckFailedException")
 }
 
 #[async_trait]

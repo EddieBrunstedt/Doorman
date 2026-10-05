@@ -8,8 +8,14 @@ use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::TokenHash;
 use uuid::Uuid;
 
-pub(crate) fn storage_err<E: std::fmt::Display>(e: E) -> StorageError {
-    StorageError::msg(e.to_string())
+/// Map a driver error to a [`StorageError`], reporting a unique-constraint
+/// violation as [`StorageErrorKind::Conflict`](doorman_core::error::StorageErrorKind::Conflict)
+/// in every dialect.
+pub(crate) fn storage_err(e: sqlx::Error) -> StorageError {
+    match e.as_database_error() {
+        Some(db) if db.is_unique_violation() => StorageError::conflict(e.to_string()),
+        _ => StorageError::msg(e.to_string()),
+    }
 }
 
 /// Placeholder rewriter for the SQLite dialect: a no-op. The shared store
@@ -117,7 +123,7 @@ pub(crate) fn uuid_to_bytes(u: Uuid) -> Vec<u8> {
 }
 
 pub(crate) fn uuid_from_row(b: Vec<u8>) -> StorageResult<Uuid> {
-    Uuid::from_slice(&b).map_err(storage_err)
+    Uuid::from_slice(&b).map_err(|e| StorageError::msg(e.to_string()))
 }
 
 pub(crate) use doorman_core::encoding::{

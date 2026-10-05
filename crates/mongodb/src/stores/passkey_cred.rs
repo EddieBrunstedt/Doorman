@@ -43,7 +43,7 @@ impl MongoPasskeyCredentialStore {
         let filter = doc! { "_id": passkey_id(credential_id) };
         let result = self.coll.update_one(filter, update).await.map_err(err)?;
         if result.matched_count == 0 {
-            return Err(StorageError::msg("passkey credential not found"));
+            return Err(StorageError::not_found("passkey credential not found"));
         }
         Ok(())
     }

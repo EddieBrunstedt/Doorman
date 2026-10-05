@@ -140,12 +140,14 @@ impl UserStore for InMemoryUserStore {
     async fn create_user(&self, user: User) -> StorageResult<()> {
         let mut state = self.write();
         if state.by_id.contains_key(&user.id) {
-            return Err(StorageError::msg("user with that id already exists"));
+            return Err(StorageError::conflict("user with that id already exists"));
         }
         if let Some(email) = user.email.as_deref()
             && state.email_to_id.contains_key(email)
         {
-            return Err(StorageError::msg("user with that email already exists"));
+            return Err(StorageError::conflict(
+                "user with that email already exists",
+            ));
         }
         if let Some(email) = user.email.clone() {
             state.email_to_id.insert(email, user.id);
@@ -174,7 +176,7 @@ impl UserStore for InMemoryUserStore {
     ) -> StorageResult<()> {
         let mut state = self.write();
         let Some(user) = state.by_id.get_mut(&id) else {
-            return Err(StorageError::msg("user not found"));
+            return Err(StorageError::not_found("user not found"));
         };
         user.status = status;
         user.updated_at = at;
@@ -190,12 +192,14 @@ impl UserStore for InMemoryUserStore {
         let mut state = self.write();
         let UserStoreState { by_id, email_to_id } = &mut *state;
         let Some(user) = by_id.get_mut(&id) else {
-            return Err(StorageError::msg("user not found"));
+            return Err(StorageError::not_found("user not found"));
         };
         if let Some(other) = email_to_id.get(email)
             && *other != id
         {
-            return Err(StorageError::msg("another user already uses that email"));
+            return Err(StorageError::conflict(
+                "another user already uses that email",
+            ));
         }
         if let Some(old) = user.email.as_deref() {
             email_to_id.remove(old);
@@ -210,7 +214,7 @@ impl UserStore for InMemoryUserStore {
     async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
         let mut state = self.write();
         let Some(user) = state.by_id.get_mut(&id) else {
-            return Err(StorageError::msg("user not found"));
+            return Err(StorageError::not_found("user not found"));
         };
         user.email_verified_at = Some(at);
         user.updated_at = at;
@@ -292,10 +296,10 @@ impl SessionStore for InMemorySessionStore {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
         let mut state = self.write();
         if state.by_id.contains_key(&session.id) {
-            return Err(StorageError::msg("session id collision"));
+            return Err(StorageError::conflict("session id collision"));
         }
         if state.hash_to_id.contains_key(&session.token_hash) {
-            return Err(StorageError::msg("session token hash collision"));
+            return Err(StorageError::conflict("session token hash collision"));
         }
         state.hash_to_id.insert(session.token_hash, session.id);
         state.by_id.insert(session.id, session);
@@ -410,7 +414,7 @@ impl VerificationTokenStore for InMemoryVerificationTokenStore {
             .iter()
             .any(|t| t.token_hash == token.token_hash && t.purpose == token.purpose)
         {
-            return Err(StorageError::msg("verification token hash collision"));
+            return Err(StorageError::conflict("verification token hash collision"));
         }
         state.push(token);
         Ok(())
@@ -484,7 +488,7 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
             .iter()
             .any(|c| c.credential_id == credential.credential_id)
         {
-            return Err(StorageError::msg(
+            return Err(StorageError::conflict(
                 "passkey credential id already registered",
             ));
         }
@@ -499,7 +503,7 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
     ) -> StorageResult<()> {
         let mut state = self.lock();
         let Some(credential) = state.iter_mut().find(|c| c.credential_id == credential_id) else {
-            return Err(StorageError::msg("passkey credential not found"));
+            return Err(StorageError::not_found("passkey credential not found"));
         };
         credential.passkey = used.passkey;
         credential.backup_eligible = used.backup_eligible;
@@ -515,7 +519,7 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
     ) -> StorageResult<()> {
         let mut state = self.lock();
         let Some(credential) = state.iter_mut().find(|c| c.credential_id == credential_id) else {
-            return Err(StorageError::msg("passkey credential not found"));
+            return Err(StorageError::not_found("passkey credential not found"));
         };
         credential.name = name.map(str::to_owned);
         Ok(())
@@ -614,7 +618,7 @@ impl PasskeyChallengeStore for InMemoryPasskeyChallengeStore {
     async fn put_registration(&self, value: StoredPasskeyRegistration) -> StorageResult<()> {
         let mut state = self.lock();
         if state.registrations.contains_key(&value.id) {
-            return Err(StorageError::msg(
+            return Err(StorageError::conflict(
                 "passkey registration challenge collision",
             ));
         }
@@ -648,7 +652,7 @@ impl PasskeyChallengeStore for InMemoryPasskeyChallengeStore {
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
         let mut state = self.lock();
         if state.authentications.contains_key(&value.id) {
-            return Err(StorageError::msg(
+            return Err(StorageError::conflict(
                 "passkey authentication challenge collision",
             ));
         }

@@ -62,6 +62,17 @@
 //!   practice — do not rely on `create_session`, `create_token`, or
 //!   `put_registration` returning an error on a collision.
 //!
+//! ## Error kinds
+//!
+//! Every method fails with a [`StorageError`](crate::error::StorageError),
+//! and the methods that enforce a uniqueness rule or write an existing row say
+//! which [`StorageErrorKind`] they report. A write that would break a
+//! uniqueness rule fails with [`StorageErrorKind::Conflict`], and a write to a
+//! missing row with [`StorageErrorKind::NotFound`]; in both cases nothing is
+//! written. The managers rely on these kinds rather than reading first, so the
+//! store's own constraint decides a race. Any other failure is
+//! [`StorageErrorKind::Backend`].
+//!
 //! The trait surface is the contract. Adapter crates (`doorman-sqlx`,
 //! `doorman-redis`, and any future siblings) are conveniences on top of it, not
 //! part of it. The published `doorman-conformance` crate exercises the contract
@@ -75,6 +86,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[cfg(doc)]
+use crate::error::StorageErrorKind;
 use crate::error::StorageResult;
 pub use crate::token::TokenHash;
 
@@ -300,7 +313,8 @@ pub struct SessionSummary {
 /// silently undo any change that landed in between.
 #[async_trait]
 pub trait UserStore: Send + Sync {
-    /// Insert a new user row.
+    /// Insert a new user row. Fails with [`StorageErrorKind::Conflict`] if
+    /// another user already has its id or its email address.
     async fn create_user(&self, user: User) -> StorageResult<()>;
 
     /// Look up a user by id, or `None` if absent.
@@ -312,8 +326,8 @@ pub trait UserStore: Send + Sync {
     async fn find_user_by_email(&self, email: &str) -> StorageResult<Option<User>>;
 
     /// Set the account status of an existing user and stamp `updated_at`
-    /// with `at`. No other field is written. Errors if the user does not
-    /// exist.
+    /// with `at`. No other field is written. Fails with
+    /// [`StorageErrorKind::NotFound`] if the user does not exist.
     async fn set_user_status(
         &self,
         id: UserId,
@@ -323,14 +337,16 @@ pub trait UserStore: Send + Sync {
 
     /// Change an existing user's email address to `email`, recording it as
     /// verified at `at` and stamping `updated_at` with `at`. No other field is
-    /// written. The old address is released for lookup and reuse. Errors if
-    /// the user does not exist or another user holds `email`.
+    /// written. The old address is released for lookup and reuse. Setting the
+    /// address the user already has succeeds. Fails with
+    /// [`StorageErrorKind::NotFound`] if the user does not exist, and with
+    /// [`StorageErrorKind::Conflict`] if another user holds `email`.
     async fn set_user_email(&self, id: UserId, email: &str, at: DateTime<Utc>)
     -> StorageResult<()>;
 
     /// Record an existing user's current email address as verified at `at`
-    /// and stamp `updated_at` with `at`. No other field is written. Errors if
-    /// the user does not exist.
+    /// and stamp `updated_at` with `at`. No other field is written. Fails with
+    /// [`StorageErrorKind::NotFound`] if the user does not exist.
     async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()>;
 
     /// Remove a user row. Callers cascade related rows first; this only
@@ -652,13 +668,15 @@ pub struct PasskeyUse {
 /// [`add_passkey`](Self::add_passkey) and nothing in this trait changes them.
 #[async_trait]
 pub trait PasskeyCredentialStore: Send + Sync {
-    /// Persist a newly-registered credential.
+    /// Persist a newly-registered credential. Fails with
+    /// [`StorageErrorKind::Conflict`] if its credential id is already
+    /// registered, to this or any other user.
     async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()>;
 
     /// Record a successful authentication with an existing credential: set
     /// its credential blob, its backup flags, and `last_used_at` (from
-    /// [`PasskeyUse::used_at`]). No other field is written. Errors if the
-    /// credential does not exist.
+    /// [`PasskeyUse::used_at`]). No other field is written. Fails with
+    /// [`StorageErrorKind::NotFound`] if the credential does not exist.
     ///
     /// This is a plain write, not a compare-and-set on the signature counter:
     /// if two sign-ins with the same credential finish concurrently, the last
@@ -668,8 +686,8 @@ pub trait PasskeyCredentialStore: Send + Sync {
     -> StorageResult<()>;
 
     /// Set an existing credential's friendly name (`None` clears it). No
-    /// other field is written. Errors if the credential does not exist.
-    /// Callers verify ownership before calling.
+    /// other field is written. Fails with [`StorageErrorKind::NotFound`] if
+    /// the credential does not exist. Callers verify ownership before calling.
     async fn set_passkey_name(&self, credential_id: &[u8], name: Option<&str>)
     -> StorageResult<()>;
 

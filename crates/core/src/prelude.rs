@@ -22,7 +22,7 @@ pub use crate::email::{
     DefaultEmailTemplates, Email, EmailSender, EmailTemplates, SecurityEmailNotifier,
     TerminalEmailSender,
 };
-pub use crate::error::{Error, Result, StorageError, StorageResult};
+pub use crate::error::{Error, Result, StorageError, StorageErrorKind, StorageResult};
 pub use crate::metrics::{MetricEvent, MetricSink, NoopMetricSink};
 pub use crate::operator::{NotificationPolicy, OperatorManager, OperatorNotice};
 pub use crate::passkey::{AuthenticationOutcome, PasskeyConfig, PasskeyManager};

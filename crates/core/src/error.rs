@@ -2,7 +2,8 @@
 //!
 //! [`enum@Error`] is the manager-facing error enum. [`StorageError`] and
 //! [`EmailError`] wrap backend-specific failures without exposing their
-//! concrete types in public APIs.
+//! concrete types in public APIs; a [`StorageError`] still tells a conflict
+//! or a missing row apart from an outage through [`StorageErrorKind`].
 
 use std::fmt;
 use std::time::Duration;
@@ -148,23 +149,71 @@ pub enum Error {
     },
 }
 
-/// Opaque storage-backend failure.
+/// Storage-backend failure, opaque apart from its [`kind`](Self::kind).
+///
+/// Adapters report a uniqueness violation as [`StorageErrorKind::Conflict`]
+/// and a write to a missing row as [`StorageErrorKind::NotFound`], so core
+/// can let the store's own constraints decide a race instead of reading
+/// first. Everything else is [`StorageErrorKind::Backend`].
 #[derive(Debug, Error)]
-#[error("storage error: {0}")]
-pub struct StorageError(BoxError);
+#[error("storage error: {inner}")]
+pub struct StorageError {
+    kind: StorageErrorKind,
+    inner: BoxError,
+}
+
+/// What a [`StorageError`] reports, as far as a caller can act on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StorageErrorKind {
+    /// The write would break a uniqueness rule: another row already holds
+    /// the id, email address, credential id or token hash. Nothing was
+    /// written.
+    Conflict,
+    /// The write targets a row that does not exist. Nothing was written.
+    NotFound,
+    /// The backend failed, or returned data that does not decode.
+    Backend,
+}
 
 impl StorageError {
-    /// Wrap a concrete backend error as an opaque [`StorageError`].
+    /// Wrap a concrete backend error as a [`StorageErrorKind::Backend`]
+    /// failure.
     pub fn new<E>(err: E) -> Self
     where
         E: std::error::Error + Send + Sync + 'static,
     {
-        Self(Box::new(err))
+        Self {
+            kind: StorageErrorKind::Backend,
+            inner: Box::new(err),
+        }
     }
 
-    /// Build a [`StorageError`] from a plain message (no source error).
+    /// Build a [`StorageErrorKind::Backend`] failure from a plain message.
     pub fn msg(message: impl Into<String>) -> Self {
-        Self(Box::new(MessageError(message.into())))
+        Self::with_kind(StorageErrorKind::Backend, message)
+    }
+
+    /// Build a [`StorageErrorKind::Conflict`] from a plain message.
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::with_kind(StorageErrorKind::Conflict, message)
+    }
+
+    /// Build a [`StorageErrorKind::NotFound`] from a plain message.
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::with_kind(StorageErrorKind::NotFound, message)
+    }
+
+    /// What this failure reports.
+    pub fn kind(&self) -> StorageErrorKind {
+        self.kind
+    }
+
+    fn with_kind(kind: StorageErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            inner: Box::new(MessageError(message.into())),
+        }
     }
 }
 

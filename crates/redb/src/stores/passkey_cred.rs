@@ -51,7 +51,7 @@ impl RedbPasskeyCredentialStore {
                     let guard = creds
                         .get(cred_key.as_str())
                         .map_err(db::err)?
-                        .ok_or_else(|| StorageError::msg("credential not found"))?;
+                        .ok_or_else(|| StorageError::not_found("credential not found"))?;
                     db::decode_passkey(guard.value())?
                 };
                 change(&mut credential);
@@ -84,7 +84,7 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                 let mut user_idx = wtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
 
                 if creds.get(cred_key.as_str()).map_err(db::err)?.is_some() {
-                    return Err(StorageError::msg("credential id already exists"));
+                    return Err(StorageError::conflict("credential id already exists"));
                 }
                 creds
                     .insert(cred_key.as_str(), encoded.as_slice())

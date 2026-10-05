@@ -26,6 +26,7 @@
 use std::future::Future;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use doorman_core::error::{StorageErrorKind, StorageResult};
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
     AccountStatus, AuthenticationPurpose, PasskeyChallengeId, PasskeySummary, PasskeyUse, Session,
@@ -37,6 +38,19 @@ fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
         .single()
         .expect("valid timestamp")
+}
+
+/// Assert `result` failed with `kind`; `what` names the refused operation.
+#[track_caller]
+fn assert_refused<T: std::fmt::Debug>(
+    result: StorageResult<T>,
+    kind: StorageErrorKind,
+    what: &str,
+) {
+    match result {
+        Err(err) => assert_eq!(err.kind(), kind, "{what}: wrong error kind ({err})"),
+        Ok(value) => panic!("{what}: expected {kind:?}, got Ok({value:?})"),
+    }
 }
 
 fn user(id: UserId, email: &str) -> User {
@@ -155,15 +169,19 @@ async fn users_round_trip(storage: &Storage) {
     );
 
     // Duplicate id is rejected.
-    users
-        .create_user(user(id, "different@example.com"))
-        .await
-        .expect_err("duplicate id should error");
+    assert_refused(
+        users.create_user(user(id, "different@example.com")).await,
+        StorageErrorKind::Conflict,
+        "duplicate id should error",
+    );
     // Duplicate email is rejected.
-    users
-        .create_user(user(UserId::new(), "round-trip@example.com"))
-        .await
-        .expect_err("duplicate email should error");
+    assert_refused(
+        users
+            .create_user(user(UserId::new(), "round-trip@example.com"))
+            .await,
+        StorageErrorKind::Conflict,
+        "duplicate email should error",
+    );
 
     // Marking the email verified is observable.
     users
@@ -282,10 +300,13 @@ async fn users_email_change(storage: &Storage) {
         .await
         .expect("old address is free for reuse");
 
-    users
-        .set_user_email(id, "taken@example.com", ts(2026, 3, 2))
-        .await
-        .expect_err("an address another user holds is refused");
+    assert_refused(
+        users
+            .set_user_email(id, "taken@example.com", ts(2026, 3, 2))
+            .await,
+        StorageErrorKind::Conflict,
+        "an address another user holds is refused",
+    );
     assert_eq!(
         users
             .find_user_by_id(id)
@@ -376,18 +397,25 @@ async fn users_field_changes_compose(storage: &Storage) {
 async fn users_setters_refuse_missing_user(storage: &Storage) {
     let users = &storage.users;
     let missing = UserId::new();
-    users
-        .set_user_status(missing, AccountStatus::Active, ts(2026, 5, 1))
-        .await
-        .expect_err("status of a missing user");
-    users
-        .set_user_email(missing, "ghost@example.com", ts(2026, 5, 1))
-        .await
-        .expect_err("email of a missing user");
-    users
-        .mark_email_verified(missing, ts(2026, 5, 1))
-        .await
-        .expect_err("verify a missing user");
+    assert_refused(
+        users
+            .set_user_status(missing, AccountStatus::Active, ts(2026, 5, 1))
+            .await,
+        StorageErrorKind::NotFound,
+        "status of a missing user",
+    );
+    assert_refused(
+        users
+            .set_user_email(missing, "ghost@example.com", ts(2026, 5, 1))
+            .await,
+        StorageErrorKind::NotFound,
+        "email of a missing user",
+    );
+    assert_refused(
+        users.mark_email_verified(missing, ts(2026, 5, 1)).await,
+        StorageErrorKind::NotFound,
+        "verify a missing user",
+    );
     assert!(
         users
             .find_user_by_id(missing)
@@ -1204,10 +1232,11 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
         backup_state: false,
         recovery_cooldown_until: None,
     };
-    credentials
-        .add_passkey(hijack)
-        .await
-        .expect_err("duplicate credential id should error");
+    assert_refused(
+        credentials.add_passkey(hijack).await,
+        StorageErrorKind::Conflict,
+        "duplicate credential id should error",
+    );
 
     let still_owned = credentials
         .find_passkey_by_credential_id(&credential_id)
@@ -1326,22 +1355,26 @@ async fn passkey_field_changes_compose(storage: &Storage) {
 async fn passkey_writes_refuse_missing_credential(storage: &Storage) {
     let credentials = &storage.passkey_credentials;
     let missing = b"conformance-missing-credential";
-    credentials
-        .record_passkey_use(
-            missing,
-            PasskeyUse {
-                passkey: b"ghost-blob".to_vec(),
-                backup_eligible: false,
-                backup_state: false,
-                used_at: ts(2026, 6, 1),
-            },
-        )
-        .await
-        .expect_err("use of a missing credential");
-    credentials
-        .set_passkey_name(missing, Some("ghost"))
-        .await
-        .expect_err("rename of a missing credential");
+    assert_refused(
+        credentials
+            .record_passkey_use(
+                missing,
+                PasskeyUse {
+                    passkey: b"ghost-blob".to_vec(),
+                    backup_eligible: false,
+                    backup_state: false,
+                    used_at: ts(2026, 6, 1),
+                },
+            )
+            .await,
+        StorageErrorKind::NotFound,
+        "use of a missing credential",
+    );
+    assert_refused(
+        credentials.set_passkey_name(missing, Some("ghost")).await,
+        StorageErrorKind::NotFound,
+        "rename of a missing credential",
+    );
     assert!(
         credentials
             .find_passkey_by_credential_id(missing)

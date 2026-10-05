@@ -10,14 +10,14 @@
 //! is guarded by `attribute_not_exists` so a duplicate credential id is
 //! rejected, and the field-level writes (`record_passkey_use`,
 //! `set_passkey_name`) are `UpdateItem`s guarded by `attribute_exists` so
-//! updating a missing credential errors. The metadata-only summary listing
+//! updating a missing credential reports it missing. The metadata-only summary listing
 //! projects each row to a
 //! [`PasskeySummary`](doorman_core::storage::PasskeySummary) without ever
 //! reading the credential blob.
 
 use async_trait::async_trait;
 use aws_sdk_dynamodb::types::AttributeValue;
-use doorman_core::error::StorageResult;
+use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{
     PasskeyCredentialStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId,
 };
@@ -61,7 +61,11 @@ impl DynamoPasskeyCredentialStore {
         for (name, value) in values {
             request = request.expression_attribute_values(name, value);
         }
-        request.send().await.map_err(client::err)?;
+        request.send().await.map_err(|e| {
+            client::condition_err(e, || {
+                StorageError::not_found("passkey credential not found")
+            })
+        })?;
         Ok(())
     }
 }
@@ -78,7 +82,11 @@ impl PasskeyCredentialStore for DynamoPasskeyCredentialStore {
             .expression_attribute_names("#pk", PK)
             .send()
             .await
-            .map_err(client::err)?;
+            .map_err(|e| {
+                client::condition_err(e, || {
+                    StorageError::conflict("passkey credential id already registered")
+                })
+            })?;
         Ok(())
     }
 

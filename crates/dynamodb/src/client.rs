@@ -38,6 +38,8 @@ use std::time::Duration;
 
 use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::client::Waiters as _;
+use aws_sdk_dynamodb::error::{ProvideErrorMetadata, SdkError};
+use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
 use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::{
     AttributeDefinition, AttributeValue, BillingMode, DeleteRequest, GlobalSecondaryIndex,
@@ -80,6 +82,48 @@ where
     E: std::error::Error + Send + Sync + 'static,
 {
     StorageError::new(e)
+}
+
+/// Map a failed conditional write: a failed condition expression becomes
+/// `on_condition()`, which names what the condition guarded (a missing row
+/// or a taken key), and anything else a backend failure.
+pub(crate) fn condition_err<E>(
+    e: SdkError<E>,
+    on_condition: impl FnOnce() -> StorageError,
+) -> StorageError
+where
+    E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
+{
+    if is_condition_failure(&e) {
+        on_condition()
+    } else {
+        err(e)
+    }
+}
+
+/// Whether `e` is a failed condition expression.
+pub(crate) fn is_condition_failure<E>(e: &SdkError<E>) -> bool
+where
+    E: ProvideErrorMetadata,
+{
+    e.as_service_error()
+        .and_then(|svc| svc.code())
+        .is_some_and(|code| code == "ConditionalCheckFailedException")
+}
+
+/// The positions of the items whose condition failed when `e` cancelled a
+/// `TransactWriteItems`; empty for any other failure.
+pub(crate) fn failed_conditions(e: &SdkError<TransactWriteItemsError>) -> Vec<usize> {
+    match e.as_service_error() {
+        Some(TransactWriteItemsError::TransactionCanceledException(cancelled)) => cancelled
+            .cancellation_reasons()
+            .iter()
+            .enumerate()
+            .filter(|(_, reason)| reason.code() == Some("ConditionalCheckFailed"))
+            .map(|(i, _)| i)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------

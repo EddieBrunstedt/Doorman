@@ -192,7 +192,7 @@ macro_rules! sqlx_stores {
                     .await
                     .map_err($crate::common::storage_err)?;
                 if result.rows_affected() == 0 {
-                    return Err($crate::stores::__reexport::StorageError::msg("user not found"));
+                    return Err($crate::stores::__reexport::StorageError::not_found("user not found"));
                 }
                 Ok(())
             }
@@ -215,7 +215,7 @@ macro_rules! sqlx_stores {
                     .await
                     .map_err($crate::common::storage_err)?;
                 if result.rows_affected() == 0 {
-                    return Err($crate::stores::__reexport::StorageError::msg("user not found"));
+                    return Err($crate::stores::__reexport::StorageError::not_found("user not found"));
                 }
                 Ok(())
             }
@@ -234,7 +234,7 @@ macro_rules! sqlx_stores {
                     .await
                     .map_err($crate::common::storage_err)?;
                 if result.rows_affected() == 0 {
-                    return Err($crate::stores::__reexport::StorageError::msg("user not found"));
+                    return Err($crate::stores::__reexport::StorageError::not_found("user not found"));
                 }
                 Ok(())
             }
@@ -635,7 +635,7 @@ macro_rules! sqlx_stores {
                     .await
                     .map_err($crate::common::storage_err)?;
                 if result.rows_affected() == 0 {
-                    return Err($crate::stores::__reexport::StorageError::msg(
+                    return Err($crate::stores::__reexport::StorageError::not_found(
                         "passkey credential not found",
                     ));
                 }
@@ -655,7 +655,7 @@ macro_rules! sqlx_stores {
                     .await
                     .map_err($crate::common::storage_err)?;
                 if result.rows_affected() == 0 {
-                    return Err($crate::stores::__reexport::StorageError::msg(
+                    return Err($crate::stores::__reexport::StorageError::not_found(
                         "passkey credential not found",
                     ));
                 }

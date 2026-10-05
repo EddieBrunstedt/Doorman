@@ -57,7 +57,7 @@ impl RedbUserStore {
                     let guard = users
                         .get(user_key.as_str())
                         .map_err(db::err)?
-                        .ok_or_else(|| StorageError::msg("user not found"))?;
+                        .ok_or_else(|| StorageError::not_found("user not found"))?;
                     db::decode(guard.value())?
                 };
                 change(&mut user, &mut email_guard)?;
@@ -88,11 +88,11 @@ impl UserStore for RedbUserStore {
                 let mut email_guard = wtxn.open_table(db::EMAIL_GUARD).map_err(db::err)?;
 
                 if users.get(user_key.as_str()).map_err(db::err)?.is_some() {
-                    return Err(StorageError::msg("user id already exists"));
+                    return Err(StorageError::conflict("user id already exists"));
                 }
                 if let Some(email) = user.email.as_deref() {
                     if email_guard.get(email).map_err(db::err)?.is_some() {
-                        return Err(StorageError::msg("email already in use"));
+                        return Err(StorageError::conflict("email already in use"));
                     }
                     email_guard
                         .insert(email, user_key.as_str())
@@ -175,7 +175,7 @@ impl UserStore for RedbUserStore {
             if let Some(owner) = email_guard.get(email.as_str()).map_err(db::err)?
                 && owner.value() != user_key
             {
-                return Err(StorageError::msg("email already in use"));
+                return Err(StorageError::conflict("email already in use"));
             }
             if let Some(old) = user.email.as_deref() {
                 email_guard.remove(old).map_err(db::err)?;

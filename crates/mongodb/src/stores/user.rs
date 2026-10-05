@@ -42,7 +42,7 @@ impl MongoUserStore {
         let filter = doc! { "_id": model::user_id_str(id) };
         let result = self.coll.update_one(filter, update).await.map_err(err)?;
         if result.matched_count == 0 {
-            return Err(StorageError::msg("user not found"));
+            return Err(StorageError::not_found("user not found"));
         }
         Ok(())
     }
