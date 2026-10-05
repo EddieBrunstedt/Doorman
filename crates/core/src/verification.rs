@@ -68,7 +68,11 @@ pub struct EnrollmentOutcome {
 
 /// Normalize an email for storage and lookup: trim surrounding whitespace
 /// and lowercase. Keeps the "find by email" path case-insensitive.
-pub(crate) fn normalize_email(email: &str) -> String {
+///
+/// Every manager stores and looks up addresses in this form, so a host that
+/// queries [`UserStore::find_user_by_email`](crate::storage::UserStore::find_user_by_email)
+/// directly normalizes through here first.
+pub fn normalize_email(email: &str) -> String {
     email.trim().to_ascii_lowercase()
 }
 

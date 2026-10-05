@@ -45,6 +45,7 @@ use doorman_core::signup::{SignupConfig, SignupRateLimits};
 use doorman_core::storage::{
     AccountStatus, PasskeyCredentialStore, Storage, User, UserId, UserStore,
 };
+use doorman_core::verification::normalize_email;
 use doorman_test_support::CapturingEmailSender;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -263,7 +264,7 @@ impl TestApp {
 /// `SessionManager`. Useful for tests that exercise the session-management
 /// surface and don't need to cover the signup ceremony itself.
 pub async fn login(_client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
-    let email_normalized = email.trim().to_ascii_lowercase();
+    let email_normalized = normalize_email(email);
 
     let user = if let Some(existing) = app
         .user_store

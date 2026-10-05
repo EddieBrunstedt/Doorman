@@ -307,7 +307,8 @@ pub trait UserStore: Send + Sync {
     async fn find_user_by_id(&self, id: UserId) -> StorageResult<Option<User>>;
 
     /// Look up a user by email, or `None` if absent. The lookup is on the
-    /// normalized address the managers store.
+    /// normalized address the managers store; see
+    /// [`normalize_email`](crate::verification::normalize_email).
     async fn find_user_by_email(&self, email: &str) -> StorageResult<Option<User>>;
 
     /// Set the account status of an existing user and stamp `updated_at`
