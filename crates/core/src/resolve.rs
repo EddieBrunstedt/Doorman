@@ -18,7 +18,7 @@
 //!
 //! - **The TTL must be strictly below the idle timeout.** Otherwise an active
 //!   user's session could idle out in storage while every request is served
-//!   from a warm entry — a silent logout. [`SessionResolver::new`] rejects
+//!   from a warm entry — a silent logout. [`AuthCore::builder`] rejects
 //!   such a configuration with [`AssemblyError::IdleTimeoutInvalid`]; a
 //!   comfortable margin such as `ttl <= idle_timeout / 2` is recommended.
 //! - **The touch throttle is the TTL.** A miss writes the slid deadline only
@@ -27,6 +27,8 @@
 //!
 //! A warm entry is still never served past its session's deadline: a hit
 //! whose cached `expires_at` has passed is treated as a miss.
+//!
+//! [`AuthCore::builder`]: crate::assembly::AuthCore::builder
 
 use std::sync::Arc;
 
@@ -57,8 +59,8 @@ pub struct ResolvedSession {
 
 /// Resolves session tokens for a front end's request path.
 ///
-/// Built once at the composition root —
-/// [`AuthCore::builder`](crate::assembly::AuthCore::builder) does it for you.
+/// Built by [`AuthCore::builder`](crate::assembly::AuthCore::builder), which
+/// hands it out as [`AuthCore::resolver`](crate::assembly::AuthCore::resolver).
 /// Cheap to clone: every field is `Arc`-backed.
 #[derive(Clone)]
 pub struct SessionResolver {
@@ -80,7 +82,7 @@ impl SessionResolver {
     /// Returns [`AssemblyError::IdleTimeoutInvalid`] when an idle timeout is
     /// configured and the cache TTL is not strictly below it (see the
     /// [module docs](self)).
-    pub fn new(
+    pub(crate) fn new(
         sessions: SessionManager,
         users: Arc<dyn UserStore>,
         cache: SessionCacheConfig,
@@ -105,7 +107,7 @@ impl SessionResolver {
 
     /// Report cache hits and misses to `metrics` and return `self`. Defaults
     /// to [`NoopMetricSink`].
-    pub fn with_metrics(mut self, metrics: Arc<dyn MetricSink>) -> Self {
+    pub(crate) fn with_metrics(mut self, metrics: Arc<dyn MetricSink>) -> Self {
         self.metrics = metrics;
         self
     }

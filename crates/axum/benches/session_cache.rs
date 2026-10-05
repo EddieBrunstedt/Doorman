@@ -20,18 +20,14 @@
 //! cargo bench -p doorman-axum --bench session_cache
 //! ```
 
-use std::sync::Arc;
-use std::time::Duration;
+mod support;
 
 use chrono::Utc;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use doorman_axum::SessionCacheConfig;
-use doorman_core::audit::{AuditSink, NoopAuditSink};
-use doorman_core::clock::{Clock, SystemClock};
-use doorman_core::memory::{InMemorySessionStore, InMemoryUserStore};
 use doorman_core::resolve::SessionResolver;
-use doorman_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
-use doorman_core::storage::{AccountStatus, SessionStore, User, UserId, UserStore};
+use doorman_core::session::{SessionContext, hash_token};
+use doorman_core::storage::{AccountStatus, User, UserId};
 use tokio::runtime::Runtime;
 
 struct Scaffold {
@@ -41,21 +37,7 @@ struct Scaffold {
 }
 
 async fn build_scaffold() -> Scaffold {
-    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-    let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
-    let user_store_impl: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
-    let user_store: Arc<dyn UserStore> = user_store_impl.clone();
-
-    let session_manager = SessionManager::new(
-        session_store,
-        clock,
-        audit,
-        SessionConfig {
-            absolute_lifetime: Duration::from_secs(60 * 60),
-            ..SessionConfig::default()
-        },
-    );
+    let core = support::in_memory_core(SessionCacheConfig::default());
 
     let now = Utc::now();
     let user = User {
@@ -66,21 +48,20 @@ async fn build_scaffold() -> Scaffold {
         created_at: now,
         updated_at: now,
     };
-    user_store_impl
+    core.storage
+        .users
         .create_user(user.clone())
         .await
         .expect("seed user");
 
-    let issued = session_manager
+    let issued = core
+        .session_manager
         .create(user.id, SessionContext::default())
         .await
         .expect("create session");
 
-    let resolver = SessionResolver::new(session_manager, user_store, SessionCacheConfig::default())
-        .expect("resolver");
-
     Scaffold {
-        resolver,
+        resolver: core.resolver,
         token: issued.token,
         user_id: user.id,
     }

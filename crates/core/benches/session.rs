@@ -16,27 +16,15 @@
 //! cargo bench -p doorman-core --bench session
 //! ```
 
-use std::sync::Arc;
-use std::time::Duration;
+mod support;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use doorman_core::audit::{AuditSink, NoopAuditSink};
-use doorman_core::clock::{Clock, SystemClock};
-use doorman_core::memory::InMemorySessionStore;
-use doorman_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
-use doorman_core::storage::{SessionStore, UserId};
+use doorman_core::session::{SessionContext, SessionManager, hash_token};
+use doorman_core::storage::UserId;
 use tokio::runtime::Runtime;
 
 fn session_manager() -> SessionManager {
-    SessionManager::new(
-        Arc::new(InMemorySessionStore::new()) as Arc<dyn SessionStore>,
-        Arc::new(SystemClock) as Arc<dyn Clock>,
-        Arc::new(NoopAuditSink) as Arc<dyn AuditSink>,
-        SessionConfig {
-            absolute_lifetime: Duration::from_secs(60 * 60),
-            ..SessionConfig::default()
-        },
-    )
+    support::in_memory_core().session_manager
 }
 
 fn session(c: &mut Criterion) {

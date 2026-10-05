@@ -22,29 +22,17 @@
 //! cargo bench -p doorman-core --bench passkey_auth
 //! ```
 
+mod support;
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
-use doorman_core::audit::{AuditSink, NoopAuditSink};
-use doorman_core::clock::{Clock, SystemClock};
-use doorman_core::context::CoreDeps;
-use doorman_core::email::{DefaultEmailTemplates, EmailSender, SecurityEmailNotifier};
-use doorman_core::memory::{
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
-    InMemoryUserStore, InMemoryVerificationTokenStore,
-};
-use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
-use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
-use doorman_core::reauth::{ReauthManager, ReauthPolicy};
-use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
-use doorman_core::storage::{
-    AccountStatus, Session, SessionStore, Storage, User, UserId, UserStore,
-};
-use doorman_test_support::CapturingEmailSender;
+use doorman_core::passkey::PasskeyManager;
+use doorman_core::session::SessionContext;
+use doorman_core::storage::{AccountStatus, Session, User, UserId};
 use tokio::runtime::Runtime;
-use url::Url;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::prelude::Url as AuthUrl;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
@@ -61,15 +49,7 @@ struct Scaffold {
 }
 
 async fn build_scaffold() -> Scaffold {
-    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-    let users: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
-    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-    let credentials: Arc<InMemoryPasskeyCredentialStore> =
-        Arc::new(InMemoryPasskeyCredentialStore::new());
-    let challenges: Arc<InMemoryPasskeyChallengeStore> =
-        Arc::new(InMemoryPasskeyChallengeStore::new());
-    let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
+    let core = support::in_memory_core();
 
     let now = Utc::now();
     let user = User {
@@ -81,60 +61,23 @@ async fn build_scaffold() -> Scaffold {
         updated_at: now,
     };
     let user_id = user.id;
-    users.create_user(user).await.expect("create user");
+    core.storage
+        .users
+        .create_user(user)
+        .await
+        .expect("create user");
 
-    let session_manager = SessionManager::new(
-        sessions.clone() as Arc<dyn SessionStore>,
-        clock.clone(),
-        audit.clone(),
-        SessionConfig {
-            absolute_lifetime: Duration::from_secs(60 * 60),
-            ..SessionConfig::default()
-        },
-    );
-
-    let storage = Storage {
-        users,
-        sessions,
-        verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
-        passkey_credentials: credentials.clone(),
-        passkey_challenges: challenges.clone(),
-    };
-    let email = email as Arc<dyn EmailSender>;
-    let emails = Arc::new(DefaultEmailTemplates);
-    let notifier = SecurityEmailNotifier::new(email.clone(), emails.clone());
-    let passkey_config = PasskeyConfig::new(
-        "localhost",
-        Url::parse("http://localhost:8080").expect("rp origin"),
-        "doorman bench",
-    );
-    let reauth = ReauthManager::new(
-        &passkey_config,
-        &storage,
-        clock.clone(),
-        audit.clone(),
-        ReauthPolicy::disabled(),
-    )
-    .expect("build reauth manager");
-    let session = session_manager
+    let session = core
+        .session_manager
         .create(user_id, SessionContext::default())
         .await
         .expect("create session")
         .session;
-    let deps = CoreDeps::new(
-        clock,
-        audit,
-        email,
-        emails,
-        notifier,
-        Arc::new(NoopRateLimiter) as Arc<dyn RateLimiter>,
-        session_manager,
-        reauth,
-        storage,
-    );
-    let manager = PasskeyManager::new(&deps, passkey_config).expect("build passkey manager");
 
-    Scaffold { manager, session }
+    Scaffold {
+        manager: core.passkey,
+        session,
+    }
 }
 
 /// Register a single credential and return its `(credential_id, user_handle)`.

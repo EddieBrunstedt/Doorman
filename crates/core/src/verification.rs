@@ -94,7 +94,7 @@ pub(crate) fn validate_email(email: &str) -> Result<()> {
 /// finish steps both flows run. Each manager composes these steps with its
 /// own emailed link, policy, events and notices.
 #[derive(Clone)]
-pub struct EnrollmentFlow {
+pub(crate) struct EnrollmentFlow {
     passkey: PasskeyManager,
     records: UserRecords,
     redeemer: Redeemer,
@@ -109,7 +109,7 @@ impl EnrollmentFlow {
     /// Build the shared enrollment flow from the [`CoreDeps`] context and
     /// the [`PasskeyManager`] the signup / recovery flows enrol credentials
     /// through.
-    pub fn new(deps: &CoreDeps, passkey: PasskeyManager) -> Self {
+    pub(crate) fn new(deps: &CoreDeps, passkey: PasskeyManager) -> Self {
         Self {
             passkey,
             records: UserRecords::new(deps),

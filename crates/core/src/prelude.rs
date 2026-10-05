@@ -35,9 +35,7 @@ pub use crate::recovery::{
     MAX_COOLDOWN, MIN_COOLDOWN, RecoveryConfig, RecoveryManager, RecoveryRateLimits,
 };
 pub use crate::resolve::{ResolvedSession, SessionResolver};
-pub use crate::session::{
-    IssuedSession, SessionConfig, SessionContext, SessionInvalidationHook, SessionManager,
-};
+pub use crate::session::{IssuedSession, SessionConfig, SessionContext, SessionManager};
 pub use crate::signup::{
     OpenSignupPolicy, SignupConfig, SignupDecision, SignupManager, SignupPolicy, SignupRateLimits,
 };

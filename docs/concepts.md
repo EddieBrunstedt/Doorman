@@ -43,7 +43,7 @@ When `idle_timeout` is `Some(d)`, the builder fails closed at `build()` time (ra
 
 - `d` is non-zero and `<= MAX_LIFETIME` (the same bound the absolute lifetime is held to);
 - `d <= absolute_lifetime` — the idle window cannot outlive the hard cap;
-- `cache.ttl < d` — a **liveness** requirement, enforced by `SessionResolver::new`. Touches fire only on a cache miss, and misses only occur after a cached entry ages past the cache TTL. If `ttl >= idle_timeout`, a continuously-active user is served by cache hits (which never touch) right up to the idle deadline, so the session idles out in storage with no touch ever sliding it and the active user is logged out. Sliding only works when a miss-driven touch can fire before the idle deadline. A comfortable margin (e.g. `ttl <= d / 2`) is recommended.
+- `cache.ttl < d` — a **liveness** requirement, enforced by `AuthCore::builder`. Touches fire only on a cache miss, and misses only occur after a cached entry ages past the cache TTL. If `ttl >= idle_timeout`, a continuously-active user is served by cache hits (which never touch) right up to the idle deadline, so the session idles out in storage with no touch ever sliding it and the active user is logged out. Sliding only works when a miss-driven touch can fire before the idle deadline. A comfortable margin (e.g. `ttl <= d / 2`) is recommended.
 
 ### The cache re-checks expiry on hit
 

@@ -104,7 +104,7 @@ pub struct SessionContext {
 /// Hooks are called on a best-effort basis — failures during invalidation
 /// must not propagate, so the trait returns `()` rather than `Result`.
 #[async_trait]
-pub trait SessionInvalidationHook: Send + Sync {
+pub(crate) trait SessionInvalidationHook: Send + Sync {
     /// Called when a single session is invalidated (revoked or deleted).
     async fn on_session_invalidated(&self, session_id: SessionId);
     /// Called when every session for a user is invalidated at once
@@ -115,7 +115,7 @@ pub trait SessionInvalidationHook: Send + Sync {
 /// Default hook that ignores every event. Used until a
 /// [`SessionResolver`](crate::resolve::SessionResolver) installs its cache
 /// invalidator.
-pub struct NoopSessionInvalidationHook;
+pub(crate) struct NoopSessionInvalidationHook;
 
 #[async_trait]
 impl SessionInvalidationHook for NoopSessionInvalidationHook {
@@ -140,10 +140,10 @@ pub struct SessionManager {
 
 impl SessionManager {
     /// Build a session manager from the session store, clock, audit sink, and
-    /// config. No invalidation hook is wired yet; install one with
-    /// [`with_invalidation_hook`](Self::with_invalidation_hook) or
-    /// [`set_invalidation_hook`](Self::set_invalidation_hook).
-    pub fn new(
+    /// config. No invalidation hook is wired yet; the
+    /// [`SessionResolver`](crate::resolve::SessionResolver) installs its cache
+    /// invalidator with [`set_invalidation_hook`](Self::set_invalidation_hook).
+    pub(crate) fn new(
         sessions: Arc<dyn SessionStore>,
         clock: Arc<dyn Clock>,
         audit: Arc<dyn AuditSink>,
@@ -173,22 +173,12 @@ impl SessionManager {
             .unwrap_or(self.config.absolute_lifetime)
     }
 
-    /// Install `hook` as the invalidation observer and return `self`.
-    ///
-    /// The hook lives in a cell shared by every clone of this manager, so
-    /// the install is visible to clones taken _before_ this call as well as
-    /// after. Construction order between the manager and its dependents
-    /// (`PasskeyManager`, `SignupManager`, …) therefore does not matter.
-    pub fn with_invalidation_hook(self, hook: Arc<dyn SessionInvalidationHook>) -> Self {
-        self.set_invalidation_hook(hook);
-        self
-    }
-
     /// Install `hook` as the invalidation observer, in place. Because the
     /// observer is held behind a cell shared by every clone, this is visible
     /// to all existing and future clones of the manager — there is no "too
-    /// late" ordering hazard.
-    pub fn set_invalidation_hook(&self, hook: Arc<dyn SessionInvalidationHook>) {
+    /// late" ordering hazard, and construction order between the manager and
+    /// its dependents (`PasskeyManager`, `SignupManager`, …) does not matter.
+    pub(crate) fn set_invalidation_hook(&self, hook: Arc<dyn SessionInvalidationHook>) {
         *sync::write(&self.invalidation_hook) = hook;
     }
 
@@ -623,7 +613,7 @@ mod tests {
     use crate::audit::NoopAuditSink;
     use crate::clock::SystemClock;
     use crate::memory::InMemorySessionStore;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     #[test]
     fn default_config_builds() {
@@ -704,27 +694,118 @@ mod tests {
         assert_eq!(issued.token, "super-secret-bearer-token");
     }
 
+    /// Records every invalidation the manager reports, in order.
     #[derive(Default)]
-    struct CountingHook {
-        user_invalidations: AtomicUsize,
+    struct RecordingHook {
+        sessions: Mutex<Vec<SessionId>>,
+        users: Mutex<Vec<UserId>>,
     }
 
-    #[async_trait]
-    impl SessionInvalidationHook for CountingHook {
-        async fn on_session_invalidated(&self, _: SessionId) {}
-        async fn on_user_sessions_invalidated(&self, _: UserId) {
-            self.user_invalidations.fetch_add(1, Ordering::SeqCst);
+    impl RecordingHook {
+        fn sessions(&self) -> Vec<SessionId> {
+            sync::lock(&self.sessions).clone()
+        }
+
+        fn users(&self) -> Vec<UserId> {
+            sync::lock(&self.users).clone()
         }
     }
 
-    fn manager_with_hook(hook: Arc<CountingHook>) -> SessionManager {
+    #[async_trait]
+    impl SessionInvalidationHook for RecordingHook {
+        async fn on_session_invalidated(&self, session_id: SessionId) {
+            sync::lock(&self.sessions).push(session_id);
+        }
+        async fn on_user_sessions_invalidated(&self, user_id: UserId) {
+            sync::lock(&self.users).push(user_id);
+        }
+    }
+
+    fn plain_manager() -> SessionManager {
         SessionManager::new(
             Arc::new(InMemorySessionStore::new()),
             Arc::new(SystemClock),
             Arc::new(NoopAuditSink),
             SessionConfig::default(),
         )
-        .with_invalidation_hook(hook)
+    }
+
+    fn manager_with_hook(hook: Arc<RecordingHook>) -> SessionManager {
+        let manager = plain_manager();
+        manager.set_invalidation_hook(hook);
+        manager
+    }
+
+    #[tokio::test]
+    async fn revoke_notifies_hook_with_session_id() {
+        let hook = Arc::new(RecordingHook::default());
+        let manager = manager_with_hook(hook.clone());
+
+        let issued = manager
+            .create(UserId::new(), SessionContext::default())
+            .await
+            .expect("create");
+        manager.revoke(&issued.token).await.expect("revoke");
+
+        assert_eq!(hook.sessions(), vec![issued.session.id]);
+        assert!(
+            hook.users().is_empty(),
+            "no user-level hook on single revoke"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_by_id_notifies_hook_with_session_id() {
+        let hook = Arc::new(RecordingHook::default());
+        let manager = manager_with_hook(hook.clone());
+
+        let issued = manager
+            .create(UserId::new(), SessionContext::default())
+            .await
+            .expect("create");
+        manager
+            .revoke_by_id(issued.session.id)
+            .await
+            .expect("revoke_by_id");
+
+        assert_eq!(hook.sessions(), vec![issued.session.id]);
+    }
+
+    /// The hook lives in a cell shared by every clone, so installing it is
+    /// visible to clones taken _before_ the install as well as after. The
+    /// resolver's cache invalidator is installed after the dependent managers
+    /// cloned the session manager, and must still be told about revocations.
+    #[tokio::test]
+    async fn hook_install_order_does_not_matter() {
+        let manager = plain_manager();
+        let early_clone = manager.clone();
+        let hook = Arc::new(RecordingHook::default());
+        manager.set_invalidation_hook(hook.clone());
+
+        let issued = early_clone
+            .create(UserId::new(), SessionContext::default())
+            .await
+            .expect("create");
+        early_clone
+            .revoke(&issued.token)
+            .await
+            .expect("revoke via early clone");
+        assert_eq!(
+            hook.sessions(),
+            vec![issued.session.id],
+            "a clone taken before the install still observes invalidation",
+        );
+
+        let late_clone = manager.clone();
+        let issued = late_clone
+            .create(UserId::new(), SessionContext::default())
+            .await
+            .expect("create");
+        late_clone
+            .revoke(&issued.token)
+            .await
+            .expect("revoke via late clone");
+        assert_eq!(hook.sessions().len(), 2, "a later clone shares the hook");
     }
 
     /// `revoke_all_for_user` must only notify the invalidation hook when it
@@ -732,7 +813,7 @@ mod tests {
     /// shape. A zero-count sweep evicts nothing.
     #[tokio::test]
     async fn revoke_all_does_not_notify_hook_on_zero_count() {
-        let hook = Arc::new(CountingHook::default());
+        let hook = Arc::new(RecordingHook::default());
         let manager = manager_with_hook(hook.clone());
 
         let count = manager
@@ -740,16 +821,15 @@ mod tests {
             .await
             .expect("revoke all");
         assert_eq!(count, 0, "no sessions to revoke");
-        assert_eq!(
-            hook.user_invalidations.load(Ordering::SeqCst),
-            0,
+        assert!(
+            hook.users().is_empty(),
             "a zero-count sweep must not notify the hook",
         );
     }
 
     #[tokio::test]
     async fn revoke_all_notifies_hook_when_sessions_removed() {
-        let hook = Arc::new(CountingHook::default());
+        let hook = Arc::new(RecordingHook::default());
         let manager = manager_with_hook(hook.clone());
         let user_id = UserId::new();
         manager
@@ -763,9 +843,13 @@ mod tests {
             .expect("revoke all");
         assert_eq!(count, 1);
         assert_eq!(
-            hook.user_invalidations.load(Ordering::SeqCst),
-            1,
+            hook.users(),
+            vec![user_id],
             "revoking sessions notifies the hook exactly once",
+        );
+        assert!(
+            hook.sessions().is_empty(),
+            "a bulk revoke does not notify per session",
         );
     }
 
@@ -773,7 +857,7 @@ mod tests {
     /// the invalidation hook once when it removed any.
     #[tokio::test]
     async fn revoke_others_keeps_the_exception_and_notifies_hook() {
-        let hook = Arc::new(CountingHook::default());
+        let hook = Arc::new(RecordingHook::default());
         let manager = manager_with_hook(hook.clone());
         let user_id = UserId::new();
         let keep = manager
@@ -798,12 +882,12 @@ mod tests {
             .map(|s| s.id)
             .collect();
         assert_eq!(remaining, vec![keep.session.id]);
-        assert_eq!(hook.user_invalidations.load(Ordering::SeqCst), 1);
+        assert_eq!(hook.users(), vec![user_id]);
     }
 
     #[tokio::test]
     async fn revoke_others_does_not_notify_hook_on_zero_count() {
-        let hook = Arc::new(CountingHook::default());
+        let hook = Arc::new(RecordingHook::default());
         let manager = manager_with_hook(hook.clone());
         let user_id = UserId::new();
         let only = manager
@@ -816,9 +900,8 @@ mod tests {
             .await
             .expect("revoke others");
         assert_eq!(count, 0);
-        assert_eq!(
-            hook.user_invalidations.load(Ordering::SeqCst),
-            0,
+        assert!(
+            hook.users().is_empty(),
             "a no-op revoke must not spam the cache invalidator",
         );
     }

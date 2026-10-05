@@ -20,7 +20,7 @@ pub mod assembly;
 pub mod audit;
 pub mod cache;
 pub mod clock;
-pub mod context;
+mod context;
 pub mod email;
 pub mod encoding;
 pub mod error;

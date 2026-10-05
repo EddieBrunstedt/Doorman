@@ -103,9 +103,10 @@ impl Default for NotificationPolicy {
 ///
 /// Reuses the same safe cascade, cache invalidation, and audit machinery the
 /// self-service flows use by driving the existing manager cores rather than
-/// re-issuing the raw store primitives. Built from the same [`CoreDeps`] bundle
-/// the other managers read, plus a [`NotificationPolicy`] chosen at
-/// construction.
+/// re-issuing the raw store primitives. Built by
+/// [`AuthCore::builder`](crate::assembly::AuthCore::builder) from the same
+/// collaborators as the other managers, plus the [`NotificationPolicy`] set
+/// there.
 ///
 /// Cheap to clone — every field is `Arc`-backed.
 #[derive(Clone)]
@@ -129,7 +130,7 @@ impl OperatorManager {
     /// are read from `deps`, so the operator flows share the one invalidation
     /// hook, the one account-deletion cascade, and the one configured email
     /// renderer with every other manager.
-    pub fn new(
+    pub(crate) fn new(
         deps: &CoreDeps,
         passkey: PasskeyManager,
         notifications: NotificationPolicy,

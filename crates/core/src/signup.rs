@@ -194,8 +194,8 @@ impl Default for SignupConfig {
 
 /// Manager for the three-step signup flow.
 ///
-/// Built on the shared [`EnrollmentFlow`]. `request_signup` is the
-/// signup-specific body (provision-on-unknown-email is the inverse of
+/// Built on the enrollment flow it shares with recovery. `request_signup` is
+/// the signup-specific body (provision-on-unknown-email is the inverse of
 /// recovery's silent no-op); consume marks the email verified, and finish
 /// enrols under the per-user credential cap with no cool-down.
 #[derive(Clone)]
@@ -208,14 +208,14 @@ pub struct SignupManager {
 impl SignupManager {
     /// Build the signup manager from an enrollment flow and its config. The
     /// email renderer comes from the [`EnrollmentFlow`] (and thus the shared
-    /// [`CoreDeps`](crate::context::CoreDeps)).
+    /// [`CoreDeps`]).
     ///
     /// Returns [`AssemblyError::InvalidUrlTemplate`] or
     /// [`AssemblyError::PlaceholderUrlTemplate`] for an unusable
     /// [`url_template`](SignupConfig::url_template), and
     /// [`AssemblyError::InvalidLifetime`] for an out-of-bounds
     /// [`token_lifetime`](SignupConfig::token_lifetime).
-    pub fn new(
+    pub(crate) fn new(
         flow: EnrollmentFlow,
         config: SignupConfig,
     ) -> std::result::Result<Self, AssemblyError> {

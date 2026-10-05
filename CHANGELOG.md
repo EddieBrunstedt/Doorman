@@ -15,7 +15,7 @@ Initial development toward the first `0.1.0` release. Highlights:
 - Passkey-only (WebAuthn) authentication for Axum: signup, login, recovery, and reauthentication ceremonies wired through `doorman-axum`'s `router()`.
 - `doorman` umbrella crate re-exporting `doorman-core`, `doorman-axum`, and the storage adapters behind cargo features.
 - Storage adapters: `doorman-sqlx` (Postgres, MySQL/MariaDB, SQLite), `doorman-redb`, `doorman-mongodb`, `doorman-dynamodb`, and `doorman-redis` (ephemeral session/token/challenge stores and rate limiting).
-- Pluggable collaborators wired explicitly at build time: `Clock`, `AuditSink`, `EmailSender`, `RateLimiter`, `MetricSink`, `SignupPolicy`, and `SessionInvalidationHook`.
+- Pluggable collaborators wired explicitly at build time: `Clock`, `AuditSink`, `EmailSender`, `RateLimiter`, `MetricSink`, and `SignupPolicy`.
 - Always-on account recovery as the all-passkeys-lost escape hatch, with a configurable cool-down.
 - `OperatorManager` backend-only administration API (disable/enable/delete, remove-passkey, revoke-sessions, list).
 - Security controls: opaque single-use tokens hashed at rest, constant-time token comparison, redacted `Debug` for token-bearing types, fail-closed builder validation, CSRF same-origin checks, and configurable rate limits.

@@ -137,8 +137,8 @@ pub enum AssemblyError {
         /// The reserved placeholder host that was detected.
         placeholder_host: &'static str,
     },
-    /// The recovery cool-down is outside its documented bounds. Surfaced from
-    /// [`RecoveryManager::new`].
+    /// The recovery cool-down is outside its documented bounds. Carries the
+    /// [`RecoveryConfigError`] saying which bound.
     #[error("recovery cooldown is misconfigured: {0}")]
     RecoveryCooldown(#[from] RecoveryConfigError),
     /// A configured lifetime (session, signup token, recovery token, account
@@ -205,16 +205,18 @@ fn validate_idle_timeout(
 
 /// The assembled, framework-agnostic auth engine.
 ///
-/// Holds the wired-up managers — each already sharing one [`CoreDeps`] bundle
-/// — plus the [`SessionResolver`] a front end runs on every request and the
-/// [`Storage`] it was built over. A front end consumes these to mount its
-/// routes and resolve sessions; `doorman-axum`'s `AuthService::builder` takes
-/// an `AuthCore` whole, hands `resolver` to its session layer and threads the
-/// managers into its router state.
+/// Holds the wired-up managers, which share one set of collaborators, plus the
+/// [`SessionResolver`] a front end runs on every request and the [`Storage`]
+/// it was built over. [`AuthCore::builder`] is the only way to get these
+/// managers: none of them has a public constructor, so none can skip the
+/// build-time checks. A front end consumes them to mount its routes and
+/// resolve sessions; `doorman-axum`'s `AuthService::builder` takes an
+/// `AuthCore` whole and keeps it as its router state.
 ///
 /// Cheap to move and clone — every field is `Arc`-backed.
+#[derive(Clone)]
 pub struct AuthCore {
-    /// Session manager (carrying the invalidation hook and security notifier).
+    /// Session manager, carrying the resolver's cache invalidator.
     pub session_manager: SessionManager,
     /// Request-time session resolution: cache, expiry, account status and
     /// idle sliding behind one call. Its cache invalidator is installed on

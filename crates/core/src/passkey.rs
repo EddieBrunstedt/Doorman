@@ -266,7 +266,7 @@ impl PasskeyManager {
     /// [`CoreDeps::notifier`] — built once at the composition root — so the
     /// passkey lifecycle notices share the one configured sender and email
     /// renderer with every other bundled notice.
-    pub fn new(deps: &CoreDeps, config: PasskeyConfig) -> Result<Self> {
+    pub(crate) fn new(deps: &CoreDeps, config: PasskeyConfig) -> Result<Self> {
         let webauthn = build_webauthn(&config)?;
 
         Ok(Self {

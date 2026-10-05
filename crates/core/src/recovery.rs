@@ -65,13 +65,14 @@ pub struct RecoveryConfig {
     /// restricted until this deadline; destructive surfaces (delete passkey,
     /// revoke other sessions — see
     /// [`crate::error::Error::RecoveryCooldownActive`]) refuse requests from
-    /// restricted sessions. [`RecoveryManager::new`] enforces a floor of
+    /// restricted sessions. [`AuthCoreBuilder::build`] enforces a floor of
     /// [`MIN_COOLDOWN`] unless [`danger_allow_cooldown_below_floor`] is set,
     /// and a ceiling of [`MAX_COOLDOWN`].
     ///
+    /// [`AuthCoreBuilder::build`]: crate::assembly::AuthCoreBuilder::build
     /// [`danger_allow_cooldown_below_floor`]: RecoveryConfig::danger_allow_cooldown_below_floor
     pub cooldown: Duration,
-    /// Escape hatch: when `true`, [`RecoveryManager::new`] accepts a
+    /// Escape hatch: when `true`, [`AuthCoreBuilder::build`] accepts a
     /// [`cooldown`] below [`MIN_COOLDOWN`] instead of rejecting it.
     ///
     /// The floor exists because the cool-down is the only thing protecting a
@@ -82,6 +83,7 @@ pub struct RecoveryConfig {
     /// a small [`cooldown`] can never silently disable the protection by
     /// accident. Leave this `false` unless you have a deliberate reason.
     ///
+    /// [`AuthCoreBuilder::build`]: crate::assembly::AuthCoreBuilder::build
     /// [`cooldown`]: RecoveryConfig::cooldown
     pub danger_allow_cooldown_below_floor: bool,
 }
@@ -99,10 +101,11 @@ pub const MIN_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 /// certainly a units mistake.
 pub const MAX_COOLDOWN: Duration = MAX_LIFETIME;
 
-/// Why [`RecoveryManager::new`] rejected the supplied
-/// [`RecoveryConfig::cooldown`]. Construction is fallible rather than a panic
-/// so the misconfiguration is threaded back to the host through the assembly
-/// builder as [`AssemblyError::RecoveryCooldown`].
+/// Why [`AuthCoreBuilder::build`](crate::assembly::AuthCoreBuilder::build)
+/// rejected the supplied [`RecoveryConfig::cooldown`]. Construction is
+/// fallible rather than a panic so the misconfiguration is threaded back to
+/// the host through the assembly builder as
+/// [`AssemblyError::RecoveryCooldown`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RecoveryConfigError {
     /// `cooldown` is below the documented [`MIN_COOLDOWN`] floor and
@@ -219,8 +222,8 @@ impl Default for RecoveryConfig {
 
 /// Manager for the three-step recovery flow.
 ///
-/// Built on the shared [`EnrollmentFlow`]. `request_recovery` silently
-/// no-ops on an unknown email and applies extra rate-limit policies; finish
+/// Built on the enrollment flow it shares with signup. `request_recovery`
+/// silently no-ops on an unknown email and applies extra rate-limit policies; finish
 /// enrols under the post-recovery cool-down, exempt from the per-user
 /// credential cap, and sends the recovery-completed notice.
 #[derive(Clone)]
@@ -253,7 +256,7 @@ impl RecoveryManager {
     /// [`token_lifetime`](RecoveryConfig::token_lifetime).
     ///
     /// [`config.danger_allow_cooldown_below_floor`]: RecoveryConfig::danger_allow_cooldown_below_floor
-    pub fn new(
+    pub(crate) fn new(
         flow: EnrollmentFlow,
         config: RecoveryConfig,
     ) -> std::result::Result<Self, AssemblyError> {

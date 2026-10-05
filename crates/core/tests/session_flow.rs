@@ -1,46 +1,29 @@
+mod common;
+
 use std::num::NonZeroU32;
-use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
-use doorman_core::audit::{AuditEventKind, AuditSink};
-use doorman_core::clock::Clock;
+use chrono::Duration as ChronoDuration;
+use doorman_core::audit::AuditEventKind;
 use doorman_core::email::{Email, EmailSender};
 use doorman_core::error::Error;
 use doorman_core::memory::{InMemorySessionStore, InMemoryUserStore};
-use doorman_core::session::{
-    SessionConfig, SessionContext, SessionInvalidationHook, SessionManager, hash_token,
-};
+use doorman_core::session::{SessionConfig, SessionContext, hash_token};
 use doorman_core::storage::{
     AccountStatus, Session, SessionId, SessionStore, StoredPasskey, User, UserId, UserStore,
 };
-use doorman_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
-use std::sync::Mutex;
+use doorman_test_support::CapturingEmailSender;
 
-fn fresh_manager() -> (
-    SessionManager,
-    Arc<InMemorySessionStore>,
-    Arc<InMemoryAuditSink>,
-) {
-    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
-    let manager = SessionManager::new(
-        sessions.clone() as Arc<dyn SessionStore>,
-        Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
-        audit.clone() as Arc<dyn AuditSink>,
-        SessionConfig {
-            absolute_lifetime: Duration::from_secs(60 * 60),
+use common::{Harness, ts};
+
+/// A harness whose sessions live for `absolute_lifetime`.
+fn harness_with_lifetime(absolute_lifetime: Duration) -> Harness {
+    Harness::builder()
+        .session_config(SessionConfig {
+            absolute_lifetime,
             ..SessionConfig::default()
-        },
-    );
-    (manager, sessions, audit)
-}
-
-fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
-        .single()
-        .expect("valid timestamp")
+        })
+        .build()
 }
 
 #[test]
@@ -125,7 +108,8 @@ fn stored_passkey_cooldown_predicate_mirrors_session() {
 
 #[tokio::test]
 async fn create_then_validate_returns_same_session() {
-    let (manager, sessions, audit) = fresh_manager();
+    let h = Harness::fresh();
+    let (manager, sessions, audit) = (&h.session_manager, &h.sessions, &h.audit);
     let user_id = UserId::new();
 
     let issued = manager
@@ -159,7 +143,8 @@ async fn create_then_validate_returns_same_session() {
 
 #[tokio::test]
 async fn revoke_deletes_session_and_emits_audit() {
-    let (manager, sessions, audit) = fresh_manager();
+    let h = Harness::fresh();
+    let (manager, sessions, audit) = (&h.session_manager, &h.sessions, &h.audit);
     let user_id = UserId::new();
 
     let issued = manager
@@ -187,19 +172,14 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
     // Cap of two: a third login evicts the user's oldest session so the new
     // one always succeeds, per-user growth is bounded, and another user is
     // untouched.
-    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
-    let clock = Arc::new(MockClock::new(ts(2026, 1, 1)));
-    let manager = SessionManager::new(
-        sessions.clone() as Arc<dyn SessionStore>,
-        clock.clone() as Arc<dyn Clock>,
-        audit.clone() as Arc<dyn AuditSink>,
-        SessionConfig {
+    let h = Harness::builder()
+        .session_config(SessionConfig {
             absolute_lifetime: Duration::from_secs(60 * 60),
             idle_timeout: None,
             max_sessions_per_user: NonZeroU32::new(2),
-        },
-    );
+        })
+        .build();
+    let (manager, sessions, audit, clock) = (&h.session_manager, &h.sessions, &h.audit, &h.clock);
 
     let alice = UserId::new();
     let bob = UserId::new();
@@ -265,7 +245,8 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
 
 #[tokio::test]
 async fn revoke_unknown_token_errors() {
-    let (manager, _, _) = fresh_manager();
+    let h = Harness::fresh();
+    let manager = &h.session_manager;
     let err = manager
         .revoke("not-a-real-token")
         .await
@@ -275,7 +256,8 @@ async fn revoke_unknown_token_errors() {
 
 #[tokio::test]
 async fn validate_unknown_token_errors() {
-    let (manager, _, _) = fresh_manager();
+    let h = Harness::fresh();
+    let manager = &h.session_manager;
     let err = manager
         .validate("not-a-real-token")
         .await
@@ -285,18 +267,8 @@ async fn validate_unknown_token_errors() {
 
 #[tokio::test]
 async fn expired_session_fails_validation_and_logs() {
-    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
-    let clock = Arc::new(MockClock::new(ts(2026, 1, 1)));
-    let manager = SessionManager::new(
-        sessions.clone() as Arc<dyn SessionStore>,
-        clock.clone() as Arc<dyn Clock>,
-        audit.clone() as Arc<dyn AuditSink>,
-        SessionConfig {
-            absolute_lifetime: Duration::from_secs(60),
-            ..SessionConfig::default()
-        },
-    );
+    let h = harness_with_lifetime(Duration::from_secs(60));
+    let (manager, audit, clock) = (&h.session_manager, &h.audit, &h.clock);
 
     let issued = manager
         .create(UserId::new(), SessionContext::default())
@@ -322,7 +294,8 @@ async fn expired_session_fails_validation_and_logs() {
 
 #[tokio::test]
 async fn revoke_by_id_removes_session() {
-    let (manager, sessions, _) = fresh_manager();
+    let h = Harness::fresh();
+    let (manager, sessions) = (&h.session_manager, &h.sessions);
     let issued = manager
         .create(UserId::new(), SessionContext::default())
         .await
@@ -337,7 +310,8 @@ async fn revoke_by_id_removes_session() {
 
 #[tokio::test]
 async fn revoke_all_for_user_clears_only_that_user() {
-    let (manager, sessions, _) = fresh_manager();
+    let h = Harness::fresh();
+    let (manager, sessions) = (&h.session_manager, &h.sessions);
     let alice = UserId::new();
     let bob = UserId::new();
 
@@ -371,18 +345,8 @@ async fn revoke_all_for_user_clears_only_that_user() {
 
 #[tokio::test]
 async fn list_for_user_returns_only_active_sessions_for_that_user() {
-    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
-    let clock = Arc::new(MockClock::new(ts(2026, 1, 1)));
-    let manager = SessionManager::new(
-        sessions.clone() as Arc<dyn SessionStore>,
-        clock.clone() as Arc<dyn Clock>,
-        audit.clone() as Arc<dyn AuditSink>,
-        SessionConfig {
-            absolute_lifetime: Duration::from_secs(60),
-            ..SessionConfig::default()
-        },
-    );
+    let h = harness_with_lifetime(Duration::from_secs(60));
+    let (manager, clock) = (&h.session_manager, &h.clock);
 
     let alice = UserId::new();
     let bob = UserId::new();
@@ -428,18 +392,8 @@ async fn list_for_user_returns_only_active_sessions_for_that_user() {
 
 #[tokio::test]
 async fn purge_expired_deletes_only_expired() {
-    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-    let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
-    let clock = Arc::new(MockClock::new(ts(2026, 1, 1)));
-    let manager = SessionManager::new(
-        sessions.clone() as Arc<dyn SessionStore>,
-        clock.clone() as Arc<dyn Clock>,
-        audit.clone() as Arc<dyn AuditSink>,
-        SessionConfig {
-            absolute_lifetime: Duration::from_secs(60),
-            ..SessionConfig::default()
-        },
-    );
+    let h = harness_with_lifetime(Duration::from_secs(60));
+    let (manager, sessions, clock) = (&h.session_manager, &h.sessions, &h.clock);
 
     let short = manager
         .create(UserId::new(), SessionContext::default())
@@ -542,148 +496,6 @@ async fn email_sender_captures_messages() {
     };
     sender.send(email.clone()).await.expect("send");
     assert_eq!(sender.sent(), vec![email]);
-}
-
-#[derive(Debug, Default)]
-struct RecordingHook {
-    sessions: Mutex<Vec<SessionId>>,
-    users: Mutex<Vec<UserId>>,
-}
-
-#[async_trait]
-impl SessionInvalidationHook for RecordingHook {
-    async fn on_session_invalidated(&self, session_id: SessionId) {
-        self.sessions
-            .lock()
-            .expect("hook session lock")
-            .push(session_id);
-    }
-
-    async fn on_user_sessions_invalidated(&self, user_id: UserId) {
-        self.users.lock().expect("hook user lock").push(user_id);
-    }
-}
-
-#[tokio::test]
-async fn revoke_notifies_invalidation_hook_with_session_id() {
-    let (manager, _, _) = fresh_manager();
-    let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
-    let manager = manager.with_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
-
-    let issued = manager
-        .create(UserId::new(), SessionContext::default())
-        .await
-        .expect("create");
-    manager.revoke(&issued.token).await.expect("revoke");
-
-    assert_eq!(
-        *hook.sessions.lock().expect("read"),
-        vec![issued.session.id],
-        "revoke fires per-session hook"
-    );
-    assert!(
-        hook.users.lock().expect("read").is_empty(),
-        "no user-level hook on single revoke"
-    );
-}
-
-#[tokio::test]
-async fn revoke_by_id_notifies_invalidation_hook() {
-    let (manager, _, _) = fresh_manager();
-    let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
-    let manager = manager.with_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
-
-    let issued = manager
-        .create(UserId::new(), SessionContext::default())
-        .await
-        .expect("create");
-    manager
-        .revoke_by_id(issued.session.id)
-        .await
-        .expect("revoke_by_id");
-
-    assert_eq!(
-        *hook.sessions.lock().expect("read"),
-        vec![issued.session.id]
-    );
-}
-
-#[tokio::test]
-async fn revoke_all_for_user_notifies_user_hook() {
-    let (manager, _, _) = fresh_manager();
-    let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
-    let manager = manager.with_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
-
-    let alice = UserId::new();
-    manager
-        .create(alice, SessionContext::default())
-        .await
-        .expect("alice 1");
-    manager
-        .create(alice, SessionContext::default())
-        .await
-        .expect("alice 2");
-
-    let removed = manager
-        .revoke_all_for_user(alice)
-        .await
-        .expect("revoke_all");
-    assert_eq!(removed, 2);
-
-    assert_eq!(
-        *hook.users.lock().expect("read"),
-        vec![alice],
-        "delete_sessions_for_user fires user-level hook"
-    );
-    assert!(
-        hook.sessions.lock().expect("read").is_empty(),
-        "bulk revoke does not iterate per session"
-    );
-}
-
-#[tokio::test]
-async fn invalidation_hook_install_order_does_not_matter() {
-    // The hook lives in a cell shared by every clone, so installing it is
-    // visible to clones taken *before* the install as well as after. A
-    // framework cache wired in after the dependent managers were cloned must
-    // still be evicted on revoke — install order cannot break invalidation.
-    let (manager, _, _) = fresh_manager();
-    let early_clone = manager.clone();
-
-    let hook: Arc<RecordingHook> = Arc::new(RecordingHook::default());
-    // Install on the original *after* the clone was taken.
-    manager.set_invalidation_hook(hook.clone() as Arc<dyn SessionInvalidationHook>);
-
-    // Revoking through the clone taken before the install still fires the hook.
-    let issued = early_clone
-        .create(UserId::new(), SessionContext::default())
-        .await
-        .expect("create");
-    early_clone
-        .revoke(&issued.token)
-        .await
-        .expect("revoke via early clone");
-    assert_eq!(
-        *hook.sessions.lock().expect("read"),
-        vec![issued.session.id],
-        "clone taken before the hook was installed still observes invalidation"
-    );
-
-    // And a clone taken after the install shares the same hook.
-    let late_clone = manager.clone();
-    let issued = late_clone
-        .create(UserId::new(), SessionContext::default())
-        .await
-        .expect("create");
-    late_clone
-        .revoke(&issued.token)
-        .await
-        .expect("revoke via late clone");
-    assert_eq!(
-        hook.sessions.lock().expect("read").len(),
-        2,
-        "clones taken after the install share the hook too"
-    );
 }
 
 #[tokio::test]

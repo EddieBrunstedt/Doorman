@@ -96,15 +96,17 @@ impl AccountManager {
     /// Build an `AccountManager` from the shared [`CoreDeps`] context and the
     /// [`AccountConfig`]. The collaborators (stores, session manager, clock,
     /// audit, email transport, re-auth manager) are read from `deps` so they
-    /// are named once
-    /// at the composition root.
+    /// are named once at the composition root.
     ///
     /// Returns [`AssemblyError::InvalidUrlTemplate`] or
     /// [`AssemblyError::PlaceholderUrlTemplate`] for an unusable
     /// [`url_template`](AccountConfig::url_template), and
     /// [`AssemblyError::InvalidLifetime`] for an out-of-bounds
     /// [`token_lifetime`](AccountConfig::token_lifetime).
-    pub fn new(deps: &CoreDeps, config: AccountConfig) -> std::result::Result<Self, AssemblyError> {
+    pub(crate) fn new(
+        deps: &CoreDeps,
+        config: AccountConfig,
+    ) -> std::result::Result<Self, AssemblyError> {
         let link = EmailedLink::new(
             deps.verification_tokens.clone(),
             Redeemer::from_deps(deps),

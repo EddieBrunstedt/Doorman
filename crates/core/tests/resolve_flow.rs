@@ -14,7 +14,6 @@ use doorman_core::audit::OperatorActor;
 use doorman_core::cache::SessionCacheConfig;
 use doorman_core::clock::Clock;
 use doorman_core::metrics::MetricEvent;
-use doorman_core::resolve::SessionResolver;
 use doorman_core::session::{SessionConfig, SessionContext, hash_token};
 use doorman_core::storage::{AccountStatus, SessionStore, User, UserStore};
 
@@ -334,17 +333,15 @@ async fn validate_does_not_slide() {
 
 #[test]
 fn cache_ttl_must_be_strictly_below_the_idle_timeout() {
-    let h = sliding_harness();
     let idle = Duration::from_secs(60 * 10);
     let build = |ttl| {
-        SessionResolver::new(
-            h.session_manager.clone(),
-            h.users.clone() as Arc<dyn UserStore>,
-            SessionCacheConfig {
+        Harness::builder()
+            .session_config(sliding_config())
+            .cache_config(SessionCacheConfig {
                 ttl,
                 ..SessionCacheConfig::default()
-            },
-        )
+            })
+            .try_build()
     };
 
     let err = build(idle).err();
@@ -357,14 +354,11 @@ fn cache_ttl_must_be_strictly_below_the_idle_timeout() {
 
 #[test]
 fn without_an_idle_timeout_any_ttl_is_accepted() {
-    let h = Harness::fresh();
-    let resolver = SessionResolver::new(
-        h.session_manager.clone(),
-        h.users.clone() as Arc<dyn UserStore>,
-        SessionCacheConfig {
+    let built = Harness::builder()
+        .cache_config(SessionCacheConfig {
             ttl: Duration::from_secs(60 * 60 * 24),
             ..SessionCacheConfig::default()
-        },
-    );
-    assert!(resolver.is_ok());
+        })
+        .try_build();
+    assert!(built.is_ok());
 }

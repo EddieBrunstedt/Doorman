@@ -11,8 +11,8 @@
 //! The cache is owned by the [`SessionResolver`], which constructs one,
 //! installs its invalidator on the [`SessionManager`], and is the only code
 //! that reads or seeds entries on the request path. Core learns about
-//! revocations through the [`SessionInvalidationHook`] trait and the
-//! cache-flushing implementation returned by [`SessionCache::invalidator`].
+//! revocations through the session manager's invalidation hook, which the
+//! resolver points at this cache.
 //!
 //! ## Invalidation
 //!
@@ -43,7 +43,6 @@
 //! [`SessionManager::revoke`]: crate::session::SessionManager::revoke
 //! [`revoke_by_id`]: crate::session::SessionManager::revoke_by_id
 //! [`SessionManager::revoke_all_for_user`]: crate::session::SessionManager::revoke_all_for_user
-//! [`SessionInvalidationHook`]: crate::session::SessionInvalidationHook
 //! [`SessionConfig::absolute_lifetime`]: crate::session::SessionConfig::absolute_lifetime
 
 use std::num::NonZeroUsize;
@@ -116,11 +115,12 @@ struct Shard {
     inner: Mutex<LruCache<TokenHash, Entry>>,
 }
 
-/// Process-local session-resolution cache. Exposed so advanced hosts and
-/// benches can poke at it directly; the canonical owner is the
+/// Process-local session-resolution cache. Owned by the
 /// [`SessionResolver`](crate::resolve::SessionResolver), which constructs one
-/// and installs its invalidator on the `SessionManager`. Cheaply cloneable
-/// because all state lives behind `Arc`.
+/// and installs its invalidator on the `SessionManager`; reach it through
+/// [`SessionResolver::cache`](crate::resolve::SessionResolver::cache) to
+/// inspect or flush it. Cheaply cloneable because all state lives behind
+/// `Arc`.
 #[derive(Clone)]
 pub struct SessionCache {
     shards: Arc<[Shard; SHARD_COUNT]>,
@@ -132,7 +132,7 @@ impl SessionCache {
     /// Build a sharded session cache from the given capacity/TTL config.
     /// Entry freshness is measured on `clock`, the same domain clock the
     /// session manager judges expiry by.
-    pub fn new(config: SessionCacheConfig, clock: Arc<dyn Clock>) -> Self {
+    pub(crate) fn new(config: SessionCacheConfig, clock: Arc<dyn Clock>) -> Self {
         // Divide the configured capacity across the shards, keeping at least
         // one slot per shard so a tiny configured capacity still functions.
         let per_shard = NonZeroUsize::new(config.capacity.get().div_ceil(SHARD_COUNT))
@@ -187,7 +187,7 @@ impl SessionCache {
     }
 
     /// Cache a freshly-resolved session/user pair under its token hash.
-    pub fn insert(&self, token_hash: TokenHash, session: Arc<Session>, user: Arc<User>) {
+    pub(crate) fn insert(&self, token_hash: TokenHash, session: Arc<Session>, user: Arc<User>) {
         let entry = Entry {
             cached: Arc::new(CachedAuth { session, user }),
             inserted_at: self.clock.now(),
@@ -231,16 +231,14 @@ impl SessionCache {
 
     /// `SessionInvalidationHook` handle that flushes matching entries from
     /// this cache. Install it on the [`SessionManager`] via
-    /// [`SessionManager::with_invalidation_hook`] /
     /// [`set_invalidation_hook`]; because the manager shares its hook across
     /// every clone, the order of installation relative to constructing the
     /// dependent managers (passkey / signup) does not matter — every clone
     /// evicts the cache when it invalidates a session.
     ///
     /// [`SessionManager`]: crate::session::SessionManager
-    /// [`SessionManager::with_invalidation_hook`]: crate::session::SessionManager::with_invalidation_hook
     /// [`set_invalidation_hook`]: crate::session::SessionManager::set_invalidation_hook
-    pub fn invalidator(&self) -> Arc<dyn SessionInvalidationHook> {
+    pub(crate) fn invalidator(&self) -> Arc<dyn SessionInvalidationHook> {
         Arc::new(CacheInvalidator::new(self.clone()))
     }
 

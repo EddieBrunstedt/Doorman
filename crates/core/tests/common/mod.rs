@@ -11,10 +11,6 @@
 //! `SoftPasskey` cannot mint resident keys, so it verifies doorman's
 //! server-issued options, then relaxes only the local input and records
 //! the credential as if it were discoverable.
-//!
-//! `session_flow` is intentionally not built on this harness — it
-//! exercises `SessionManager` in isolation with its own bespoke setup and
-//! shares none of this scaffolding.
 
 #![allow(dead_code)]
 

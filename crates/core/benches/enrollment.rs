@@ -16,99 +16,15 @@
 //! cargo bench -p doorman-core --bench enrollment
 //! ```
 
-use std::sync::Arc;
-use std::time::Duration;
+mod support;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use doorman_core::audit::{AuditSink, NoopAuditSink};
-use doorman_core::clock::{Clock, SystemClock};
-use doorman_core::context::CoreDeps;
-use doorman_core::email::{DefaultEmailTemplates, EmailSender, SecurityEmailNotifier};
-use doorman_core::memory::{
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
-    InMemoryUserStore, InMemoryVerificationTokenStore,
-};
-use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
-use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
-use doorman_core::reauth::{ReauthManager, ReauthPolicy};
-use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
-use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
-use doorman_core::storage::{SessionStore, Storage};
-use doorman_core::verification::EnrollmentFlow;
-use doorman_test_support::CapturingEmailSender;
+use doorman_core::session::SessionContext;
+use doorman_core::signup::SignupManager;
 use tokio::runtime::Runtime;
-use url::Url;
 
 fn signup_manager() -> SignupManager {
-    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-    let users: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
-    let tokens: Arc<InMemoryVerificationTokenStore> =
-        Arc::new(InMemoryVerificationTokenStore::new());
-    let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-    let credentials: Arc<InMemoryPasskeyCredentialStore> =
-        Arc::new(InMemoryPasskeyCredentialStore::new());
-    let challenges: Arc<InMemoryPasskeyChallengeStore> =
-        Arc::new(InMemoryPasskeyChallengeStore::new());
-    let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
-
-    let session_manager = SessionManager::new(
-        sessions.clone() as Arc<dyn SessionStore>,
-        clock.clone(),
-        audit.clone(),
-        SessionConfig {
-            absolute_lifetime: Duration::from_secs(60 * 60),
-            ..SessionConfig::default()
-        },
-    );
-
-    let storage = Storage {
-        users,
-        sessions,
-        verification_tokens: tokens,
-        passkey_credentials: credentials.clone(),
-        passkey_challenges: challenges.clone(),
-    };
-    let email = email as Arc<dyn EmailSender>;
-    let emails = Arc::new(DefaultEmailTemplates);
-    let notifier = SecurityEmailNotifier::new(email.clone(), emails.clone());
-    let passkey_config = PasskeyConfig::new(
-        "localhost",
-        Url::parse("http://localhost:8080").expect("rp origin"),
-        "doorman bench",
-    );
-    let reauth = ReauthManager::new(
-        &passkey_config,
-        &storage,
-        clock.clone(),
-        audit.clone(),
-        ReauthPolicy::disabled(),
-    )
-    .expect("build reauth manager");
-    let deps = CoreDeps::new(
-        clock,
-        audit,
-        email,
-        emails,
-        notifier,
-        Arc::new(NoopRateLimiter) as Arc<dyn RateLimiter>,
-        session_manager,
-        reauth,
-        storage,
-    );
-
-    let passkey = PasskeyManager::new(&deps, passkey_config).expect("build passkey manager");
-
-    let flow = EnrollmentFlow::new(&deps, passkey);
-    SignupManager::new(
-        flow,
-        SignupConfig {
-            url_template: "https://app.test/signup?token={token}".to_string(),
-            rate_limits: SignupRateLimits::disabled(),
-            ..SignupConfig::default()
-        },
-    )
-    .expect("build signup manager")
+    support::in_memory_core().signup
 }
 
 fn enrollment(c: &mut Criterion) {

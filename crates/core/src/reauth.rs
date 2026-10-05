@@ -174,9 +174,8 @@ pub struct ReauthProof {
 /// across ceremonies (the per-ceremony state lives in the serialized
 /// challenge), so building a second handle from the same [`PasskeyConfig`] the
 /// [`PasskeyManager`](crate::passkey::PasskeyManager) uses is functionally
-/// equivalent to sharing one — and it keeps this manager constructible from the
-/// shared [`CoreDeps`](crate::context::CoreDeps) bundle without threading the
-/// handle out of the passkey manager. The single source of truth for the
+/// equivalent to sharing one — and it lets the assembly builder construct this
+/// manager before the passkey manager without threading the handle out of it. The single source of truth for the
 /// relying-party id / origin remains the one [`PasskeyConfig`].
 #[derive(Clone)]
 pub struct ReauthManager {
@@ -197,10 +196,9 @@ impl ReauthManager {
     /// `webauthn-rs` handle (and to read the challenge lifetime); supply the
     /// same config the [`PasskeyManager`](crate::passkey::PasskeyManager) is
     /// built with. Challenges and credentials are read from `storage`. The
-    /// [`ReauthPolicy`] is a **required** argument — there is no default, so a
-    /// low-level host that wires managers by hand cannot silently skip the
-    /// decision.
-    pub fn new(
+    /// [`ReauthPolicy`] is a **required** argument — there is no default; the
+    /// assembly builder refuses to build until the host decides.
+    pub(crate) fn new(
         config: &PasskeyConfig,
         storage: &Storage,
         clock: Arc<dyn Clock>,
