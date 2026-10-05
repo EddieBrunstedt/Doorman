@@ -277,7 +277,7 @@ doorman is batteries-included and Axum-first. The auth engine and its assembly l
 ```text
 crates/doorman/         umbrella crate re-exporting the others behind features
 crates/core/            framework-agnostic managers, storage traits, email/audit/rate-limit/metrics traits
-crates/axum/            Axum router, extractors, session layer, CSRF layer
+crates/axum/            Axum router, extractors, session layer with CSRF check
 crates/sqlx/            SQLite / Postgres / MySQL / MariaDB storage adapter
 crates/redis/           Redis/Valkey ephemeral stores + shared rate limiter
 crates/dynamodb/        Amazon DynamoDB storage adapter

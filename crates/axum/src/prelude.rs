@@ -15,7 +15,7 @@
 pub use doorman_core::prelude::*;
 
 pub use crate::config::CookieConfig;
-pub use crate::csrf::{CsrfConfig, CsrfLayer};
+pub use crate::csrf::CsrfConfig;
 pub use crate::dto::{AuthResponse, PasskeyDto, SessionDto, UserDto};
 pub use crate::error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use crate::extractors::{AuthSession, AuthUser, ClientIp, OptionalAuthUser, RequestContext};

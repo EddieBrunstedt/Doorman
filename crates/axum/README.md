@@ -1,6 +1,6 @@
 # doorman-axum
 
-Axum HTTP integration for [doorman](../../README.md): the `AuthService` router, session-loading layer, `AuthUser` / `OptionalAuthUser` / `AuthSession` extractors, CSRF layer, and the `AuthServiceBuilder` that adds the cookie and CSRF settings to an `AuthCore` assembled by [`doorman-core`](../core).
+Axum HTTP integration for [doorman](../../README.md): the `AuthService` router, session-loading layer (which also runs the CSRF origin check), `AuthUser` / `OptionalAuthUser` / `AuthSession` extractors, and the `AuthServiceBuilder` that adds the cookie and CSRF settings to an `AuthCore` assembled by [`doorman-core`](../core).
 
 This is the supported user-facing integration. Hand `AuthCore::builder` a `Storage` value (e.g. from [`doorman-sqlx`](../sqlx)) and configure the relying party, email transport, and flows; pass the built core to `AuthService::builder` for the HTTP settings; mount `auth.router()`; and apply `auth.session_layer()`.
 

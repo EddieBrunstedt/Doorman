@@ -70,7 +70,7 @@ doorman-core is framework-agnostic. It defines the behaviour as **managers** (`S
 | `Clock`                                                                                                  | Supply "now" (real or mocked in tests).                                                |
 | `SignupPolicy`                                                                                           | Gate whether a signup attempt may proceed (allowlist / invite-only). Defaults to open. |
 
-First-party adapters implement the five storage traits: `doorman-sqlx` (SQLite, Postgres, MySQL/MariaDB), `doorman-dynamodb`, `doorman-mongodb`, `doorman-redb`, and `doorman-redis` (ephemeral stores only). `doorman-axum` wires the managers behind an HTTP router, extractors, a session layer, and a CSRF layer. See [integration.md](integration.md) for how to plug in your own implementations.
+First-party adapters implement the five storage traits: `doorman-sqlx` (SQLite, Postgres, MySQL/MariaDB), `doorman-dynamodb`, `doorman-mongodb`, `doorman-redb`, and `doorman-redis` (ephemeral stores only). `doorman-axum` wires the managers behind an HTTP router, extractors, and a session layer that also runs the CSRF origin check. See [integration.md](integration.md) for how to plug in your own implementations.
 
 ## Single tenant
 

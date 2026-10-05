@@ -125,7 +125,7 @@ The challenge is scoped to the session user's own credentials (the allow-list-sc
 - The cleartext bearer token is **redacted from `Debug`**. The types that briefly carry it — `IssuedSession` in the core, `AuthSession` and `AuthResponse` in `doorman-axum` — render the field as `<redacted>`, so an accidental `tracing::debug!(?session)` cannot spill a live credential into logs. Serialization (the JSON response body) is unaffected; only `Debug` is redacted.
 - Expiry is enforced server-side.
 - Revocation is immediate because sessions are opaque server-side rows, not self-contained bearer claims.
-- The Axum layer accepts either the HttpOnly cookie or an `Authorization: Bearer` token, parsed through one shared bearer-token helper so the session and CSRF layers agree on what counts as bearer auth.
+- The Axum layer accepts either the HttpOnly cookie or an `Authorization: Bearer` token, parsed through one shared bearer-token helper so session resolution and the CSRF check agree on what counts as bearer auth.
 
 **In-memory secret zeroization is a deliberate non-goal.** doorman does not scrub cleartext tokens from memory on drop (no `zeroize`). A freshly minted bearer token necessarily propagates into buffers the library does not own — the JSON response body, the `Set-Cookie` header, the runtime's TLS/socket buffers — so zeroizing only the library's own copy would leave the same secret resident elsewhere and buy partial, easily-overstated coverage at the cost of a `zeroize` type in the public API. The load-bearing controls are the ones above: hash-at-rest (a memory or database snapshot yields no usable token), constant-time comparison, redacted `Debug`, single-use semantics, and high entropy. A host with a hard in-memory-secret-scrubbing requirement is operating a threat model (defending against a same-host memory-disclosure attacker) that this paragraph and the "compromised host process" exclusion in the threat model place out of scope.
 
@@ -133,7 +133,7 @@ On the DynamoDB adapter, bulk revocation — "log out everywhere", "sign out eve
 
 ## CSRF and cookies
 
-For browser cookie flows, keep the default CSRF layer enabled. When `external_origin` is configured, mutating requests that carry the session cookie must present a matching `Origin` header or, if `Origin` is absent, a matching `Referer` origin. The check **fails closed**: an unsafe-method cookie request with neither header is rejected.
+For browser cookie flows, keep the session layer's CSRF origin check enabled. When `external_origin` is configured, mutating requests that carry the session cookie must present a matching `Origin` header or, if `Origin` is absent, a matching `Referer` origin. The check **fails closed**: an unsafe-method cookie request with neither header is rejected.
 
 Set session cookies with `HttpOnly`, `Secure` outside local HTTP development, `SameSite=Lax`, and `Path=/` unless you intentionally scope them tighter. Avoid a `Domain` attribute unless cross-subdomain sessions are required. A `__Host-`/`__Secure-` cookie name is validated at build time to imply the matching `Secure`/path/domain attributes.
 

@@ -80,7 +80,7 @@ pub use doorman_core as core;
 pub use builder::{AuthServiceBuilder, BuilderError};
 pub use cache::{DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, SessionCache, SessionCacheConfig};
 pub use config::CookieConfig;
-pub use csrf::{CsrfConfig, CsrfLayer};
+pub use csrf::CsrfConfig;
 pub use error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use extractors::{AuthSession, AuthUser, ClientIp, OptionalAuthUser, RequestContext};
 pub use session::{AuthContext, SessionLayer};

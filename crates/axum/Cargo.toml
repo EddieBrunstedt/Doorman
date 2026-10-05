@@ -34,8 +34,8 @@ http = "1"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# The `SessionLayer` / `CsrfLayer` middleware implement the `Layer` / `Service`
-# traits directly from these thin trait-only crates; the full `tower` crate is a
+# The `SessionLayer` middleware implements the `Layer` / `Service` traits
+# directly from these thin trait-only crates; the full `tower` crate is a
 # dev-dependency, used only by the benches.
 tower-layer = "0.3"
 tower-service = "0.3"

@@ -110,9 +110,9 @@ A typical local flow: `--save-baseline before`, make a change, `--baseline befor
 | `request_path`  | `layer_no_auth`            | An unauthenticated request through the layer — its fixed cost on traffic carrying no session.                                                                              |
 | `concurrency`   | `cache_hit`                | 32 concurrent `SessionCache::get` hits across distinct keys on a fixed 4-worker runtime — characterizes the sharded cache lock under fan-out.                              |
 | `concurrency`   | `validate`                 | 32 concurrent `SessionManager::validate_by_hash` calls against the in-memory store with no cache — characterizes the reference store's read lock under fan-out.            |
-| `parsing`       | `csrf/same_origin_allow`   | `CsrfLayer` decision on a same-origin cookie POST: parse `Cookie` + `Origin`, then call the inner service.                                                                 |
-| `parsing`       | `csrf/cross_origin_reject` | The CSRF decision on a cross-origin cookie POST: parse and short-circuit with a rejection.                                                                                 |
-| `parsing`       | `csrf/bearer_bypass`       | The CSRF decision when an `Authorization: Bearer` header is present: the bearer parse skips the origin check.                                                              |
+| `parsing`       | `csrf/same_origin_allow`   | The `SessionLayer` CSRF decision on a same-origin cookie POST: parse `Cookie` + `Origin`, then resolve the cached session and call the route.                              |
+| `parsing`       | `csrf/cross_origin_reject` | The CSRF decision on a cross-origin cookie POST: parse and short-circuit with a rejection before any session resolution.                                                   |
+| `parsing`       | `csrf/bearer_bypass`       | The CSRF decision when an `Authorization: Bearer` header is present: the bearer parse skips the origin check, then the cached session resolves.                            |
 
 ### `doorman-sqlx` — storage adapters
 
@@ -136,4 +136,4 @@ SQLite runs against an ephemeral `sqlite::memory:` database and is always enable
 - **Allowed vs limited** (`rate_limit`) shows the limiter's cost in both regimes.
 - **With vs without crypto**: `passkey_authenticate`/`passkey_finish` dwarf the other core paths — WebAuthn signature verification dominates login latency. `passkey_finish` isolates the server-side verify from the ceremony setup.
 - **In-memory vs SQLite vs Postgres**: compare the `doorman-sqlx` dialect groups against the `doorman-core` `session` baseline for adapter overhead, and read the scaling ids to see how lookups and listing grow with table size.
-- **Parsing overhead** (`parsing`) shows the fixed per-request cookie/header parsing cost the CSRF layer adds to state-changing requests.
+- **Parsing overhead** (`parsing`) shows the per-request cookie/header parsing cost the CSRF check adds to state-changing requests. Its allowed paths include a cached session resolution; compare them with `request_path/me_cached` to separate the two.

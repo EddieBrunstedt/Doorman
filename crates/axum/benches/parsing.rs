@@ -1,18 +1,21 @@
 //! Request-header parsing microbenches on the CSRF decision path.
 //!
-//! Every state-changing request runs through [`CsrfLayer`], whose decision
-//! parses the `Cookie` header (to detect an ambient session), the
-//! `Authorization` header (to detect a bearer bypass), and the `Origin` /
-//! `Referer` headers (to check same-origin). These benches isolate that
-//! parsing cost from the rest of the request path by driving the layer with a
-//! trivial inner service:
+//! Every state-changing request runs through the CSRF origin check inside
+//! `SessionLayer`, whose decision parses the `Cookie` header (to detect an
+//! ambient session), the `Authorization` header (to detect a bearer bypass),
+//! and the `Origin` / `Referer` headers (to check same-origin). These benches
+//! drive the real layer with a trivial route behind it, over the in-memory
+//! stores with the session cache warm:
 //!
 //! - `same_origin_allow` — cookie + matching `Origin`: parses the cookie and
-//!   origin, then calls the inner service.
+//!   origin, then resolves the (cached) session and calls the route.
 //! - `cross_origin_reject` — cookie + mismatched `Origin`: parses both and
-//!   short-circuits with a rejection.
-//! - `bearer_bypass` — cookie + `Authorization: Bearer`: the bearer parse wins
-//!   and the request skips the origin check entirely.
+//!   short-circuits with a rejection before any session resolution.
+//! - `bearer_bypass` — cookie + `Authorization: Bearer`: the bearer parse wins,
+//!   the request skips the origin check, and the (cached) session resolves.
+//!
+//! The two allowed paths include a cached session resolution; compare them
+//! against `request_path/me_cached` to separate the parsing cost from it.
 //!
 //! Run with:
 //!
@@ -20,37 +23,126 @@
 //! cargo bench -p doorman-axum --bench parsing
 //! ```
 
-use std::convert::Infallible;
+use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::routing::post;
 use criterion::{Criterion, criterion_group, criterion_main};
-use doorman_axum::{CsrfConfig, CsrfLayer};
+use doorman_axum::AuthService;
+use doorman_axum::config::CookieConfig;
+use doorman_axum::csrf::CsrfConfig;
+use doorman_core::account::AccountConfig;
+use doorman_core::assembly::AuthCore;
+use doorman_core::audit::NoopAuditSink;
+use doorman_core::clock::SystemClock;
+use doorman_core::email::EmailSender;
+use doorman_core::memory::{
+    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemoryRateLimiter,
+    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
+};
+use doorman_core::passkey::PasskeyConfig;
+use doorman_core::recovery::RecoveryConfig;
+use doorman_core::session::SessionContext;
+use doorman_core::signup::SignupConfig;
+use doorman_core::storage::{AccountStatus, Storage, User, UserId, UserStore};
+use doorman_test_support::CapturingEmailSender;
 use tokio::runtime::Runtime;
-use tower::{Layer, ServiceExt, service_fn};
+use tower::ServiceExt;
 use url::Url;
 
 const SESSION_COOKIE: &str = "doorman_session";
 const APP_ORIGIN: &str = "https://app.test";
 
-/// A representative `Cookie` header carrying the session plus a couple of
-/// unrelated pairs, so the parse does real splitting work.
-fn cookie_header() -> HeaderValue {
-    HeaderValue::from_static("theme=dark; doorman_session=session-token-value; locale=en-US")
+/// Build a router with CSRF checks enabled for [`APP_ORIGIN`] and a seeded
+/// live session, returning it with the session's token.
+async fn build_router() -> (Router, String) {
+    let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
+    let storage = Storage {
+        users: user_store.clone(),
+        sessions: Arc::new(InMemorySessionStore::new()),
+        verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
+        passkey_credentials: Arc::new(InMemoryPasskeyCredentialStore::new()),
+        passkey_challenges: Arc::new(InMemoryPasskeyChallengeStore::new()),
+    };
+
+    let rp_origin = Url::parse(APP_ORIGIN).expect("rp origin");
+    let core = AuthCore::builder(storage)
+        .email(Arc::new(CapturingEmailSender::new()) as Arc<dyn EmailSender>)
+        .passkey(PasskeyConfig::new(
+            "app.test",
+            rp_origin.clone(),
+            "doorman bench",
+        ))
+        .reauthentication(doorman_core::reauth::ReauthPolicy::disabled())
+        .audit(Arc::new(NoopAuditSink))
+        .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
+        .signup(SignupConfig {
+            url_template: "https://app.test/signup?token={token}".to_string(),
+            ..SignupConfig::default()
+        })
+        .recovery(RecoveryConfig {
+            url_template: "https://app.test/recovery?token={token}".to_string(),
+            ..RecoveryConfig::default()
+        })
+        .account(AccountConfig {
+            url_template: "https://app.test/email-change?token={token}".to_string(),
+            ..AccountConfig::default()
+        })
+        .build()
+        .expect("auth core built");
+    let auth = AuthService::builder(core)
+        .csrf(CsrfConfig::new(rp_origin))
+        .cookie(CookieConfig {
+            session_cookie_name: SESSION_COOKIE.to_string(),
+            ..CookieConfig::default()
+        })
+        .build()
+        .expect("auth built");
+
+    let now = chrono::Utc::now();
+    let user = User {
+        id: UserId::new(),
+        email: Some("bench@example.com".into()),
+        email_verified_at: Some(now),
+        status: AccountStatus::Active,
+        created_at: now,
+        updated_at: now,
+    };
+    let user_id = user.id;
+    user_store.create_user(user).await.expect("create user");
+    let token = auth
+        .state()
+        .session_manager()
+        .create(user_id, SessionContext::default())
+        .await
+        .expect("create session")
+        .token;
+
+    let router = Router::new()
+        .route("/mutate", post(|| async { StatusCode::OK }))
+        .layer(auth.session_layer());
+    (router, token)
 }
 
-/// Build the header set for one scenario.
-fn headers(origin: Option<&'static str>, bearer: bool) -> HeaderMap {
+/// Build the header set for one scenario. The `Cookie` header carries the
+/// session plus a couple of unrelated pairs, so the parse does real splitting
+/// work.
+fn headers(token: &str, origin: Option<&'static str>, bearer: bool) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    headers.insert(header::COOKIE, cookie_header());
+    let cookie = format!("theme=dark; {SESSION_COOKIE}={token}; locale=en-US");
+    headers.insert(
+        header::COOKIE,
+        HeaderValue::from_str(&cookie).expect("cookie header"),
+    );
     if let Some(origin) = origin {
         headers.insert(header::ORIGIN, HeaderValue::from_static(origin));
     }
     if bearer {
         headers.insert(
             header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer some-opaque-bearer-token"),
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("bearer header"),
         );
     }
     headers
@@ -60,51 +152,52 @@ fn headers(origin: Option<&'static str>, bearer: bool) -> HeaderMap {
 fn request(template: &HeaderMap) -> Request<Body> {
     let mut req = Request::new(Body::empty());
     *req.method_mut() = Method::POST;
+    *req.uri_mut() = "/mutate".parse().expect("uri");
     *req.headers_mut() = template.clone();
     req
 }
 
 fn csrf_parsing(c: &mut Criterion) {
     let runtime = Runtime::new().expect("tokio runtime");
-
-    let inner = service_fn(|_req: Request<Body>| async {
-        Ok::<Response, Infallible>(StatusCode::OK.into_response())
-    });
-    let layer = CsrfLayer::new(
-        CsrfConfig::new(Url::parse(APP_ORIGIN).expect("origin")),
-        SESSION_COOKIE,
-    );
-    let service = layer.layer(inner);
-
-    let mut group = c.benchmark_group("csrf");
+    let (router, token) = runtime.block_on(build_router());
 
     let scenarios: [(&str, HeaderMap, StatusCode); 3] = [
         (
             "same_origin_allow",
-            headers(Some(APP_ORIGIN), false),
+            headers(&token, Some(APP_ORIGIN), false),
             StatusCode::OK,
         ),
         (
             "cross_origin_reject",
-            headers(Some("https://evil.test"), false),
+            headers(&token, Some("https://evil.test"), false),
             StatusCode::FORBIDDEN,
         ),
-        ("bearer_bypass", headers(None, true), StatusCode::OK),
+        ("bearer_bypass", headers(&token, None, true), StatusCode::OK),
     ];
 
+    // Warm the session cache so the allowed paths measure a cached resolve.
+    runtime.block_on(async {
+        let response = router
+            .clone()
+            .oneshot(request(&scenarios[0].1))
+            .await
+            .expect("warm request");
+        assert_eq!(response.status(), StatusCode::OK);
+    });
+
+    let mut group = c.benchmark_group("csrf");
     for (name, template, expected) in scenarios {
         group.bench_function(name, |b| {
             b.to_async(&runtime).iter(|| {
-                let service = service.clone();
+                let router = router.clone();
                 let req = request(&template);
                 async move {
-                    let response = service.oneshot(req).await.expect("csrf service");
+                    let response = router.oneshot(req).await.expect("csrf request");
                     assert_eq!(response.status(), expected);
                 }
             });
         });
     }
-
     group.finish();
 }
 

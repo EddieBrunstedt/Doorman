@@ -9,7 +9,7 @@ Running doorman in production: purging expired rows, configuration, rate limitin
 - Replace `TerminalEmailSender` / `FileEmailSender` with a real `EmailSender`.
 - Wire a durable `AuditSink`, or pass `NoopAuditSink` explicitly to discard security events.
 - Wire a shared `RateLimiter`; `InMemoryRateLimiter` is per-process only, and `NoopRateLimiter` disables enforcement.
-- Set `external_origin` to the exact public origin (enables the CSRF layer for browser cookie flows), or opt out with `CsrfConfig::disabled()`.
+- Set `external_origin` to the exact public origin (enables the session layer's CSRF origin check for browser cookie flows), or opt out with `CsrfConfig::disabled()`.
 - Set real signup / recovery / account URL templates; the stock `example.invalid` placeholders are rejected.
 - Keep secure, HttpOnly, SameSite session cookies outside local HTTP dev.
 - Run storage migrations before serving traffic.

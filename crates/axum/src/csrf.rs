@@ -1,26 +1,18 @@
-//! CSRF origin-check middleware.
+//! CSRF origin check.
 //!
 //! Cookie-backed sessions are ambient authority: a browser will attach the
 //! session cookie to a cross-site form POST unless the application rejects
-//! the request. [`CsrfLayer`] implements the simple, storage-free defence
-//! doorman recommends for Axum hosts: state-changing requests that carry the
+//! the request. [`AuthService::session_layer`](crate::AuthService::session_layer)
+//! runs the simple, storage-free defence doorman recommends for Axum hosts
+//! whenever a [`CsrfConfig`] enables it: state-changing requests that carry the
 //! configured session cookie must present a same-origin `Origin` header, or
 //! a same-origin `Referer` when `Origin` is absent. Requests authenticated
 //! with `Authorization: Bearer ...` are not in CSRF scope.
 
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
-
-use axum::body::Body;
-use axum::http::{HeaderMap, Method, Request, header};
-use axum::response::Response;
-use tower_layer::Layer;
-use tower_service::Service;
+use axum::http::{HeaderMap, Method, header};
 use url::Url;
 
 use crate::cookies::{bearer_token, read_cookie};
-use crate::error::csrf_rejection_response;
 
 /// CSRF origin-check configuration.
 ///
@@ -60,85 +52,6 @@ impl CsrfConfig {
 
     fn external_origin(&self) -> Option<&Url> {
         self.external_origin.as_ref()
-    }
-}
-
-/// Tower layer that rejects cross-site state-changing requests carrying a
-/// doorman session cookie.
-///
-/// [`AuthService`](crate::AuthService) wires the same check into
-/// [`session_layer`](crate::AuthService::session_layer) automatically when
-/// an external origin is configured. Use this standalone layer only when
-/// composing your own middleware stack.
-#[derive(Clone)]
-pub struct CsrfLayer {
-    state: Arc<CsrfState>,
-}
-
-#[derive(Debug)]
-struct CsrfState {
-    config: CsrfConfig,
-    session_cookie_name: String,
-}
-
-impl CsrfLayer {
-    /// Construct a CSRF layer for the named session cookie.
-    pub fn new(config: CsrfConfig, session_cookie_name: impl Into<String>) -> Self {
-        Self {
-            state: Arc::new(CsrfState {
-                config,
-                session_cookie_name: session_cookie_name.into(),
-            }),
-        }
-    }
-}
-
-/// Service produced by [`CsrfLayer`] for a concrete inner service.
-#[derive(Clone)]
-pub struct CsrfService<S> {
-    inner: S,
-    state: Arc<CsrfState>,
-}
-
-impl<S> Layer<S> for CsrfLayer {
-    type Service = CsrfService<S>;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        CsrfService {
-            inner,
-            state: self.state.clone(),
-        }
-    }
-}
-
-impl<S> Service<Request<Body>> for CsrfService<S>
-where
-    S: Service<Request<Body>, Response = Response> + Send + Clone + 'static,
-    S::Future: Send + 'static,
-{
-    type Response = Response;
-    type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Response, S::Error>> + Send>>;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
-        if should_reject(
-            req.method(),
-            req.headers(),
-            &self.state.session_cookie_name,
-            &self.state.config,
-        ) {
-            return Box::pin(async { Ok(csrf_rejection_response()) });
-        }
-
-        // tower contract: hand the ready service instance to the future and
-        // leave a fresh clone behind for the next request.
-        let clone = self.inner.clone();
-        let mut inner = std::mem::replace(&mut self.inner, clone);
-        Box::pin(async move { inner.call(req).await })
     }
 }
 
