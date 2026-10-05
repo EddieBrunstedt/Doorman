@@ -59,7 +59,7 @@ use crate::signup::{SignupConfig, SignupManager};
 use crate::storage::Storage;
 use crate::verification::{EnrollmentFlow, TOKEN_PLACEHOLDER};
 
-/// Upper bound on any host-supplied lifetime (session / token). Ten years —
+/// Upper bound on any host-supplied lifetime (session / token / challenge). Ten years —
 /// well below the point where converting to a `chrono::Duration` overflows,
 /// and far past any sane session or verification-link validity. A value
 /// above this is almost certainly a units mistake, so the build rejects it.
@@ -145,9 +145,9 @@ pub enum AssemblyError {
     /// [`RecoveryManager::new`].
     #[error("recovery cooldown is misconfigured: {0}")]
     RecoveryCooldown(#[from] RecoveryConfigError),
-    /// A configured lifetime (session, signup token, recovery token, or
-    /// account token) is zero or implausibly large. Rejected at build time
-    /// rather than panicking later when converted to a `chrono::Duration`.
+    /// A configured lifetime (session, signup token, recovery token, account
+    /// token, or passkey challenge) is zero or implausibly large. Rejected at
+    /// build time rather than failing every mint later.
     #[error("{field} ({value:?}) must be greater than zero and at most {max:?}")]
     InvalidLifetime {
         /// Which lifetime field is out of bounds.
@@ -172,7 +172,7 @@ pub enum AssemblyError {
 }
 
 /// Reject a zero or implausibly large lifetime before it reaches a manager
-/// (where converting to a `chrono::Duration` would otherwise panic).
+/// (where an expiry beyond chrono's range would otherwise fail every mint).
 fn validate_lifetime(field: &'static str, value: Duration) -> Result<(), AssemblyError> {
     if value.is_zero() || value > MAX_LIFETIME {
         return Err(AssemblyError::InvalidLifetime {
@@ -465,7 +465,7 @@ impl AuthCoreBuilder {
         // manager: a template that drops the token, a template still pointing
         // at the stock example.invalid host (a valid link to a domain the host
         // does not own — effectively dead), or a zero/absurd lifetime (which
-        // would otherwise panic when converted to chrono).
+        // would otherwise fail every mint at runtime).
         validate_url_template("signup", &signup_config.url_template)?;
         validate_url_template("recovery", &recovery_config.url_template)?;
         validate_url_template("account email change", &account_config.url_template)?;
@@ -479,6 +479,10 @@ impl AuthCoreBuilder {
         validate_lifetime("signup token_lifetime", signup_config.token_lifetime)?;
         validate_lifetime("recovery token_lifetime", recovery_config.token_lifetime)?;
         validate_lifetime("account token_lifetime", account_config.token_lifetime)?;
+        validate_lifetime(
+            "passkey challenge_lifetime",
+            passkey_config.challenge_lifetime,
+        )?;
 
         if let Some(idle_timeout) = session_config.idle_timeout {
             validate_idle_timeout(idle_timeout, session_config.absolute_lifetime)?;

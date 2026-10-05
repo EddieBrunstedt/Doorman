@@ -23,7 +23,7 @@ use chrono::{DateTime, Utc};
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, RecoveryFailureReason};
-use crate::clock::Clock;
+use crate::clock::{Clock, expiry};
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
@@ -114,9 +114,7 @@ pub(crate) async fn issue_link(
 ) -> Result<String> {
     tokens.delete_tokens_for_user(user_id, purpose).await?;
 
-    let lifetime = chrono::Duration::from_std(token_lifetime).expect(
-        "verification token lifetime overflows chrono::Duration; configure a smaller value",
-    );
+    let expires_at = expiry(now, token_lifetime)?;
     let (token, token_hash) = generate_token()?;
     tokens
         .create_token(VerificationToken {
@@ -125,7 +123,7 @@ pub(crate) async fn issue_link(
             purpose,
             new_email,
             created_at: now,
-            expires_at: now + lifetime,
+            expires_at,
         })
         .await?;
 

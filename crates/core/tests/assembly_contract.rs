@@ -344,3 +344,24 @@ fn zero_signup_token_lifetime_is_rejected() {
         "expected InvalidLifetime for a zero signup token lifetime, got: {err:?}"
     );
 }
+
+#[test]
+fn oversized_passkey_challenge_lifetime_is_rejected() {
+    let err = valid_builder()
+        .passkey(PasskeyConfig {
+            challenge_lifetime: Duration::MAX,
+            ..passkey_config()
+        })
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(AssemblyError::InvalidLifetime {
+                field: "passkey challenge_lifetime",
+                ..
+            })
+        ),
+        "expected InvalidLifetime for an oversized challenge lifetime, got: {err:?}"
+    );
+}

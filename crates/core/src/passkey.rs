@@ -28,7 +28,7 @@ use webauthn_rs::prelude::{
 use webauthn_rs_proto::ResidentKeyRequirement;
 
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, AuthFailureReason};
-use crate::clock::Clock;
+use crate::clock::{Clock, expiry};
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
@@ -403,7 +403,7 @@ impl PasskeyManager {
             user_id,
             state: encode_registration_state(&reg_state)?,
             created_at: now,
-            expires_at: now + challenge_lifetime(self.config.challenge_lifetime),
+            expires_at: expiry(now, self.config.challenge_lifetime)?,
             recovery_cooldown_until,
         };
         self.challenges.put_registration(stored).await?;
@@ -725,7 +725,7 @@ impl PasskeyManager {
             purpose: AuthenticationPurpose::Login,
             state: encode_authentication_state(&auth_state)?,
             created_at: now,
-            expires_at: now + challenge_lifetime(self.config.challenge_lifetime),
+            expires_at: expiry(now, self.config.challenge_lifetime)?,
         };
         self.challenges.put_authentication(stored).await?;
         tracing::info!(outcome = "started", "passkey authentication started");
@@ -1336,11 +1336,6 @@ pub(crate) fn encode_passkey_authentication_state(
 pub(crate) fn decode_passkey_authentication_state(bytes: &[u8]) -> Result<PasskeyAuthentication> {
     serde_json::from_slice(bytes)
         .map_err(|e| Error::Internal(format!("deserialise reauth state: {e}")))
-}
-
-pub(crate) fn challenge_lifetime(d: Duration) -> chrono::Duration {
-    chrono::Duration::from_std(d)
-        .expect("passkey challenge lifetime overflows chrono::Duration; configure a smaller value")
 }
 
 #[cfg(test)]

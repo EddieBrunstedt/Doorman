@@ -60,11 +60,11 @@ use webauthn_rs::prelude::{
 use crate::audit::{
     Actor, AuditDispatch, AuditEvent, AuditEventKind, AuditSink, ReauthFailureReason,
 };
-use crate::clock::Clock;
+use crate::clock::{Clock, expiry};
 use crate::error::{Error, Result};
 use crate::passkey::{
-    PasskeyConfig, build_webauthn, challenge_lifetime, decode_credential,
-    encode_passkey_authentication_state, find_owned_passkey,
+    PasskeyConfig, build_webauthn, decode_credential, encode_passkey_authentication_state,
+    find_owned_passkey,
 };
 use crate::redeem::Redeemer;
 use crate::session::SessionContext;
@@ -251,7 +251,7 @@ impl ReauthManager {
                 purpose: AuthenticationPurpose::Reauth,
                 state: encode_passkey_authentication_state(&auth_state)?,
                 created_at: now,
-                expires_at: now + challenge_lifetime(self.challenge_lifetime),
+                expires_at: expiry(now, self.challenge_lifetime)?,
             })
             .await?;
         tracing::info!(outcome = "started", "reauth started");
