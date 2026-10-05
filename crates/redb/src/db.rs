@@ -37,7 +37,7 @@ use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{
     PasskeySummary, Session, StoredPasskey, TokenHash, UserId, VerificationPurpose,
 };
-use redb::{Database, TableDefinition, WriteTransaction};
+use redb::{Database, ReadTransaction, ReadableDatabase as _, TableDefinition, WriteTransaction};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -293,10 +293,44 @@ impl RedbHandle {
         Self { db }
     }
 
-    /// Clone the inner `Arc<Database>`, suitable for moving into a
-    /// `spawn_blocking` closure.
+    /// Clone the inner `Arc<Database>`, for a host that opens its own
+    /// transaction.
     pub(crate) fn db(&self) -> Arc<Database> {
         self.db.clone()
+    }
+
+    /// Run `f` over a read transaction on the blocking pool.
+    pub(crate) async fn read<T, F>(&self, f: F) -> StorageResult<T>
+    where
+        F: FnOnce(&ReadTransaction) -> StorageResult<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let rtxn = db.begin_read().map_err(err)?;
+            f(&rtxn)
+        })
+        .await
+        .map_err(err)?
+    }
+
+    /// Run `f` inside a write transaction on the blocking pool, committing it
+    /// when `f` returns `Ok`. An `Err` drops the transaction, which aborts
+    /// every write `f` made.
+    pub(crate) async fn write<T, F>(&self, f: F) -> StorageResult<T>
+    where
+        F: FnOnce(&WriteTransaction) -> StorageResult<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let wtxn = db.begin_write().map_err(err)?;
+            let out = f(&wtxn)?;
+            wtxn.commit().map_err(err)?;
+            Ok(out)
+        })
+        .await
+        .map_err(err)?
     }
 }
 

@@ -18,7 +18,7 @@ use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{AccountStatus, User, UserId, UserStore};
 
-use redb::{ReadableDatabase as _, ReadableTable as _};
+use redb::ReadableTable as _;
 
 use crate::db::{self, RedbHandle};
 
@@ -45,11 +45,9 @@ impl RedbUserStore {
         + Send
         + 'static,
     ) -> StorageResult<()> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let user_key = id.0.to_string();
-            let wtxn = db.begin_write().map_err(db::err)?;
-            {
+        self.handle
+            .write(move |wtxn| {
+                let user_key = id.0.to_string();
                 let mut users = wtxn.open_table(db::USERS).map_err(db::err)?;
                 let mut email_guard = wtxn.open_table(db::EMAIL_GUARD).map_err(db::err)?;
 
@@ -65,25 +63,20 @@ impl RedbUserStore {
                 users
                     .insert(user_key.as_str(), encoded.as_slice())
                     .map_err(db::err)?;
-            }
-            wtxn.commit().map_err(db::err)?;
-            Ok(())
-        })
-        .await
-        .map_err(db::err)?
+                Ok(())
+            })
+            .await
     }
 }
 
 #[async_trait]
 impl UserStore for RedbUserStore {
     async fn create_user(&self, user: User) -> StorageResult<()> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let user_key = user.id.0.to_string();
-            let encoded = db::encode(&user)?;
+        self.handle
+            .write(move |wtxn| {
+                let user_key = user.id.0.to_string();
+                let encoded = db::encode(&user)?;
 
-            let wtxn = db.begin_write().map_err(db::err)?;
-            {
                 let mut users = wtxn.open_table(db::USERS).map_err(db::err)?;
                 let mut email_guard = wtxn.open_table(db::EMAIL_GUARD).map_err(db::err)?;
 
@@ -101,52 +94,45 @@ impl UserStore for RedbUserStore {
                 users
                     .insert(user_key.as_str(), encoded.as_slice())
                     .map_err(db::err)?;
-            }
-            wtxn.commit().map_err(db::err)?;
-            Ok(())
-        })
-        .await
-        .map_err(db::err)?
+                Ok(())
+            })
+            .await
     }
 
     async fn find_user_by_id(&self, id: UserId) -> StorageResult<Option<User>> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let key = id.0.to_string();
-            let rtxn = db.begin_read().map_err(db::err)?;
-            let table = rtxn.open_table(db::USERS).map_err(db::err)?;
-            match table.get(key.as_str()).map_err(db::err)? {
-                Some(guard) => Ok(Some(db::decode(guard.value())?)),
-                None => Ok(None),
-            }
-        })
-        .await
-        .map_err(db::err)?
+        self.handle
+            .read(move |rtxn| {
+                let key = id.0.to_string();
+                let table = rtxn.open_table(db::USERS).map_err(db::err)?;
+                match table.get(key.as_str()).map_err(db::err)? {
+                    Some(guard) => Ok(Some(db::decode(guard.value())?)),
+                    None => Ok(None),
+                }
+            })
+            .await
     }
 
     async fn find_user_by_email(&self, email: &str) -> StorageResult<Option<User>> {
         let email = email.to_owned();
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let rtxn = db.begin_read().map_err(db::err)?;
-            // Look up the user id via the email guard.
-            let user_id_str = {
-                let guard_tbl = rtxn.open_table(db::EMAIL_GUARD).map_err(db::err)?;
-                match guard_tbl.get(email.as_str()).map_err(db::err)? {
-                    Some(guard) => guard.value().to_owned(),
-                    None => return Ok(None),
+        self.handle
+            .read(move |rtxn| {
+                // Look up the user id via the email guard.
+                let user_id_str = {
+                    let guard_tbl = rtxn.open_table(db::EMAIL_GUARD).map_err(db::err)?;
+                    match guard_tbl.get(email.as_str()).map_err(db::err)? {
+                        Some(guard) => guard.value().to_owned(),
+                        None => return Ok(None),
+                    }
+                    // guard_tbl dropped here, releasing its borrow of rtxn.
+                };
+                // Now look up the user record using the same read transaction.
+                let users_tbl = rtxn.open_table(db::USERS).map_err(db::err)?;
+                match users_tbl.get(user_id_str.as_str()).map_err(db::err)? {
+                    Some(guard) => Ok(Some(db::decode(guard.value())?)),
+                    None => Ok(None),
                 }
-                // guard_tbl dropped here, releasing its borrow of rtxn.
-            };
-            // Now look up the user record using the same read transaction.
-            let users_tbl = rtxn.open_table(db::USERS).map_err(db::err)?;
-            match users_tbl.get(user_id_str.as_str()).map_err(db::err)? {
-                Some(guard) => Ok(Some(db::decode(guard.value())?)),
-                None => Ok(None),
-            }
-        })
-        .await
-        .map_err(db::err)?
+            })
+            .await
     }
 
     async fn set_user_status(
@@ -201,11 +187,9 @@ impl UserStore for RedbUserStore {
     }
 
     async fn delete_user(&self, id: UserId) -> StorageResult<()> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let key = id.0.to_string();
-            let wtxn = db.begin_write().map_err(db::err)?;
-            {
+        self.handle
+            .write(move |wtxn| {
+                let key = id.0.to_string();
                 let mut users = wtxn.open_table(db::USERS).map_err(db::err)?;
                 let mut email_guard = wtxn.open_table(db::EMAIL_GUARD).map_err(db::err)?;
 
@@ -215,11 +199,8 @@ impl UserStore for RedbUserStore {
                         email_guard.remove(email).map_err(db::err)?;
                     }
                 }
-            }
-            wtxn.commit().map_err(db::err)?;
-            Ok(())
-        })
-        .await
-        .map_err(db::err)?
+                Ok(())
+            })
+            .await
     }
 }

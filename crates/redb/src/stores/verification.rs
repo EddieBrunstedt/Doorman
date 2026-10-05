@@ -32,15 +32,13 @@ impl RedbVerificationTokenStore {
 #[async_trait]
 impl VerificationTokenStore for RedbVerificationTokenStore {
     async fn create_token(&self, token: VerificationToken) -> StorageResult<()> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let vt_key = db::vtoken_key(token.purpose, &token.token_hash);
-            let user_idx_key =
-                db::user_vtokens_idx_key(token.user_id, token.purpose, &token.token_hash);
-            let encoded = db::encode(&token)?;
+        self.handle
+            .write(move |wtxn| {
+                let vt_key = db::vtoken_key(token.purpose, &token.token_hash);
+                let user_idx_key =
+                    db::user_vtokens_idx_key(token.user_id, token.purpose, &token.token_hash);
+                let encoded = db::encode(&token)?;
 
-            let wtxn = db.begin_write().map_err(db::err)?;
-            {
                 let mut vtokens = wtxn.open_table(db::VTOKENS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_VTOKENS_IDX).map_err(db::err)?;
 
@@ -50,12 +48,9 @@ impl VerificationTokenStore for RedbVerificationTokenStore {
                 user_idx
                     .insert(user_idx_key.as_str(), ())
                     .map_err(db::err)?;
-            }
-            wtxn.commit().map_err(db::err)?;
-            Ok(())
-        })
-        .await
-        .map_err(db::err)?
+                Ok(())
+            })
+            .await
     }
 
     async fn consume_token(
@@ -64,32 +59,21 @@ impl VerificationTokenStore for RedbVerificationTokenStore {
         purpose: VerificationPurpose,
     ) -> StorageResult<Option<VerificationToken>> {
         let vt_key = db::vtoken_key(purpose, hash);
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let result = {
+        self.handle
+            .write(move |wtxn| {
                 let mut vtokens = wtxn.open_table(db::VTOKENS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_VTOKENS_IDX).map_err(db::err)?;
 
-                match vtokens.remove(vt_key.as_str()).map_err(db::err)? {
-                    None => None,
-                    Some(guard) => {
-                        let token: VerificationToken = db::decode(guard.value())?;
-                        let user_idx_key = db::user_vtokens_idx_key(
-                            token.user_id,
-                            token.purpose,
-                            &token.token_hash,
-                        );
-                        user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
-                        Some(token)
-                    }
-                }
-            };
-            wtxn.commit().map_err(db::err)?;
-            Ok(result)
-        })
-        .await
-        .map_err(db::err)?
+                let Some(guard) = vtokens.remove(vt_key.as_str()).map_err(db::err)? else {
+                    return Ok(None);
+                };
+                let token: VerificationToken = db::decode(guard.value())?;
+                let user_idx_key =
+                    db::user_vtokens_idx_key(token.user_id, token.purpose, &token.token_hash);
+                user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
+                Ok(Some(token))
+            })
+            .await
     }
 
     async fn delete_tokens_for_user(
@@ -97,13 +81,11 @@ impl VerificationTokenStore for RedbVerificationTokenStore {
         user_id: UserId,
         purpose: VerificationPurpose,
     ) -> StorageResult<u64> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let prefix = db::user_vtokens_prefix(user_id, purpose);
-            let end = db::prefix_end(&prefix);
+        self.handle
+            .write(move |wtxn| {
+                let prefix = db::user_vtokens_prefix(user_id, purpose);
+                let end = db::prefix_end(&prefix);
 
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let removed = {
                 let mut vtokens = wtxn.open_table(db::VTOKENS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_VTOKENS_IDX).map_err(db::err)?;
 
@@ -126,20 +108,14 @@ impl VerificationTokenStore for RedbVerificationTokenStore {
                     }
                     user_idx.remove(idx_key.as_str()).map_err(db::err)?;
                 }
-                count
-            };
-            wtxn.commit().map_err(db::err)?;
-            Ok(removed)
-        })
-        .await
-        .map_err(db::err)?
+                Ok(count)
+            })
+            .await
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let count = {
+        self.handle
+            .write(move |wtxn| {
                 let mut vtokens = wtxn.open_table(db::VTOKENS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_VTOKENS_IDX).map_err(db::err)?;
 
@@ -164,12 +140,8 @@ impl VerificationTokenStore for RedbVerificationTokenStore {
                         db::user_vtokens_idx_key(token.user_id, token.purpose, &token.token_hash);
                     user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
-                expired.len() as u64
-            };
-            wtxn.commit().map_err(db::err)?;
-            Ok(count)
-        })
-        .await
-        .map_err(db::err)?
+                Ok(expired.len() as u64)
+            })
+            .await
     }
 }

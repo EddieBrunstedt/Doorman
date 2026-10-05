@@ -17,7 +17,7 @@ use doorman_core::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, StoredPasskeyAuthentication,
     StoredPasskeyRegistration, UserId,
 };
-use redb::{ReadableDatabase as _, ReadableTable as _};
+use redb::ReadableTable as _;
 
 use crate::db::{self, RedbHandle};
 
@@ -34,14 +34,12 @@ impl RedbPasskeyChallengeStore {
 #[async_trait]
 impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
     async fn put_registration(&self, value: StoredPasskeyRegistration) -> StorageResult<()> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let key = value.id.0.to_string();
-            let user_idx_key = db::user_pkregs_idx_key(value.user_id, value.id);
-            let encoded = db::encode(&value)?;
+        self.handle
+            .write(move |wtxn| {
+                let key = value.id.0.to_string();
+                let user_idx_key = db::user_pkregs_idx_key(value.user_id, value.id);
+                let encoded = db::encode(&value)?;
 
-            let wtxn = db.begin_write().map_err(db::err)?;
-            {
                 let mut pkregs = wtxn.open_table(db::PKREGS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
 
@@ -51,51 +49,38 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
                 user_idx
                     .insert(user_idx_key.as_str(), ())
                     .map_err(db::err)?;
-            }
-            wtxn.commit().map_err(db::err)?;
-            Ok(())
-        })
-        .await
-        .map_err(db::err)?
+                Ok(())
+            })
+            .await
     }
 
     async fn take_registration(
         &self,
         id: PasskeyChallengeId,
     ) -> StorageResult<Option<StoredPasskeyRegistration>> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let key = id.0.to_string();
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let result = {
+        self.handle
+            .write(move |wtxn| {
+                let key = id.0.to_string();
                 let mut pkregs = wtxn.open_table(db::PKREGS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
 
-                match pkregs.remove(key.as_str()).map_err(db::err)? {
-                    None => None,
-                    Some(guard) => {
-                        let reg: StoredPasskeyRegistration = db::decode(guard.value())?;
-                        let user_idx_key = db::user_pkregs_idx_key(reg.user_id, reg.id);
-                        user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
-                        Some(reg)
-                    }
-                }
-            };
-            wtxn.commit().map_err(db::err)?;
-            Ok(result)
-        })
-        .await
-        .map_err(db::err)?
+                let Some(guard) = pkregs.remove(key.as_str()).map_err(db::err)? else {
+                    return Ok(None);
+                };
+                let reg: StoredPasskeyRegistration = db::decode(guard.value())?;
+                let user_idx_key = db::user_pkregs_idx_key(reg.user_id, reg.id);
+                user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
+                Ok(Some(reg))
+            })
+            .await
     }
 
     async fn delete_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let prefix = db::user_pkregs_prefix(user_id);
-            let end = db::prefix_end(&prefix);
+        self.handle
+            .write(move |wtxn| {
+                let prefix = db::user_pkregs_prefix(user_id);
+                let end = db::prefix_end(&prefix);
 
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let removed = {
                 let mut pkregs = wtxn.open_table(db::PKREGS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
 
@@ -118,80 +103,61 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
                     }
                     user_idx.remove(idx_key.as_str()).map_err(db::err)?;
                 }
-                count
-            };
-            wtxn.commit().map_err(db::err)?;
-            Ok(removed)
-        })
-        .await
-        .map_err(db::err)?
+                Ok(count)
+            })
+            .await
     }
 
     async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let prefix = db::user_pkregs_prefix(user_id);
-            let end = db::prefix_end(&prefix);
+        self.handle
+            .read(move |rtxn| {
+                let prefix = db::user_pkregs_prefix(user_id);
+                let end = db::prefix_end(&prefix);
 
-            let rtxn = db.begin_read().map_err(db::err)?;
-            let idx_tbl = rtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
-            let count = idx_tbl
-                .range(prefix.as_str()..end.as_str())
-                .map_err(db::err)?
-                .count() as u64;
-            Ok(count)
-        })
-        .await
-        .map_err(db::err)?
+                let idx_tbl = rtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
+                let count = idx_tbl
+                    .range(prefix.as_str()..end.as_str())
+                    .map_err(db::err)?
+                    .count() as u64;
+                Ok(count)
+            })
+            .await
     }
 
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let key = value.id.0.to_string();
-            let encoded = db::encode(&value)?;
+        self.handle
+            .write(move |wtxn| {
+                let key = value.id.0.to_string();
+                let encoded = db::encode(&value)?;
 
-            let wtxn = db.begin_write().map_err(db::err)?;
-            {
                 let mut pkauths = wtxn.open_table(db::PKAUTHS).map_err(db::err)?;
                 pkauths
                     .insert(key.as_str(), encoded.as_slice())
                     .map_err(db::err)?;
-            }
-            wtxn.commit().map_err(db::err)?;
-            Ok(())
-        })
-        .await
-        .map_err(db::err)?
+                Ok(())
+            })
+            .await
     }
 
     async fn take_authentication(
         &self,
         id: PasskeyChallengeId,
     ) -> StorageResult<Option<StoredPasskeyAuthentication>> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let key = id.0.to_string();
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let result = {
+        self.handle
+            .write(move |wtxn| {
+                let key = id.0.to_string();
                 let mut pkauths = wtxn.open_table(db::PKAUTHS).map_err(db::err)?;
                 match pkauths.remove(key.as_str()).map_err(db::err)? {
-                    None => None,
-                    Some(guard) => Some(db::decode::<StoredPasskeyAuthentication>(guard.value())?),
+                    Some(guard) => Ok(Some(db::decode(guard.value())?)),
+                    None => Ok(None),
                 }
-            };
-            wtxn.commit().map_err(db::err)?;
-            Ok(result)
-        })
-        .await
-        .map_err(db::err)?
+            })
+            .await
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let count = {
+        self.handle
+            .write(move |wtxn| {
                 let mut pkregs = wtxn.open_table(db::PKREGS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
                 let mut pkauths = wtxn.open_table(db::PKAUTHS).map_err(db::err)?;
@@ -233,12 +199,8 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
                 for key in &expired_auths {
                     pkauths.remove(key.as_str()).map_err(db::err)?;
                 }
-                (expired_regs.len() + expired_auths.len()) as u64
-            };
-            wtxn.commit().map_err(db::err)?;
-            Ok(count)
-        })
-        .await
-        .map_err(db::err)?
+                Ok((expired_regs.len() + expired_auths.len()) as u64)
+            })
+            .await
     }
 }

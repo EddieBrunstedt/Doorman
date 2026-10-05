@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 
-use redb::{ReadableDatabase as _, ReadableTable as _};
+use redb::ReadableTable as _;
 
 use crate::db::{self, RedbHandle};
 
@@ -39,15 +39,12 @@ fn session_id_from_idx_key(key: &str) -> StorageResult<&str> {
 #[async_trait]
 impl SessionStore for RedbSessionStore {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let wtxn = db.begin_write().map_err(db::err)?;
-            db::write_session(&wtxn, &session)?;
-            wtxn.commit().map_err(db::err)?;
-            Ok(())
-        })
-        .await
-        .map_err(db::err)?
+        self.handle
+            .write(move |wtxn| {
+                db::write_session(wtxn, &session)?;
+                Ok(())
+            })
+            .await
     }
 
     async fn touch_session(
@@ -56,11 +53,9 @@ impl SessionStore for RedbSessionStore {
         last_used_at: DateTime<Utc>,
         expires_at: DateTime<Utc>,
     ) -> StorageResult<()> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let key = id.0.to_string();
-            let wtxn = db.begin_write().map_err(db::err)?;
-            {
+        self.handle
+            .write(move |wtxn| {
+                let key = id.0.to_string();
                 let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
                 // Conditional write: read the row first and re-insert the slid
                 // timestamps only if it still exists. A session deleted between
@@ -80,49 +75,42 @@ impl SessionStore for RedbSessionStore {
                         .insert(key.as_str(), bytes.as_slice())
                         .map_err(db::err)?;
                 }
-            }
-            wtxn.commit().map_err(db::err)?;
-            Ok(())
-        })
-        .await
-        .map_err(db::err)?
+                Ok(())
+            })
+            .await
     }
 
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
         let hash_hex = db::token_hash_hex(hash);
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let rtxn = db.begin_read().map_err(db::err)?;
-            let session_key = {
-                let hash_tbl = rtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
-                match hash_tbl.get(hash_hex.as_str()).map_err(db::err)? {
-                    Some(guard) => guard.value().to_owned(),
-                    None => return Ok(None),
+        self.handle
+            .read(move |rtxn| {
+                let session_key = {
+                    let hash_tbl = rtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
+                    match hash_tbl.get(hash_hex.as_str()).map_err(db::err)? {
+                        Some(guard) => guard.value().to_owned(),
+                        None => return Ok(None),
+                    }
+                };
+                let sessions = rtxn.open_table(db::SESSIONS).map_err(db::err)?;
+                match sessions.get(session_key.as_str()).map_err(db::err)? {
+                    Some(guard) => Ok(Some(db::decode(guard.value())?)),
+                    None => Ok(None),
                 }
-            };
-            let sessions = rtxn.open_table(db::SESSIONS).map_err(db::err)?;
-            match sessions.get(session_key.as_str()).map_err(db::err)? {
-                Some(guard) => Ok(Some(db::decode(guard.value())?)),
-                None => Ok(None),
-            }
-        })
-        .await
-        .map_err(db::err)?
+            })
+            .await
     }
 
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let key = id.0.to_string();
-            let rtxn = db.begin_read().map_err(db::err)?;
-            let sessions = rtxn.open_table(db::SESSIONS).map_err(db::err)?;
-            match sessions.get(key.as_str()).map_err(db::err)? {
-                Some(guard) => Ok(Some(db::decode(guard.value())?)),
-                None => Ok(None),
-            }
-        })
-        .await
-        .map_err(db::err)?
+        self.handle
+            .read(move |rtxn| {
+                let key = id.0.to_string();
+                let sessions = rtxn.open_table(db::SESSIONS).map_err(db::err)?;
+                match sessions.get(key.as_str()).map_err(db::err)? {
+                    Some(guard) => Ok(Some(db::decode(guard.value())?)),
+                    None => Ok(None),
+                }
+            })
+            .await
     }
 
     async fn list_for_user(
@@ -130,49 +118,45 @@ impl SessionStore for RedbSessionStore {
         user_id: UserId,
         now: DateTime<Utc>,
     ) -> StorageResult<Vec<Session>> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let prefix = db::user_sessions_prefix(user_id);
-            let end = db::prefix_end(&prefix);
+        self.handle
+            .read(move |rtxn| {
+                let prefix = db::user_sessions_prefix(user_id);
+                let end = db::prefix_end(&prefix);
 
-            let rtxn = db.begin_read().map_err(db::err)?;
-            // Collect session ids from the index.
-            let session_ids: Vec<String> = {
-                let idx_tbl = rtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
-                idx_tbl
-                    .range(prefix.as_str()..end.as_str())
-                    .map_err(db::err)?
-                    .map(|r| {
-                        r.map_err(db::err).and_then(|(k, _)| {
-                            session_id_from_idx_key(k.value()).map(ToOwned::to_owned)
+                // Collect session ids from the index.
+                let session_ids: Vec<String> = {
+                    let idx_tbl = rtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
+                    idx_tbl
+                        .range(prefix.as_str()..end.as_str())
+                        .map_err(db::err)?
+                        .map(|r| {
+                            r.map_err(db::err).and_then(|(k, _)| {
+                                session_id_from_idx_key(k.value()).map(ToOwned::to_owned)
+                            })
                         })
-                    })
-                    .collect::<StorageResult<Vec<_>>>()?
-            };
+                        .collect::<StorageResult<Vec<_>>>()?
+                };
 
-            let sessions_tbl = rtxn.open_table(db::SESSIONS).map_err(db::err)?;
-            let mut out = Vec::with_capacity(session_ids.len());
-            for id in &session_ids {
-                if let Some(guard) = sessions_tbl.get(id.as_str()).map_err(db::err)? {
-                    let session: Session = db::decode(guard.value())?;
-                    if session.expires_at > now {
-                        out.push(session);
+                let sessions_tbl = rtxn.open_table(db::SESSIONS).map_err(db::err)?;
+                let mut out = Vec::with_capacity(session_ids.len());
+                for id in &session_ids {
+                    if let Some(guard) = sessions_tbl.get(id.as_str()).map_err(db::err)? {
+                        let session: Session = db::decode(guard.value())?;
+                        if session.expires_at > now {
+                            out.push(session);
+                        }
+                        // expired or missing: skip (dangling index entry)
                     }
-                    // expired or missing: skip (dangling index entry)
                 }
-            }
-            Ok(out)
-        })
-        .await
-        .map_err(db::err)?
+                Ok(out)
+            })
+            .await
     }
 
     async fn delete_session(&self, id: SessionId) -> StorageResult<()> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let key = id.0.to_string();
-            let wtxn = db.begin_write().map_err(db::err)?;
-            {
+        self.handle
+            .write(move |wtxn| {
+                let key = id.0.to_string();
                 let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
                 let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
@@ -184,12 +168,9 @@ impl SessionStore for RedbSessionStore {
                     hash_idx.remove(hash_hex.as_str()).map_err(db::err)?;
                     user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
-            }
-            wtxn.commit().map_err(db::err)?;
-            Ok(())
-        })
-        .await
-        .map_err(db::err)?
+                Ok(())
+            })
+            .await
     }
 
     async fn delete_sessions_for_user(
@@ -197,17 +178,15 @@ impl SessionStore for RedbSessionStore {
         user_id: UserId,
         except: Option<SessionId>,
     ) -> StorageResult<u64> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let prefix = db::user_sessions_prefix(user_id);
-            let end = db::prefix_end(&prefix);
-            let except_key = except.map(|id| id.0.to_string());
+        self.handle
+            .write(move |wtxn| {
+                let prefix = db::user_sessions_prefix(user_id);
+                let end = db::prefix_end(&prefix);
+                let except_key = except.map(|id| id.0.to_string());
 
-            // One write transaction: redb serializes writers, so a concurrent
-            // create commits either before this sweep (and is deleted) or after
-            // it (and is untouched).
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let removed = {
+                // One write transaction: redb serializes writers, so a concurrent
+                // create commits either before this sweep (and is deleted) or after
+                // it (and is untouched).
                 let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
                 let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
@@ -234,20 +213,14 @@ impl SessionStore for RedbSessionStore {
                     }
                     user_idx.remove(idx_key.as_str()).map_err(db::err)?;
                 }
-                count
-            };
-            wtxn.commit().map_err(db::err)?;
-            Ok(removed)
-        })
-        .await
-        .map_err(db::err)?
+                Ok(count)
+            })
+            .await
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let count = {
+        self.handle
+            .write(move |wtxn| {
                 let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
                 let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
@@ -275,12 +248,8 @@ impl SessionStore for RedbSessionStore {
                     hash_idx.remove(hash_hex.as_str()).map_err(db::err)?;
                     user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
-                expired.len() as u64
-            };
-            wtxn.commit().map_err(db::err)?;
-            Ok(count)
-        })
-        .await
-        .map_err(db::err)?
+                Ok(expired.len() as u64)
+            })
+            .await
     }
 }

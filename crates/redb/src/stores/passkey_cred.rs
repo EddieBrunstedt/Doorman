@@ -18,7 +18,7 @@ use doorman_core::storage::{
     PasskeyCredentialStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId,
 };
 
-use redb::{ReadableDatabase as _, ReadableTable as _};
+use redb::ReadableTable as _;
 
 use crate::db::{self, RedbHandle};
 
@@ -41,11 +41,9 @@ impl RedbPasskeyCredentialStore {
         credential_id: &[u8],
         change: impl FnOnce(&mut StoredPasskey) + Send + 'static,
     ) -> StorageResult<()> {
-        let db = self.handle.db();
         let cred_key = db::hex_bytes(credential_id);
-        tokio::task::spawn_blocking(move || {
-            let wtxn = db.begin_write().map_err(db::err)?;
-            {
+        self.handle
+            .write(move |wtxn| {
                 let mut creds = wtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
                 let mut credential = {
                     let guard = creds
@@ -59,27 +57,22 @@ impl RedbPasskeyCredentialStore {
                 creds
                     .insert(cred_key.as_str(), encoded.as_slice())
                     .map_err(db::err)?;
-            }
-            wtxn.commit().map_err(db::err)?;
-            Ok(())
-        })
-        .await
-        .map_err(db::err)?
+                Ok(())
+            })
+            .await
     }
 }
 
 #[async_trait]
 impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
     async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let cred_key = db::hex_bytes(&credential.credential_id);
-            let user_idx_key =
-                db::user_creds_idx_key(credential.user_id, &credential.credential_id);
-            let encoded = db::encode_passkey(&credential)?;
+        self.handle
+            .write(move |wtxn| {
+                let cred_key = db::hex_bytes(&credential.credential_id);
+                let user_idx_key =
+                    db::user_creds_idx_key(credential.user_id, &credential.credential_id);
+                let encoded = db::encode_passkey(&credential)?;
 
-            let wtxn = db.begin_write().map_err(db::err)?;
-            {
                 let mut creds = wtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
 
@@ -92,12 +85,9 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                 user_idx
                     .insert(user_idx_key.as_str(), ())
                     .map_err(db::err)?;
-            }
-            wtxn.commit().map_err(db::err)?;
-            Ok(())
-        })
-        .await
-        .map_err(db::err)?
+                Ok(())
+            })
+            .await
     }
 
     async fn record_passkey_use(
@@ -125,99 +115,97 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
     }
 
     async fn list_passkeys_for_user(&self, user_id: UserId) -> StorageResult<Vec<StoredPasskey>> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let prefix = db::user_creds_prefix(user_id);
-            let end = db::prefix_end(&prefix);
+        self.handle
+            .read(move |rtxn| {
+                let prefix = db::user_creds_prefix(user_id);
+                let end = db::prefix_end(&prefix);
 
-            let rtxn = db.begin_read().map_err(db::err)?;
-            let cred_keys: Vec<String> = {
-                let idx_tbl = rtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
-                idx_tbl
-                    .range(prefix.as_str()..end.as_str())
-                    .map_err(db::err)?
-                    .map(|r| {
-                        r.map_err(db::err).and_then(|(k, _)| {
-                            // Extract cred_id_hex after the separator.
-                            k.value()
-                                .split_once('\x00')
-                                .map(|x| x.1.to_owned())
-                                .ok_or_else(|| StorageError::msg("malformed user_creds_idx key"))
+                let cred_keys: Vec<String> = {
+                    let idx_tbl = rtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
+                    idx_tbl
+                        .range(prefix.as_str()..end.as_str())
+                        .map_err(db::err)?
+                        .map(|r| {
+                            r.map_err(db::err).and_then(|(k, _)| {
+                                // Extract cred_id_hex after the separator.
+                                k.value()
+                                    .split_once('\x00')
+                                    .map(|x| x.1.to_owned())
+                                    .ok_or_else(|| {
+                                        StorageError::msg("malformed user_creds_idx key")
+                                    })
+                            })
                         })
-                    })
-                    .collect::<StorageResult<_>>()?
-            };
+                        .collect::<StorageResult<_>>()?
+                };
 
-            let creds_tbl = rtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
-            let mut out = Vec::with_capacity(cred_keys.len());
-            for key in &cred_keys {
-                if let Some(guard) = creds_tbl.get(key.as_str()).map_err(db::err)? {
-                    out.push(db::decode_passkey(guard.value())?);
+                let creds_tbl = rtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
+                let mut out = Vec::with_capacity(cred_keys.len());
+                for key in &cred_keys {
+                    if let Some(guard) = creds_tbl.get(key.as_str()).map_err(db::err)? {
+                        out.push(db::decode_passkey(guard.value())?);
+                    }
                 }
-            }
-            Ok(out)
-        })
-        .await
-        .map_err(db::err)?
+                Ok(out)
+            })
+            .await
     }
 
     async fn list_passkey_summaries_for_user(
         &self,
         user_id: UserId,
     ) -> StorageResult<Vec<PasskeySummary>> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let prefix = db::user_creds_prefix(user_id);
-            let end = db::prefix_end(&prefix);
+        self.handle
+            .read(move |rtxn| {
+                let prefix = db::user_creds_prefix(user_id);
+                let end = db::prefix_end(&prefix);
 
-            let rtxn = db.begin_read().map_err(db::err)?;
-            let cred_keys: Vec<String> = {
-                let idx_tbl = rtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
-                idx_tbl
-                    .range(prefix.as_str()..end.as_str())
-                    .map_err(db::err)?
-                    .map(|r| {
-                        r.map_err(db::err).and_then(|(k, _)| {
-                            k.value()
-                                .split_once('\x00')
-                                .map(|x| x.1.to_owned())
-                                .ok_or_else(|| StorageError::msg("malformed user_creds_idx key"))
+                let cred_keys: Vec<String> = {
+                    let idx_tbl = rtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
+                    idx_tbl
+                        .range(prefix.as_str()..end.as_str())
+                        .map_err(db::err)?
+                        .map(|r| {
+                            r.map_err(db::err).and_then(|(k, _)| {
+                                k.value()
+                                    .split_once('\x00')
+                                    .map(|x| x.1.to_owned())
+                                    .ok_or_else(|| {
+                                        StorageError::msg("malformed user_creds_idx key")
+                                    })
+                            })
                         })
-                    })
-                    .collect::<StorageResult<_>>()?
-            };
+                        .collect::<StorageResult<_>>()?
+                };
 
-            let creds_tbl = rtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
-            let mut out = Vec::with_capacity(cred_keys.len());
-            for key in &cred_keys {
-                if let Some(guard) = creds_tbl.get(key.as_str()).map_err(db::err)? {
-                    out.push(db::decode_passkey_summary(guard.value())?);
+                let creds_tbl = rtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
+                let mut out = Vec::with_capacity(cred_keys.len());
+                for key in &cred_keys {
+                    if let Some(guard) = creds_tbl.get(key.as_str()).map_err(db::err)? {
+                        out.push(db::decode_passkey_summary(guard.value())?);
+                    }
                 }
-            }
-            Ok(out)
-        })
-        .await
-        .map_err(db::err)?
+                Ok(out)
+            })
+            .await
     }
 
     async fn count_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            // The index entry and the credential row are written and removed
-            // in the same transaction, so counting the index is exact.
-            let prefix = db::user_creds_prefix(user_id);
-            let end = db::prefix_end(&prefix);
+        self.handle
+            .read(move |rtxn| {
+                // The index entry and the credential row are written and removed
+                // in the same transaction, so counting the index is exact.
+                let prefix = db::user_creds_prefix(user_id);
+                let end = db::prefix_end(&prefix);
 
-            let rtxn = db.begin_read().map_err(db::err)?;
-            let idx_tbl = rtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
-            let count = idx_tbl
-                .range(prefix.as_str()..end.as_str())
-                .map_err(db::err)?
-                .count() as u64;
-            Ok(count)
-        })
-        .await
-        .map_err(db::err)?
+                let idx_tbl = rtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
+                let count = idx_tbl
+                    .range(prefix.as_str()..end.as_str())
+                    .map_err(db::err)?
+                    .count() as u64;
+                Ok(count)
+            })
+            .await
     }
 
     async fn find_passkey_by_credential_id(
@@ -225,25 +213,21 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
         credential_id: &[u8],
     ) -> StorageResult<Option<StoredPasskey>> {
         let key = db::hex_bytes(credential_id);
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let rtxn = db.begin_read().map_err(db::err)?;
-            let creds_tbl = rtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
-            match creds_tbl.get(key.as_str()).map_err(db::err)? {
-                Some(guard) => Ok(Some(db::decode_passkey(guard.value())?)),
-                None => Ok(None),
-            }
-        })
-        .await
-        .map_err(db::err)?
+        self.handle
+            .read(move |rtxn| {
+                let creds_tbl = rtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
+                match creds_tbl.get(key.as_str()).map_err(db::err)? {
+                    Some(guard) => Ok(Some(db::decode_passkey(guard.value())?)),
+                    None => Ok(None),
+                }
+            })
+            .await
     }
 
     async fn delete_passkey(&self, credential_id: &[u8]) -> StorageResult<()> {
         let cred_key = db::hex_bytes(credential_id);
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let wtxn = db.begin_write().map_err(db::err)?;
-            {
+        self.handle
+            .write(move |wtxn| {
                 let mut creds = wtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
 
@@ -252,22 +236,17 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                     let user_idx_key = db::user_creds_idx_key(cred.user_id, &cred.credential_id);
                     user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
-            }
-            wtxn.commit().map_err(db::err)?;
-            Ok(())
-        })
-        .await
-        .map_err(db::err)?
+                Ok(())
+            })
+            .await
     }
 
     async fn delete_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let db = self.handle.db();
-        tokio::task::spawn_blocking(move || {
-            let prefix = db::user_creds_prefix(user_id);
-            let end = db::prefix_end(&prefix);
+        self.handle
+            .write(move |wtxn| {
+                let prefix = db::user_creds_prefix(user_id);
+                let end = db::prefix_end(&prefix);
 
-            let wtxn = db.begin_write().map_err(db::err)?;
-            let removed = {
                 let mut creds = wtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
 
@@ -295,12 +274,8 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                     }
                     user_idx.remove(idx_key.as_str()).map_err(db::err)?;
                 }
-                count
-            };
-            wtxn.commit().map_err(db::err)?;
-            Ok(removed)
-        })
-        .await
-        .map_err(db::err)?
+                Ok(count)
+            })
+            .await
     }
 }
