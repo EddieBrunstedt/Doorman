@@ -141,10 +141,10 @@ pub enum AssemblyError {
         /// The reserved placeholder host that was detected.
         placeholder_host: &'static str,
     },
-    /// The recovery cool-down is below the documented floor. Surfaced from
+    /// The recovery cool-down is outside its documented bounds. Surfaced from
     /// [`RecoveryManager::new`].
     #[error("recovery cooldown is misconfigured: {0}")]
-    RecoveryCooldownTooShort(#[from] RecoveryConfigError),
+    RecoveryCooldown(#[from] RecoveryConfigError),
     /// A configured lifetime (session, signup token, recovery token, or
     /// account token) is zero or implausibly large. Rejected at build time
     /// rather than panicking later when converted to a `chrono::Duration`.
@@ -565,7 +565,7 @@ impl AuthCoreBuilder {
         let signup = SignupManager::new(signup_flow, signup_config);
 
         // Recovery rides on the same primitives as signup and is similarly
-        // always-on. The sub-floor cool-down check is enforced here.
+        // always-on. The cool-down bounds are enforced here.
         let recovery = RecoveryManager::new(recovery_flow, recovery_config)?;
 
         // The account manager reads its collaborators (stores, clock, audit,

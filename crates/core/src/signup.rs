@@ -31,14 +31,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
+use chrono::{DateTime, Utc};
+
 use crate::audit::AuditEventKind;
 use crate::error::{Error, Result};
+use crate::passkey::{CredentialCap, EnrollmentPolicy};
 use crate::rate_limit::RateLimitPolicy;
 use crate::session::SessionContext;
-use crate::storage::{PasskeyChallengeId, VerificationPurpose};
+use crate::storage::{PasskeyChallengeId, User, VerificationPurpose};
 use crate::verification::{
-    self, EnrollmentFlow, EnrollmentOutcome, FlowKind, TOKEN_PLACEHOLDER,
-    VerificationConsumeOutcome,
+    self, EnrollmentFlow, EnrollmentOutcome, TOKEN_PLACEHOLDER, VerificationConsumeOutcome,
 };
 
 /// Outcome of a [`SignupPolicy`] evaluation. The host chooses how a rejected
@@ -72,7 +74,7 @@ pub enum SignupDecision {
 /// The gate runs **after** rate limiting and **before** any user is
 /// provisioned: a denied attempt still spends rate-limit budget (so a host
 /// invite-store lookup cannot be hammered unthrottled) but never creates a
-/// [`User`](crate::storage::User) row.
+/// [`User`] row.
 #[async_trait]
 pub trait SignupPolicy: Send + Sync {
     /// Decide whether the signup attempt described by `email` / `invite_token`
@@ -192,10 +194,10 @@ impl Default for SignupConfig {
 
 /// Manager for the three-step signup flow.
 ///
-/// A thin wrapper over the shared [`EnrollmentFlow`]: `consume_signup` and
-/// `finish_signup` delegate to it directly, and `request_signup` is the one
-/// genuinely signup-specific body (provision-on-unknown-email is the
-/// inverse of recovery's silent no-op).
+/// Built on the shared [`EnrollmentFlow`]. `request_signup` is the
+/// signup-specific body (provision-on-unknown-email is the inverse of
+/// recovery's silent no-op); consume marks the email verified, and finish
+/// enrols under the per-user credential cap with no cool-down.
 #[derive(Clone)]
 pub struct SignupManager {
     flow: EnrollmentFlow,
@@ -298,37 +300,10 @@ impl SignupManager {
             // unchanged (`Ok(())` + best-effort send), so sending to a
             // zero-credential existing address stays observationally identical
             // to a brand-new signup and adds no enumeration oracle.
-            let credential_count = self
-                .flow
-                .credentials()
-                .list_passkey_summaries_for_user(existing.id)
-                .await?
-                .len();
-            if credential_count == 0 {
-                // Same invalidate-prior / store-fresh / send path the
-                // new-user branch below takes. The signup-request rate limit
-                // enforced above already covers this send, so it cannot be
-                // used to email-bomb the address.
-                let url = verification::issue_link(
-                    self.flow.tokens().as_ref(),
-                    existing.id,
-                    VerificationPurpose::Signup,
-                    None,
-                    self.config.token_lifetime,
-                    &self.config.url_template,
-                    now,
-                )
-                .await?;
-                let email = self.flow.emails().signup_email(&existing, &url);
-                self.flow.send_best_effort(email, "signup link").await;
-                self.flow
-                    .emit(
-                        &context,
-                        AuditEventKind::SignupRequested {
-                            user_id: existing.id,
-                        },
-                    )
-                    .await;
+            if !self.flow.has_passkey(existing.id).await? {
+                // The signup-request rate limit enforced above already covers
+                // this send, so it cannot be used to email-bomb the address.
+                self.send_link(&existing, now, &context).await?;
                 tracing::info!(
                     outcome = "reissued",
                     "signup email re-sent to passkey-less user"
@@ -359,8 +334,24 @@ impl SignupManager {
             .await?;
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
-        // Invalidate any prior signup tokens for the user, store a fresh
-        // single-use token, and render the link URL.
+        self.send_link(&user, now, &context).await?;
+        tracing::info!(outcome = "sent", "signup email sent");
+        Ok(())
+    }
+
+    /// Issue a fresh signup link for `user`, superseding any earlier one,
+    /// send it, and audit the request.
+    ///
+    /// The send is best-effort: a transport failure must not become an error
+    /// response. The already-registered branch of `request_signup` returns
+    /// `Ok(())` with no send, so propagating a send error here would make a
+    /// bounce distinguish a fresh address from a registered one.
+    async fn send_link(
+        &self,
+        user: &User,
+        now: DateTime<Utc>,
+        context: &SessionContext,
+    ) -> Result<()> {
         let url = verification::issue_link(
             self.flow.tokens().as_ref(),
             user.id,
@@ -371,20 +362,14 @@ impl SignupManager {
             now,
         )
         .await?;
-        // Best-effort: a transport failure here must not become an error
-        // response. The already-registered branch above returns `Ok(())` with
-        // no send, so propagating a send error from this new-user branch would
-        // make a bounce distinguish a fresh address from a registered one.
-        let email = self.flow.emails().signup_email(&user, &url);
+        let email = self.flow.emails().signup_email(user, &url);
         self.flow.send_best_effort(email, "signup link").await;
-
         self.flow
             .emit(
-                &context,
+                context,
                 AuditEventKind::SignupRequested { user_id: user.id },
             )
             .await;
-        tracing::info!(outcome = "sent", "signup email sent");
         Ok(())
     }
 
@@ -402,7 +387,22 @@ impl SignupManager {
         token: &str,
         context: SessionContext,
     ) -> Result<VerificationConsumeOutcome> {
-        self.flow.consume(FlowKind::Signup, token, context).await
+        let user = self
+            .flow
+            .redeem_link(token, VerificationPurpose::Signup, &context)
+            .await?;
+        // Clicking a link sent to the address proves ownership.
+        self.flow.records().mark_email_verified(&user).await?;
+        let outcome = self.flow.start_enrollment(user.id).await?;
+
+        self.flow
+            .emit(
+                &context,
+                AuditEventKind::SignupConsumed { user_id: user.id },
+            )
+            .await;
+        tracing::info!(outcome = "consumed", "signup token consumed");
+        Ok(outcome)
     }
 
     /// Complete a signup-time passkey registration ceremony, send the
@@ -416,15 +416,15 @@ impl SignupManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<EnrollmentOutcome> {
-        self.flow
-            .finish(
-                FlowKind::Signup,
-                challenge_id,
-                response,
-                name,
-                context,
-                None,
-            )
-            .await
+        let policy = EnrollmentPolicy {
+            cooldown: None,
+            credential_cap: CredentialCap::Enforce,
+        };
+        let outcome = self
+            .flow
+            .enroll(challenge_id, response, name, context, policy)
+            .await?;
+        tracing::info!(outcome = "succeeded", "signup finished");
+        Ok(outcome)
     }
 }

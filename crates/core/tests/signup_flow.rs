@@ -227,6 +227,36 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
 }
 
 #[tokio::test]
+async fn finish_reads_the_user_once() {
+    let h = Harness::fresh();
+    h.signup
+        .request_signup("alice@example.com", None, SessionContext::default())
+        .await
+        .expect("request");
+    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
+    let consume = h
+        .signup
+        .consume_signup(&token, SessionContext::default())
+        .await
+        .expect("consume");
+    let mut wa = authenticator();
+    let attestation = wa.do_registration(consume.options);
+
+    h.user_store.reset();
+    h.signup
+        .finish_signup(
+            consume.challenge_id,
+            &attestation,
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish");
+
+    assert_eq!(h.user_store.reads_by_id(), 1);
+}
+
+#[tokio::test]
 async fn notification_send_failure_does_not_undo_successful_finish() {
     let h = Harness::fresh();
     h.signup

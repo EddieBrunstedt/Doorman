@@ -5,7 +5,7 @@
 //! ceremony and issue a session. This module owns the pieces that are
 //! genuinely identical between them — email normalization/validation, URL
 //! templating, token generation, rate-limit enforcement, token issuance,
-//! and the two result types — so [`signup`](crate::signup) and
+//! the consume and finish steps, and the two result types — so [`signup`](crate::signup) and
 //! [`recovery`](crate::recovery) read as thin specializations rather than
 //! parallel copies.
 //!
@@ -22,17 +22,18 @@ use chrono::{DateTime, Utc};
 
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
-use crate::audit::{Actor, AuditEvent, AuditEventKind, RecoveryFailureReason};
+use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, RecoveryFailureReason};
+use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::{Email, EmailSender, EmailTemplates};
 use crate::error::{Error, Result};
-use crate::passkey::PasskeyManager;
+use crate::passkey::{EnrollmentPolicy, PasskeyManager};
 use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::redeem::Redeemer;
 use crate::session::{IssuedSession, SessionContext};
 use crate::storage::{
-    PasskeyChallengeId, PasskeyCredentialStore, StoredPasskey, User, UserId, VerificationPurpose,
-    VerificationToken, VerificationTokenStore,
+    PasskeyChallengeId, StoredPasskey, User, UserId, VerificationPurpose, VerificationToken,
+    VerificationTokenStore,
 };
 use crate::token::generate_token;
 use crate::user::UserRecords;
@@ -180,67 +181,9 @@ pub(crate) async fn issue_link(
     Ok(build_url(url_template, &token))
 }
 
-/// Which verification flow an [`EnrollmentFlow`] operation is running for.
-/// The signup and recovery managers share the consume/finish skeleton; this
-/// names the handful of per-flow differences in that skeleton (token
-/// purpose, which audit events fire, whether consuming marks the email
-/// verified).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FlowKind {
-    Signup,
-    Recovery,
-}
-
-impl FlowKind {
-    fn purpose(self) -> VerificationPurpose {
-        match self {
-            FlowKind::Signup => VerificationPurpose::Signup,
-            FlowKind::Recovery => VerificationPurpose::Recovery,
-        }
-    }
-
-    /// Lower-case flow name used in the log lines the skeleton emits.
-    fn label(self) -> &'static str {
-        match self {
-            FlowKind::Signup => "signup",
-            FlowKind::Recovery => "recovery",
-        }
-    }
-
-    fn consumed_event(self, user_id: UserId) -> AuditEventKind {
-        match self {
-            FlowKind::Signup => AuditEventKind::SignupConsumed { user_id },
-            FlowKind::Recovery => AuditEventKind::RecoveryConsumed { user_id },
-        }
-    }
-
-    /// Whether consuming the token also marks the user's email verified.
-    /// Signup treats clicking a link sent to the address as proof of
-    /// ownership; recovery runs against an already-verified address, so it
-    /// leaves the flag untouched.
-    fn marks_email_verified(self) -> bool {
-        matches!(self, FlowKind::Signup)
-    }
-}
-
-/// Recovery-only extras for [`EnrollmentFlow::finish`]. The two always
-/// travel together — recovery supplies both, signup supplies neither — so
-/// they are bundled into one `Option` rather than two independent ones,
-/// making "cooldown without notification" unrepresentable. `cooldown` is
-/// the post-recovery deadline stamped onto both the new passkey and the new
-/// session; `notification` renders the recovery-completed email sent
-/// best-effort once enrollment succeeds.
-pub(crate) struct RecoveryFinish<'a> {
-    pub cooldown: std::time::Duration,
-    pub notification: &'a (dyn Fn(&User) -> Email + Send + Sync),
-}
-
-/// Shared dependencies and consume/finish skeleton behind the signup and
-/// recovery managers. Both managers hold one of these and delegate to it,
-/// passing an internal flow-kind selector plus the per-flow knobs
-/// (post-recovery passkey/session cool-down, finish-time notification) that
-/// distinguish the two flows. This is what keeps the two managers from
-/// being near-identical copies.
+/// Dependencies the signup and recovery managers share, and the consume and
+/// finish steps both flows run. Each manager composes these steps with its
+/// own policy, events and notices.
 #[derive(Clone)]
 pub struct EnrollmentFlow {
     passkey: PasskeyManager,
@@ -250,16 +193,14 @@ pub struct EnrollmentFlow {
     email: Arc<dyn EmailSender>,
     emails: Arc<dyn EmailTemplates>,
     rate_limiter: Arc<dyn RateLimiter>,
+    clock: Arc<dyn Clock>,
+    audit: AuditDispatch,
 }
 
 impl EnrollmentFlow {
     /// Build the shared enrollment flow from the [`CoreDeps`] context and
     /// the [`PasskeyManager`] the signup / recovery flows enrol credentials
-    /// through. The session manager, clock, and audit sink are not held
-    /// directly — the flow reaches them through its owned `PasskeyManager`,
-    /// which already carries the same collaborators, so they live in one
-    /// place. The user records, verification-token store, email transport,
-    /// email renderer, and rate limiter are taken from `deps`.
+    /// through.
     pub fn new(deps: &CoreDeps, passkey: PasskeyManager) -> Self {
         Self {
             passkey,
@@ -269,6 +210,8 @@ impl EnrollmentFlow {
             email: deps.email.clone(),
             emails: deps.emails.clone(),
             rate_limiter: deps.rate_limiter.clone(),
+            clock: deps.clock.clone(),
+            audit: deps.audit.clone(),
         }
     }
 
@@ -282,12 +225,17 @@ impl EnrollmentFlow {
         &self.records
     }
 
-    pub(crate) fn credentials(&self) -> &Arc<dyn PasskeyCredentialStore> {
-        self.passkey.credentials()
-    }
-
     pub(crate) fn tokens(&self) -> &Arc<dyn VerificationTokenStore> {
         &self.tokens
+    }
+
+    /// Whether `user_id` has at least one registered passkey.
+    pub(crate) async fn has_passkey(&self, user_id: UserId) -> Result<bool> {
+        Ok(!self
+            .passkey
+            .list_passkey_summaries(user_id)
+            .await?
+            .is_empty())
     }
 
     /// Send an email on a best-effort basis: a transport failure is logged
@@ -310,16 +258,15 @@ impl EnrollmentFlow {
     }
 
     pub(crate) fn now(&self) -> DateTime<Utc> {
-        self.passkey.clock().now()
+        self.clock.now()
     }
 
     /// Emit one audit event stamped with the current clock and the request
     /// context's IP / user-agent.
     pub(crate) async fn emit(&self, context: &SessionContext, kind: AuditEventKind) {
-        self.passkey
-            .audit()
+        self.audit
             .emit(AuditEvent {
-                timestamp: self.passkey.clock().now(),
+                timestamp: self.clock.now(),
                 actor: Actor::Subject {
                     ip: context.ip.clone(),
                     user_agent: context.user_agent.clone(),
@@ -340,136 +287,59 @@ impl EnrollmentFlow {
             .await;
     }
 
-    /// Redeem a verification link and start a passkey registration ceremony.
-    /// The token is consumed atomically (so a link cannot be replayed); on
-    /// signup the click also marks the email verified. A refused link is
-    /// audited as [`RedemptionFailed`](AuditEventKind::RedemptionFailed).
-    ///
-    /// The link is consumed before the ceremony starts, so starting it must
-    /// not fail on the per-user pending-registration cap: the user's
-    /// unfinished registration ceremonies are dropped first, and the new one
-    /// replaces them. A fresh link already supersedes older links of the same
-    /// purpose, and its ceremony supersedes theirs the same way.
-    pub(crate) async fn consume(
+    /// Redeem a signup or recovery link and return its active owner. The
+    /// token is consumed atomically, so a link cannot be replayed; a refused
+    /// link is audited as
+    /// [`RedemptionFailed`](AuditEventKind::RedemptionFailed).
+    pub(crate) async fn redeem_link(
         &self,
-        kind: FlowKind,
         token: &str,
-        context: SessionContext,
-    ) -> Result<VerificationConsumeOutcome> {
+        purpose: VerificationPurpose,
+        context: &SessionContext,
+    ) -> Result<User> {
         let user = self
             .redeemer
-            .enrollment_link(token, kind.purpose(), &context)
+            .enrollment_link(token, purpose, context)
             .await?;
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
+        Ok(user)
+    }
 
-        if kind.marks_email_verified() {
-            // Clicking a link sent to the address proves ownership.
-            self.records.mark_email_verified(&user).await?;
-        }
-
-        self.passkey
-            .invalidate_pending_registrations(user.id)
-            .await?;
-        let (challenge_id, options) = self.passkey.start_registration(user.id).await?;
-
-        self.emit(&context, kind.consumed_event(user.id)).await;
-        tracing::info!(outcome = "consumed", "{} token consumed", kind.label());
+    /// Start the passkey registration ceremony a redeemed link leads to.
+    pub(crate) async fn start_enrollment(
+        &self,
+        user_id: UserId,
+    ) -> Result<VerificationConsumeOutcome> {
+        let (challenge_id, options) = self.passkey.start_enrollment(user_id).await?;
         Ok(VerificationConsumeOutcome {
             challenge_id,
             options,
         })
     }
 
-    /// Finish a passkey registration ceremony and issue a session. When
-    /// `recovery` is set the new passkey and session share the same
-    /// post-recovery cool-down deadline and the recovery-completed email is
-    /// sent best-effort once the new passkey is enrolled. Both flows audit
-    /// `LoginSucceeded`.
-    pub(crate) async fn finish(
+    /// Finish the registration ceremony under `policy`, enrol the passkey,
+    /// issue a session, and audit
+    /// [`LoginSucceeded`](AuditEventKind::LoginSucceeded).
+    pub(crate) async fn enroll(
         &self,
-        kind: FlowKind,
         challenge_id: PasskeyChallengeId,
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
         context: SessionContext,
-        recovery: Option<RecoveryFinish<'_>>,
+        policy: EnrollmentPolicy,
     ) -> Result<EnrollmentOutcome> {
-        // The deadline is bound explicitly to the recovery-completion instant
-        // (`now + cooldown`) and is the single value applied to both the new
-        // passkey and the new session, so the two never disagree and the
-        // deadline is never re-derived from a credential/session `created_at`
-        // later on.
-        let cooldown_until = recovery.as_ref().map(|recovery| {
-            let cooldown = chrono::Duration::from_std(recovery.cooldown)
-                .expect("recovery cooldown overflows chrono::Duration; configure a smaller value");
-            self.passkey.clock().now() + cooldown
-        });
-
-        // `cooldown_until` is `Option<DateTime<Utc>>` (`Copy`); the passkey and
-        // session creation bodies both take it as an `Option`, so the deadline
-        // (or its absence) threads through one call each instead of a
-        // Some/None branch per side.
-        //
-        // Recovery bypasses the per-user credential cap: it is the
-        // all-credentials-lost escape hatch, and its single-use email token was
-        // already burned in `consume`. Rejecting it at the cap would brick every
-        // recovery attempt and leave the user permanently locked out, since they
-        // have no working authenticator to sign in and free a slot.
-        let bypass_credential_cap = kind == FlowKind::Recovery;
-        let passkey = self
+        let outcome = self
             .passkey
-            .finish_registration_inner(
-                challenge_id,
-                response,
-                name,
-                context.clone(),
-                cooldown_until,
-                bypass_credential_cap,
-            )
+            .enroll(challenge_id, response, name, context.clone(), policy)
             .await?;
-        let user = self.records.find(passkey.user_id).await?;
-
-        if kind == FlowKind::Recovery {
-            // Close the pre-recovery-challenge bypass: any registration
-            // ceremony begun before this recovery completed was minted without
-            // the cool-down stamp, so finishing it now would attach a
-            // credential outside the cool-down. Drop those pending challenges
-            // (the recovery's own challenge was already consumed by
-            // `finish_registration*` above, so this only sweeps the dangerous
-            // pre-recovery ones). This sweep runs before the recovery session
-            // is issued so a sweep failure aborts with `?` while no
-            // cool-down-bearing session has been minted, keeping the guarantee
-            // hard: a surviving pre-recovery bypass challenge can never coexist
-            // with a committed recovery session.
-            self.passkey
-                .invalidate_pending_registrations(user.id)
-                .await?;
-        }
-
-        let session = self
-            .passkey
-            .sessions()
-            .issue(user.id, context.clone(), cooldown_until)
-            .await?;
-
-        if let Some(recovery) = recovery {
-            // Best-effort — a notification-send failure is logged but does
-            // not roll back the enrollment (the passkey is already stored).
-            self.send_best_effort((recovery.notification)(&user), kind.label())
-                .await;
-        }
-
         self.emit(
             &context,
-            AuditEventKind::LoginSucceeded { user_id: user.id },
+            AuditEventKind::LoginSucceeded {
+                user_id: outcome.user.id,
+            },
         )
         .await;
-        tracing::info!(outcome = "succeeded", "{} finished", kind.label());
-        Ok(EnrollmentOutcome {
-            user,
-            session,
-            passkey,
-        })
+        Ok(outcome)
     }
 }
 

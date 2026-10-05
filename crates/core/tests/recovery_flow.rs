@@ -16,7 +16,7 @@ use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::recovery::{
-    MIN_COOLDOWN, RecoveryConfig, RecoveryConfigError, RecoveryRateLimits,
+    MAX_COOLDOWN, MIN_COOLDOWN, RecoveryConfig, RecoveryConfigError, RecoveryRateLimits,
 };
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{AccountStatus, PasskeyCredentialStore, User, UserStore};
@@ -1137,8 +1137,8 @@ async fn pre_recovery_challenge_is_invalidated_before_recovery_session() {
 
 #[tokio::test]
 async fn signup_does_not_invalidate_other_pending_registrations() {
-    // The bypass closure is recovery-specific: a signup finish must not sweep
-    // a user's other in-flight registration ceremonies.
+    // The sweep belongs to the recovery cool-down: a signup finish must not
+    // drop a user's other in-flight registration ceremonies.
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;
 
@@ -1154,8 +1154,8 @@ async fn signup_does_not_invalidate_other_pending_registrations() {
 
     // Run another full signup for the same address. It silently no-ops on the
     // known email, but exercising a signup finish is what matters: provision a
-    // fresh user and finish a signup so the shared `finish` path runs with
-    // `FlowKind::Signup`.
+    // fresh user and finish a signup so the shared enrolment runs without a
+    // cool-down.
     let other = provision_user(&h, "bob@example.com").await;
     assert_ne!(other.id, user.id);
 
@@ -1184,10 +1184,28 @@ fn recovery_config_with_subhour_cooldown_is_rejected() {
         .try_build();
     assert!(matches!(
         result.err(),
-        Some(AssemblyError::RecoveryCooldownTooShort(RecoveryConfigError::CooldownTooShort {
+        Some(AssemblyError::RecoveryCooldown(RecoveryConfigError::CooldownTooShort {
             configured,
             minimum,
         })) if configured == Duration::from_secs(60 * 30) && minimum == MIN_COOLDOWN
+    ));
+}
+
+#[test]
+fn recovery_config_above_ceiling_is_rejected() {
+    let configured = MAX_COOLDOWN + Duration::from_secs(1);
+    let result = Harness::builder()
+        .recovery_config(RecoveryConfig {
+            cooldown: configured,
+            ..recovery_config()
+        })
+        .try_build();
+    assert!(matches!(
+        result.err(),
+        Some(AssemblyError::RecoveryCooldown(RecoveryConfigError::CooldownTooLong {
+            configured: c,
+            maximum,
+        })) if c == configured && maximum == MAX_COOLDOWN
     ));
 }
 

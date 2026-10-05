@@ -298,8 +298,8 @@ fn subfloor_recovery_cooldown_is_rejected() {
         .build()
         .err();
     assert!(
-        matches!(err, Some(AssemblyError::RecoveryCooldownTooShort(_))),
-        "expected RecoveryCooldownTooShort, got: {err:?}"
+        matches!(err, Some(AssemblyError::RecoveryCooldown(_))),
+        "expected RecoveryCooldown, got: {err:?}"
     );
 }
 

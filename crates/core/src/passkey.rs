@@ -43,7 +43,7 @@ use crate::storage::{
     User, UserId,
 };
 use crate::user::UserRecords;
-use crate::verification::enforce_rate_limit;
+use crate::verification::{EnrollmentOutcome, enforce_rate_limit};
 
 /// Rate-limit policies for the passkey authentication ceremony endpoints.
 ///
@@ -110,6 +110,28 @@ impl Default for PasskeyRateLimits {
             authenticate_finish_per_credential: Some(Self::DEFAULT_FINISH_PER_CREDENTIAL),
         }
     }
+}
+
+/// Whether an enrolment through [`PasskeyManager::enroll`] counts against
+/// [`PasskeyConfig::max_credentials_per_user`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialCap {
+    /// Refuse the enrolment once the user holds the configured maximum.
+    Enforce,
+    /// Enrol whatever the user already holds.
+    Exempt,
+}
+
+/// The policy a flow enrols a passkey under through
+/// [`PasskeyManager::enroll`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EnrollmentPolicy {
+    /// Post-recovery cool-down started at enrolment and stamped on both the
+    /// new passkey and the new session, or `None` for an unrestricted
+    /// enrolment.
+    pub cooldown: Option<chrono::Duration>,
+    /// Whether the per-user credential cap applies.
+    pub credential_cap: CredentialCap,
 }
 
 /// WebAuthn relying-party configuration for passkey flows.
@@ -253,30 +275,6 @@ impl PasskeyManager {
         })
     }
 
-    /// Borrow the credential store, so the enrollment flow can inspect a
-    /// user's existing passkeys (e.g. count them) against the same one.
-    pub(crate) fn credentials(&self) -> &Arc<dyn PasskeyCredentialStore> {
-        &self.credentials
-    }
-
-    /// Borrow the session manager this passkey manager mints sessions
-    /// through, so the enrollment flow issues sessions against the same one.
-    pub(crate) fn sessions(&self) -> &SessionManager {
-        &self.sessions
-    }
-
-    /// Borrow the clock, so the enrollment flow reads time through the same
-    /// source.
-    pub(crate) fn clock(&self) -> &Arc<dyn Clock> {
-        &self.clock
-    }
-
-    /// Borrow the audit dispatch, so the enrollment flow emits (and traces)
-    /// through the same one.
-    pub(crate) fn audit(&self) -> &AuditDispatch {
-        &self.audit
-    }
-
     /// Begin registering a new passkey for `user_id`. The returned
     /// [`CreationChallengeResponse`] is the JSON payload to hand to
     /// `navigator.credentials.create` on the client; the
@@ -418,13 +416,12 @@ impl PasskeyManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<StoredPasskey> {
-        self.finish_registration_inner(challenge_id, response, name, context, None, false)
+        self.finish_registration_inner(challenge_id, response, name, context, None)
             .await
     }
 
     /// Complete a registration ceremony while overriding any cool-down stored
-    /// on the challenge. Recovery flows use this to bind the exact deadline
-    /// they also apply to the newly issued session.
+    /// on the challenge.
     #[tracing::instrument(
         skip(self, response, name, context),
         fields(method = "passkey", user_id = tracing::field::Empty),
@@ -443,65 +440,151 @@ impl PasskeyManager {
             name,
             context,
             Some(recovery_cooldown_until),
-            false,
         )
         .await
     }
 
-    /// Shared registration-finish body taking the cool-down deadline as an
-    /// `Option`. The two public wrappers above pass `None` / `Some(..)`; the
-    /// in-crate enrollment flow ([`crate::verification::EnrollmentFlow`]) calls
-    /// this directly so it threads its already-`Option`al deadline through one
-    /// call instead of branching.
-    pub(crate) async fn finish_registration_inner(
+    async fn finish_registration_inner(
         &self,
         challenge_id: PasskeyChallengeId,
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
         context: SessionContext,
         recovery_cooldown_override: Option<DateTime<Utc>>,
-        bypass_credential_cap: bool,
     ) -> Result<StoredPasskey> {
-        // Redeeming re-checks that the user the ceremony was started for still
-        // exists and is active. A concurrent delete or operator disable may
-        // have landed after the challenge was issued; enrolling now would
-        // orphan a credential or re-credential a disabled account. This is the
-        // hard backstop that keeps recovery from re-credentialing its way back
-        // in even when the link was consumed before the disable landed, and it
-        // gates every registration path. What remains is the window between
-        // this check and `add_passkey`.
-        let RedeemedRegistration {
-            user,
-            state: reg_state,
-            recovery_cooldown_until: challenge_recovery_cooldown_until,
-        } = self.redeemer.registration(challenge_id, &context).await?;
-        let user_id = user.id;
-        let now = self.clock.now();
-        tracing::Span::current().record("user_id", tracing::field::display(user_id));
+        let registration = self.redeem_registration(challenge_id, &context).await?;
+        self.enforce_credential_cap(registration.user.id).await?;
+        let credential =
+            self.verify_registration(&registration, response, name, recovery_cooldown_override)?;
+        self.store_credential(&registration.user, credential, &context)
+            .await
+    }
 
-        // Reject (never evict) once the per-user credential cap is reached:
-        // silently dropping an existing passkey would remove an authenticator
-        // the user still relies on. The summary projection avoids deserialising
-        // any credential blob just to count. Recovery bypasses this cap so the
-        // all-credentials-lost escape hatch can always land its one passkey.
-        if !bypass_credential_cap && let Some(max) = self.config.max_credentials_per_user {
-            let count = self
-                .credentials
-                .list_passkey_summaries_for_user(user_id)
-                .await?
-                .len();
-            if count >= max.get() as usize {
-                tracing::warn!(%user_id, max = max.get(), "passkey registration rejected: credential cap reached");
-                return Err(Error::ResourceLimitExceeded {
-                    resource: "credentials",
-                    limit: max.get(),
-                });
-            }
+    /// Start the registration ceremony an emailed signup or recovery link
+    /// leads to. The link is already consumed when this runs, so starting
+    /// must not fail on
+    /// [`max_pending_registrations_per_user`](PasskeyConfig::max_pending_registrations_per_user):
+    /// the user's unfinished registration ceremonies are dropped first and
+    /// the new one replaces them, the same way a fresh link supersedes older
+    /// ones.
+    pub(crate) async fn start_enrollment(
+        &self,
+        user_id: UserId,
+    ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
+        self.invalidate_pending_registrations(user_id).await?;
+        self.start_registration_inner(user_id, None).await
+    }
+
+    /// Finish the registration ceremony begun by
+    /// [`start_enrollment`](Self::start_enrollment), enrol the passkey, and
+    /// issue a session for its user.
+    ///
+    /// With a `policy.cooldown`, the new passkey and session share one
+    /// deadline, bound to this instant, and the user's other unfinished
+    /// registration ceremonies are dropped before anything is stored: they
+    /// were started without the cool-down, so finishing one later would add
+    /// a credential that escapes it.
+    ///
+    /// The passkey and session live in separate stores that may sit on
+    /// different backends, so enrolment is not atomic. Every check that can
+    /// refuse it runs before the passkey is stored, which leaves only session
+    /// issue after it, and that fails only on a storage error (the session
+    /// cap evicts rather than refuses). The passkey is then kept: the
+    /// authenticator already holds the credential, so deleting it would
+    /// strand a passkey the user can still sign in with.
+    pub(crate) async fn enroll(
+        &self,
+        challenge_id: PasskeyChallengeId,
+        response: &RegisterPublicKeyCredential,
+        name: Option<String>,
+        context: SessionContext,
+        policy: EnrollmentPolicy,
+    ) -> Result<EnrollmentOutcome> {
+        let cooldown_until = policy.cooldown.map(|cooldown| {
+            self.clock
+                .now()
+                .checked_add_signed(cooldown)
+                .unwrap_or(DateTime::<Utc>::MAX_UTC)
+        });
+
+        let registration = self.redeem_registration(challenge_id, &context).await?;
+        let user = &registration.user;
+        if policy.credential_cap == CredentialCap::Enforce {
+            self.enforce_credential_cap(user.id).await?;
         }
+        let credential = self.verify_registration(&registration, response, name, cooldown_until)?;
+        if cooldown_until.is_some() {
+            self.invalidate_pending_registrations(user.id).await?;
+        }
+        let passkey = self.store_credential(user, credential, &context).await?;
+        let session = self
+            .sessions
+            .issue(user.id, context, cooldown_until)
+            .await?;
 
+        Ok(EnrollmentOutcome {
+            user: registration.user,
+            session,
+            passkey,
+        })
+    }
+
+    /// Redeem a registration challenge. Redeeming re-checks that the user the
+    /// ceremony was started for still exists and is active: a concurrent
+    /// delete or operator disable may have landed after the challenge was
+    /// issued, and enrolling then would orphan a credential or re-credential
+    /// a disabled account. This is the backstop that keeps recovery from
+    /// re-credentialing its way back in even when the link was consumed
+    /// before the disable landed. What remains is the window between this
+    /// check and `add_passkey`.
+    async fn redeem_registration(
+        &self,
+        challenge_id: PasskeyChallengeId,
+        context: &SessionContext,
+    ) -> Result<RedeemedRegistration> {
+        let registration = self.redeemer.registration(challenge_id, context).await?;
+        tracing::Span::current().record("user_id", tracing::field::display(registration.user.id));
+        Ok(registration)
+    }
+
+    /// Reject (never evict) a registration once the user holds
+    /// [`max_credentials_per_user`](PasskeyConfig::max_credentials_per_user)
+    /// passkeys: silently dropping an existing passkey would remove an
+    /// authenticator the user still relies on. The summary projection avoids
+    /// deserialising any credential blob just to count.
+    async fn enforce_credential_cap(&self, user_id: UserId) -> Result<()> {
+        let Some(max) = self.config.max_credentials_per_user else {
+            return Ok(());
+        };
+        let count = self
+            .credentials
+            .list_passkey_summaries_for_user(user_id)
+            .await?
+            .len();
+        if count >= max.get() as usize {
+            tracing::warn!(%user_id, max = max.get(), "passkey registration rejected: credential cap reached");
+            return Err(Error::ResourceLimitExceeded {
+                resource: "credentials",
+                limit: max.get(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Verify the authenticator's response against the redeemed ceremony and
+    /// build the credential to store. A `recovery_cooldown_override` takes
+    /// precedence over the deadline the ceremony was started with.
+    fn verify_registration(
+        &self,
+        registration: &RedeemedRegistration,
+        response: &RegisterPublicKeyCredential,
+        name: Option<String>,
+        recovery_cooldown_override: Option<DateTime<Utc>>,
+    ) -> Result<StoredPasskey> {
+        let user_id = registration.user.id;
         let passkey = self
             .webauthn
-            .finish_passkey_registration(response, &reg_state)
+            .finish_passkey_registration(response, &registration.state)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
 
         let metadata = PasskeyMetadata::from_passkey(&passkey);
@@ -509,40 +592,45 @@ impl PasskeyManager {
             tracing::warn!(%user_id, outcome = "user_verification_missing", "passkey registration failed");
             return Err(Error::UserVerificationRequired);
         }
-        let credential = StoredPasskey {
+        Ok(StoredPasskey {
             credential_id: passkey.cred_id().to_vec(),
             user_id,
             passkey: encode_credential(&passkey)?,
             name,
-            created_at: now,
+            created_at: self.clock.now(),
             last_used_at: None,
             aaguid: metadata.aaguid,
             transports: metadata.transports,
             backup_eligible: metadata.backup_eligible,
             backup_state: metadata.backup_state,
             recovery_cooldown_until: recovery_cooldown_override
-                .or(challenge_recovery_cooldown_until),
-        };
+                .or(registration.recovery_cooldown_until),
+        })
+    }
+
+    /// Store a verified credential for `user`, audit it, and send the
+    /// best-effort passkey-registered notice.
+    async fn store_credential(
+        &self,
+        user: &User,
+        credential: StoredPasskey,
+        context: &SessionContext,
+    ) -> Result<StoredPasskey> {
         self.credentials.add_passkey(credential.clone()).await?;
 
         self.audit
             .emit(AuditEvent {
-                timestamp: now,
+                timestamp: self.clock.now(),
                 actor: Actor::Subject {
-                    ip: context.ip,
-                    user_agent: context.user_agent,
+                    ip: context.ip.clone(),
+                    user_agent: context.user_agent.clone(),
                 },
-                kind: AuditEventKind::CredentialAdded { user_id },
+                kind: AuditEventKind::CredentialAdded { user_id: user.id },
             })
             .await;
-        if let Some(user) = self
-            .user_for_notification(user_id, "passkey registered")
-            .await
-        {
-            self.notifier
-                .passkey_registered(&user, credential.name.as_deref())
-                .await;
-        }
+        self.notifier
+            .passkey_registered(user, credential.name.as_deref())
+            .await;
         Ok(credential)
     }
 
@@ -840,16 +928,10 @@ impl PasskeyManager {
             .await?)
     }
 
-    /// Invalidate every outstanding passkey registration challenge for
-    /// `user_id`, returning the number dropped.
-    ///
-    /// Recovery completion calls this so a registration ceremony begun before
-    /// the recovery cannot be finished afterwards: such a challenge was minted
-    /// without the post-recovery cool-down stamp, so finishing it post-recovery
-    /// would attach a credential outside the cool-down window. Dropping the
-    /// pending challenges forces a fresh ceremony, which — when started from the
-    /// restricted recovery session — inherits the active deadline.
-    pub(crate) async fn invalidate_pending_registrations(&self, user_id: UserId) -> Result<u64> {
+    /// Drop every unfinished registration ceremony for `user_id`.
+    /// [`start_enrollment`](Self::start_enrollment) and
+    /// [`enroll`](Self::enroll) say why each needs it.
+    async fn invalidate_pending_registrations(&self, user_id: UserId) -> Result<()> {
         let dropped = self
             .challenges
             .delete_registrations_for_user(user_id)
@@ -857,7 +939,7 @@ impl PasskeyManager {
         if dropped > 0 {
             tracing::info!(%user_id, dropped, "pending passkey registrations invalidated");
         }
-        Ok(dropped)
+        Ok(())
     }
 
     /// Remove a passkey on behalf of the authenticated `session`. The

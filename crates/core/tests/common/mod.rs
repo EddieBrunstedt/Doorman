@@ -19,7 +19,10 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+use async_trait::async_trait;
 
 use doorman_core::account::{AccountConfig, AccountManager};
 use doorman_core::assembly::{AssemblyError, AuthCore};
@@ -27,6 +30,7 @@ use doorman_core::audit::{AuditEvent, AuditEventKind, AuditSink};
 use doorman_core::cache::SessionCacheConfig;
 use doorman_core::clock::Clock;
 use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
+use doorman_core::error::StorageResult;
 use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
@@ -103,6 +107,66 @@ pub fn recovery_config() -> RecoveryConfig {
     }
 }
 
+/// The harness's [`UserStore`]: the in-memory store, counting lookups by id
+/// so a test can pin how often a flow reads the user.
+pub struct CountingUserStore {
+    inner: Arc<InMemoryUserStore>,
+    reads_by_id: AtomicUsize,
+}
+
+impl CountingUserStore {
+    /// Lookups by id since the last [`reset`](Self::reset).
+    pub fn reads_by_id(&self) -> usize {
+        self.reads_by_id.load(Ordering::SeqCst)
+    }
+
+    pub fn reset(&self) {
+        self.reads_by_id.store(0, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl UserStore for CountingUserStore {
+    async fn create_user(&self, user: User) -> StorageResult<()> {
+        self.inner.create_user(user).await
+    }
+
+    async fn find_user_by_id(&self, id: UserId) -> StorageResult<Option<User>> {
+        self.reads_by_id.fetch_add(1, Ordering::SeqCst);
+        self.inner.find_user_by_id(id).await
+    }
+
+    async fn find_user_by_email(&self, email: &str) -> StorageResult<Option<User>> {
+        self.inner.find_user_by_email(email).await
+    }
+
+    async fn set_user_status(
+        &self,
+        id: UserId,
+        status: AccountStatus,
+        at: DateTime<Utc>,
+    ) -> StorageResult<()> {
+        self.inner.set_user_status(id, status, at).await
+    }
+
+    async fn set_user_email(
+        &self,
+        id: UserId,
+        email: &str,
+        at: DateTime<Utc>,
+    ) -> StorageResult<()> {
+        self.inner.set_user_email(id, email, at).await
+    }
+
+    async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
+        self.inner.mark_email_verified(id, at).await
+    }
+
+    async fn delete_user(&self, id: UserId) -> StorageResult<()> {
+        self.inner.delete_user(id).await
+    }
+}
+
 /// In-memory stores plus every manager [`AuthCore::builder`] wires over them,
 /// all sharing one clock, audit sink, and email sender.
 pub struct Harness {
@@ -118,6 +182,8 @@ pub struct Harness {
     /// reporting cache hits and misses to [`metrics`](Self::metrics).
     pub resolver: SessionResolver,
     pub users: Arc<InMemoryUserStore>,
+    /// The store the managers actually read users through.
+    pub user_store: Arc<CountingUserStore>,
     pub sessions: Arc<InMemorySessionStore>,
     pub tokens: Arc<InMemoryVerificationTokenStore>,
     pub credentials: Arc<InMemoryPasskeyCredentialStore>,
@@ -266,8 +332,13 @@ impl HarnessBuilder {
         let clock: Arc<MockClock> = Arc::new(MockClock::new(ts(2026, 1, 1)));
         let metrics: Arc<CapturingMetrics> = Arc::new(CapturingMetrics::new());
 
+        let user_store = Arc::new(CountingUserStore {
+            inner: users.clone(),
+            reads_by_id: AtomicUsize::new(0),
+        });
+
         let storage = Storage {
-            users: users.clone(),
+            users: user_store.clone(),
             sessions: sessions.clone(),
             verification_tokens: tokens.clone(),
             passkey_credentials: credentials.clone(),
@@ -305,6 +376,7 @@ impl HarnessBuilder {
             session_manager: core.session_manager,
             resolver: core.resolver,
             users,
+            user_store,
             sessions,
             tokens,
             credentials,

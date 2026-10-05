@@ -34,8 +34,9 @@ use crate::storage::{
 /// one field with struct-update syntax.
 ///
 /// The [`SessionManager`] is held rather than the bare session store
-/// because the passkey and enrollment flows issue sessions through it (and
-/// must observe the same invalidation hook the session layer installs).
+/// because the passkey manager issues sessions through it, at sign-in and at
+/// signup / recovery enrolment (and must observe the same invalidation hook
+/// the session layer installs).
 /// Build the `SessionManager` first, wire any invalidation hook onto it,
 /// then assemble `CoreDeps`.
 #[derive(Clone)]
@@ -72,8 +73,7 @@ pub struct CoreDeps {
     /// [`NoopMetricSink`]; set a host backend with
     /// [`with_metrics`](Self::with_metrics).
     pub metrics: Arc<dyn MetricSink>,
-    /// Session manager the passkey and enrollment flows mint sessions
-    /// through.
+    /// Session manager the passkey manager mints sessions through.
     pub sessions: SessionManager,
     /// Re-authentication manager the destructive flows (account deletion,
     /// email-change request, passkey removal) gate through. Carries the

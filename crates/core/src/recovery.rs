@@ -30,15 +30,16 @@ use std::time::Duration;
 
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
+use crate::assembly::MAX_LIFETIME;
 use crate::audit::{AuditEventKind, RecoveryFailureReason};
 use crate::error::Result;
+use crate::passkey::{CredentialCap, EnrollmentPolicy};
 use crate::rate_limit::RateLimitPolicy;
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, VerificationPurpose};
 use crate::user;
 use crate::verification::{
-    self, EnrollmentFlow, EnrollmentOutcome, FlowKind, RecoveryFinish, TOKEN_PLACEHOLDER,
-    VerificationConsumeOutcome,
+    self, EnrollmentFlow, EnrollmentOutcome, TOKEN_PLACEHOLDER, VerificationConsumeOutcome,
 };
 
 /// Configuration for issuing and consuming recovery tokens.
@@ -63,9 +64,9 @@ pub struct RecoveryConfig {
     /// restricted until this deadline; destructive surfaces (delete passkey,
     /// revoke other sessions — see
     /// [`crate::error::Error::RecoveryCooldownActive`]) refuse requests from
-    /// restricted sessions. Floor of one hour enforced by
-    /// [`RecoveryManager::new`] unless [`danger_allow_cooldown_below_floor`]
-    /// is set.
+    /// restricted sessions. [`RecoveryManager::new`] enforces a floor of
+    /// [`MIN_COOLDOWN`] unless [`danger_allow_cooldown_below_floor`] is set,
+    /// and a ceiling of [`MAX_COOLDOWN`].
     ///
     /// [`danger_allow_cooldown_below_floor`]: RecoveryConfig::danger_allow_cooldown_below_floor
     pub cooldown: Duration,
@@ -92,12 +93,17 @@ pub struct RecoveryConfig {
 /// [`RecoveryConfig::danger_allow_cooldown_below_floor`].
 pub const MIN_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 
+/// Maximum permitted [`RecoveryConfig::cooldown`]: ten years, the same
+/// ceiling every other configured lifetime has. A longer value is almost
+/// certainly a units mistake.
+pub const MAX_COOLDOWN: Duration = MAX_LIFETIME;
+
 /// Rejection returned by [`RecoveryManager::new`] when the supplied
 /// [`RecoveryConfig`] is invalid. Construction is fallible rather than a
 /// panic so the misconfiguration is threaded back to the host through the
-/// assembly builder as [`AssemblyError::RecoveryCooldownTooShort`].
+/// assembly builder as [`AssemblyError::RecoveryCooldown`].
 ///
-/// [`AssemblyError::RecoveryCooldownTooShort`]: crate::assembly::AssemblyError::RecoveryCooldownTooShort
+/// [`AssemblyError::RecoveryCooldown`]: crate::assembly::AssemblyError::RecoveryCooldown
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RecoveryConfigError {
     /// `cooldown` is below the documented [`MIN_COOLDOWN`] floor and
@@ -113,6 +119,14 @@ pub enum RecoveryConfigError {
         configured: Duration,
         /// The minimum cool-down doorman enforces.
         minimum: Duration,
+    },
+    /// `cooldown` is above [`MAX_COOLDOWN`].
+    #[error("recovery cooldown ({configured:?}) is above the ceiling of {maximum:?}")]
+    CooldownTooLong {
+        /// The cool-down the host configured.
+        configured: Duration,
+        /// The maximum cool-down doorman accepts.
+        maximum: Duration,
     },
 }
 
@@ -206,22 +220,25 @@ impl Default for RecoveryConfig {
 
 /// Manager for the three-step recovery flow.
 ///
-/// A thin wrapper over the shared [`EnrollmentFlow`]: `consume_recovery`
-/// delegates directly and `finish_recovery` delegates with the cool-down
-/// and success-notification knobs set. `request_recovery` stays here — its
-/// silent-no-op-on-unknown-email behaviour and extra rate-limit policies
-/// are what make it distinct from signup's request path.
+/// Built on the shared [`EnrollmentFlow`]. `request_recovery` silently
+/// no-ops on an unknown email and applies extra rate-limit policies; finish
+/// enrols under the post-recovery cool-down, exempt from the per-user
+/// credential cap, and sends the recovery-completed notice.
 #[derive(Clone)]
 pub struct RecoveryManager {
     flow: EnrollmentFlow,
     config: RecoveryConfig,
+    /// `config.cooldown`, converted once by [`RecoveryManager::new`].
+    cooldown: chrono::Duration,
 }
 
 impl RecoveryManager {
     /// Construct a `RecoveryManager`.
     ///
-    /// Returns [`RecoveryConfigError::CooldownTooShort`] if `config.cooldown`
-    /// is below [`MIN_COOLDOWN`] (one hour) and
+    /// Returns [`RecoveryConfigError::CooldownTooLong`] if `config.cooldown`
+    /// is above [`MAX_COOLDOWN`], and
+    /// [`RecoveryConfigError::CooldownTooShort`] if it is below
+    /// [`MIN_COOLDOWN`] (one hour) and
     /// [`config.danger_allow_cooldown_below_floor`] is `false`. The floor
     /// exists because the cool-down is the only thing protecting a
     /// freshly-recovered account from an attacker who phished the link before
@@ -234,13 +251,25 @@ impl RecoveryManager {
         flow: EnrollmentFlow,
         config: RecoveryConfig,
     ) -> std::result::Result<Self, RecoveryConfigError> {
+        let too_long = RecoveryConfigError::CooldownTooLong {
+            configured: config.cooldown,
+            maximum: MAX_COOLDOWN,
+        };
+        if config.cooldown > MAX_COOLDOWN {
+            return Err(too_long);
+        }
         if config.cooldown < MIN_COOLDOWN && !config.danger_allow_cooldown_below_floor {
             return Err(RecoveryConfigError::CooldownTooShort {
                 configured: config.cooldown,
                 minimum: MIN_COOLDOWN,
             });
         }
-        Ok(Self { flow, config })
+        let cooldown = chrono::Duration::from_std(config.cooldown).map_err(|_| too_long)?;
+        Ok(Self {
+            flow,
+            config,
+            cooldown,
+        })
     }
 
     /// Issue a recovery link to `email`. Returns `Ok(())` regardless of
@@ -386,7 +415,20 @@ impl RecoveryManager {
         token: &str,
         context: SessionContext,
     ) -> Result<VerificationConsumeOutcome> {
-        self.flow.consume(FlowKind::Recovery, token, context).await
+        let user = self
+            .flow
+            .redeem_link(token, VerificationPurpose::Recovery, &context)
+            .await?;
+        let outcome = self.flow.start_enrollment(user.id).await?;
+
+        self.flow
+            .emit(
+                &context,
+                AuditEventKind::RecoveryConsumed { user_id: user.id },
+            )
+            .await;
+        tracing::info!(outcome = "consumed", "recovery token consumed");
+        Ok(outcome)
     }
 
     /// Complete the recovery-time passkey registration ceremony and issue
@@ -400,22 +442,28 @@ impl RecoveryManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<EnrollmentOutcome> {
-        self.flow
-            .finish(
-                FlowKind::Recovery,
-                challenge_id,
-                response,
-                name,
-                context,
-                Some(RecoveryFinish {
-                    cooldown: self.config.cooldown,
-                    notification: &|user| {
-                        self.flow
-                            .emails()
-                            .recovery_completed_notification_email(user)
-                    },
-                }),
-            )
-            .await
+        let policy = EnrollmentPolicy {
+            cooldown: Some(self.cooldown),
+            // Recovery is the all-credentials-lost escape hatch, and its
+            // single-use link was already burned at consume. Refusing it at
+            // the cap would leave a user with no working authenticator
+            // permanently locked out, since they cannot sign in to free a
+            // slot.
+            credential_cap: CredentialCap::Exempt,
+        };
+        let outcome = self
+            .flow
+            .enroll(challenge_id, response, name, context, policy)
+            .await?;
+
+        // Best-effort: a send failure does not undo the enrolment.
+        let notification = self
+            .flow
+            .emails()
+            .recovery_completed_notification_email(&outcome.user);
+        self.flow.send_best_effort(notification, "recovery").await;
+
+        tracing::info!(outcome = "succeeded", "recovery finished");
+        Ok(outcome)
     }
 }
