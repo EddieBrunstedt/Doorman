@@ -393,7 +393,8 @@ pub enum AuthFailureReason {
     InvalidChallenge,
     /// The authentication ceremony had expired before it was finished.
     ExpiredChallenge,
-    /// The asserted credential id is not registered.
+    /// The asserted credential id is not registered, or its owner was deleted
+    /// while the ceremony was in flight.
     UnknownCredential,
     /// The authenticator did not assert a user handle, or asserted one that
     /// does not map to the credential's stored owner. Either way the
@@ -411,6 +412,9 @@ pub enum AuthFailureReason {
     /// The assertion failed `webauthn-rs` verification for any other reason
     /// (bad signature, origin mismatch, malformed response, etc.).
     BadAssertion,
+    /// The assertion verified but the account is disabled by an operator, so
+    /// no session is minted.
+    AccountDisabled,
 }
 
 /// Why a passkey re-authentication attempt did not succeed. Pairs with

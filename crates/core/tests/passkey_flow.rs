@@ -12,7 +12,9 @@ use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::passkey::{PasskeyConfig, PasskeyRateLimits};
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
-use doorman_core::storage::{PasskeyChallengeStore, PasskeyCredentialStore, UserId, UserStore};
+use doorman_core::storage::{
+    AccountStatus, PasskeyChallengeStore, PasskeyCredentialStore, UserId, UserStore,
+};
 use doorman_test_support::MockClock;
 
 use common::{
@@ -587,6 +589,67 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
             .iter()
             .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. })),
         "no login-succeeded event on regression"
+    );
+}
+
+#[tokio::test]
+async fn finish_authentication_refuses_disabled_account() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "frozen@example.com").await;
+    let mut wa = authenticator();
+    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+
+    let mut disabled = user.clone();
+    disabled.status = AccountStatus::Disabled { at: h.clock.now() };
+    h.users.update_user(disabled).await.expect("disable user");
+
+    let (auth_id, rcr) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
+    let assertion = wa.do_authentication(rcr, &cred.credential_id);
+
+    let err = h
+        .passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect_err("disabled account must be refused");
+    assert!(matches!(err, Error::AccountDisabled));
+    assert_eq!(
+        h.sessions.len(),
+        0,
+        "no session minted for a disabled account"
+    );
+    assert!(h.challenges.is_empty(), "challenge consumed");
+
+    let stored = h
+        .credentials
+        .find_passkey_by_credential_id(&cred.credential_id)
+        .await
+        .expect("find credential")
+        .expect("credential persisted");
+    assert_eq!(
+        stored.last_used_at, None,
+        "credential not updated on refusal"
+    );
+
+    let events = kinds(&h.audit.events());
+    assert!(
+        events.iter().any(|k| matches!(
+            k,
+            AuditEventKind::AuthenticationFailed {
+                user_id: Some(uid),
+                reason: AuthFailureReason::AccountDisabled,
+            } if *uid == user.id
+        )),
+        "refusal emits an account-disabled audit event"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. })),
+        "no login-succeeded event for a disabled account"
     );
 }
 

@@ -660,6 +660,10 @@ impl PasskeyManager {
     /// Complete an authentication ceremony, issuing a session on success.
     /// If the authenticated passkey still carries an active recovery
     /// cool-down deadline, the issued session inherits that restriction.
+    ///
+    /// A disabled account is refused with [`Error::AccountDisabled`] after the
+    /// assertion verifies: no session is minted and the credential is not
+    /// updated.
     #[tracing::instrument(
         skip(self, response, context),
         fields(method = "passkey", user_id = tracing::field::Empty),
@@ -790,6 +794,34 @@ impl PasskeyManager {
             )
             .await;
             return Err(Error::UserVerificationRequired);
+        }
+
+        // Refuse a disabled account (or one deleted while the ceremony was in
+        // flight) before anything is persisted or minted. The check sits after
+        // the assertion verifies so only the credential holder learns the
+        // account is disabled; the single-use challenge stays consumed.
+        match self.users.find_user_by_id(user_id).await? {
+            None => {
+                self.emit_auth_failure(
+                    now,
+                    &context,
+                    Some(user_id),
+                    AuthFailureReason::UnknownCredential,
+                )
+                .await;
+                return Err(Error::UserNotFound);
+            }
+            Some(user) if !user.status.is_active() => {
+                self.emit_auth_failure(
+                    now,
+                    &context,
+                    Some(user_id),
+                    AuthFailureReason::AccountDisabled,
+                )
+                .await;
+                return Err(Error::AccountDisabled);
+            }
+            Some(_) => {}
         }
 
         let active_recovery_cooldown_until = credential.active_recovery_cooldown_until(now);
