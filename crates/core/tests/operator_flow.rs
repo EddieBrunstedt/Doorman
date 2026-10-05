@@ -6,14 +6,18 @@ mod common;
 use chrono::Utc;
 use doorman_core::Error;
 use doorman_core::audit::RecoveryFailureReason;
-use doorman_core::audit::{Actor, AuditEvent, AuditEventKind, OperatorActor};
+use doorman_core::audit::{Actor, AuditEvent, AuditEventKind, OperatorActor, SecretKind};
 use doorman_core::operator::{NotificationPolicy, OperatorNotice};
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{
     AccountStatus, PasskeyCredentialStore, SessionId, SessionStore, UserId, UserStore,
 };
 
-use common::{Harness, HarnessBuilder, provision_user, session_for};
+use common::{
+    Harness, HarnessBuilder, RECOVERY_URL, assert_last_redemption_unknown, authenticator,
+    last_email_change_token, passkey_count, provision_user, session_count, session_for,
+    token_from_email,
+};
 
 /// The first credential id registered for `user` by `provision_user`.
 async fn first_credential_id(h: &Harness, user_id: UserId) -> Vec<u8> {
@@ -65,15 +69,24 @@ async fn operator_delete_cascades_all_stores() {
         )
         .await
         .expect("request email change");
-    h.passkey
+    let email_change_token = last_email_change_token(&h);
+    let (challenge_id, options) = h
+        .passkey
         .start_registration(user.id)
         .await
         .expect("start a pending registration");
+    let attestation = authenticator().do_registration(options);
 
-    assert_eq!(h.sessions.len(), 1, "signup left an active session");
-    assert_eq!(h.credentials.len(), 1, "signup left a credential");
-    assert_eq!(h.tokens.len(), 1, "email-change token outstanding");
-    assert_eq!(h.challenges.len(), 1, "pending registration challenge");
+    assert_eq!(
+        session_count(&h, user.id).await,
+        1,
+        "signup left an active session"
+    );
+    assert_eq!(
+        passkey_count(&h, user.id).await,
+        1,
+        "signup left a credential"
+    );
 
     h.operator
         .delete_account(user.id, operator())
@@ -88,10 +101,26 @@ async fn operator_delete_cascades_all_stores() {
             .is_none(),
         "the user row is gone",
     );
-    assert_eq!(h.sessions.len(), 0, "sessions cascaded");
-    assert_eq!(h.credentials.len(), 0, "credentials cascaded");
-    assert_eq!(h.tokens.len(), 0, "verification tokens cascaded");
-    assert_eq!(h.challenges.len(), 0, "pending ceremonies cascaded");
+    assert_eq!(session_count(&h, user.id).await, 0, "sessions cascaded");
+    assert_eq!(passkey_count(&h, user.id).await, 0, "credentials cascaded");
+
+    // The outstanding link and ceremony are refused as unknown, not as
+    // belonging to a deleted user: their rows went with the account.
+    let err = h
+        .account
+        .confirm_email_change(&email_change_token, SessionContext::default())
+        .await
+        .expect_err("the email-change link is gone");
+    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert_last_redemption_unknown(&h, SecretKind::EmailChangeLink);
+
+    let err = h
+        .passkey
+        .finish_registration(challenge_id, &attestation, None, SessionContext::default())
+        .await
+        .expect_err("the pending ceremony is gone");
+    assert!(matches!(err, Error::InvalidPasskeyChallenge));
+    assert_last_redemption_unknown(&h, SecretKind::RegistrationChallenge);
 }
 
 #[tokio::test]
@@ -149,8 +178,16 @@ async fn operator_delete_unknown_user_fails_before_touching_stores() {
             .is_some(),
         "bystander survives",
     );
-    assert_eq!(h.sessions.len(), 1, "bystander session untouched");
-    assert_eq!(h.credentials.len(), 1, "bystander credential untouched");
+    assert_eq!(
+        session_count(&h, bystander.id).await,
+        1,
+        "bystander session untouched"
+    );
+    assert_eq!(
+        passkey_count(&h, bystander.id).await,
+        1,
+        "bystander credential untouched"
+    );
     assert!(
         !h.audit
             .events()
@@ -175,7 +212,11 @@ async fn operator_remove_passkey_attributes_to_operator_and_sends_operator_copy(
         .await
         .expect("operator remove passkey");
 
-    assert_eq!(h.credentials.len(), 0, "the credential was removed");
+    assert_eq!(
+        passkey_count(&h, user.id).await,
+        0,
+        "the credential was removed"
+    );
 
     // The removal is attributed to the operator, not the subject.
     let removed = h
@@ -263,7 +304,7 @@ async fn operator_remove_passkey_unknown_user_fails_loudly() {
         "expected UserNotFound, got {err:?}"
     );
     assert_eq!(
-        h.credentials.len(),
+        passkey_count(&h, victim.id).await,
         1,
         "no credential was removed for a missing target",
     );
@@ -286,7 +327,11 @@ async fn operator_remove_passkey_suppresses_notice_when_policy_off() {
         .expect("operator remove passkey");
 
     // Still removed and audited, but no subject notice was sent.
-    assert_eq!(h.credentials.len(), 0, "the credential was removed");
+    assert_eq!(
+        passkey_count(&h, user.id).await,
+        0,
+        "the credential was removed"
+    );
     assert!(
         h.audit.events().iter().any(|e| matches!(
             e.kind,
@@ -317,7 +362,11 @@ async fn operator_revoke_session_attributes_to_operator() {
         .await
         .expect("operator revoke session");
 
-    assert_eq!(h.sessions.len(), 0, "the session was revoked");
+    assert_eq!(
+        session_count(&h, user.id).await,
+        0,
+        "the session was revoked"
+    );
     let revoked = h
         .audit
         .events()
@@ -385,7 +434,7 @@ async fn operator_revoke_session_unknown_user_fails_loudly() {
         "expected UserNotFound, got {err:?}"
     );
     assert_eq!(
-        h.sessions.len(),
+        session_count(&h, victim.id).await,
         1,
         "no session was revoked for a missing target"
     );
@@ -399,7 +448,11 @@ async fn operator_revoke_session_unknown_user_fails_loudly() {
 async fn operator_revoke_all_clears_sessions_and_suppresses_notice_by_default() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
-    assert_eq!(h.sessions.len(), 1, "user starts with a session");
+    assert_eq!(
+        session_count(&h, user.id).await,
+        1,
+        "user starts with a session"
+    );
 
     let count = h
         .operator
@@ -407,7 +460,7 @@ async fn operator_revoke_all_clears_sessions_and_suppresses_notice_by_default() 
         .await
         .expect("operator revoke all");
     assert_eq!(count, 1, "the one active session was revoked");
-    assert_eq!(h.sessions.len(), 0, "every session is gone");
+    assert_eq!(session_count(&h, user.id).await, 0, "every session is gone");
 
     // sessions_revoked defaults to Suppress, so no notice goes out.
     assert!(
@@ -458,11 +511,10 @@ async fn operator_revoke_all_unknown_user_fails_loudly() {
         "expected UserNotFound, got {err:?}"
     );
     assert_eq!(
-        h.sessions.len(),
+        session_count(&h, bystander.id).await,
         1,
         "the bystander's session is untouched by a failed revoke-all",
     );
-    let _ = bystander;
 }
 
 #[tokio::test]
@@ -626,7 +678,11 @@ async fn status_of(h: &Harness, user_id: UserId) -> AccountStatus {
 async fn operator_disable_freezes_account_and_drops_live_sessions() {
     let h = Harness::fresh();
     let user = provision_user(&h, "frozen@example.com").await;
-    assert_eq!(h.sessions.len(), 1, "user starts with a live session");
+    assert_eq!(
+        session_count(&h, user.id).await,
+        1,
+        "user starts with a live session"
+    );
 
     h.operator
         .disable(user.id, operator())
@@ -639,7 +695,11 @@ async fn operator_disable_freezes_account_and_drops_live_sessions() {
         matches!(status_of(&h, user.id).await, AccountStatus::Disabled { .. }),
         "the account resolves as Disabled",
     );
-    assert_eq!(h.sessions.len(), 0, "every live session was revoked");
+    assert_eq!(
+        session_count(&h, user.id).await,
+        0,
+        "every live session was revoked"
+    );
 }
 
 #[tokio::test]
@@ -743,7 +803,11 @@ async fn operator_disable_is_idempotent() {
         matches!(status_of(&h, user.id).await, AccountStatus::Disabled { .. }),
         "the account is still Disabled after a redundant disable",
     );
-    assert_eq!(h.sessions.len(), 0, "no live sessions reappear");
+    assert_eq!(
+        session_count(&h, user.id).await,
+        0,
+        "no live sessions reappear"
+    );
 }
 
 #[tokio::test]
@@ -765,7 +829,11 @@ async fn operator_disable_unknown_user_fails_loudly() {
         matches!(status_of(&h, bystander.id).await, AccountStatus::Active),
         "bystander stays active",
     );
-    assert_eq!(h.sessions.len(), 1, "bystander session untouched");
+    assert_eq!(
+        session_count(&h, bystander.id).await,
+        1,
+        "bystander session untouched"
+    );
     assert!(
         !h.audit
             .events()
@@ -854,7 +922,6 @@ async fn disable_blocks_recovery_then_enable_restores_it() {
         .expect("disable");
 
     let mail_before = h.email.sent().len();
-    let tokens_before = h.tokens.len();
     h.recovery
         .request_recovery("alice@example.com", SessionContext::default())
         .await
@@ -864,11 +931,6 @@ async fn disable_blocks_recovery_then_enable_restores_it() {
         h.email.sent().len(),
         mail_before,
         "a disabled account gets no recovery link",
-    );
-    assert_eq!(
-        h.tokens.len(),
-        tokens_before,
-        "a disabled account gets no recovery token",
     );
     assert!(
         h.audit.events().iter().any(|e| matches!(
@@ -890,8 +952,18 @@ async fn disable_blocks_recovery_then_enable_restores_it() {
         .request_recovery("alice@example.com", SessionContext::default())
         .await
         .expect("recovery request after enable");
-    assert!(
-        h.tokens.len() > tokens_before,
-        "an enabled account can request recovery again",
-    );
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("an enabled account is sent a recovery link");
+    h.recovery
+        .consume_recovery(
+            &token_from_email(&link.body_text, RECOVERY_URL),
+            SessionContext::default(),
+        )
+        .await
+        .expect("an enabled account can recover again");
 }

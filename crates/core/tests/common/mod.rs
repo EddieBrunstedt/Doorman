@@ -26,7 +26,9 @@ use async_trait::async_trait;
 
 use doorman_core::account::{AccountConfig, AccountManager};
 use doorman_core::assembly::{AssemblyError, AuthCore};
-use doorman_core::audit::{AuditEvent, AuditEventKind, AuditSink};
+use doorman_core::audit::{
+    AuditEvent, AuditEventKind, AuditSink, RedemptionFailureReason, SecretKind,
+};
 use doorman_core::cache::SessionCacheConfig;
 use doorman_core::clock::Clock;
 use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
@@ -393,6 +395,57 @@ impl Default for HarnessBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// How many live sessions `user_id` holds, read through the session manager.
+pub async fn session_count(h: &Harness, user_id: UserId) -> usize {
+    h.session_manager
+        .list_for_user(user_id)
+        .await
+        .expect("list sessions")
+        .len()
+}
+
+/// How many passkeys `user_id` holds, read through the passkey manager.
+pub async fn passkey_count(h: &Harness, user_id: UserId) -> u64 {
+    h.passkey
+        .count_passkeys(user_id)
+        .await
+        .expect("count passkeys")
+}
+
+/// The token from the most recent email-change confirmation link.
+pub fn last_email_change_token(h: &Harness) -> String {
+    let confirmation = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Confirm your new email address")
+        .expect("email-change link queued");
+    token_from_email(&confirmation.body_text, ACCOUNT_URL)
+}
+
+/// Assert the latest audit event refuses `secret` as unknown to its store.
+///
+/// No manager reads outstanding links or ceremonies, so a test proves one is
+/// gone by presenting it: a secret whose row was deleted is refused as
+/// `Unknown`, while one that outlived its deleted owner is refused as
+/// `UserNotFound`.
+pub fn assert_last_redemption_unknown(h: &Harness, secret: SecretKind) {
+    let events = h.audit.events();
+    let last = events.last().map(|e| &e.kind);
+    assert!(
+        matches!(
+            last,
+            Some(AuditEventKind::RedemptionFailed {
+                user_id: None,
+                secret: s,
+                reason: RedemptionFailureReason::Unknown,
+            }) if *s == secret
+        ),
+        "expected {secret:?} refused as unknown, got {last:?}",
+    );
 }
 
 /// Create a verified user directly in the store, bypassing the signup

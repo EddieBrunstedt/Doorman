@@ -24,7 +24,8 @@ use doorman_test_support::MockClock;
 
 use common::{
     Harness, RECOVERY_URL, RP_ID, RP_NAME, ResidentTestAuthenticator, authenticator, kinds,
-    make_user, provision_user, recovery_config, register_passkey, rp_origin, token_from_email,
+    make_user, passkey_count, provision_user, recovery_config, register_passkey, rp_origin,
+    session_count, token_from_email,
 };
 
 #[tokio::test]
@@ -77,7 +78,13 @@ async fn request_for_registered_email_sends_link_and_notification() {
         k,
         AuditEventKind::RecoveryRequested { user_id: Some(id) } if *id == user.id,
     )));
-    assert_eq!(h.tokens.len(), 1, "exactly one recovery token persisted");
+    h.recovery
+        .consume_recovery(
+            &token_from_email(&link_email.body_text, RECOVERY_URL),
+            SessionContext::default(),
+        )
+        .await
+        .expect("recovery token persisted: the emailed link redeems");
 }
 
 #[tokio::test]
@@ -88,8 +95,7 @@ async fn request_for_unknown_email_sends_nothing_but_audits() {
         .await
         .expect("silent ok");
 
-    assert!(h.email.sent().is_empty(), "no email sent for unknown email");
-    assert!(h.tokens.is_empty(), "no token created for unknown email");
+    assert!(h.email.sent().is_empty(), "no link sent for unknown email");
     let events = kinds(&h.audit.events());
     assert!(
         events
@@ -124,7 +130,6 @@ async fn request_for_disabled_user_sends_nothing_but_audits() {
     let user = provision_user(&h, "alice@example.com").await;
     disable_user(&h, &user).await;
     let mail_before = h.email.sent().len();
-    let tokens_before = h.tokens.len();
 
     h.recovery
         .request_recovery("alice@example.com", SessionContext::default())
@@ -134,12 +139,7 @@ async fn request_for_disabled_user_sends_nothing_but_audits() {
     assert_eq!(
         h.email.sent().len(),
         mail_before,
-        "no email sent for a disabled account",
-    );
-    assert_eq!(
-        h.tokens.len(),
-        tokens_before,
-        "no recovery token issued for a disabled account",
+        "no link sent for a disabled account",
     );
     assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
         k,
@@ -196,8 +196,8 @@ async fn finish_refused_for_disabled_user_enrolls_nothing() {
     // issued.
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;
-    let credentials_before = h.credentials.len();
-    let sessions_before = h.sessions.len();
+    let credentials_before = passkey_count(&h, user.id).await;
+    let sessions_before = session_count(&h, user.id).await;
 
     h.recovery
         .request_recovery("alice@example.com", SessionContext::default())
@@ -234,12 +234,12 @@ async fn finish_refused_for_disabled_user_enrolls_nothing() {
         .expect_err("finish refused for disabled account");
     assert!(matches!(err, Error::AccountDisabled));
     assert_eq!(
-        h.credentials.len(),
+        passkey_count(&h, user.id).await,
         credentials_before,
         "no passkey enrolled onto a disabled account",
     );
     assert_eq!(
-        h.sessions.len(),
+        session_count(&h, user.id).await,
         sessions_before,
         "no session issued for a disabled account",
     );
@@ -415,7 +415,7 @@ async fn consume_rejects_expired_token_without_notification() {
 async fn successful_recovery_enrols_passkey_and_sends_success_notification() {
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;
-    let credentials_before = h.credentials.len();
+    let credentials_before = passkey_count(&h, user.id).await;
 
     h.recovery
         .request_recovery("alice@example.com", SessionContext::default())
@@ -459,7 +459,7 @@ async fn successful_recovery_enrols_passkey_and_sends_success_notification() {
 
     assert_eq!(outcome.user.id, user.id);
     assert_eq!(
-        h.credentials.len(),
+        passkey_count(&h, user.id).await,
         credentials_before + 1,
         "new passkey enrolled",
     );
@@ -474,7 +474,15 @@ async fn successful_recovery_enrols_passkey_and_sends_success_notification() {
             .any(|c| c.name.as_deref() == Some("backup device")),
         "recovery-enrolled passkey shows up in list_passkeys for the user",
     );
-    assert!(!h.sessions.is_empty(), "session issued");
+    let sessions = h
+        .session_manager
+        .list_for_user(user.id)
+        .await
+        .expect("list sessions");
+    assert!(
+        sessions.iter().any(|s| s.id == outcome.session.session.id),
+        "session issued"
+    );
 
     let sent = h.email.sent();
     let after_finish = &sent[mail_before_finish..];
@@ -644,6 +652,15 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
         .await
         .expect("known Ok");
 
+    let first_link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("first link sent");
+    let first_token = token_from_email(&first_link.body_text, RECOVERY_URL);
+
     // Fail every subsequent send. The known path attempts two sends, both of
     // which now bounce — the response must still be Ok, identical to the
     // unknown path.
@@ -658,12 +675,27 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
         .expect("unknown Ok despite send failures");
 
     // Delivery is decoupled from token issuance: the failed sends did not stop
-    // the fresh single-use token from being persisted for the known user.
-    assert_eq!(
-        h.tokens.len(),
-        1,
-        "recovery token issued despite send failure"
-    );
+    // the fresh single-use token from being persisted for the known user, and
+    // it replaced the earlier one.
+    let bounced_link = h
+        .email
+        .bounced()
+        .into_iter()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("the second link was attempted");
+    let err = h
+        .recovery
+        .consume_recovery(&first_token, SessionContext::default())
+        .await
+        .expect_err("the earlier link was invalidated");
+    assert!(matches!(err, Error::InvalidVerificationToken));
+    h.recovery
+        .consume_recovery(
+            &token_from_email(&bounced_link.body_text, RECOVERY_URL),
+            SessionContext::default(),
+        )
+        .await
+        .expect("recovery token issued despite send failure");
 }
 
 struct BrandedEmails;
@@ -1454,12 +1486,8 @@ async fn ordinary_registration_still_rejected_at_cap() {
     let mut filler = authenticator();
     register_passkey(&h, user.id, &mut filler, Some("second device")).await;
     assert_eq!(
-        h.credentials
-            .list_passkey_summaries_for_user(user.id)
-            .await
-            .expect("list summaries")
-            .len(),
-        CAP as usize,
+        passkey_count(&h, user.id).await,
+        u64::from(CAP),
         "user starts exactly at the cap",
     );
 
@@ -1487,12 +1515,8 @@ async fn ordinary_registration_still_rejected_at_cap() {
         }
     ));
     assert_eq!(
-        h.credentials
-            .list_passkey_summaries_for_user(user.id)
-            .await
-            .expect("list summaries")
-            .len(),
-        CAP as usize,
+        passkey_count(&h, user.id).await,
+        u64::from(CAP),
         "no credential added past the cap",
     );
 }

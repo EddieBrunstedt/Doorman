@@ -19,8 +19,8 @@ use doorman_core::storage::{User, UserStore};
 use doorman_test_support::MockClock;
 
 use common::{
-    Harness, RECOVERY_URL, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds, provision_user,
-    rp_origin, signup_config, token_from_email, ts,
+    Harness, RECOVERY_URL, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds, passkey_count,
+    provision_user, rp_origin, session_count, signup_config, token_from_email, ts,
 };
 
 #[tokio::test]
@@ -38,13 +38,18 @@ async fn request_provisions_user_for_new_email() {
         .expect("find user")
         .expect("user provisioned");
     assert!(user.email_verified_at.is_none(), "unverified until consume");
-    assert_eq!(h.tokens.len(), 1, "token persisted");
     assert_eq!(h.email.sent().len(), 1, "signup email queued");
     assert_eq!(h.email.sent()[0].subject, "Finish setting up your account");
     assert!(matches!(
         kinds(&h.audit.events()).last(),
         Some(AuditEventKind::SignupRequested { .. })
     ));
+
+    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
+    h.signup
+        .consume_signup(&token, SessionContext::default())
+        .await
+        .expect("token persisted: the emailed link redeems");
 }
 
 #[tokio::test]
@@ -53,20 +58,18 @@ async fn request_for_credentialed_email_is_silent_and_audited() {
     // A fully registered user (≥1 credential) provisioned through the ceremony.
     provision_user(&h, "alice@example.com").await;
     let emails_before = h.email.sent().len();
-    let tokens_before = h.tokens.len();
     let signup_requested_before = kinds(&h.audit.events())
         .into_iter()
         .filter(|k| matches!(k, AuditEventKind::SignupRequested { .. }))
         .count();
 
     // Re-request: the account already holds a credential → silent no-op, no new
-    // email or token. The legitimate user signs in or recovers instead.
+    // link. The legitimate user signs in or recovers instead.
     h.signup
         .request_signup("alice@example.com", None, SessionContext::default())
         .await
         .expect("silent ok");
-    assert_eq!(h.email.sent().len(), emails_before, "no extra email sent");
-    assert_eq!(h.tokens.len(), tokens_before, "no extra token created");
+    assert_eq!(h.email.sent().len(), emails_before, "no extra link sent");
 
     // The silent attempt is still audited as a signup request.
     let signup_requested = kinds(&h.audit.events())
@@ -90,7 +93,6 @@ async fn request_for_passkeyless_user_reissues_signup_link() {
         .await
         .expect("first request");
     assert_eq!(h.email.sent().len(), 1, "first link sent");
-    assert_eq!(h.tokens.len(), 1, "first token stored");
     let first_token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
 
     // Second request to the same passkey-less account: re-issue a fresh link
@@ -100,11 +102,6 @@ async fn request_for_passkeyless_user_reissues_signup_link() {
         .await
         .expect("reissue");
     assert_eq!(h.email.sent().len(), 2, "fresh link re-sent");
-    assert_eq!(
-        h.tokens.len(),
-        1,
-        "prior token invalidated, one fresh token"
-    );
 
     // The reissued link carries a new token and the original is invalidated.
     let second_token = token_from_email(&h.email.sent()[1].body_text, SIGNUP_URL);
@@ -115,6 +112,10 @@ async fn request_for_passkeyless_user_reissues_signup_link() {
         .await
         .expect_err("prior token no longer valid");
     assert!(matches!(err, Error::InvalidVerificationToken));
+    h.signup
+        .consume_signup(&second_token, SessionContext::default())
+        .await
+        .expect("the fresh token redeems");
 
     // No duplicate user was created.
     let user = h
@@ -150,7 +151,12 @@ async fn consume_verifies_email_and_starts_passkey_registration() {
     let _ = outcome.challenge_id;
     let _ = outcome.options;
 
-    assert_eq!(h.tokens.len(), 0, "token consumed");
+    let err = h
+        .signup
+        .consume_signup(&token, SessionContext::default())
+        .await
+        .expect_err("token consumed: the link cannot be replayed");
+    assert!(matches!(err, Error::InvalidVerificationToken));
     let user = h
         .users
         .find_user_by_email("user@example.com")
@@ -199,8 +205,16 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
 
     assert_eq!(outcome.user.email.as_deref(), Some("alice@example.com"));
     assert!(outcome.user.email_verified_at.is_some());
-    assert_eq!(h.sessions.len(), 1, "session issued");
-    assert_eq!(h.credentials.len(), 1, "passkey registered");
+    assert_eq!(
+        session_count(&h, outcome.user.id).await,
+        1,
+        "session issued"
+    );
+    assert_eq!(
+        passkey_count(&h, outcome.user.id).await,
+        1,
+        "passkey registered"
+    );
     let sent = h.email.sent();
     let after_finish = &sent[mail_before_finish..];
     assert_eq!(
@@ -290,8 +304,16 @@ async fn notification_send_failure_does_not_undo_successful_finish() {
         outcome.user.email.as_deref(),
         Some("notify-fails@example.com")
     );
-    assert_eq!(h.credentials.len(), 1, "passkey still stored");
-    assert_eq!(h.sessions.len(), 1, "session still issued");
+    assert_eq!(
+        passkey_count(&h, outcome.user.id).await,
+        1,
+        "passkey still stored"
+    );
+    assert_eq!(
+        session_count(&h, outcome.user.id).await,
+        1,
+        "session still issued"
+    );
     assert_eq!(
         h.email.sent().len(),
         mail_before_finish,
@@ -425,7 +447,6 @@ async fn consume_rejects_tampered_token_and_leaves_the_real_one_usable() {
         .expect_err("tampered token rejected");
     assert!(matches!(err, Error::InvalidVerificationToken));
 
-    assert_eq!(h.tokens.len(), 1, "tamper did not consume the real token");
     h.signup
         .consume_signup(&token, SessionContext::default())
         .await
@@ -452,7 +473,6 @@ async fn signup_token_cannot_be_consumed_by_recovery() {
 
     // The signup token survives the failed cross-flow attempt and still
     // redeems on its own flow.
-    assert_eq!(h.tokens.len(), 1, "token not consumed by wrong flow");
     h.signup
         .consume_signup(&token, SessionContext::default())
         .await
@@ -482,7 +502,6 @@ async fn recovery_token_cannot_be_consumed_by_signup() {
         .expect_err("recovery token rejected on signup");
     assert!(matches!(err, Error::InvalidVerificationToken));
 
-    assert_eq!(h.tokens.len(), 1, "token not consumed by wrong flow");
     h.recovery
         .consume_recovery(&token, SessionContext::default())
         .await
@@ -791,7 +810,6 @@ async fn deny_silently_returns_ok_without_email_or_user() {
         .expect("silent denial returns Ok");
 
     assert_eq!(h.email.sent().len(), 0, "no link sent on silent denial");
-    assert_eq!(h.tokens.len(), 0, "no token stored on silent denial");
     assert!(
         h.users
             .find_user_by_email("blocked@example.com")

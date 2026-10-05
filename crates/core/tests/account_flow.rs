@@ -10,8 +10,9 @@ use doorman_core::session::SessionContext;
 use doorman_core::storage::{AccountStatus, UserStore};
 
 use common::{
-    ACCOUNT_URL, Harness, kinds, make_user, provision_user, restricted_session_for, session_for,
-    token_from_email,
+    ACCOUNT_URL, Harness, assert_last_redemption_unknown, authenticator, kinds,
+    last_email_change_token, make_user, passkey_count, provision_user, restricted_session_for,
+    session_count, session_for, token_from_email,
 };
 
 #[tokio::test]
@@ -143,7 +144,6 @@ async fn request_email_change_refused_during_recovery_cooldown() {
     let cooldown_until = h.clock.now() + chrono::Duration::hours(24);
     let restricted = restricted_session_for(&h, &user, cooldown_until);
     let mail_before = h.email.sent().len();
-    let tokens_before = h.tokens.len();
 
     let err = h
         .account
@@ -160,12 +160,7 @@ async fn request_email_change_refused_during_recovery_cooldown() {
     assert_eq!(
         h.email.sent().len(),
         mail_before,
-        "no confirmation or notice email is sent when the gate trips",
-    );
-    assert_eq!(
-        h.tokens.len(),
-        tokens_before,
-        "no confirmation token is issued when the gate trips",
+        "no confirmation link or notice is sent when the gate trips",
     );
 }
 
@@ -192,7 +187,11 @@ async fn delete_account_refused_during_recovery_cooldown() {
             .is_some(),
         "the account is untouched when the gate trips",
     );
-    assert_eq!(h.sessions.len(), 1, "the signup session is left intact");
+    assert_eq!(
+        session_count(&h, user.id).await,
+        1,
+        "the signup session is left intact"
+    );
 }
 
 #[tokio::test]
@@ -222,7 +221,6 @@ async fn request_email_change_allowed_once_recovery_cooldown_lapses() {
     // After the deadline the request is allowed and issues the confirmation.
     h.clock.advance(chrono::Duration::hours(25));
     let mail_before = h.email.sent().len();
-    let tokens_before = h.tokens.len();
     h.account
         .request_email_change(
             &user,
@@ -237,10 +235,10 @@ async fn request_email_change_allowed_once_recovery_cooldown_lapses() {
         h.email.sent().len() > mail_before,
         "the confirmation email is sent after the cool-down lapses",
     );
-    assert!(
-        h.tokens.len() > tokens_before,
-        "a confirmation token is issued after the cool-down lapses",
-    );
+    h.account
+        .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
+        .await
+        .expect("the confirmation link issued after the cool-down lapses redeems");
 }
 
 #[tokio::test]
@@ -423,15 +421,24 @@ async fn delete_account_cascades_all_stores() {
         )
         .await
         .expect("request email change");
-    h.passkey
+    let email_change_token = last_email_change_token(&h);
+    let (challenge_id, options) = h
+        .passkey
         .start_registration(user.id)
         .await
         .expect("start a pending registration");
+    let attestation = authenticator().do_registration(options);
 
-    assert_eq!(h.sessions.len(), 1, "signup left an active session");
-    assert_eq!(h.credentials.len(), 1, "signup left a credential");
-    assert_eq!(h.tokens.len(), 1, "email-change token outstanding");
-    assert_eq!(h.challenges.len(), 1, "pending registration challenge");
+    assert_eq!(
+        session_count(&h, user.id).await,
+        1,
+        "signup left an active session"
+    );
+    assert_eq!(
+        passkey_count(&h, user.id).await,
+        1,
+        "signup left a credential"
+    );
 
     h.account
         .delete_account(&session, None, SessionContext::default())
@@ -446,10 +453,8 @@ async fn delete_account_cascades_all_stores() {
             .is_none(),
         "the user row is gone",
     );
-    assert_eq!(h.sessions.len(), 0, "sessions cascaded");
-    assert_eq!(h.credentials.len(), 0, "credentials cascaded");
-    assert_eq!(h.tokens.len(), 0, "verification tokens cascaded");
-    assert_eq!(h.challenges.len(), 0, "pending ceremonies cascaded");
+    assert_eq!(session_count(&h, user.id).await, 0, "sessions cascaded");
+    assert_eq!(passkey_count(&h, user.id).await, 0, "credentials cascaded");
 
     let audit = kinds(&h.audit.events());
     assert!(
@@ -458,4 +463,22 @@ async fn delete_account_cascades_all_stores() {
             .any(|k| matches!(k, AuditEventKind::AccountDeleted { .. })),
         "deletion emits an audit event",
     );
+
+    // The outstanding link and ceremony are refused as unknown, not as
+    // belonging to a deleted user: their rows went with the account.
+    let err = h
+        .account
+        .confirm_email_change(&email_change_token, SessionContext::default())
+        .await
+        .expect_err("the email-change link is gone");
+    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert_last_redemption_unknown(&h, SecretKind::EmailChangeLink);
+
+    let err = h
+        .passkey
+        .finish_registration(challenge_id, &attestation, None, SessionContext::default())
+        .await
+        .expect_err("the pending ceremony is gone");
+    assert!(matches!(err, Error::InvalidPasskeyChallenge));
+    assert_last_redemption_unknown(&h, SecretKind::RegistrationChallenge);
 }

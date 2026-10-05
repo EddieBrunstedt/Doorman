@@ -19,8 +19,8 @@ use doorman_test_support::MockClock;
 
 use common::{
     Harness, RP_ID, RP_NAME, assert_discoverable_request_options,
-    assert_resident_registration_options, authenticator, kinds, make_user, register_passkey,
-    restricted_session_for, rp_origin, session_for, ts,
+    assert_resident_registration_options, authenticator, kinds, make_user, passkey_count,
+    register_passkey, restricted_session_for, rp_origin, session_count, session_for, ts,
 };
 
 /// A [`PasskeyConfig`] matching the harness relying party but with the
@@ -39,12 +39,32 @@ async fn register_then_discoverable_authenticate_round_trip() {
     let user = make_user(&h, "alice@example.com").await;
     let mut wa = authenticator();
 
-    let credential = register_passkey(&h, user.id, &mut wa, Some("Alice's Mac")).await;
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration(user.id)
+        .await
+        .expect("start_registration");
+    let response = wa.do_registration(ccr);
+    let credential = h
+        .passkey
+        .finish_registration(
+            challenge_id,
+            &response,
+            Some("Alice's Mac".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish_registration");
     assert_eq!(credential.user_id, user.id);
     assert_eq!(credential.name.as_deref(), Some("Alice's Mac"));
     assert_eq!(credential.recovery_cooldown_until, None);
-    assert_eq!(h.credentials.len(), 1);
-    assert!(h.challenges.is_empty(), "challenge consumed");
+    assert_eq!(passkey_count(&h, user.id).await, 1);
+    let err = h
+        .passkey
+        .finish_registration(challenge_id, &response, None, SessionContext::default())
+        .await
+        .expect_err("challenge consumed: the ceremony cannot be replayed");
+    assert!(matches!(err, Error::InvalidPasskeyChallenge));
     let sent = h.email.sent();
     assert_eq!(sent.len(), 1, "passkey registration notification sent");
     assert_eq!(sent[0].subject, "Security notice: passkey registered");
@@ -76,7 +96,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
     );
     let issued = issued.session;
     assert_eq!(issued.session.user_id, user.id);
-    assert_eq!(h.sessions.len(), 1);
+    assert_eq!(session_count(&h, user.id).await, 1);
 
     let stored = h
         .credentials
@@ -284,7 +304,7 @@ async fn authentication_without_user_handle_is_rejected() {
         .await
         .expect_err("missing user handle must be rejected");
     assert!(matches!(err, Error::PasskeyOwnershipMismatch));
-    assert_eq!(h.sessions.len(), 0, "no session minted");
+    assert_eq!(session_count(&h, user.id).await, 0, "no session minted");
 
     let events = kinds(&h.audit.events());
     assert!(
@@ -404,8 +424,9 @@ async fn finish_registration_against_deleted_user_writes_no_orphan_credential() 
         matches!(err, Error::InvalidPasskeyChallenge),
         "got: {err:?}"
     );
-    assert!(
-        h.credentials.is_empty(),
+    assert_eq!(
+        passkey_count(&h, user.id).await,
+        0,
         "no credential written against the deleted user"
     );
     assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
@@ -467,7 +488,13 @@ async fn finish_authentication_rejects_mismatched_user_handle() {
         .await
         .expect_err("ownership mismatch");
     assert!(matches!(err, Error::PasskeyOwnershipMismatch));
-    assert_eq!(h.sessions.len(), 0, "no session minted on mismatch");
+    for id in [alice.id, bob.id] {
+        assert_eq!(
+            session_count(&h, id).await,
+            0,
+            "no session minted on mismatch"
+        );
+    }
 
     let events = kinds(&h.audit.events());
     assert!(
@@ -510,7 +537,11 @@ async fn finish_authentication_rejects_tampered_signature() {
         .await
         .expect_err("tampered signature must be rejected");
     assert!(matches!(err, Error::Webauthn(_)));
-    assert_eq!(h.sessions.len(), 0, "no session minted on a bad assertion");
+    assert_eq!(
+        session_count(&h, user.id).await,
+        0,
+        "no session minted on a bad assertion"
+    );
 
     let events = kinds(&h.audit.events());
     assert!(
@@ -553,8 +584,9 @@ async fn finish_registration_rejects_tampered_attestation() {
         .await
         .expect_err("tampered attestation must be rejected");
     assert!(matches!(err, Error::Webauthn(_)));
-    assert!(
-        h.credentials.is_empty(),
+    assert_eq!(
+        passkey_count(&h, user.id).await,
+        0,
         "no credential written for a tampered attestation"
     );
 }
@@ -598,7 +630,11 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
         .await
         .expect_err("counter regression must be rejected");
     assert!(matches!(err, Error::PasskeyPossibleCompromise));
-    assert_eq!(h.sessions.len(), 0, "no session minted on regression");
+    assert_eq!(
+        session_count(&h, user.id).await,
+        0,
+        "no session minted on regression"
+    );
 
     let events = kinds(&h.audit.events());
     assert!(
@@ -646,11 +682,10 @@ async fn finish_authentication_refuses_disabled_account() {
         .expect_err("disabled account must be refused");
     assert!(matches!(err, Error::AccountDisabled));
     assert_eq!(
-        h.sessions.len(),
+        session_count(&h, user.id).await,
         0,
         "no session minted for a disabled account"
     );
-    assert!(h.challenges.is_empty(), "challenge consumed");
 
     let stored = h
         .credentials
@@ -680,6 +715,13 @@ async fn finish_authentication_refuses_disabled_account() {
             .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. })),
         "no login-succeeded event for a disabled account"
     );
+
+    let err = h
+        .passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect_err("challenge consumed: the refused login cannot be replayed");
+    assert!(matches!(err, Error::InvalidPasskeyChallenge));
 }
 
 #[tokio::test]
@@ -823,7 +865,7 @@ async fn finish_authentication_rejects_a_reauth_challenge() {
         matches!(err, Error::InvalidPasskeyChallenge),
         "got: {err:?}"
     );
-    assert_eq!(h.sessions.len(), 0, "no session minted");
+    assert_eq!(session_count(&h, user.id).await, 0, "no session minted");
 
     let events = kinds(&h.audit.events());
     assert!(events.iter().any(|k| matches!(
@@ -893,7 +935,7 @@ async fn remove_passkey_emits_audit_sends_notification_and_blocks_login() {
         )
         .await
         .expect("remove");
-    assert!(h.credentials.is_empty());
+    assert_eq!(passkey_count(&h, user.id).await, 0);
     let sent = h.email.sent();
     let removal_mail = &sent[mail_before..];
     assert_eq!(removal_mail.len(), 1, "passkey removal notification sent");
@@ -930,7 +972,11 @@ async fn remove_passkey_refuses_other_users_credential_without_notification() {
         .await
         .expect_err("ownership check");
     assert!(matches!(err, Error::PasskeyOwnershipMismatch));
-    assert_eq!(h.credentials.len(), 1, "alice's passkey untouched");
+    assert_eq!(
+        passkey_count(&h, alice.id).await,
+        1,
+        "alice's passkey untouched"
+    );
     assert_eq!(h.email.sent().len(), mail_before, "no removal email sent");
 }
 
@@ -1013,7 +1059,11 @@ async fn remove_passkey_refused_during_recovery_cooldown() {
         .await
         .expect_err("removal must be refused during the cool-down");
     assert!(matches!(err, Error::RecoveryCooldownActive));
-    assert_eq!(h.credentials.len(), 1, "the passkey is left intact");
+    assert_eq!(
+        passkey_count(&h, user.id).await,
+        1,
+        "the passkey is left intact"
+    );
     assert_eq!(
         h.email.sent().len(),
         mail_before,
@@ -1031,7 +1081,7 @@ async fn remove_passkey_refused_during_recovery_cooldown() {
         )
         .await
         .expect("removal allowed once the cool-down lapses");
-    assert!(h.credentials.is_empty());
+    assert_eq!(passkey_count(&h, user.id).await, 0);
 }
 
 #[tokio::test]
@@ -1236,7 +1286,15 @@ async fn start_registration_for_unknown_user_errors() {
 
 #[tokio::test]
 async fn start_registration_refuses_disabled_account() {
-    let h = Harness::fresh();
+    // A pending-registration cap of one makes a leftover ceremony observable:
+    // had the refused start minted a challenge, the start after re-enabling
+    // would hit the cap.
+    let h = Harness::builder()
+        .passkey_config(PasskeyConfig {
+            max_pending_registrations_per_user: NonZeroU32::new(1),
+            ..base_passkey_config()
+        })
+        .build();
     let user = make_user(&h, "frozen@example.com").await;
     let now = h.clock.now();
     h.users
@@ -1250,7 +1308,16 @@ async fn start_registration_refuses_disabled_account() {
         .await
         .expect_err("disabled account must be refused");
     assert!(matches!(err, Error::AccountDisabled));
-    assert_eq!(h.challenges.len(), 0, "no ceremony started");
+
+    let now = h.clock.now();
+    h.users
+        .set_user_status(user.id, AccountStatus::Active, now)
+        .await
+        .expect("re-enable user");
+    h.passkey
+        .start_registration(user.id)
+        .await
+        .expect("no ceremony started: the pending budget is untouched");
 }
 
 #[tokio::test]
@@ -1265,7 +1332,6 @@ async fn challenge_store_purges_expired_entries() {
         .start_authentication(SessionContext::default())
         .await
         .expect("start authentication");
-    assert_eq!(h.challenges.len(), 2);
 
     h.clock.advance(ChronoDuration::seconds(600));
     let removed = h
@@ -1273,8 +1339,13 @@ async fn challenge_store_purges_expired_entries() {
         .purge_expired(h.clock.now())
         .await
         .expect("purge expired");
-    assert_eq!(removed, 2);
-    assert!(h.challenges.is_empty());
+    assert_eq!(removed, 2, "both ceremonies were stored, then swept");
+    let removed_again = h
+        .challenges
+        .purge_expired(h.clock.now())
+        .await
+        .expect("purge expired again");
+    assert_eq!(removed_again, 0, "nothing is left to sweep");
 }
 
 #[tokio::test]
@@ -1291,7 +1362,7 @@ async fn registration_is_rejected_once_credential_cap_is_reached() {
     let mut wa = authenticator();
 
     register_passkey(&h, user.id, &mut wa, Some("first")).await;
-    assert_eq!(h.credentials.len(), 1);
+    assert_eq!(passkey_count(&h, user.id).await, 1);
 
     let (challenge_id, ccr) = h
         .passkey
@@ -1316,7 +1387,11 @@ async fn registration_is_rejected_once_credential_cap_is_reached() {
             limit: 1
         }
     ));
-    assert_eq!(h.credentials.len(), 1, "no credential was stored");
+    assert_eq!(
+        passkey_count(&h, user.id).await,
+        1,
+        "no credential was stored"
+    );
 }
 
 #[tokio::test]
@@ -1331,7 +1406,8 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
         .build();
     let user = make_user(&h, "pending@example.com").await;
 
-    h.passkey
+    let (first_id, first_options) = h
+        .passkey
         .start_registration(user.id)
         .await
         .expect("first pending allowed");
@@ -1351,7 +1427,18 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
             limit: 2
         }
     ));
-    assert_eq!(h.challenges.len(), 2, "no extra challenge was minted");
+
+    // Finishing one ceremony frees exactly one slot. Had the rejected start
+    // minted a challenge, two would still be pending and this start would fail.
+    let response = authenticator().do_registration(first_options);
+    h.passkey
+        .finish_registration(first_id, &response, None, SessionContext::default())
+        .await
+        .expect("finish the first ceremony");
+    h.passkey
+        .start_registration(user.id)
+        .await
+        .expect("no extra challenge was minted");
 
     // The cap is per user: a different user is unaffected.
     let other = make_user(&h, "pending-other@example.com").await;

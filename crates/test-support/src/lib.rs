@@ -128,6 +128,7 @@ impl AuditSink for InMemoryAuditSink {
 #[derive(Debug, Default)]
 pub struct CapturingEmailSender {
     sent: Mutex<Vec<Email>>,
+    bounced: Mutex<Vec<Email>>,
     fail_after_successful_sends: Mutex<Option<usize>>,
 }
 
@@ -142,6 +143,16 @@ impl CapturingEmailSender {
         self.sent
             .lock()
             .expect("email sender mutex poisoned")
+            .clone()
+    }
+
+    /// Snapshot every message whose send was failed by
+    /// [`fail_after_successful_sends`](Self::fail_after_successful_sends), in
+    /// send order. These never appear in [`sent`](Self::sent).
+    pub fn bounced(&self) -> Vec<Email> {
+        self.bounced
+            .lock()
+            .expect("email sender bounce mutex poisoned")
             .clone()
     }
 
@@ -173,6 +184,10 @@ impl EmailSender for CapturingEmailSender {
             .expect("email sender failure mutex poisoned");
         let mut sent = self.sent.lock().expect("email sender mutex poisoned");
         if fail_after.is_some_and(|max| sent.len() >= max) {
+            self.bounced
+                .lock()
+                .expect("email sender bounce mutex poisoned")
+                .push(email);
             return Err(EmailError::msg("capturing email sender configured to fail"));
         }
         sent.push(email);
