@@ -104,17 +104,9 @@ impl SessionStore for DynamoSessionStore {
     }
 
     async fn delete_sessions_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let items = self
-            .client
-            .query_owner(&model::user_sessions_key(user_id))
-            .await?;
-        let keys = items
-            .iter()
-            .map(client::item_pk)
-            .collect::<StorageResult<Vec<_>>>()?;
-        let removed = keys.len() as u64;
-        self.client.batch_delete(keys).await?;
-        Ok(removed)
+        self.client
+            .delete_owned(&model::user_sessions_key(user_id))
+            .await
     }
 
     async fn delete_other_sessions_for_user(
@@ -140,15 +132,6 @@ impl SessionStore for DynamoSessionStore {
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
-        let items = self.client.scan_entities(&[ENTITY_SESSION]).await?;
-        let mut keys = Vec::new();
-        for item in &items {
-            if client::get_ts(item, client::EXPIRES_AT)? <= now {
-                keys.push(client::item_pk(item)?);
-            }
-        }
-        let removed = keys.len() as u64;
-        self.client.batch_delete(keys).await?;
-        Ok(removed)
+        self.client.delete_expired(&[ENTITY_SESSION], now).await
     }
 }

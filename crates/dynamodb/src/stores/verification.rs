@@ -18,7 +18,7 @@ use doorman_core::storage::{
     TokenHash, UserId, VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
 
-use crate::client::{self, DynamoClient};
+use crate::client::DynamoClient;
 use crate::model::{self, ENTITY_VTOKEN};
 
 /// Verification-token store backed by a DynamoDB connection.
@@ -59,29 +59,12 @@ impl VerificationTokenStore for DynamoVerificationTokenStore {
         user_id: UserId,
         purpose: VerificationPurpose,
     ) -> StorageResult<u64> {
-        let items = self
-            .client
-            .query_owner(&model::user_vtokens_key(user_id, purpose))
-            .await?;
-        let keys = items
-            .iter()
-            .map(client::item_pk)
-            .collect::<StorageResult<Vec<_>>>()?;
-        let removed = keys.len() as u64;
-        self.client.batch_delete(keys).await?;
-        Ok(removed)
+        self.client
+            .delete_owned(&model::user_vtokens_key(user_id, purpose))
+            .await
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
-        let items = self.client.scan_entities(&[ENTITY_VTOKEN]).await?;
-        let mut keys = Vec::new();
-        for item in &items {
-            if client::get_ts(item, client::EXPIRES_AT)? <= now {
-                keys.push(client::item_pk(item)?);
-            }
-        }
-        let removed = keys.len() as u64;
-        self.client.batch_delete(keys).await?;
-        Ok(removed)
+        self.client.delete_expired(&[ENTITY_VTOKEN], now).await
     }
 }

@@ -20,7 +20,7 @@ use doorman_core::storage::{
     StoredPasskeyRegistration, UserId,
 };
 
-use crate::client::{self, DynamoClient};
+use crate::client::DynamoClient;
 use crate::model::{self, ENTITY_PKAUTH, ENTITY_PKREG};
 
 /// Passkey-challenge store backed by a DynamoDB connection.
@@ -56,17 +56,9 @@ impl PasskeyChallengeStore for DynamoPasskeyChallengeStore {
     /// or by `purge_expired` / native TTL. This bulk revoke is best-effort under
     /// write-after-write.
     async fn delete_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let items = self
-            .client
-            .query_owner(&model::user_pkregs_key(user_id))
-            .await?;
-        let keys = items
-            .iter()
-            .map(client::item_pk)
-            .collect::<StorageResult<Vec<_>>>()?;
-        let removed = keys.len() as u64;
-        self.client.batch_delete(keys).await?;
-        Ok(removed)
+        self.client
+            .delete_owned(&model::user_pkregs_key(user_id))
+            .await
     }
 
     async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
@@ -92,18 +84,8 @@ impl PasskeyChallengeStore for DynamoPasskeyChallengeStore {
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
-        let items = self
-            .client
-            .scan_entities(&[ENTITY_PKREG, ENTITY_PKAUTH])
-            .await?;
-        let mut keys = Vec::new();
-        for item in &items {
-            if client::get_ts(item, client::EXPIRES_AT)? <= now {
-                keys.push(client::item_pk(item)?);
-            }
-        }
-        let removed = keys.len() as u64;
-        self.client.batch_delete(keys).await?;
-        Ok(removed)
+        self.client
+            .delete_expired(&[ENTITY_PKREG, ENTITY_PKAUTH], now)
+            .await
     }
 }

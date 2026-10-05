@@ -98,16 +98,8 @@ impl PasskeyCredentialStore for DynamoPasskeyCredentialStore {
     }
 
     async fn delete_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let items = self
-            .client
-            .query_owner(&model::user_passkeys_key(user_id))
-            .await?;
-        let keys = items
-            .iter()
-            .map(client::item_pk)
-            .collect::<StorageResult<Vec<_>>>()?;
-        let removed = keys.len() as u64;
-        self.client.batch_delete(keys).await?;
-        Ok(removed)
+        self.client
+            .delete_owned(&model::user_passkeys_key(user_id))
+            .await
     }
 }

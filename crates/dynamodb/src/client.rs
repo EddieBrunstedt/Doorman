@@ -6,7 +6,8 @@
 //! around the AWS SDK client plus the table name, the helpers that translate
 //! between Rust values and DynamoDB [`AttributeValue`]s, and a small set of
 //! reusable operations (`get`, `put`, the atomic `take`, the two GSI queries, a
-//! filtered table scan, and a batch delete) that the per-trait stores compose.
+//! filtered table scan, a batch delete, and the owner-scoped and expiry bulk
+//! deletes built on them) that the per-trait stores compose.
 //!
 //! ## Indexes
 //!
@@ -436,10 +437,10 @@ impl DynamoClient {
     }
 
     /// Strongly-consistent table `Scan` returning every item whose `entity`
-    /// discriminator is one of `entities`. Backs the `purge_expired` sweeps,
-    /// which then filter on `expires_at` in the store. Consistent so a row
-    /// written moments earlier (as the conformance suite does) is visible.
-    pub(crate) async fn scan_entities(&self, entities: &[&str]) -> StorageResult<Vec<Item>> {
+    /// discriminator is one of `entities`. Backs [`delete_expired`](Self::delete_expired),
+    /// which then filters on `expires_at`. Consistent so a row written moments
+    /// earlier (as the conformance suite does) is visible.
+    async fn scan_entities(&self, entities: &[&str]) -> StorageResult<Vec<Item>> {
         let mut names = HashMap::new();
         names.insert("#e".to_string(), ENTITY.to_string());
         let mut values = HashMap::new();
@@ -514,6 +515,43 @@ impl DynamoClient {
             }
         }
         Ok(())
+    }
+
+    /// Delete every item in the `owner-index` partition `key`, returning how
+    /// many were removed.
+    ///
+    /// The partition is read through the eventually-consistent GSI, so an item
+    /// written immediately before the call may not be visible yet and survives
+    /// it; a later bulk delete, `purge_expired`, or native TTL reclaims it.
+    pub(crate) async fn delete_owned(&self, key: &str) -> StorageResult<u64> {
+        let pks = self
+            .query_owner(key)
+            .await?
+            .iter()
+            .map(item_pk)
+            .collect::<StorageResult<Vec<_>>>()?;
+        let removed = pks.len() as u64;
+        self.batch_delete(pks).await?;
+        Ok(removed)
+    }
+
+    /// Delete every item of the given `entities` whose `expires_at` is at or
+    /// before `now`, returning how many were removed. Backs the authoritative
+    /// `purge_expired` sweeps; native TTL is only a memory backstop.
+    pub(crate) async fn delete_expired(
+        &self,
+        entities: &[&str],
+        now: DateTime<Utc>,
+    ) -> StorageResult<u64> {
+        let mut pks = Vec::new();
+        for item in &self.scan_entities(entities).await? {
+            if get_ts(item, EXPIRES_AT)? <= now {
+                pks.push(item_pk(item)?);
+            }
+        }
+        let removed = pks.len() as u64;
+        self.batch_delete(pks).await?;
+        Ok(removed)
     }
 
     /// Provision the table, its two GSIs, and native TTL — idempotently.
