@@ -225,9 +225,11 @@ impl SessionStore for RedisSessionStore {
                 removed += 1;
             }
         }
-        // Drop the SET itself, taking any dangling members with it.
-        del_keys.push(user_key);
+        // SREM exactly the members read, dangling ones included. Dropping the
+        // whole SET would also drop a session created after the SMEMBERS,
+        // leaving it resolvable but unlisted and beyond any later revoke.
         client::del(&mut conn, &del_keys).await?;
+        client::srem(&mut conn, &user_key, &members).await?;
         Ok(removed)
     }
 

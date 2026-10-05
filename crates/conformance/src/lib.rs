@@ -68,6 +68,7 @@ pub async fn run(storage: &Storage) {
     sessions_purge_expired(storage).await;
     session_touch_slides_deadline(storage).await;
     session_touch_does_not_resurrect(storage).await;
+    session_revoke_races_creation(storage).await;
     passkey_credentials_cooldown_round_trip(storage).await;
     passkey_field_changes_compose(storage).await;
     passkey_writes_refuse_missing_credential(storage).await;
@@ -924,6 +925,110 @@ async fn session_touch_does_not_resurrect(storage: &Storage) {
             .is_none(),
         "the resurrected row must not be reachable by token hash either",
     );
+}
+
+/// Rounds of [`session_revoke_races_creation`]: each round races one bulk
+/// revoke against [`RACERS`] session creations.
+const REVOKE_ROUNDS: usize = 8;
+
+/// A bulk revoke racing session creation never half-removes a session. Every
+/// session that survives the revoke is still listed for its user and is
+/// removed by the next revoke. An adapter that drops its whole per-user index
+/// after enumerating it would orphan a session created in between: the
+/// session still resolves, but no listing or later revoke can reach it.
+async fn session_revoke_races_creation(storage: &Storage) {
+    let now = ts(2026, 1, 1);
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "revoke-race@example.com"))
+        .await
+        .expect("user");
+
+    let session = |token: String| Session {
+        id: SessionId::new(),
+        user_id,
+        token_hash: hash_token(&token),
+        created_at: now,
+        last_used_at: now,
+        expires_at: ts(2099, 1, 1),
+        ip: None,
+        user_agent: None,
+        recovery_cooldown_until: None,
+    };
+    let create = |session: Session| {
+        let sessions = storage.sessions.clone();
+        tokio::spawn(async move {
+            sessions
+                .create_session(session)
+                .await
+                .expect("create session");
+        })
+    };
+
+    let mut created = Vec::new();
+    for round in 0..REVOKE_ROUNDS {
+        let batch: Vec<Session> = (0..RACERS)
+            .map(|i| session(format!("revoke-race-{round}-{i}")))
+            .collect();
+        let (before, after) = batch.split_at(RACERS / 2);
+        let mut tasks: Vec<_> = before.iter().cloned().map(create).collect();
+        let sessions = storage.sessions.clone();
+        tasks.push(tokio::spawn(async move {
+            sessions
+                .delete_sessions_for_user(user_id)
+                .await
+                .expect("revoke");
+        }));
+        tasks.extend(after.iter().cloned().map(create));
+        for task in tasks {
+            task.await.expect("race task");
+        }
+        created.extend(batch);
+    }
+
+    let listed: std::collections::HashSet<_> = storage
+        .sessions
+        .list_for_user(user_id, now)
+        .await
+        .expect("list")
+        .iter()
+        .map(|s| s.id)
+        .collect();
+    for s in &created {
+        let resolves = storage
+            .sessions
+            .find_session_by_token_hash(&s.token_hash)
+            .await
+            .expect("find by hash")
+            .is_some();
+        assert!(
+            !resolves || listed.contains(&s.id),
+            "a session that survived a racing revoke is still listed",
+        );
+    }
+
+    let removed = storage
+        .sessions
+        .delete_sessions_for_user(user_id)
+        .await
+        .expect("second revoke");
+    assert_eq!(
+        removed,
+        listed.len() as u64,
+        "the second revoke removes every survivor",
+    );
+    for s in &created {
+        assert!(
+            storage
+                .sessions
+                .find_session_by_token_hash(&s.token_hash)
+                .await
+                .expect("find by hash after second revoke")
+                .is_none(),
+            "no session resolves after the second revoke",
+        );
+    }
 }
 
 async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
