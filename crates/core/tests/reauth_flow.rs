@@ -1,11 +1,11 @@
 mod common;
 
 use doorman_core::Error;
-use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
+use doorman_core::audit::{AuditEventKind, AuthFailureReason, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
 use doorman_core::session::SessionContext;
-use doorman_core::storage::UserStore;
+use doorman_core::storage::{AccountStatus, PasskeyCredentialStore, StoredPasskey, UserStore};
 
 use common::{
     Harness, authenticator, kinds, make_user, register_passkey, restricted_session_for,
@@ -164,6 +164,93 @@ async fn gated_action_with_fresh_proof_succeeds_and_audits() {
         ),
         "a ReauthSucceeded row is emitted"
     );
+}
+
+#[tokio::test]
+async fn successful_reauth_records_the_passkey_use() {
+    let h = gated_harness();
+    let user = make_user(&h, "owner@example.com").await;
+    let mut wa = authenticator();
+    let registered = register_passkey(&h, user.id, &mut wa, Some("device")).await;
+    let session = session_for(&h, &user);
+    h.clock.advance(chrono::Duration::minutes(1));
+
+    let proof = fresh_proof(&h, user.id, &mut wa).await;
+    h.reauth
+        .ensure(
+            ReauthAction::RemovePasskey,
+            &session,
+            Some(&proof),
+            &SessionContext::default(),
+        )
+        .await
+        .expect("a fresh proof passes");
+
+    let stored = h
+        .credentials
+        .find_passkey_by_credential_id(&registered.credential_id)
+        .await
+        .expect("find credential")
+        .expect("credential persisted");
+    assert_eq!(
+        stored.last_used_at,
+        Some(h.clock.now()),
+        "last_used_at advanced"
+    );
+    assert!(
+        signature_counter(&stored) > signature_counter(&registered),
+        "the stored signature counter advanced"
+    );
+}
+
+#[tokio::test]
+async fn reauth_refuses_a_disabled_users_passkey() {
+    let h = gated_harness();
+    let user = make_user(&h, "frozen@example.com").await;
+    let mut wa = authenticator();
+    let registered = register_passkey(&h, user.id, &mut wa, Some("device")).await;
+    let session = session_for(&h, &user);
+    let proof = fresh_proof(&h, user.id, &mut wa).await;
+
+    let now = h.clock.now();
+    h.users
+        .set_user_status(user.id, AccountStatus::Disabled { at: now }, now)
+        .await
+        .expect("disable user");
+
+    let err = h
+        .reauth
+        .ensure(
+            ReauthAction::RemovePasskey,
+            &session,
+            Some(&proof),
+            &SessionContext::default(),
+        )
+        .await
+        .expect_err("a disabled user cannot re-authenticate");
+    assert!(matches!(err, Error::AccountDisabled), "got: {err:?}");
+
+    let stored = h
+        .credentials
+        .find_passkey_by_credential_id(&registered.credential_id)
+        .await
+        .expect("find credential")
+        .expect("credential persisted");
+    assert_eq!(stored.last_used_at, None, "a refused proof records no use");
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::ReauthFailed {
+            user_id,
+            reason: AuthFailureReason::AccountDisabled,
+        } if *user_id == user.id
+    )));
+}
+
+fn signature_counter(passkey: &StoredPasskey) -> u64 {
+    let blob: serde_json::Value = serde_json::from_slice(&passkey.passkey).expect("blob is json");
+    blob["cred"]["counter"]
+        .as_u64()
+        .expect("the stored credential carries a counter")
 }
 
 #[tokio::test]

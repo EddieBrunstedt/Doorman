@@ -9,7 +9,7 @@ use crate::context::CoreDeps;
 use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityEmailNotifier};
 use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::operator::{NotificationPolicy, OperatorManager};
-use crate::passkey::{PasskeyConfig, PasskeyManager};
+use crate::passkey::{PasskeyConfig, PasskeyManager, build_webauthn};
 use crate::rate_limit::RateLimiter;
 use crate::reauth::{ReauthManager, ReauthPolicy};
 use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
@@ -282,14 +282,16 @@ impl AuthCoreBuilder {
 
         let reauth_policy = self.reauth.ok_or(AssemblyError::ReauthDecisionRequired)?;
 
+        let webauthn = Arc::new(build_webauthn(&passkey_config).map_err(AssemblyError::Passkey)?);
+
         let reauth = ReauthManager::new(
             &passkey_config,
             &self.storage,
             clock.clone(),
             audit.clone(),
             reauth_policy,
-        )
-        .map_err(AssemblyError::Passkey)?;
+            webauthn.clone(),
+        );
 
         let deps = CoreDeps::new(
             clock,
@@ -304,7 +306,7 @@ impl AuthCoreBuilder {
         )
         .with_metrics(metrics);
 
-        let passkey = PasskeyManager::new(&deps, passkey_config).map_err(AssemblyError::Passkey)?;
+        let passkey = PasskeyManager::new(&deps, passkey_config, webauthn);
 
         let signup_flow = EnrollmentFlow::new(&deps, passkey.clone());
         let recovery_flow = match self.recovery_rate_limiter {

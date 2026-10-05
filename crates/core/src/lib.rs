@@ -1,5 +1,6 @@
 pub mod account;
 pub mod assembly;
+mod assertion;
 pub mod audit;
 pub mod cache;
 pub mod clock;

@@ -1,19 +1,15 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use webauthn_rs::prelude::{
-    Passkey, PublicKeyCredential, RequestChallengeResponse, Webauthn, WebauthnError,
-};
+use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RequestChallengeResponse, Webauthn};
 
+use crate::assertion::{AssertionVerifier, PendingAssertion};
 use crate::audit::{
-    Actor, AuditDispatch, AuditEvent, AuditEventKind, AuditSink, ReauthFailureReason,
+    Actor, AuditDispatch, AuditEvent, AuditEventKind, AuditSink, AuthFailureReason,
 };
 use crate::clock::{Clock, expiry};
 use crate::error::{Error, Result};
-use crate::passkey::{
-    PasskeyConfig, build_webauthn, decode_credential, encode_passkey_authentication_state,
-    find_owned_passkey,
-};
+use crate::passkey::{PasskeyConfig, decode_credential, encode_passkey_authentication_state};
 use crate::redeem::Redeemer;
 use crate::session::SessionContext;
 use crate::storage::{
@@ -87,6 +83,7 @@ pub struct ReauthManager {
     credentials: Arc<dyn PasskeyCredentialStore>,
     challenges: Arc<dyn PasskeyChallengeStore>,
     redeemer: Redeemer,
+    assertions: AssertionVerifier,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     challenge_lifetime: std::time::Duration,
@@ -100,10 +97,17 @@ impl ReauthManager {
         clock: Arc<dyn Clock>,
         audit: Arc<dyn AuditSink>,
         policy: ReauthPolicy,
-    ) -> Result<Self> {
+        webauthn: Arc<Webauthn>,
+    ) -> Self {
         let audit = AuditDispatch::new(audit);
-        Ok(Self {
-            webauthn: Arc::new(build_webauthn(config)?),
+        Self {
+            assertions: AssertionVerifier::new(
+                webauthn.clone(),
+                storage.users.clone(),
+                storage.passkey_credentials.clone(),
+                clock.clone(),
+            ),
+            webauthn,
             credentials: storage.passkey_credentials.clone(),
             challenges: storage.passkey_challenges.clone(),
             redeemer: Redeemer::new(storage, clock.clone(), audit.clone()),
@@ -111,7 +115,7 @@ impl ReauthManager {
             audit,
             challenge_lifetime: config.challenge_lifetime,
             policy,
-        })
+        }
     }
 
     pub fn policy(&self) -> ReauthPolicy {
@@ -173,58 +177,22 @@ impl ReauthManager {
             return Err(Error::ReauthRequired);
         };
 
-        let auth_state = self
+        let state = self
             .redeemer
             .reauth(proof.challenge_id, user_id, context)
             .await?;
         let now = self.clock.now();
-        let result = match self
-            .webauthn
-            .finish_passkey_authentication(&proof.assertion, &auth_state)
-        {
-            Ok(result) => result,
-            Err(WebauthnError::CredentialPossibleCompromise) => {
-                self.emit_failed(
-                    now,
-                    context,
-                    user_id,
-                    ReauthFailureReason::CounterRegression,
-                )
-                .await;
-                return Err(Error::PasskeyPossibleCompromise);
-            }
-            Err(e) => {
-                self.emit_failed(now, context, user_id, ReauthFailureReason::BadAssertion)
-                    .await;
-                return Err(Error::Webauthn(e.to_string()));
-            }
-        };
-
-        if !result.user_verified() {
-            self.emit_failed(
-                now,
-                context,
-                user_id,
-                ReauthFailureReason::UserVerificationMissing,
+        if let Err(refusal) = self
+            .assertions
+            .verify(
+                PendingAssertion::Reauth { user_id, state },
+                &proof.assertion,
             )
-            .await;
-            return Err(Error::UserVerificationRequired);
-        }
-
-        let cred_id: &[u8] = result.cred_id().as_ref();
-        match find_owned_passkey(self.credentials.as_ref(), user_id, cred_id).await {
-            Ok(_) => {}
-            Err(Error::PasskeyNotFound | Error::PasskeyOwnershipMismatch) => {
-                self.emit_failed(
-                    now,
-                    context,
-                    user_id,
-                    ReauthFailureReason::OwnershipMismatch,
-                )
+            .await?
+        {
+            self.emit_failed(now, context, user_id, refusal.reason)
                 .await;
-                return Err(Error::PasskeyOwnershipMismatch);
-            }
-            Err(error) => return Err(error),
+            return Err(refusal.error);
         }
 
         self.audit
@@ -245,7 +213,7 @@ impl ReauthManager {
         now: DateTime<Utc>,
         context: &SessionContext,
         user_id: UserId,
-        reason: ReauthFailureReason,
+        reason: AuthFailureReason,
     ) {
         self.audit
             .emit(AuditEvent {

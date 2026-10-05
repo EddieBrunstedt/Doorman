@@ -9,12 +9,13 @@ use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
     AttestationMetadata, CreationChallengeResponse, Credential, CredentialID,
-    DiscoverableAuthentication, DiscoverableKey, Passkey, PasskeyAuthentication,
-    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
-    RequestChallengeResponse, Webauthn, WebauthnBuilder, WebauthnError,
+    DiscoverableAuthentication, Passkey, PasskeyAuthentication, PasskeyRegistration,
+    PublicKeyCredential, RegisterPublicKeyCredential, RequestChallengeResponse, Webauthn,
+    WebauthnBuilder,
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
 
+use crate::assertion::{AssertionVerifier, PendingAssertion, VerifiedAssertion};
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, AuthFailureReason};
 use crate::clock::{Clock, expiry};
 use crate::context::CoreDeps;
@@ -27,8 +28,8 @@ use crate::redeem::{RedeemedRegistration, Redeemer};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
     AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
-    PasskeySummary, PasskeyUse, Session, StoredPasskey, StoredPasskeyAuthentication,
-    StoredPasskeyRegistration, User, UserId,
+    PasskeySummary, Session, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
+    User, UserId,
 };
 use crate::user::UserRecords;
 use crate::verification::EnrollmentOutcome;
@@ -127,6 +128,7 @@ pub struct PasskeyManager {
     credentials: Arc<dyn PasskeyCredentialStore>,
     challenges: Arc<dyn PasskeyChallengeStore>,
     redeemer: Redeemer,
+    assertions: AssertionVerifier,
     sessions: SessionManager,
     reauth: ReauthManager,
     clock: Arc<dyn Clock>,
@@ -139,14 +141,18 @@ pub struct PasskeyManager {
 }
 
 impl PasskeyManager {
-    pub(crate) fn new(deps: &CoreDeps, config: PasskeyConfig) -> Result<Self> {
-        let webauthn = build_webauthn(&config)?;
-
-        Ok(Self {
+    pub(crate) fn new(deps: &CoreDeps, config: PasskeyConfig, webauthn: Arc<Webauthn>) -> Self {
+        Self {
             records: UserRecords::new(deps),
             credentials: deps.passkey_credentials.clone(),
             challenges: deps.passkey_challenges.clone(),
             redeemer: Redeemer::from_deps(deps),
+            assertions: AssertionVerifier::new(
+                webauthn.clone(),
+                deps.users.clone(),
+                deps.passkey_credentials.clone(),
+                deps.clock.clone(),
+            ),
             sessions: deps.sessions.clone(),
             reauth: deps.reauth.clone(),
             clock: deps.clock.clone(),
@@ -154,9 +160,9 @@ impl PasskeyManager {
             notifier: deps.notifier.clone(),
             rate_limiter: deps.rate_limiter.clone(),
             metrics: deps.metrics.clone(),
-            webauthn: Arc::new(webauthn),
+            webauthn,
             config,
-        })
+        }
     }
 
     #[tracing::instrument(skip(self, session), fields(method = "passkey", user_id = %session.user_id))]
@@ -478,104 +484,22 @@ impl PasskeyManager {
         let auth_state = self.redeemer.login(challenge_id, &context).await?;
         let now = self.clock.now();
 
-        let cred_id_bytes: &[u8] = response.raw_id.as_ref();
-        let Some(credential) = self
-            .credentials
-            .find_passkey_by_credential_id(cred_id_bytes)
+        let VerifiedAssertion { user, passkey } = match self
+            .assertions
+            .verify(PendingAssertion::Login(auth_state), response)
             .await?
-        else {
-            self.emit_auth_failure(now, &context, None, AuthFailureReason::UnknownCredential)
-                .await;
-            return Err(Error::PasskeyNotFound);
-        };
-
-        let user_id = credential.user_id;
-
-        match user_id_from_handle(response) {
-            Ok(Some(asserted_user)) if asserted_user == user_id => {}
-            _ => {
-                self.emit_auth_failure(
-                    now,
-                    &context,
-                    Some(user_id),
-                    AuthFailureReason::UserHandleMismatch,
-                )
-                .await;
-                return Err(Error::PasskeyOwnershipMismatch);
+        {
+            Ok(verified) => verified,
+            Err(refusal) => {
+                self.emit_auth_failure(now, &context, refusal.user_id, refusal.reason)
+                    .await;
+                return Err(refusal.error);
             }
-        }
+        };
+        let user_id = user.id;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
-        let mut passkey = decode_credential(&credential.passkey)?;
-        let discoverable = [DiscoverableKey::from(&passkey)];
-        let auth_result = match self.webauthn.finish_discoverable_authentication(
-            response,
-            auth_state,
-            &discoverable,
-        ) {
-            Ok(result) => result,
-            Err(WebauthnError::CredentialPossibleCompromise) => {
-                self.emit_auth_failure(
-                    now,
-                    &context,
-                    Some(user_id),
-                    AuthFailureReason::CounterRegression,
-                )
-                .await;
-                return Err(Error::PasskeyPossibleCompromise);
-            }
-            Err(e) => {
-                self.emit_auth_failure(
-                    now,
-                    &context,
-                    Some(user_id),
-                    AuthFailureReason::BadAssertion,
-                )
-                .await;
-                return Err(Error::Webauthn(e.to_string()));
-            }
-        };
-
-        if !auth_result.user_verified() {
-            self.emit_auth_failure(
-                now,
-                &context,
-                Some(user_id),
-                AuthFailureReason::UserVerificationMissing,
-            )
-            .await;
-            return Err(Error::UserVerificationRequired);
-        }
-
-        let user = match self.records.find_active(user_id).await {
-            Ok(user) => user,
-            Err(error) => {
-                let reason = match error {
-                    Error::UserNotFound => AuthFailureReason::UnknownCredential,
-                    Error::AccountDisabled => AuthFailureReason::AccountDisabled,
-                    _ => return Err(error),
-                };
-                self.emit_auth_failure(now, &context, Some(user_id), reason)
-                    .await;
-                return Err(error);
-            }
-        };
-
-        let active_recovery_cooldown_until = credential.active_recovery_cooldown_until(now);
-
-        passkey.update_credential(&auth_result);
-        let refreshed = PasskeyMetadata::from_passkey(&passkey);
-        self.credentials
-            .record_passkey_use(
-                &credential.credential_id,
-                PasskeyUse {
-                    passkey: encode_credential(&passkey)?,
-                    backup_eligible: refreshed.backup_eligible,
-                    backup_state: refreshed.backup_state,
-                    used_at: now,
-                },
-            )
-            .await?;
+        let active_recovery_cooldown_until = passkey.active_recovery_cooldown_until(now);
 
         self.metrics.record(MetricEvent::LoginSucceeded);
         self.audit
@@ -787,16 +711,16 @@ impl Drop for AuthLatencyGuard {
     }
 }
 
-struct PasskeyMetadata {
+pub(crate) struct PasskeyMetadata {
     aaguid: Option<Uuid>,
     transports: Vec<String>,
-    backup_eligible: bool,
-    backup_state: bool,
+    pub(crate) backup_eligible: bool,
+    pub(crate) backup_state: bool,
     user_verified: bool,
 }
 
 impl PasskeyMetadata {
-    fn from_passkey(passkey: &Passkey) -> Self {
+    pub(crate) fn from_passkey(passkey: &Passkey) -> Self {
         let cred: Credential = passkey.clone().into();
         let aaguid = match cred.attestation.metadata {
             AttestationMetadata::Packed { aaguid } | AttestationMetadata::Tpm { aaguid, .. } => {
@@ -833,19 +757,6 @@ fn require_discoverable_credential(ccr: &mut CreationChallengeResponse) -> Resul
     Ok(())
 }
 
-fn user_id_from_handle(response: &PublicKeyCredential) -> Result<Option<UserId>> {
-    response
-        .response
-        .user_handle
-        .as_ref()
-        .map(|handle| {
-            Uuid::from_slice(handle.as_ref())
-                .map(UserId)
-                .map_err(|_| Error::PasskeyNotFound)
-        })
-        .transpose()
-}
-
 pub(crate) fn build_webauthn(config: &PasskeyConfig) -> Result<Webauthn> {
     let mut builder = WebauthnBuilder::new(&config.rp_id, &config.rp_origin)
         .map_err(|e| Error::InvalidRelyingParty(e.to_string()))?
@@ -858,7 +769,7 @@ pub(crate) fn build_webauthn(config: &PasskeyConfig) -> Result<Webauthn> {
         .map_err(|e| Error::InvalidRelyingParty(e.to_string()))
 }
 
-fn encode_credential(passkey: &Passkey) -> Result<Vec<u8>> {
+pub(crate) fn encode_credential(passkey: &Passkey) -> Result<Vec<u8>> {
     serde_json::to_vec(passkey).map_err(|e| Error::Internal(format!("serialise credential: {e}")))
 }
 

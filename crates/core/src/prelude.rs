@@ -2,7 +2,7 @@ pub use crate::account::{AccountConfig, AccountManager};
 pub use crate::assembly::{AssemblyError, AuthCore, AuthCoreBuilder};
 pub use crate::audit::{
     Actor, AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, OperatorActor,
-    ReauthFailureReason, RecoveryFailureReason, RedemptionFailureReason, SecretKind,
+    RecoveryFailureReason, RedemptionFailureReason, SecretKind,
 };
 pub use crate::clock::{Clock, SystemClock};
 #[cfg(feature = "file-email")]

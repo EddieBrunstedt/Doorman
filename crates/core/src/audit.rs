@@ -130,7 +130,7 @@ pub enum AuditEventKind {
     },
     ReauthFailed {
         user_id: UserId,
-        reason: ReauthFailureReason,
+        reason: AuthFailureReason,
     },
     OperatorRevokedAllSessions {
         user_id: UserId,
@@ -211,20 +211,11 @@ impl AuditEventKind {
 pub enum AuthFailureReason {
     UnknownCredential,
     UserHandleMismatch,
+    OwnershipMismatch,
     CounterRegression,
     UserVerificationMissing,
     BadAssertion,
     AccountDisabled,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum ReauthFailureReason {
-    UserVerificationMissing,
-    OwnershipMismatch,
-    CounterRegression,
-    BadAssertion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
