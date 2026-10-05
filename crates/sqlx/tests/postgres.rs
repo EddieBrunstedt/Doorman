@@ -29,5 +29,4 @@ async fn postgres_storage_conformance() {
     let storage = PostgresStorage::from_pool(pool);
     storage.migrate().await.expect("migrate");
     doorman_conformance::run(&storage.all_stores()).await;
-    doorman_conformance::run_db_backed(&storage.all_stores()).await;
 }

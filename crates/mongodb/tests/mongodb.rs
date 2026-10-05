@@ -36,7 +36,4 @@ async fn mongodb_storage_conformance() {
     storage.ensure_indexes().await.expect("ensure indexes");
 
     doorman_conformance::run(&storage.all_stores()).await;
-    // The session store pushes `expires_at > now` into `list_for_user`, so it
-    // satisfies the database-backed assertions too.
-    doorman_conformance::run_db_backed(&storage.all_stores()).await;
 }

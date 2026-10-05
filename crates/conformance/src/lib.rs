@@ -10,10 +10,6 @@
 //! everywhere keeps adapters from drifting apart and pins the in-memory
 //! stores to the same contract the docs claim they model.
 //!
-//! [`run_db_backed`] adds the extra assertions that only hold for adapters
-//! which push the expiry predicate into their query layer; call it in addition
-//! to [`run`] from those harnesses.
-//!
 //! Checks share a single `Storage` instance, so each uses freshly minted
 //! ids and token hashes to stay isolated; assertions that touch
 //! whole-table operations (`purge_expired`) target a specific row rather
@@ -79,6 +75,7 @@ pub async fn run(storage: &Storage) {
     verification_token_email_change_payload(storage).await;
     verification_token_purge_and_delete(storage).await;
     sessions_crud_and_queries(storage).await;
+    sessions_list_excludes_expired(storage).await;
     sessions_purge_expired(storage).await;
     session_touch_slides_deadline(storage).await;
     session_touch_does_not_resurrect(storage).await;
@@ -94,15 +91,6 @@ pub async fn run(storage: &Storage) {
     passkey_challenge_purge_expired(storage).await;
     owner_indexes_track_removals(storage).await;
     absent_lookups_return_none(storage).await;
-}
-
-/// Extra assertions that only hold for database-backed adapters, which push
-/// the expiry predicate into the query (or filter on read). The in-memory
-/// reference store deliberately returns expired rows (the manager filters
-/// them), so every adapter harness calls this in addition to [`run`] while
-/// the in-memory harness sticks to [`run`] alone.
-pub async fn run_db_backed(storage: &Storage) {
-    sessions_list_excludes_expired(storage).await;
 }
 
 /// `SessionStore::list_for_user` must drop rows whose `expires_at <= now`

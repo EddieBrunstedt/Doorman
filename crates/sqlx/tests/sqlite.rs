@@ -13,5 +13,4 @@ async fn sqlite_storage_conformance() {
         .expect("connect");
     storage.migrate().await.expect("migrate");
     doorman_conformance::run(&storage.all_stores()).await;
-    doorman_conformance::run_db_backed(&storage.all_stores()).await;
 }

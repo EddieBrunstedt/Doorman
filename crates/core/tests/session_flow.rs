@@ -372,10 +372,9 @@ async fn list_for_user_returns_only_active_sessions_for_that_user() {
     expected.sort_by_key(|id| id.0);
     assert_eq!(ids, expected, "list returns only Alice's sessions");
 
-    // Step past Alice's first session's expiry while keeping Bob's and
-    // Alice's second session alive (re-issue Alice's second now to verify
-    // the manager filters expired entries even though the storage adapter
-    // still holds the row).
+    // Step past both of Alice's sessions' expiry and issue her a fresh one.
+    // The expired rows are still stored (nothing purged them) but are not
+    // listed.
     clock.advance(ChronoDuration::seconds(120));
     let fresh = manager
         .create(alice, SessionContext::default())
@@ -387,7 +386,7 @@ async fn list_for_user_returns_only_active_sessions_for_that_user() {
     assert_eq!(
         ids_after,
         vec![fresh.session.id],
-        "manager filters out expired sessions even when storage retains them"
+        "expired sessions are not listed even while storage retains them"
     );
 }
 

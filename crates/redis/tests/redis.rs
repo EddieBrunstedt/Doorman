@@ -16,7 +16,4 @@ async fn redis_storage_conformance() {
     // `_node` keeps the container alive until the end of the test.
     let (_node, storage) = common::storage(Backend::Redis).await;
     doorman_conformance::run(&storage).await;
-    // The Redis adapter pushes the `expires_at > now` predicate into
-    // `list_for_user`, so it satisfies the database-backed assertions too.
-    doorman_conformance::run_db_backed(&storage).await;
 }

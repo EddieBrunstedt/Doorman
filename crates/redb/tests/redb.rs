@@ -13,7 +13,4 @@ async fn redb_storage_conformance() {
     let storage = RedbStorage::open(&path).expect("open redb");
 
     doorman_conformance::run(&storage.all_stores()).await;
-    // redb pushes the `expires_at > now` predicate into `list_for_user`,
-    // so the database-backed extra assertions hold too.
-    doorman_conformance::run_db_backed(&storage.all_stores()).await;
 }

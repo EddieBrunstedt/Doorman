@@ -104,8 +104,7 @@ impl SessionStore for MongoSessionStore {
         now: DateTime<Utc>,
     ) -> StorageResult<Vec<Session>> {
         // Push the `expires_at > now` predicate into the query so expired rows
-        // never leave the store — matching the SQL adapter behaviour and
-        // satisfying `run_db_backed`.
+        // never leave the store, as the trait contract requires.
         let filter = doc! {
             "user_id": user_id.0.to_string(),
             "expires_at": { "$gt": to_bson_dt(now) },

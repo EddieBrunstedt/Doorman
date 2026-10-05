@@ -469,20 +469,12 @@ impl SessionManager {
         Ok(count)
     }
 
-    /// Return every still-valid session belonging to `user_id`. Sessions
-    /// whose `expires_at` has already passed are filtered out here so
-    /// adapters don't have to encode the expiry rule.
+    /// Return every still-valid session belonging to `user_id`. The store
+    /// drops expired rows, per the [`SessionStore::list_for_user`] contract.
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn list_for_user(&self, user_id: UserId) -> Result<Vec<Session>> {
         let now = self.clock.now();
-        let sessions = self.sessions.list_for_user(user_id, now).await?;
-        // Adapters that push `expires_at > now` into the query already exclude
-        // dead rows; this filter is the belt-and-suspenders that keeps the
-        // in-memory reference store (which returns everything) correct too.
-        Ok(sessions
-            .into_iter()
-            .filter(|s| s.expires_at > now)
-            .collect())
+        Ok(self.sessions.list_for_user(user_id, now).await?)
     }
 
     /// Return a [`SessionSummary`] for every still-valid session belonging to

@@ -19,5 +19,4 @@ async fn valkey_storage_conformance() {
     // `_node` keeps the container alive until the end of the test.
     let (_node, storage) = common::storage(Backend::Valkey).await;
     doorman_conformance::run(&storage).await;
-    doorman_conformance::run_db_backed(&storage).await;
 }

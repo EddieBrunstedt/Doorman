@@ -47,7 +47,4 @@ async fn dynamodb_storage_conformance() {
     storage.create_table().await.expect("create table");
 
     doorman_conformance::run(&storage.all_stores()).await;
-    // The adapter pushes the `expires_at > now` predicate into `list_for_user`,
-    // so it satisfies the database-backed assertions too.
-    doorman_conformance::run_db_backed(&storage.all_stores()).await;
 }

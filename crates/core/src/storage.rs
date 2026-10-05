@@ -47,9 +47,9 @@
 //! - **Secondary indexes are best-effort.** A user-scoped index of ids/hashes
 //!   may briefly point at a row whose TTL already evicted it. Reads that resolve
 //!   members ([`SessionStore::list_for_user`] and friends) must skip and
-//!   opportunistically drop such dangling members, and the manager re-applies
-//!   the `expires_at > now` filter, so correctness never depends on the index
-//!   being pristine.
+//!   opportunistically drop such dangling members, and still apply
+//!   `list_for_user`'s `expires_at > now` filter, so correctness never depends
+//!   on the index being pristine.
 //! - **`purge_expired` is a real reclamation pass, not a no-op.** TTL evicts the
 //!   value keys, but dangling index members for users who never return are
 //!   reclaimed only by `purge_expired`. It returns the count reclaimed (expired
@@ -385,13 +385,11 @@ pub trait SessionStore: Send + Sync {
     /// Resolve a session by id, or `None` if absent.
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>>;
 
-    /// Return the sessions belonging to a user. `now` is the caller's clock
-    /// instant: database-backed adapters SHOULD push `expires_at > now` into
-    /// the query so dead rows never leave the store, while the in-memory
-    /// reference store MAY return expired rows. Either way
-    /// [`SessionManager::list_for_user`](crate::session::SessionManager::list_for_user)
-    /// applies the same `expires_at > now` filter, so a caller never observes
-    /// an expired session regardless of which adapter is in use.
+    /// Return the live sessions belonging to a user. `now` is the caller's
+    /// clock instant, and the adapter MUST drop every row whose
+    /// `expires_at <= now` (database-backed adapters push the predicate into
+    /// the query). Nothing above the store re-filters, so an expired row
+    /// returned here would be listed to the user.
     async fn list_for_user(
         &self,
         user_id: UserId,
