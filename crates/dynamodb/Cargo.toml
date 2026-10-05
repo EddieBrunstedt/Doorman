@@ -7,7 +7,6 @@ documentation = "https://docs.rs/doorman-dynamodb"
 edition.workspace = true
 keywords = ["authentication", "passkey", "dynamodb", "aws", "session"]
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
 description = "Amazon DynamoDB storage adapter for the doorman authentication library."

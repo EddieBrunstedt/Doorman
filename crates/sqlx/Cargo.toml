@@ -7,7 +7,6 @@ documentation = "https://docs.rs/doorman-sqlx"
 edition.workspace = true
 keywords = ["authentication", "passkey", "sqlx", "sqlite", "postgres"]
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
 description = "SQLx-backed storage adapter for the doorman authentication library (SQLite, Postgres, and MySQL/MariaDB)."

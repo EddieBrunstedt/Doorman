@@ -7,7 +7,6 @@ documentation = "https://docs.rs/doorman-conformance"
 edition.workspace = true
 keywords = ["authentication", "passkey", "storage", "conformance", "testing"]
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
 description = "Backend-agnostic storage-conformance suite for doorman storage adapters."

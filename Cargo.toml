@@ -67,7 +67,7 @@ webauthn-rs-proto = "0.5"
 
 # Pinned bench profile: optimise like release but with a single codegen unit
 # and fat LTO so numbers are stable run-to-run and don't drift with incremental
-# codegen-unit partitioning. Documented in BENCHMARKS.md.
+# codegen-unit partitioning.
 [profile.bench]
 opt-level = 3
 lto = "fat"

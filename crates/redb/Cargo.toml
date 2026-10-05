@@ -7,7 +7,6 @@ documentation = "https://docs.rs/doorman-redb"
 edition.workspace = true
 keywords = ["authentication", "passkey", "redb", "embedded", "session"]
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
 description = "redb embedded key-value storage adapter for the doorman authentication library."

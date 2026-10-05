@@ -37,7 +37,7 @@ const SIGNUP_TEMPLATE: &str = "http://localhost:3000/signup?token={token}";
 const RECOVERY_TEMPLATE: &str = "http://localhost:3000/recovery?token={token}";
 
 #[tokio::test]
-async fn readme_quickstart_drives_signup_login_recovery() {
+async fn signup_login_recovery_round_trip() {
     async fn me(auth: AuthSession) -> String {
         auth.user
             .email

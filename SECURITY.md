@@ -1,7 +1,5 @@
 # Security policy
 
-The full security model — threat model, implemented guarantees, defaults, and host hardening requirements — lives in [`docs/security.md`](docs/security.md). This file is the vulnerability-disclosure policy.
-
 ## Reporting a vulnerability
 
 Please report security issues **privately** and give the maintainer a chance to ship a fix before any public disclosure.

@@ -60,17 +60,6 @@ fmt-check:
 dprint-check:
     dprint check
 
-# Regenerate the README's overview/quickstart region from the umbrella crate
-# docs (`crates/doorman/src/lib.rs`). The quickstart is a real doctest there, so
-# this keeps the shown code and the tested code as one source. Needs cargo-rdme
-# on PATH; match the version CI pins (2.0.0) so output doesn't drift.
-rdme:
-    cargo rdme --workspace-project doorman --readme-path README.md --intralinks-strip-links --heading-base-level 0
-
-# Verify the README is in sync with the crate docs without writing, as CI does.
-rdme-check:
-    cargo rdme --workspace-project doorman --readme-path README.md --intralinks-strip-links --heading-base-level 0 --check
-
 # Type-check the whole workspace with all features.
 check:
     cargo check --workspace --all-features
@@ -106,4 +95,4 @@ msrv:
 
 # Cheap-first ordering: format, dprint, lint, docs, feature isolation, MSRV,
 # then the container-backed test suite. The full local gate, mirroring CI.
-verify: fmt-check dprint-check rdme-check clippy doc check-features msrv test
+verify: fmt-check dprint-check clippy doc check-features msrv test
