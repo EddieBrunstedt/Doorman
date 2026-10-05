@@ -1,6 +1,7 @@
 //! `SessionResolver::resolve`: the cache hit/miss path, the expiry re-check on
-//! a hit, eviction on revocation, the account-status gate, and idle sliding —
-//! all through the one request-time operation, with no HTTP.
+//! a hit, eviction on revocation and user changes, the account-status gate,
+//! and idle sliding — all through the one request-time operation, with no
+//! HTTP.
 
 mod common;
 
@@ -15,9 +16,9 @@ use doorman_core::cache::SessionCacheConfig;
 use doorman_core::clock::Clock;
 use doorman_core::metrics::MetricEvent;
 use doorman_core::session::{SessionConfig, SessionContext, hash_token};
-use doorman_core::storage::{AccountStatus, SessionStore, User, UserStore};
+use doorman_core::storage::{AccountStatus, SessionStore, User, UserId, UserStore};
 
-use common::{Harness, make_user};
+use common::{Harness, SIGNUP_URL, last_email_change_token, make_user, token_from_email};
 
 /// One hour absolute, ten minute idle — with the default 60s cache TTL, which
 /// is also the touch throttle.
@@ -180,6 +181,86 @@ async fn operator_disable_evicts_the_warm_entry() {
     let err = h.resolver.resolve(&token).await.err();
     assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
     assert_eq!(hits(&h), 0);
+}
+
+/// A confirmed email change evicts the user's warm entries, so the next
+/// resolve shows the new address rather than the cached one.
+#[tokio::test]
+async fn email_change_evicts_the_warm_entry() {
+    let h = Harness::fresh();
+    let (_, token) = signed_in(&h, "old@example.com").await;
+    let warm = h.resolver.resolve(&token).await.expect("warm the cache");
+
+    h.account
+        .request_email_change(
+            &warm.user,
+            &warm.session,
+            "new@example.com",
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("request email change");
+    h.account
+        .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
+        .await
+        .expect("confirm email change");
+
+    let resolved = h.resolver.resolve(&token).await.expect("resolve");
+    assert_eq!(resolved.user.email.as_deref(), Some("new@example.com"));
+    assert_eq!(hits(&h), 0, "the stale snapshot was never served");
+}
+
+/// Verifying an address through a signup link evicts the user's warm
+/// entries. Here an unverified, passkey-less user who holds a session asks
+/// for signup again and clicks the re-issued link.
+#[tokio::test]
+async fn email_verification_evicts_the_warm_entry() {
+    let h = Harness::fresh();
+    let now = h.clock.now();
+    let user = User {
+        id: UserId::new(),
+        email: Some("late@example.com".to_owned()),
+        email_verified_at: None,
+        status: AccountStatus::Active,
+        created_at: now,
+        updated_at: now,
+    };
+    h.users
+        .create_user(user.clone())
+        .await
+        .expect("create user");
+    let token = h
+        .session_manager
+        .create(user.id, SessionContext::default())
+        .await
+        .expect("create session")
+        .token;
+    let warm = h.resolver.resolve(&token).await.expect("warm the cache");
+    assert!(warm.user.email_verified_at.is_none());
+
+    h.signup
+        .request_signup("late@example.com", None, SessionContext::default())
+        .await
+        .expect("request signup");
+    let link = h
+        .email
+        .sent()
+        .last()
+        .expect("signup link queued")
+        .body_text
+        .clone();
+    h.signup
+        .consume_signup(
+            &token_from_email(&link, SIGNUP_URL),
+            SessionContext::default(),
+        )
+        .await
+        .expect("consume signup");
+
+    let resolved = h.resolver.resolve(&token).await.expect("resolve");
+    assert!(resolved.user.email_verified_at.is_some());
+    assert_eq!(hits(&h), 0, "the stale snapshot was never served");
 }
 
 #[tokio::test]

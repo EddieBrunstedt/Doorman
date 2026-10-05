@@ -96,10 +96,11 @@ pub struct SessionContext {
 }
 
 /// Observer that is notified whenever the [`SessionManager`] invalidates
-/// a session out-of-band of a fresh `validate()` call. The canonical user is
-/// the [`SessionResolver`](crate::resolve::SessionResolver)'s cache, which
-/// needs to evict stale entries when a session is revoked or a user is logged
-/// out everywhere.
+/// a session out-of-band of a fresh `validate()` call, or learns that a
+/// user's record changed. The canonical user is the
+/// [`SessionResolver`](crate::resolve::SessionResolver)'s cache, which needs
+/// to evict stale entries when a session is revoked, a user is logged out
+/// everywhere, or a user's fields change.
 ///
 /// Hooks are called on a best-effort basis — failures during invalidation
 /// must not propagate, so the trait returns `()` rather than `Result`.
@@ -107,9 +108,10 @@ pub struct SessionContext {
 pub(crate) trait SessionInvalidationHook: Send + Sync {
     /// Called when a single session is invalidated (revoked or deleted).
     async fn on_session_invalidated(&self, session_id: SessionId);
-    /// Called when every session for a user is invalidated at once
-    /// (log-out-everywhere, account deletion).
-    async fn on_user_sessions_invalidated(&self, user_id: UserId);
+    /// Called when nothing derived from a user's sessions is current any
+    /// more: several of their sessions were revoked at once
+    /// (log-out-everywhere, account deletion), or their user record changed.
+    async fn on_user_invalidated(&self, user_id: UserId);
 }
 
 /// Default hook that ignores every event. Used until a
@@ -120,7 +122,7 @@ pub(crate) struct NoopSessionInvalidationHook;
 #[async_trait]
 impl SessionInvalidationHook for NoopSessionInvalidationHook {
     async fn on_session_invalidated(&self, _: SessionId) {}
-    async fn on_user_sessions_invalidated(&self, _: UserId) {}
+    async fn on_user_invalidated(&self, _: UserId) {}
 }
 
 /// Manager for issuing, validating, listing, and revoking sessions.
@@ -189,6 +191,14 @@ impl SessionManager {
     /// so a host that injected a custom or mock clock is honoured everywhere.
     pub fn clock(&self) -> &Arc<dyn Clock> {
         &self.clock
+    }
+
+    /// Tell the invalidation observer that `user_id`'s record changed,
+    /// without revoking anything, so a cached copy of the old record is not
+    /// served. [`UserRecords`](crate::user::UserRecords) calls this after
+    /// every email write.
+    pub(crate) async fn forget_cached_user(&self, user_id: UserId) {
+        self.invalidation_hook().on_user_invalidated(user_id).await;
     }
 
     /// Snapshot the currently installed invalidation observer. Cloned out so
@@ -442,7 +452,7 @@ impl SessionManager {
     }
 
     /// Revoke every session belonging to a user, firing the
-    /// user-sessions-invalidated hook when any were removed. Returns the count.
+    /// user-invalidated hook when any were removed. Returns the count.
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn revoke_all_for_user(&self, user_id: UserId) -> Result<u64> {
         let count = self
@@ -453,9 +463,7 @@ impl SessionManager {
         // revoked, matching `revoke_others`'s guarded shape — a zero-count
         // sweep evicts nothing, so there is nothing to invalidate.
         if count > 0 {
-            self.invalidation_hook()
-                .on_user_sessions_invalidated(user_id)
-                .await;
+            self.invalidation_hook().on_user_invalidated(user_id).await;
         }
         tracing::info!(count, outcome = "revoked_all", "user sessions revoked");
         Ok(count)
@@ -488,7 +496,7 @@ impl SessionManager {
     }
 
     /// Revoke every session belonging to `user_id` except `keep`, firing the
-    /// user-sessions-invalidated hook when any were removed. Returns the count.
+    /// user-invalidated hook when any were removed. Returns the count.
     /// The ungated core of
     /// [`AccountManager::revoke_other_sessions`](crate::account::AccountManager::revoke_other_sessions),
     /// which owns the cool-down and re-auth gate and the security notice.
@@ -498,9 +506,7 @@ impl SessionManager {
             .delete_sessions_for_user(user_id, Some(keep))
             .await?;
         if count > 0 {
-            self.invalidation_hook()
-                .on_user_sessions_invalidated(user_id)
-                .await;
+            self.invalidation_hook().on_user_invalidated(user_id).await;
         }
         tracing::info!(
             count,
@@ -716,7 +722,7 @@ mod tests {
         async fn on_session_invalidated(&self, session_id: SessionId) {
             sync::lock(&self.sessions).push(session_id);
         }
-        async fn on_user_sessions_invalidated(&self, user_id: UserId) {
+        async fn on_user_invalidated(&self, user_id: UserId) {
             sync::lock(&self.users).push(user_id);
         }
     }

@@ -20,6 +20,9 @@
 //!   invalidator drops the matching entry.
 //! - On [`SessionManager::revoke_all_for_user`] → the cache invalidator
 //!   drops every entry belonging to that user.
+//! - On a change to a user's record (a new or newly verified email) → the
+//!   cache invalidator drops every entry belonging to that user without
+//!   revoking anything, so the next request re-reads the user.
 //! - Time-based: every entry carries an `inserted_at` read from the domain
 //!   [`Clock`] and is treated as stale once the configured TTL has elapsed.
 //!   TTL must be kept well below [`SessionConfig::absolute_lifetime`] so that
@@ -214,7 +217,7 @@ impl SessionCache {
     }
 
     /// Drop every entry belonging to `user_id`. Used when a user is logged
-    /// out everywhere. Scans every shard.
+    /// out everywhere or their record changes. Scans every shard.
     pub fn invalidate_user(&self, user_id: UserId) {
         for shard in self.shards.iter() {
             let mut guard = sync::lock(&shard.inner);
@@ -277,7 +280,7 @@ impl SessionInvalidationHook for CacheInvalidator {
         self.cache.invalidate_session(session_id);
     }
 
-    async fn on_user_sessions_invalidated(&self, user_id: UserId) {
+    async fn on_user_invalidated(&self, user_id: UserId) {
         self.cache.invalidate_user(user_id);
     }
 }

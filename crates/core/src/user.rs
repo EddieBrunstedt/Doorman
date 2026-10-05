@@ -5,6 +5,15 @@
 //! [`UserStore`], so "find the user or refuse", "is this account usable", and
 //! "remove everything that hangs off a user" each have one definition.
 //!
+//! # Cached copies
+//!
+//! The session cache holds a copy of the user beside each resolved session,
+//! so every write here leaves no stale copy behind. An email change or
+//! verification revokes nothing, so it evicts the user's entries through
+//! [`SessionManager`] and the next request re-reads the record. Disabling or
+//! deleting an account revokes its sessions, which evicts them too.
+//! Re-enabling evicts nothing: a disabled account has no sessions to cache.
+//!
 //! # Account standing
 //!
 //! [`ensure_active`] is the account-status rule and [`find_active_user`] the
@@ -141,6 +150,7 @@ impl UserRecords {
     pub(crate) async fn mark_email_verified(&self, user: &User) -> Result<()> {
         if user.email_verified_at.is_none() {
             self.users.mark_email_verified(user.id, self.now()).await?;
+            self.sessions.forget_cached_user(user.id).await;
         }
         Ok(())
     }
@@ -156,7 +166,10 @@ impl UserRecords {
     /// made in between.
     pub(crate) async fn change_email(&self, user_id: UserId, email: &str) -> Result<User> {
         match self.users.set_user_email(user_id, email, self.now()).await {
-            Ok(()) => self.find(user_id).await,
+            Ok(()) => {
+                self.sessions.forget_cached_user(user_id).await;
+                self.find(user_id).await
+            }
             Err(e) => Err(match e.kind() {
                 StorageErrorKind::Conflict => Error::EmailAlreadyInUse,
                 StorageErrorKind::NotFound => Error::UserNotFound,
