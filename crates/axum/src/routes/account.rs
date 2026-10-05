@@ -58,7 +58,7 @@ async fn confirm_email_change(
         .account
         .confirm_email_change(&body.token, context)
         .await?;
-    let passkey_count = state.passkey.list_passkey_summaries(user.id).await?.len();
+    let passkey_count = state.passkey.count_passkeys(user.id).await?;
     Ok(Json(UserDto::from_user(&user, passkey_count)))
 }
 

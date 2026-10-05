@@ -83,6 +83,12 @@ impl PasskeyCredentialStore for DynamoPasskeyCredentialStore {
         items.iter().map(model::passkey_summary_from_item).collect()
     }
 
+    async fn count_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        self.client
+            .count_owner(&model::user_passkeys_key(user_id))
+            .await
+    }
+
     async fn find_passkey_by_credential_id(
         &self,
         credential_id: &[u8],

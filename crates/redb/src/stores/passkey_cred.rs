@@ -164,6 +164,26 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
         .map_err(db::err)?
     }
 
+    async fn count_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        let db = self.handle.db();
+        tokio::task::spawn_blocking(move || {
+            // The index entry and the credential row are written and removed
+            // in the same transaction, so counting the index is exact.
+            let prefix = db::user_creds_prefix(user_id);
+            let end = db::prefix_end(&prefix);
+
+            let rtxn = db.begin_read().map_err(db::err)?;
+            let idx_tbl = rtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
+            let count = idx_tbl
+                .range(prefix.as_str()..end.as_str())
+                .map_err(db::err)?
+                .count() as u64;
+            Ok(count)
+        })
+        .await
+        .map_err(db::err)?
+    }
+
     async fn find_passkey_by_credential_id(
         &self,
         credential_id: &[u8],

@@ -119,10 +119,9 @@ async fn me(
     let passkey_count = state
         .auth
         .passkey()
-        .list_passkey_summaries(auth.user.id)
+        .count_passkeys(auth.user.id)
         .await
-        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?
-        .len();
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({
         "user": UserDto::from_user(&auth.user, passkey_count),
         "session": SessionDto::from_session(&auth.session, true),

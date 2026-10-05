@@ -81,20 +81,14 @@ async fn authenticate_finish(
     Json(body): Json<PasskeyAuthenticateFinishRequest>,
 ) -> Result<Response, ErrorResponse> {
     let challenge_id = parse_challenge_id(&body.challenge_id)?;
-    let issued = manager(&state)
+    let outcome = manager(&state)
         .finish_authentication(challenge_id, &body.response, context)
         .await?;
-    let user = state
-        .user_store
-        .find_user_by_id(issued.session.user_id)
-        .await
-        .map_err(doorman_core::Error::from)?
-        .ok_or(ErrorResponse(doorman_core::Error::UserNotFound))?;
-    let passkey_count = manager(&state).list_passkey_summaries(user.id).await?.len();
+    let passkey_count = manager(&state).count_passkeys(outcome.user.id).await?;
     Ok(auth_success(
         StatusCode::OK,
         state.cookie_config(),
-        AuthResponse::from_issued(user, issued, passkey_count),
+        AuthResponse::from_issued(outcome.user, outcome.session, passkey_count),
     ))
 }
 

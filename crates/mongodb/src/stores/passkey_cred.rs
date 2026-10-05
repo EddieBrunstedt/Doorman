@@ -83,6 +83,11 @@ impl PasskeyCredentialStore for MongoPasskeyCredentialStore {
         Ok(out)
     }
 
+    async fn count_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        let filter = doc! { "user_id": user_id.0.to_string() };
+        self.coll.count_documents(filter).await.map_err(err)
+    }
+
     async fn find_passkey_by_credential_id(
         &self,
         credential_id: &[u8],

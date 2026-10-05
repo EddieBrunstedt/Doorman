@@ -631,12 +631,17 @@ pub trait PasskeyCredentialStore: Send + Sync {
 
     /// List the user's credentials as metadata-only [`PasskeySummary`]
     /// values. Adapters MUST satisfy this without deserialising the
-    /// credential blob; it backs the "your passkeys" listing/count paths
-    /// where the blob is never read.
+    /// credential blob; it backs the "your passkeys" listing, where the blob
+    /// is never read.
     async fn list_passkey_summaries_for_user(
         &self,
         user_id: UserId,
     ) -> StorageResult<Vec<PasskeySummary>>;
+
+    /// Count the user's credentials. Adapters MUST answer without loading the
+    /// rows; it backs the per-user credential cap and the passkey count on
+    /// every auth response.
+    async fn count_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64>;
 
     /// Resolve a credential by its raw credential id, or `None` if absent.
     async fn find_passkey_by_credential_id(

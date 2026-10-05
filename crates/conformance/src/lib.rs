@@ -1082,7 +1082,8 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
 /// `PasskeyCredentialStore::delete_passkeys_for_user` removes every credential
 /// belonging to the target user in one set-based operation, returns the number
 /// removed, and leaves another user's credential untouched. This backs account
-/// deletion's credential cascade.
+/// deletion's credential cascade. `count_passkeys_for_user` is checked along
+/// the way: it is owner-scoped and tracks single and bulk removals.
 async fn passkey_credentials_bulk_delete_for_user(storage: &Storage) {
     let now = ts(2026, 1, 1);
     let target = UserId::new();
@@ -1127,13 +1128,42 @@ async fn passkey_credentials_bulk_delete_for_user(storage: &Storage) {
     let bystander_cred = b"bulk-delete-bystander-cred".to_vec();
     add(bystander, bystander_cred.clone()).await;
 
+    // The count is scoped to the owner and tracks a single removal.
+    let count = |user_id: UserId| async move {
+        credentials
+            .count_passkeys_for_user(user_id)
+            .await
+            .expect("count passkeys")
+    };
+    assert_eq!(
+        count(target).await,
+        3,
+        "count covers the owner's credentials"
+    );
+    assert_eq!(count(bystander).await, 1, "count excludes other users");
+    credentials
+        .delete_passkey(b"bulk-delete-target-cred-3")
+        .await
+        .expect("delete one passkey");
+    assert_eq!(count(target).await, 2, "count drops after a single removal");
+
     let removed = credentials
         .delete_passkeys_for_user(target)
         .await
         .expect("delete passkeys for user");
     assert_eq!(
-        removed, 3,
+        removed, 2,
         "the return count equals the target user's credential count",
+    );
+    assert_eq!(
+        count(target).await,
+        0,
+        "count is zero after the bulk delete"
+    );
+    assert_eq!(
+        count(bystander).await,
+        1,
+        "another user's count is untouched"
     );
 
     assert!(

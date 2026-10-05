@@ -526,6 +526,10 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
             .collect())
     }
 
+    async fn count_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        Ok(self.lock().iter().filter(|c| c.user_id == user_id).count() as u64)
+    }
+
     async fn find_passkey_by_credential_id(
         &self,
         credential_id: &[u8],

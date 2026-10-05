@@ -149,9 +149,8 @@ async fn me_handler(
     Extension(passkey_credentials): Extension<Arc<dyn PasskeyCredentialStore>>,
 ) -> Response {
     let passkey_count = passkey_credentials
-        .list_passkeys_for_user(auth.user.id)
+        .count_passkeys_for_user(auth.user.id)
         .await
-        .map(|list| list.len())
         .unwrap_or(0);
     (
         StatusCode::OK,

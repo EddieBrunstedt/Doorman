@@ -226,6 +226,17 @@ impl PasskeyConfig {
     }
 }
 
+/// Result of a successful
+/// [`finish_authentication`](PasskeyManager::finish_authentication): the
+/// signed-in user and the session minted for them.
+#[derive(Debug, Clone)]
+pub struct AuthenticationOutcome {
+    /// The user the passkey belongs to, as read by the account-status check.
+    pub user: User,
+    /// The freshly-issued session.
+    pub session: IssuedSession,
+}
+
 /// Manager for passkey registration, authentication, listing, and removal.
 #[derive(Clone)]
 pub struct PasskeyManager {
@@ -550,18 +561,13 @@ impl PasskeyManager {
     /// Reject (never evict) a registration once the user holds
     /// [`max_credentials_per_user`](PasskeyConfig::max_credentials_per_user)
     /// passkeys: silently dropping an existing passkey would remove an
-    /// authenticator the user still relies on. The summary projection avoids
-    /// deserialising any credential blob just to count.
+    /// authenticator the user still relies on.
     async fn enforce_credential_cap(&self, user_id: UserId) -> Result<()> {
         let Some(max) = self.config.max_credentials_per_user else {
             return Ok(());
         };
-        let count = self
-            .credentials
-            .list_passkey_summaries_for_user(user_id)
-            .await?
-            .len();
-        if count >= max.get() as usize {
+        let count = self.credentials.count_passkeys_for_user(user_id).await?;
+        if count >= u64::from(max.get()) {
             tracing::warn!(%user_id, max = max.get(), "passkey registration rejected: credential cap reached");
             return Err(Error::ResourceLimitExceeded {
                 resource: "credentials",
@@ -726,8 +732,8 @@ impl PasskeyManager {
         Ok((id, rcr))
     }
 
-    /// Complete an authentication ceremony, issuing a session on success.
-    /// If the authenticated passkey still carries an active recovery
+    /// Complete an authentication ceremony, issuing a session on success and
+    /// returning it with the signed-in user. If the authenticated passkey still carries an active recovery
     /// cool-down deadline, the issued session inherits that restriction.
     ///
     /// A disabled account is refused with [`Error::AccountDisabled`] after the
@@ -742,7 +748,7 @@ impl PasskeyManager {
         challenge_id: PasskeyChallengeId,
         response: &PublicKeyCredential,
         context: SessionContext,
-    ) -> Result<IssuedSession> {
+    ) -> Result<AuthenticationOutcome> {
         // Record the ceremony's wall-clock latency on every outcome: the
         // guard fires its `AuthLatency` observation when this scope unwinds,
         // whether through a rate-limit `?`, a rejection, or success — so the
@@ -860,16 +866,19 @@ impl PasskeyManager {
         // the assertion verifies so only the credential holder learns the
         // account is disabled; the single-use challenge stays consumed.
         // The gate is the one session resolution applies on every request.
-        if let Err(error) = self.records.find_active(user_id).await {
-            let reason = match error {
-                Error::UserNotFound => AuthFailureReason::UnknownCredential,
-                Error::AccountDisabled => AuthFailureReason::AccountDisabled,
-                _ => return Err(error),
-            };
-            self.emit_auth_failure(now, &context, Some(user_id), reason)
-                .await;
-            return Err(error);
-        }
+        let user = match self.records.find_active(user_id).await {
+            Ok(user) => user,
+            Err(error) => {
+                let reason = match error {
+                    Error::UserNotFound => AuthFailureReason::UnknownCredential,
+                    Error::AccountDisabled => AuthFailureReason::AccountDisabled,
+                    _ => return Err(error),
+                };
+                self.emit_auth_failure(now, &context, Some(user_id), reason)
+                    .await;
+                return Err(error);
+            }
+        };
 
         let active_recovery_cooldown_until = credential.active_recovery_cooldown_until(now);
 
@@ -900,14 +909,15 @@ impl PasskeyManager {
             })
             .await;
 
-        match active_recovery_cooldown_until {
+        let session = match active_recovery_cooldown_until {
             Some(cooldown_until) => {
                 self.sessions
                     .create_restricted(user_id, context, cooldown_until)
-                    .await
+                    .await?
             }
-            None => self.sessions.create(user_id, context).await,
-        }
+            None => self.sessions.create(user_id, context).await?,
+        };
+        Ok(AuthenticationOutcome { user, session })
     }
 
     /// List a user's credentials, including the credential blob. Prefer the
@@ -917,9 +927,15 @@ impl PasskeyManager {
         Ok(self.credentials.list_passkeys_for_user(user_id).await?)
     }
 
+    /// Count the user's passkeys without loading them.
+    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
+    pub async fn count_passkeys(&self, user_id: UserId) -> Result<u64> {
+        Ok(self.credentials.count_passkeys_for_user(user_id).await?)
+    }
+
     /// List the user's passkeys as metadata-only [`PasskeySummary`] values.
-    /// Backs the management listing and count paths without deserialising
-    /// the credential blob.
+    /// Backs the management listing without deserialising the credential
+    /// blob.
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn list_passkey_summaries(&self, user_id: UserId) -> Result<Vec<PasskeySummary>> {
         Ok(self

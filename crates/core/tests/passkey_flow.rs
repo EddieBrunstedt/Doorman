@@ -70,6 +70,11 @@ async fn register_then_discoverable_authenticate_round_trip() {
         )
         .await
         .expect("finish_authentication");
+    assert_eq!(
+        issued.user.id, user.id,
+        "the outcome carries the signed-in user"
+    );
+    let issued = issued.session;
     assert_eq!(issued.session.user_id, user.id);
     assert_eq!(h.sessions.len(), 1);
 
@@ -236,7 +241,8 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
         .passkey
         .finish_authentication(bob_challenge, &bob_assertion, SessionContext::default())
         .await
-        .expect("finish bob");
+        .expect("finish bob")
+        .session;
     assert_eq!(bob_issued.session.user_id, bob.id);
 
     let (alice_challenge, alice_options) = h
@@ -249,7 +255,8 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
         .passkey
         .finish_authentication(alice_challenge, &alice_assertion, SessionContext::default())
         .await
-        .expect("finish alice");
+        .expect("finish alice")
+        .session;
     assert_eq!(alice_issued.session.user_id, alice.id);
 }
 

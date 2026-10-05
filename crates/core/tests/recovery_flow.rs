@@ -801,7 +801,8 @@ async fn recovery_created_passkey_login_inherits_active_cooldown() {
         .passkey
         .finish_authentication(auth_id, &assertion, SessionContext::default())
         .await
-        .expect("finish auth");
+        .expect("finish auth")
+        .session;
 
     assert_eq!(
         issued.session.recovery_cooldown_until,
@@ -863,7 +864,8 @@ async fn pre_existing_passkey_login_stays_unrestricted_during_recovery_cooldown(
         .passkey
         .finish_authentication(auth_id, &assertion, SessionContext::default())
         .await
-        .expect("finish auth");
+        .expect("finish auth")
+        .session;
 
     assert_eq!(issued.session.recovery_cooldown_until, None);
 }
@@ -923,7 +925,8 @@ async fn recovery_created_passkey_login_after_cooldown_is_unrestricted() {
         .passkey
         .finish_authentication(auth_id, &assertion, SessionContext::default())
         .await
-        .expect("finish auth");
+        .expect("finish auth")
+        .session;
 
     assert_eq!(issued.session.recovery_cooldown_until, None);
 }

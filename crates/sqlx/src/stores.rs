@@ -686,6 +686,19 @@ macro_rules! sqlx_stores {
                 rows.into_iter().map(row_to_passkey_summary).collect()
             }
 
+            async fn count_passkeys_for_user(
+                &self,
+                user_id: $crate::stores::__reexport::UserId,
+            ) -> $crate::stores::__reexport::StorageResult<u64> {
+                let sql = $ph("SELECT COUNT(*) FROM passkey_credentials WHERE user_id = ?");
+                let count: i64 = ::sqlx::query_scalar(::sqlx::AssertSqlSafe(sql))
+                    .bind($crate::common::uuid_to_bytes(user_id.0))
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err($crate::common::storage_err)?;
+                Ok(count.max(0) as u64)
+            }
+
             async fn find_passkey_by_credential_id(
                 &self,
                 credential_id: &[u8],

@@ -217,7 +217,8 @@ use axum::Json;
 use doorman::prelude::*;
 
 async fn me(user: AuthUser) -> Json<UserDto> {
-    // AuthUser is AuthUser(pub Arc<User>); passkey_count comes from your store.
+    // AuthUser is AuthUser(pub Arc<User>); take passkey_count from
+    // PasskeyManager::count_passkeys.
     Json(UserDto::from_user(&user.0, 0))
 }
 ```

@@ -37,12 +37,12 @@ pub struct UserDto {
     /// When the account was created.
     pub created_at: DateTime<Utc>,
     /// Number of passkeys currently registered to the user.
-    pub passkey_count: usize,
+    pub passkey_count: u64,
 }
 
 impl UserDto {
     /// Build the DTO from a core [`User`] and a known passkey count.
-    pub fn from_user(user: &User, passkey_count: usize) -> Self {
+    pub fn from_user(user: &User, passkey_count: u64) -> Self {
         Self {
             id: user.id,
             email: user.email.clone(),
@@ -172,7 +172,7 @@ impl std::fmt::Debug for AuthResponse {
 impl AuthResponse {
     /// Build the response from the user, the issued session, and the user's
     /// passkey count.
-    pub fn from_issued(user: User, issued: IssuedSession, passkey_count: usize) -> Self {
+    pub fn from_issued(user: User, issued: IssuedSession, passkey_count: u64) -> Self {
         Self {
             user: UserDto::from_user(&user, passkey_count),
             session: SessionDto::from_session(&issued.session, true),
