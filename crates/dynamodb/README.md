@@ -51,7 +51,7 @@ Everything lives in **one table** addressed by a single string partition key (`p
 
 The notable design points:
 
-- **Atomic single-use.** `consume_token`, `take_registration`, and `take_authentication` are a `DeleteItem` with `ReturnValues=ALL_OLD`. DynamoDB serializes writes per item, so under concurrency exactly one caller observes the value — the single-use guarantee single-use tokens and challenges rely on.
+- **Atomic single-use.** `consume_token`, `take_registration`, and `take_authentication` are a `DeleteItem` with `ReturnValues=ALL_OLD`, conditional on `attribute_exists(pk)`. Only one concurrent delete can satisfy the condition, so exactly one caller observes the value — the single-use guarantee single-use tokens and challenges rely on.
 - **Email uniqueness.** A GSI can enforce no constraints and is only eventually consistent, so a user's email is guarded by a strongly-consistent companion item written in the same `TransactWriteItems` as the user (each guarded by `attribute_not_exists`). The guard doubles as the email → user lookup. Every other secondary lookup uses a GSI, which DynamoDB maintains automatically — deleting or TTL-evicting a row drops its index entries for free, so there is no dangling-index bookkeeping.
 - **Expiry.** Native TTL deletion lags by up to ~48h and is a _memory_ backstop only. The stores filter `expires_at > now` on read, and `purge_expired` performs the authoritative, immediate reclamation (a consistent table scan filtered to the relevant record kind).
 

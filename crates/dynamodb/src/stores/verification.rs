@@ -4,8 +4,8 @@
 //! key, so a leaked token of one purpose can never be redeemed under another —
 //! plus an `owner-index` entry keyed on `(user, purpose)` that backs the
 //! per-purpose bulk delete. Redemption is the atomic delete-and-return `take`
-//! (`DeleteItem` with `ALL_OLD`): exactly one concurrent caller observes the
-//! value, giving the single-use guarantee.
+//! (a `DeleteItem` with `ALL_OLD`, conditional on the item existing): exactly
+//! one concurrent caller observes the value, giving the single-use guarantee.
 //!
 //! `create_token` is a plain `PutItem` upsert; the 256-bit hashes are random, so
 //! a collision is not a real-world case. Native TTL evicts spent rows in

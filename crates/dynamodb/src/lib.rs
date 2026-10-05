@@ -14,9 +14,9 @@
 //! on the (private) `model` module. The notable design points:
 //!
 //! - **Atomic single-use.** `consume_token`, `take_registration`, and
-//!   `take_authentication` are a `DeleteItem` with `ReturnValues=ALL_OLD`:
-//!   DynamoDB serializes writes per item, so exactly one concurrent caller
-//!   observes the value.
+//!   `take_authentication` are a `DeleteItem` with `ReturnValues=ALL_OLD`,
+//!   conditional on `attribute_exists(pk)`: only one concurrent delete can
+//!   satisfy the condition, so exactly one caller observes the value.
 //! - **Email uniqueness.** A GSI can enforce no constraints and is only
 //!   eventually consistent, so a user's email is guarded by a strongly-consistent
 //!   companion item written in the same transaction as the user — which also

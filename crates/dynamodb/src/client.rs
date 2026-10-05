@@ -332,22 +332,38 @@ impl DynamoClient {
         Ok(())
     }
 
-    /// Atomic delete-and-return: `DeleteItem` with `ReturnValues=ALL_OLD`.
+    /// Atomic delete-and-return: `DeleteItem` with `ReturnValues=ALL_OLD`,
+    /// guarded by `attribute_exists(pk)`.
     ///
-    /// DynamoDB serializes writes to a single item, so under concurrency exactly
-    /// one caller observes the old image and every other sees an empty result —
-    /// the single-use guarantee the `take_*` / `consume_token` paths rely on.
+    /// The condition is what makes the take single-use: a conditional write is
+    /// evaluated against the item's current state, so under concurrency exactly
+    /// one caller's delete succeeds and returns the old image. Every other
+    /// caller fails the condition, which is swallowed into `None`. An
+    /// unconditional delete gives no such guarantee; DynamoDB Local returns the
+    /// old image to several concurrent deleters.
     pub(crate) async fn take(&self, pk: &str) -> StorageResult<Option<Item>> {
-        let out = self
+        let result = self
             .client
             .delete_item()
             .table_name(&self.table)
             .key(PK, s(pk))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", PK)
             .return_values(ReturnValue::AllOld)
             .send()
-            .await
-            .map_err(err)?;
-        Ok(out.attributes.filter(|m| !m.is_empty()))
+            .await;
+        match result {
+            Ok(out) => Ok(out.attributes.filter(|m| !m.is_empty())),
+            Err(e) => {
+                if e.as_service_error()
+                    .is_some_and(|svc| svc.is_conditional_check_failed_exception())
+                {
+                    // Absent, or another caller took it first.
+                    return Ok(None);
+                }
+                Err(err(e))
+            }
+        }
     }
 
     /// Query the `owner-index` partition `key`, returning every projected item.
