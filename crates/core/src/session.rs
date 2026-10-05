@@ -503,15 +503,15 @@ impl SessionManager {
     /// Reject the action with [`Error::RecoveryCooldownActive`] when `session`
     /// is inside its post-recovery cool-down window; otherwise return `Ok(())`.
     ///
-    /// This is the single enforcement point behind the post-recovery
-    /// lock-down. The destructive surfaces that could strand a legitimate
-    /// owner — passkey removal, "sign out everywhere else", revoking another
-    /// device's session, account deletion, and email change — call it (the
-    /// passkey and account managers reach it through the [`SessionManager`]
-    /// they already hold). Keeping the gate here means the guarantee holds for
-    /// every host driving `doorman-core`, not only the bundled `doorman-axum`
-    /// routes. Judged against this manager's clock, so an injected or mock
-    /// clock is honoured.
+    /// This gates the session-revocation surfaces that could strand a
+    /// legitimate owner: "sign out everywhere else" and revoking another
+    /// device's session. The other cool-down-protected actions (passkey
+    /// removal, account deletion, and email change) are refused by
+    /// [`ReauthManager::ensure`](crate::reauth::ReauthManager::ensure), which
+    /// checks the cool-down before re-authentication. Keeping the gate in core
+    /// means the guarantee holds for every host driving `doorman-core`, not
+    /// only the bundled `doorman-axum` routes. Judged against this manager's
+    /// clock, so an injected or mock clock is honoured.
     ///
     /// Pass a `session` resolved from storage for the current request, as the
     /// bundled `doorman-axum` layer does. The gate trusts the supplied snapshot:

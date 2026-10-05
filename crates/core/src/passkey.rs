@@ -970,7 +970,6 @@ impl PasskeyManager {
         reauth: Option<ReauthProof>,
         context: SessionContext,
     ) -> Result<()> {
-        self.sessions.ensure_not_in_recovery_cooldown(session)?;
         self.reauth
             .ensure(
                 ReauthAction::RemovePasskey,

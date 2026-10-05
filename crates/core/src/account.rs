@@ -31,7 +31,7 @@ use crate::email::{EmailSender, EmailTemplates, SecurityEmailNotifier};
 use crate::error::{Error, Result};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::redeem::Redeemer;
-use crate::session::{SessionContext, SessionManager};
+use crate::session::SessionContext;
 use crate::storage::{Session, User, VerificationPurpose, VerificationTokenStore};
 use crate::user::UserRecords;
 use crate::verification::{self, TOKEN_PLACEHOLDER};
@@ -73,7 +73,6 @@ pub struct AccountManager {
     records: UserRecords,
     redeemer: Redeemer,
     tokens: Arc<dyn VerificationTokenStore>,
-    sessions: SessionManager,
     reauth: ReauthManager,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
@@ -86,14 +85,13 @@ pub struct AccountManager {
 impl AccountManager {
     /// Build an `AccountManager` from the shared [`CoreDeps`] context and the
     /// [`AccountConfig`]. The collaborators (stores, clock, audit, email
-    /// transport, session manager) are read from `deps` so they are named once
+    /// transport, re-auth manager) are read from `deps` so they are named once
     /// at the composition root.
     pub fn new(deps: &CoreDeps, config: AccountConfig) -> Self {
         Self {
             records: UserRecords::new(deps),
             redeemer: Redeemer::from_deps(deps),
             tokens: deps.verification_tokens.clone(),
-            sessions: deps.sessions.clone(),
             reauth: deps.reauth.clone(),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
@@ -151,7 +149,6 @@ impl AccountManager {
         reauth: Option<ReauthProof>,
         context: SessionContext,
     ) -> Result<()> {
-        self.sessions.ensure_not_in_recovery_cooldown(session)?;
         self.reauth
             .ensure(
                 ReauthAction::RequestEmailChange,
@@ -238,7 +235,8 @@ impl AccountManager {
 
     /// Irreversibly delete the account behind the acting `session` and
     /// everything that hangs off it. Revokes every session first (evicting any
-    /// framework-side session cache through the [`SessionManager`]'s
+    /// framework-side session cache through the
+    /// [`SessionManager`](crate::session::SessionManager)'s
     /// invalidation hook), then removes the user's passkey credentials,
     /// verification tokens, pending registration ceremonies, and finally the
     /// user row itself, leaving no orphaned rows.
@@ -260,7 +258,6 @@ impl AccountManager {
         reauth: Option<ReauthProof>,
         context: SessionContext,
     ) -> Result<()> {
-        self.sessions.ensure_not_in_recovery_cooldown(session)?;
         self.reauth
             .ensure(
                 ReauthAction::DeleteAccount,

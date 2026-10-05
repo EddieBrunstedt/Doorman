@@ -75,9 +75,11 @@ use crate::storage::{
 
 /// A destructive self-service action that may be gated behind re-authentication.
 ///
-/// The set mirrors the recovery-cool-down protected set: the same irreversible
-/// actions a phished recovery session is held back from are the ones a stale
-/// session is asked to prove recency for.
+/// The set is also the recovery-cool-down protected set:
+/// [`ReauthManager::ensure`] refuses a session inside its cool-down before it
+/// looks at the policy, so the same irreversible actions a phished recovery
+/// session is held back from are the ones a stale session is asked to prove
+/// recency for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReauthAction {
     /// [`AccountManager::delete_account`](crate::account::AccountManager::delete_account).
@@ -258,6 +260,11 @@ impl ReauthManager {
 
     /// Gate `action` for the acting `session`.
     ///
+    /// - A `session` inside its post-recovery cool-down window is refused with
+    ///   [`Error::RecoveryCooldownActive`] first, whatever the policy and
+    ///   proof: the cool-down is a hard block re-auth cannot satisfy. The
+    ///   check trusts the supplied snapshot, so pass a `session` resolved
+    ///   from storage for this request.
     /// - If the policy does not require `action`, returns `Ok(())` immediately.
     /// - Otherwise a [`ReauthProof`] is mandatory: a missing one is
     ///   [`Error::ReauthRequired`] (the caller should run [`start`](Self::start)
@@ -283,6 +290,9 @@ impl ReauthManager {
         proof: Option<&ReauthProof>,
         context: &SessionContext,
     ) -> Result<()> {
+        if session.is_in_recovery_cooldown(self.clock.now()) {
+            return Err(Error::RecoveryCooldownActive);
+        }
         if !self.policy.requires(action) {
             return Ok(());
         }
