@@ -352,7 +352,7 @@ pub trait SessionStore: Send + Sync {
     /// exists, this is a no-op returning `Ok(())`. It MUST NOT create a row —
     /// see "the resurrection hazard" below.
     ///
-    /// The caller treats failures as best-effort (see `validate_by_hash`): a
+    /// The caller treats failures as best-effort (see `SessionResolver::resolve`): a
     /// storage error here MUST NOT fail an otherwise-valid request.
     async fn touch_session(&self, session: &Session) -> StorageResult<()>;
 

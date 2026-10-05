@@ -31,6 +31,7 @@ pub use crate::rate_limit::{
 };
 pub use crate::reauth::{ReauthAction, ReauthManager, ReauthPolicy, ReauthProof};
 pub use crate::recovery::{MIN_COOLDOWN, RecoveryConfig, RecoveryManager, RecoveryRateLimits};
+pub use crate::resolve::{ResolvedSession, SessionResolver};
 pub use crate::session::{
     IssuedSession, SessionConfig, SessionContext, SessionInvalidationHook, SessionManager,
 };

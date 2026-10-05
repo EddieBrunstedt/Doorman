@@ -22,7 +22,7 @@ Initial development toward the first `0.1.0` release. Highlights:
 - Trusted client identity for Axum rate limits, sessions, and audit events: socket metadata or a host-supplied `ClientIp` extension, canonical IP addresses, ignored forwarding headers, and rejection when identity is missing. See [client identity and proxies](docs/integration.md#client-identity-and-proxies).
 - Audit emission funneled through a single dispatch that always writes a `doorman::audit` tracing event alongside the `AuditSink`, so an audit trail exists even with `NoopAuditSink`.
 - Background expiry purge via `Storage::purge_all_expired` and the `background-purge` feature's `spawn_purge_task`.
-- Optional `MetricSink` signals: logins, auth failures, ceremony latency, and axum session-cache hit/miss.
+- Optional `MetricSink` signals: logins, auth failures, ceremony latency, and session-cache hit/miss.
 - Documentation set under `docs/`, runnable `examples/`, and a backend-agnostic storage-conformance suite (`doorman-conformance`).
 
 [Unreleased]: https://codeberg.org/EddieBrunstedt/Doorman/commits/branch/main

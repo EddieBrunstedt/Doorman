@@ -41,7 +41,7 @@ use std::time::Duration;
 
 use crate::account::{AccountConfig, AccountManager};
 use crate::audit::AuditSink;
-use crate::cache::{SessionCache, SessionCacheConfig};
+use crate::cache::SessionCacheConfig;
 use crate::clock::{Clock, SystemClock};
 use crate::context::CoreDeps;
 use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityEmailNotifier};
@@ -51,6 +51,7 @@ use crate::passkey::{PasskeyConfig, PasskeyManager};
 use crate::rate_limit::RateLimiter;
 use crate::reauth::{ReauthManager, ReauthPolicy};
 use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
+use crate::resolve::SessionResolver;
 use crate::session::{SessionConfig, SessionManager};
 use crate::signup::{SignupConfig, SignupManager};
 use crate::storage::{Storage, UserStore};
@@ -159,13 +160,10 @@ pub enum AssemblyError {
         max: Duration,
     },
     /// The configured session idle timeout is invalid relative to the absolute
-    /// lifetime or the session-resolution cache TTL. Sliding idle expiry only
-    /// works when a cache-miss touch can fire before the idle deadline, so the
-    /// build refuses a configuration that would silently log active users out.
-    /// The `idle_timeout` must be greater than zero, at most the ten-year
-    /// lifetime ceiling, at most the session's
-    /// `absolute_lifetime`, and strictly greater than the cache `ttl` (a
-    /// comfortable margin such as `ttl <= idle_timeout / 2` is recommended).
+    /// lifetime or the session-resolution cache TTL. The `idle_timeout` must
+    /// be greater than zero, at most the ten-year lifetime ceiling, at most the
+    /// session's `absolute_lifetime`, and strictly greater than the cache
+    /// `ttl` — the last rule is explained in [`crate::resolve`].
     #[error("session idle_timeout ({idle_timeout:?}) is invalid: {reason}")]
     IdleTimeoutInvalid {
         /// The rejected idle timeout.
@@ -188,20 +186,13 @@ fn validate_lifetime(field: &'static str, value: Duration) -> Result<(), Assembl
     Ok(())
 }
 
-/// Reject a session idle timeout that cannot slide a session forward in time.
-///
-/// Sliding idle expiry depends on a cache-miss touch firing *before* the idle
-/// deadline. Misses only occur after a cache entry ages past `cache_ttl`, so an
-/// idle window at or below the TTL would let a continuously-active user idle
-/// out in storage with no touch ever sliding them — a silent logout. The build
-/// therefore requires `cache_ttl < idle_timeout`, plus the same zero/`MAX_LIFETIME`
-/// bound the absolute lifetime gets and `idle_timeout <= absolute_lifetime`.
-/// Bounding the idle path before any `chrono::Duration::from_std` also keeps the
-/// later slide arithmetic from overflowing.
+/// Reject a session idle timeout outside the lifetime bounds: the same
+/// zero/`MAX_LIFETIME` bound the absolute lifetime gets, and
+/// `idle_timeout <= absolute_lifetime`. Its relation to the cache TTL is
+/// checked by [`SessionResolver::new`].
 fn validate_idle_timeout(
     idle_timeout: Duration,
     absolute_lifetime: Duration,
-    cache_ttl: Duration,
 ) -> Result<(), AssemblyError> {
     if idle_timeout.is_zero() || idle_timeout > MAX_LIFETIME {
         return Err(AssemblyError::IdleTimeoutInvalid {
@@ -213,12 +204,6 @@ fn validate_idle_timeout(
         return Err(AssemblyError::IdleTimeoutInvalid {
             idle_timeout,
             reason: "must not exceed the session absolute_lifetime",
-        });
-    }
-    if cache_ttl >= idle_timeout {
-        return Err(AssemblyError::IdleTimeoutInvalid {
-            idle_timeout,
-            reason: "must be strictly greater than the cache ttl so a cache-miss touch can slide the session before it idles out",
         });
     }
     Ok(())
@@ -256,17 +241,20 @@ fn reject_placeholder_url(flow: &'static str, template: &str) -> Result<(), Asse
 /// The assembled, framework-agnostic auth engine.
 ///
 /// Holds the wired-up managers — each already sharing one [`CoreDeps`] bundle
-/// — plus the session-resolution [`SessionCache`] whose invalidator is
-/// installed on the [`SessionManager`]. A front end consumes these to mount
-/// its routes and resolve sessions; `doorman-axum` reads `user_store` and
-/// `session_manager` into its session layer and threads the managers into its
-/// router state.
+/// — plus the [`SessionResolver`] a front end runs on every request. A front
+/// end consumes these to mount its routes and resolve sessions;
+/// `doorman-axum` hands `resolver` to its session layer and threads the
+/// managers into its router state.
 ///
 /// Cheap to move and clone — every field is `Arc`-backed.
 pub struct AuthCore {
     /// Session manager (carrying the invalidation hook and security notifier).
     pub session_manager: SessionManager,
-    /// User store, surfaced for the front end's session-resolution path.
+    /// Request-time session resolution: cache, expiry, account status and
+    /// idle sliding behind one call. Its cache invalidator is installed on
+    /// [`session_manager`](Self::session_manager).
+    pub resolver: SessionResolver,
+    /// User store, surfaced for front-end handlers that read user records.
     pub user_store: Arc<dyn UserStore>,
     /// Passkey registration / authentication manager.
     pub passkey: PasskeyManager,
@@ -283,13 +271,6 @@ pub struct AuthCore {
     /// through its own deliberate accessor so a handler must hold it
     /// explicitly to invoke an operator flow.
     pub operator: OperatorManager,
-    /// Session-resolution cache whose invalidator is installed on
-    /// [`session_manager`](Self::session_manager). Hand this to the front
-    /// end's session-resolution layer so it reads the cache core has hooked.
-    pub cache: SessionCache,
-    /// [`MetricSink`] shared across the managers, surfaced so the front end's
-    /// own observations (e.g. cache hit/miss) report through the same sink.
-    pub metrics: Arc<dyn MetricSink>,
 }
 
 impl AuthCore {
@@ -303,7 +284,7 @@ impl AuthCore {
 
 /// Builder for [`AuthCore`]. Carries the portable collaborators, the per-flow
 /// configs, and the session-cache config; runs the portable validation; wires
-/// the security notifier and cache invalidator; and constructs the managers in
+/// the security notifier and session resolver; and constructs the managers in
 /// the order their shared collaborators require.
 pub struct AuthCoreBuilder {
     storage: Storage,
@@ -444,7 +425,7 @@ impl AuthCoreBuilder {
     }
 
     /// Resolve defaults, validate the portable configuration, wire the
-    /// notifier and cache invalidator, and construct the managers in the
+    /// notifier and session resolver, and construct the managers in the
     /// order their shared collaborators require.
     pub fn build(self) -> Result<AuthCore, AssemblyError> {
         let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock));
@@ -488,39 +469,29 @@ impl AuthCoreBuilder {
         validate_lifetime("recovery token_lifetime", recovery_config.token_lifetime)?;
         validate_lifetime("account token_lifetime", account_config.token_lifetime)?;
 
-        // Resolve the cache config up-front: its TTL gates the idle-timeout
-        // invariant and seeds the manager's touch throttle below.
-        let cache_config = self.cache_config.unwrap_or_default();
         if let Some(idle_timeout) = session_config.idle_timeout {
-            validate_idle_timeout(
-                idle_timeout,
-                session_config.absolute_lifetime,
-                cache_config.ttl,
-            )?;
+            validate_idle_timeout(idle_timeout, session_config.absolute_lifetime)?;
         }
 
         let notifier = SecurityEmailNotifier::new(email.clone(), emails.clone());
 
-        // Build the cache up-front so its invalidator can be attached to
-        // the `SessionManager` before any dependent manager clones it.
-        // Every clone captures the same invalidation hook, so revocations
-        // routed through manager logout / revoke paths evict the cache for
-        // free. The security notifier is installed the same way — before the
-        // manager is cloned into `CoreDeps` — so every clone carries it.
-        let cache_ttl = cache_config.ttl;
-        let cache = SessionCache::new(cache_config);
-
+        // The security notifier is installed before the manager is cloned into
+        // `CoreDeps`, so every clone carries it. The resolver installs its
+        // cache invalidator in the hook cell every clone shares, so
+        // revocations routed through any manager evict the cache.
         let session_manager = SessionManager::new(
             self.storage.sessions.clone(),
             clock.clone(),
             audit.clone(),
             session_config,
         )
-        // Align the idle-slide touch throttle with the cache-miss cadence: a
-        // touch fires at most once per TTL window per active session.
-        .with_touch_granularity(cache_ttl)
-        .with_invalidation_hook(cache.invalidator())
         .with_security_notifier(notifier.clone());
+        let resolver = SessionResolver::new(
+            session_manager.clone(),
+            self.storage.users.clone(),
+            self.cache_config.unwrap_or_default(),
+        )?
+        .with_metrics(metrics.clone());
 
         // No re-auth default: the host must decide whether destructive actions
         // require a fresh passkey assertion. Mirrors the CSRF decision — fail
@@ -559,7 +530,7 @@ impl AuthCoreBuilder {
             reauth.clone(),
             self.storage.clone(),
         )
-        .with_metrics(metrics.clone());
+        .with_metrics(metrics);
 
         let user_store = deps.users.clone();
 
@@ -594,6 +565,7 @@ impl AuthCoreBuilder {
 
         Ok(AuthCore {
             session_manager,
+            resolver,
             user_store,
             passkey,
             signup,
@@ -601,8 +573,6 @@ impl AuthCoreBuilder {
             account,
             reauth,
             operator,
-            cache,
-            metrics,
         })
     }
 }

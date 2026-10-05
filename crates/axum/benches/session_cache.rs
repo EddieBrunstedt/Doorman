@@ -1,15 +1,14 @@
 //! Session-cache microbenchmarks for the real `doorman-axum` request cache.
 //!
 //! These benches intentionally do **not** drive the full `SessionLayer` or
-//! router. They isolate the cache component that the layer uses on real
+//! router. They isolate the session resolution the layer runs on real
 //! requests:
 //!
 //! - `cache_hit` — raw `SessionCache::get` hit with a precomputed token
 //!   hash. This is the lower bound for a warm session-resolution cache.
-//! - `cache_miss_populate` — the cold-cache populate path after token
-//!   extraction: hash the token, observe a cache miss, validate through
-//!   `SessionManager`, fetch the user, and insert the resolved auth context
-//!   into the cache. The cache clear happens in untimed setup.
+//! - `cache_miss_populate` — `SessionResolver::resolve` on a cold cache:
+//!   hash the token, miss, validate the session, fetch and check the user,
+//!   and insert the resolved pair. The cache clear happens in untimed setup.
 //!
 //! For the authoritative full request path, including token extraction,
 //! middleware, router dispatch, extension insertion, and handler work, see
@@ -26,18 +25,17 @@ use std::time::Duration;
 
 use chrono::Utc;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use doorman_axum::{SessionCache, SessionCacheConfig};
+use doorman_axum::SessionCacheConfig;
 use doorman_core::audit::{AuditSink, NoopAuditSink};
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::memory::{InMemorySessionStore, InMemoryUserStore};
+use doorman_core::resolve::SessionResolver;
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager, hash_token};
 use doorman_core::storage::{AccountStatus, SessionStore, User, UserId, UserStore};
 use tokio::runtime::Runtime;
 
 struct Scaffold {
-    session_manager: SessionManager,
-    user_store: Arc<dyn UserStore>,
-    cache: SessionCache,
+    resolver: SessionResolver,
     token: String,
     user_id: UserId,
 }
@@ -78,10 +76,11 @@ async fn build_scaffold() -> Scaffold {
         .await
         .expect("create session");
 
+    let resolver = SessionResolver::new(session_manager, user_store, SessionCacheConfig::default())
+        .expect("resolver");
+
     Scaffold {
-        session_manager,
-        user_store,
-        cache: SessionCache::new(SessionCacheConfig::default()),
+        resolver,
         token: issued.token,
         user_id: user.id,
     }
@@ -90,6 +89,7 @@ async fn build_scaffold() -> Scaffold {
 fn session_cache(c: &mut Criterion) {
     let runtime = Runtime::new().expect("tokio runtime");
     let scaffold = runtime.block_on(build_scaffold());
+    let cache = scaffold.resolver.cache();
 
     let mut group = c.benchmark_group("session_cache");
 
@@ -99,56 +99,35 @@ fn session_cache(c: &mut Criterion) {
     // session layer?".
     let token_hash = hash_token(&scaffold.token);
     runtime.block_on(async {
-        let session = scaffold
-            .session_manager
-            .validate(&scaffold.token)
-            .await
-            .expect("seed validate");
-        let user = scaffold
-            .user_store
-            .find_user_by_id(session.user_id)
-            .await
-            .expect("seed user lookup")
-            .expect("user exists");
         scaffold
-            .cache
-            .insert(token_hash, Arc::new(session), Arc::new(user));
+            .resolver
+            .resolve(&scaffold.token)
+            .await
+            .expect("seed resolve");
     });
     group.bench_function("cache_hit", |b| {
         b.iter(|| {
-            let cached = scaffold
-                .cache
+            let cached = cache
                 .get(std::hint::black_box(&token_hash))
                 .expect("cache hit");
             std::hint::black_box(cached);
         });
     });
 
-    // Clear the cache outside the timed section for each measured iteration.
-    // The timed body mirrors the layer's cold-cache populate sequence after
-    // token extraction: hash -> miss -> validate -> user lookup -> insert.
+    // Clear the cache outside the timed section for each measured iteration,
+    // so every timed resolve is a cold miss that repopulates the cache.
     group.bench_function("cache_miss_populate", |b| {
         b.to_async(&runtime).iter_batched(
             || {
-                scaffold.cache.invalidate_user(scaffold.user_id);
+                cache.invalidate_user(scaffold.user_id);
             },
             |_| async {
-                let token_hash = hash_token(std::hint::black_box(&scaffold.token));
-                assert!(scaffold.cache.get(&token_hash).is_none(), "cache miss");
-                let session = scaffold
-                    .session_manager
-                    .validate(&scaffold.token)
+                let resolved = scaffold
+                    .resolver
+                    .resolve(std::hint::black_box(&scaffold.token))
                     .await
-                    .expect("validate");
-                let user = scaffold
-                    .user_store
-                    .find_user_by_id(session.user_id)
-                    .await
-                    .expect("user lookup")
-                    .expect("user exists");
-                scaffold
-                    .cache
-                    .insert(token_hash, Arc::new(session), Arc::new(user));
+                    .expect("resolve");
+                std::hint::black_box(resolved);
             },
             BatchSize::PerIteration,
         );

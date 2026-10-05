@@ -49,14 +49,6 @@ impl fmt::Debug for IssuedSession {
 /// two cannot drift apart.
 pub const DEFAULT_SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 
-/// Default minimum interval between idle-slide touch writes for a manager
-/// driven directly (no front-end cache). Throttles the per-request touch so
-/// an active session writes at most once per window. The assembly seam
-/// overrides this to the session-resolution cache TTL via
-/// [`SessionManager::with_touch_granularity`] so the throttle aligns with the
-/// cache-miss cadence; it is deliberately not a [`SessionConfig`] field.
-const DEFAULT_TOUCH_GRANULARITY: Duration = Duration::from_secs(60);
-
 /// Configuration for session issuance.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -66,7 +58,9 @@ pub struct SessionConfig {
     /// Idle window. `None` (the default) is pure absolute expiry — no
     /// sliding, no touch writes, behavior identical to a fixed lifetime.
     /// `Some(d)` makes the session expire `d` after its last use, sliding the
-    /// deadline forward on each use and capped at `absolute_lifetime`.
+    /// deadline forward on each use and capped at `absolute_lifetime`. Sliding
+    /// happens in [`SessionResolver::resolve`](crate::resolve::SessionResolver::resolve),
+    /// which also documents how the idle window must relate to the cache TTL.
     pub idle_timeout: Option<Duration>,
     /// Cap on concurrent active sessions per user. When issuing a session
     /// would exceed it, the user's oldest active session(s) are revoked first
@@ -102,10 +96,10 @@ pub struct SessionContext {
 }
 
 /// Observer that is notified whenever the [`SessionManager`] invalidates
-/// a session out-of-band of a fresh `validate()` call. Implementations
-/// live outside `doorman-core`; the canonical user is `doorman-axum`'s
-/// session-resolution cache, which needs to evict stale entries when a
-/// session is revoked or a user is logged out everywhere.
+/// a session out-of-band of a fresh `validate()` call. The canonical user is
+/// the [`SessionResolver`](crate::resolve::SessionResolver)'s cache, which
+/// needs to evict stale entries when a session is revoked or a user is logged
+/// out everywhere.
 ///
 /// Hooks are called on a best-effort basis — failures during invalidation
 /// must not propagate, so the trait returns `()` rather than `Result`.
@@ -118,8 +112,9 @@ pub trait SessionInvalidationHook: Send + Sync {
     async fn on_user_sessions_invalidated(&self, user_id: UserId);
 }
 
-/// Default hook that ignores every event. Used when no observer is wired
-/// up, which is the common case for non-axum hosts.
+/// Default hook that ignores every event. Used until a
+/// [`SessionResolver`](crate::resolve::SessionResolver) installs its cache
+/// invalidator.
 pub struct NoopSessionInvalidationHook;
 
 #[async_trait]
@@ -147,10 +142,6 @@ pub struct SessionManager {
     /// them, not only the bundled axum routes.
     notifier: Option<SecurityEmailNotifier>,
     config: SessionConfig,
-    /// Minimum interval between idle-slide touch writes. Not a host knob (see
-    /// [`DEFAULT_TOUCH_GRANULARITY`]); the assembly seam sets it to the cache
-    /// TTL via [`with_touch_granularity`](Self::with_touch_granularity).
-    touch_granularity: Duration,
 }
 
 impl SessionManager {
@@ -171,24 +162,11 @@ impl SessionManager {
             invalidation_hook: Arc::new(RwLock::new(Arc::new(NoopSessionInvalidationHook))),
             notifier: None,
             config,
-            touch_granularity: DEFAULT_TOUCH_GRANULARITY,
         }
     }
 
-    /// Override the idle-slide touch throttle interval and return `self`. Used
-    /// by the assembly seam to align the throttle with the session-resolution
-    /// cache TTL so a touch fires at most once per cache-miss window per active
-    /// session. Not a host-facing knob — direct-core hosts keep the internal
-    /// default touch granularity.
-    pub fn with_touch_granularity(mut self, granularity: Duration) -> Self {
-        self.touch_granularity = granularity;
-        self
-    }
-
-    /// The configured idle window, or `None` when sliding is disabled. A front
-    /// end reads this to decide whether to refresh a session cookie on slide
-    /// without needing to see [`SessionConfig`].
-    pub fn idle_timeout(&self) -> Option<Duration> {
+    /// The configured idle window, or `None` when sliding is disabled.
+    pub(crate) fn idle_timeout(&self) -> Option<Duration> {
         self.config.idle_timeout
     }
 
@@ -283,15 +261,6 @@ impl SessionManager {
 
         let (token, token_hash) = generate_token();
         let now = self.clock.now();
-        let mut expires_at = now
-            + chrono::Duration::from_std(self.config.absolute_lifetime)
-                .expect("session lifetime overflows chrono::Duration; configure a smaller value");
-        if let Some(idle) = self.config.idle_timeout {
-            let idle_deadline = now
-                + chrono::Duration::from_std(idle)
-                    .expect("idle timeout overflows chrono::Duration; configure a smaller value");
-            expires_at = expires_at.min(idle_deadline);
-        }
 
         let session = Session {
             id: SessionId::new(),
@@ -299,7 +268,7 @@ impl SessionManager {
             token_hash,
             created_at: now,
             last_used_at: now,
-            expires_at,
+            expires_at: self.deadline(now, now),
             ip: context.ip.clone(),
             user_agent: context.user_agent.clone(),
             recovery_cooldown_until: cooldown_until,
@@ -350,16 +319,40 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Resolve and validate a plaintext session token, returning the live
-    /// session or a not-found/expired error. Hashes once and delegates to
+    /// The effective deadline of a session created at `created_at` and last
+    /// used at `last_used`: the absolute cap, pulled in to one idle window
+    /// after `last_used` when sliding is on. The single place the deadline
+    /// rule lives — issue and slide both call it. Saturates instead of
+    /// panicking on an out-of-range lifetime; the assembly bounds lifetimes
+    /// well inside the range anyway.
+    fn deadline(&self, created_at: DateTime<Utc>, last_used: DateTime<Utc>) -> DateTime<Utc> {
+        let after = |start: DateTime<Utc>, span: Duration| {
+            chrono::Duration::from_std(span)
+                .ok()
+                .and_then(|span| start.checked_add_signed(span))
+                .unwrap_or(DateTime::<Utc>::MAX_UTC)
+        };
+        let absolute = after(created_at, self.config.absolute_lifetime);
+        match self.config.idle_timeout {
+            Some(idle) => absolute.min(after(last_used, idle)),
+            None => absolute,
+        }
+    }
+
+    /// Look up a plaintext session token, returning the live session or a
+    /// not-found/expired error. Hashes once and delegates to
     /// [`validate_by_hash`](Self::validate_by_hash).
+    ///
+    /// This is a read: it never slides an idle deadline or consults the user.
+    /// To authenticate a request, use
+    /// [`SessionResolver::resolve`](crate::resolve::SessionResolver::resolve).
     pub async fn validate(&self, token: &str) -> Result<Session> {
         self.validate_by_hash(&hash_token(token)).await
     }
 
-    /// Validate a session directly from its token hash. Callers that have
-    /// already hashed the token (e.g. a framework cache keyed by
-    /// [`TokenHash`]) use this to avoid hashing twice per request.
+    /// Look up a session directly from its token hash, returning the live
+    /// session or a not-found/expired error. Like
+    /// [`validate`](Self::validate), it never slides the deadline.
     #[tracing::instrument(skip(self, hash), fields(user_id = tracing::field::Empty, session_id = tracing::field::Empty))]
     pub async fn validate_by_hash(&self, hash: &TokenHash) -> Result<Session> {
         let Some(session) = self.sessions.find_session_by_token_hash(hash).await? else {
@@ -388,54 +381,49 @@ impl SessionManager {
             return Err(Error::SessionExpired);
         }
 
-        // Idle sliding: when an idle window is configured and this session has
-        // not been touched within the throttle interval, slide its deadline
-        // forward (capped at the absolute lifetime) and persist it. The write
-        // is best-effort — a touch failure must never fail an otherwise-valid
-        // request, so on error the un-slid resolved row is returned so the
-        // seeded cache mirrors storage truth.
-        let since_used = now - session.last_used_at;
-        if let Some(idle) = self.config.idle_timeout
-            && since_used
-                >= chrono::Duration::from_std(self.touch_granularity())
-                    .unwrap_or(chrono::Duration::MAX)
-        {
-            // Both lifetimes are bounded by the assembly before reaching here,
-            // so the chrono conversions cannot overflow under an assembled host.
-            let absolute_deadline = session.created_at
-                + chrono::Duration::from_std(self.config.absolute_lifetime).expect(
-                    "session lifetime overflows chrono::Duration; configure a smaller value",
-                );
-            let idle_deadline = now
-                + chrono::Duration::from_std(idle)
-                    .expect("idle timeout overflows chrono::Duration; configure a smaller value");
-            let mut updated = session.clone();
-            updated.last_used_at = now;
-            updated.expires_at = absolute_deadline.min(idle_deadline);
-
-            match self.sessions.touch_session(&updated).await {
-                Ok(()) => {
-                    tracing::debug!(session_id = %updated.id, "session deadline slid");
-                    return Ok(updated);
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        session_id = %session.id,
-                        %error,
-                        "session touch failed; serving un-slid session",
-                    );
-                    return Ok(session);
-                }
-            }
-        }
-
         Ok(session)
     }
 
-    /// The interval below which repeated validations skip the idle-slide
-    /// touch write. Reads the manager field set by the assembly seam.
-    fn touch_granularity(&self) -> Duration {
-        self.touch_granularity
+    /// Slide `session`'s idle deadline forward to `now` and persist it,
+    /// returning the session to serve and whether its deadline moved.
+    ///
+    /// Does nothing (returns `false`) when sliding is off or the session was
+    /// last touched less than `granularity` ago — the throttle that keeps an
+    /// active session from writing on every request. The write is
+    /// best-effort: a touch failure must never fail an otherwise-valid
+    /// request, so on error the un-slid row is returned and the caller's
+    /// cache mirrors storage truth. Driven only by
+    /// [`SessionResolver::resolve`](crate::resolve::SessionResolver::resolve).
+    pub(crate) async fn slide(
+        &self,
+        session: Session,
+        now: DateTime<Utc>,
+        granularity: Duration,
+    ) -> (Session, bool) {
+        let due = (now - session.last_used_at)
+            .to_std()
+            .is_ok_and(|since_used| since_used >= granularity);
+        if self.config.idle_timeout.is_none() || !due {
+            return (session, false);
+        }
+
+        let mut updated = session.clone();
+        updated.last_used_at = now;
+        updated.expires_at = self.deadline(session.created_at, now);
+        match self.sessions.touch_session(&updated).await {
+            Ok(()) => {
+                tracing::debug!(session_id = %updated.id, "session deadline slid");
+                (updated, true)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session.id,
+                    %error,
+                    "session touch failed; serving un-slid session",
+                );
+                (session, false)
+            }
+        }
     }
 
     /// Revoke the session identified by a plaintext token. Returns
@@ -742,7 +730,6 @@ mod tests {
     use crate::audit::NoopAuditSink;
     use crate::clock::SystemClock;
     use crate::memory::InMemorySessionStore;
-    use chrono::TimeZone;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
@@ -887,216 +874,5 @@ mod tests {
             1,
             "revoking sessions notifies the hook exactly once",
         );
-    }
-
-    // ----- idle sliding ------------------------------------------------
-
-    /// Mutable test clock. `doorman-test-support`'s `MockClock` cannot be used
-    /// from `doorman-core`'s own lib tests: test-support depends on core, so
-    /// using it here links a second copy of the crate and its `Clock` impl is
-    /// against the wrong `Clock` trait. A tiny local clock sidesteps that.
-    struct MockClock {
-        inner: std::sync::Mutex<DateTime<Utc>>,
-    }
-
-    impl MockClock {
-        fn new(time: DateTime<Utc>) -> Self {
-            Self {
-                inner: std::sync::Mutex::new(time),
-            }
-        }
-        fn advance(&self, by: chrono::Duration) {
-            *self.inner.lock().expect("clock") += by;
-        }
-    }
-
-    impl Clock for MockClock {
-        fn now(&self) -> DateTime<Utc> {
-            *self.inner.lock().expect("clock")
-        }
-    }
-
-    /// One hour absolute, ten minute idle, one minute touch throttle — small,
-    /// legible numbers so the slide/clamp/throttle arithmetic is obvious.
-    const ABS: Duration = Duration::from_secs(60 * 60);
-    const IDLE: Duration = Duration::from_secs(60 * 10);
-    const GRAN: Duration = Duration::from_secs(60);
-
-    /// Build a sliding manager sharing `clock` and `store` so a test can drive
-    /// the clock and then read storage back to assert what a touch persisted.
-    fn sliding_manager(
-        clock: Arc<MockClock>,
-        store: Arc<InMemorySessionStore>,
-        idle_timeout: Option<Duration>,
-    ) -> SessionManager {
-        SessionManager::new(
-            store,
-            clock,
-            Arc::new(NoopAuditSink),
-            SessionConfig {
-                absolute_lifetime: ABS,
-                idle_timeout,
-                max_sessions_per_user: None,
-            },
-        )
-        .with_touch_granularity(GRAN)
-    }
-
-    /// With an idle window configured, a validate after the throttle interval
-    /// has elapsed slides both `expires_at` and `last_used_at` forward and
-    /// persists the new deadline.
-    #[tokio::test]
-    async fn slides_deadline_on_use() {
-        let start = Utc.timestamp_opt(1_000_000, 0).single().expect("ts");
-        let clock = Arc::new(MockClock::new(start));
-        let store = Arc::new(InMemorySessionStore::new());
-        let manager = sliding_manager(clock.clone(), store.clone(), Some(IDLE));
-
-        let issued = manager
-            .create(UserId::new(), SessionContext::default())
-            .await
-            .expect("create");
-        let hash = issued.session.token_hash;
-        // Issued with idle < absolute, so the effective deadline is the idle one.
-        assert_eq!(
-            issued.session.expires_at,
-            start + chrono::Duration::minutes(10)
-        );
-
-        // Advance past the throttle, then validate.
-        clock.advance(chrono::Duration::seconds(90));
-        let now = clock.now();
-        let slid = manager.validate_by_hash(&hash).await.expect("validate");
-
-        assert_eq!(slid.last_used_at, now, "last_used_at moves to now");
-        assert_eq!(
-            slid.expires_at,
-            now + chrono::Duration::minutes(10),
-            "deadline slides to now + idle",
-        );
-        // The slide was persisted, not just returned.
-        let stored = store
-            .find_session_by_token_hash(&hash)
-            .await
-            .expect("find")
-            .expect("present");
-        assert_eq!(stored.expires_at, slid.expires_at);
-        assert_eq!(stored.last_used_at, now);
-    }
-
-    /// The slid deadline is clamped at the absolute cap: once `now + idle`
-    /// would exceed `created_at + absolute`, `expires_at` pins to the cap and
-    /// never moves past it.
-    #[tokio::test]
-    async fn clamps_at_absolute_cap() {
-        let start = Utc.timestamp_opt(2_000_000, 0).single().expect("ts");
-        let clock = Arc::new(MockClock::new(start));
-        let store = Arc::new(InMemorySessionStore::new());
-        let manager = sliding_manager(clock.clone(), store.clone(), Some(IDLE));
-
-        let issued = manager
-            .create(UserId::new(), SessionContext::default())
-            .await
-            .expect("create");
-        let hash = issued.session.token_hash;
-        let absolute_cap = start + chrono::Duration::minutes(60);
-
-        // Keep the session alive by validating every 5 minutes (each slides the
-        // 10-minute idle deadline forward) until we are within idle of the cap.
-        // At 55 minutes in, now + idle (10m) = 65m would exceed the 60m cap.
-        let mut last = issued.session;
-        for _ in 0..11 {
-            clock.advance(chrono::Duration::minutes(5));
-            last = manager.validate_by_hash(&hash).await.expect("validate");
-            assert!(
-                last.expires_at <= absolute_cap,
-                "never exceeds the absolute cap (got {})",
-                last.expires_at,
-            );
-        }
-        // The final validate sits at 55 minutes in, so the slide clamps.
-        assert_eq!(
-            last.expires_at, absolute_cap,
-            "slide is clamped to created_at + absolute_lifetime",
-        );
-    }
-
-    /// A second validate within the throttle interval performs no touch: it
-    /// writes nothing and returns the session with its deadline unmoved.
-    #[tokio::test]
-    async fn throttles_repeated_touches() {
-        let start = Utc.timestamp_opt(3_000_000, 0).single().expect("ts");
-        let clock = Arc::new(MockClock::new(start));
-        let store = Arc::new(InMemorySessionStore::new());
-        let manager = sliding_manager(clock.clone(), store.clone(), Some(IDLE));
-
-        let issued = manager
-            .create(UserId::new(), SessionContext::default())
-            .await
-            .expect("create");
-        let hash = issued.session.token_hash;
-
-        // First validate after the throttle slides.
-        clock.advance(chrono::Duration::seconds(90));
-        let first = manager.validate_by_hash(&hash).await.expect("first");
-
-        // Second validate only 30s later — within GRAN of the slide — must not
-        // touch, so the deadline is exactly what the first slide set.
-        clock.advance(chrono::Duration::seconds(30));
-        let second = manager.validate_by_hash(&hash).await.expect("second");
-        assert_eq!(
-            second.expires_at, first.expires_at,
-            "a validate within the throttle window does not slide",
-        );
-        assert_eq!(
-            second.last_used_at, first.last_used_at,
-            "throttled validate leaves last_used_at unmoved",
-        );
-        let stored = store
-            .find_session_by_token_hash(&hash)
-            .await
-            .expect("find")
-            .expect("present");
-        assert_eq!(stored.last_used_at, first.last_used_at);
-    }
-
-    /// With `idle_timeout = None`, validation never touches: `expires_at` is
-    /// the absolute deadline and stays put no matter how often (or how long
-    /// after) the session is validated.
-    #[tokio::test]
-    async fn no_idle_means_no_touch() {
-        let start = Utc.timestamp_opt(4_000_000, 0).single().expect("ts");
-        let clock = Arc::new(MockClock::new(start));
-        let store = Arc::new(InMemorySessionStore::new());
-        let manager = sliding_manager(clock.clone(), store.clone(), None);
-
-        let issued = manager
-            .create(UserId::new(), SessionContext::default())
-            .await
-            .expect("create");
-        let hash = issued.session.token_hash;
-        let absolute = start + chrono::Duration::minutes(60);
-        assert_eq!(
-            issued.session.expires_at, absolute,
-            "with no idle window the deadline is the absolute cap",
-        );
-
-        clock.advance(chrono::Duration::minutes(30));
-        let validated = manager.validate_by_hash(&hash).await.expect("validate");
-        assert_eq!(
-            validated.expires_at, absolute,
-            "no idle window means expires_at never slides",
-        );
-        assert_eq!(
-            validated.last_used_at, issued.session.last_used_at,
-            "no touch write occurs",
-        );
-        let stored = store
-            .find_session_by_token_hash(&hash)
-            .await
-            .expect("find")
-            .expect("present");
-        assert_eq!(stored.expires_at, absolute);
-        assert_eq!(stored.last_used_at, issued.session.last_used_at);
     }
 }

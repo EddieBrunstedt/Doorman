@@ -8,11 +8,9 @@
 //! host's database. This cache short-circuits that hot path with an
 //! in-process LRU keyed by token hash.
 //!
-//! The cache is owned by core: the assembly seam ([`crate::assembly`])
-//! constructs one, installs its invalidator on the [`SessionManager`] before
-//! any dependent manager clones it, and hands the same handle to the front
-//! end. A front end (such as `doorman-axum`'s session layer) consumes the
-//! handle to look up and seed entries on the request path. Core learns about
+//! The cache is owned by the [`SessionResolver`], which constructs one,
+//! installs its invalidator on the [`SessionManager`], and is the only code
+//! that reads or seeds entries on the request path. Core learns about
 //! revocations through the [`SessionInvalidationHook`] trait and the
 //! cache-flushing implementation returned by [`SessionCache::invalidator`].
 //!
@@ -22,11 +20,13 @@
 //!   invalidator drops the matching entry.
 //! - On [`SessionManager::revoke_all_for_user`] → the cache invalidator
 //!   drops every entry belonging to that user.
-//! - Time-based: every entry carries an `inserted_at` and is treated as
-//!   stale once the configured TTL has elapsed. TTL must be kept well below
-//!   [`SessionConfig::absolute_lifetime`] so that a session that is revoked through a
-//!   path the hook doesn't cover (e.g. someone calling
-//!   `SessionStore::delete_session` directly) still expires in bounded time.
+//! - Time-based: every entry carries an `inserted_at` read from the domain
+//!   [`Clock`] and is treated as stale once the configured TTL has elapsed.
+//!   TTL must be kept well below [`SessionConfig::absolute_lifetime`] so that
+//!   a session that is revoked through a path the hook doesn't cover (e.g.
+//!   someone calling `SessionStore::delete_session` directly) still expires
+//!   in bounded time. How the TTL relates to the idle timeout is documented
+//!   on [`SessionResolver`].
 //!
 //! ## Sharding
 //!
@@ -37,6 +37,8 @@
 //! only collisions within a single shard contend. The configured capacity
 //! is divided evenly across the shards.
 //!
+//! [`Clock`]: crate::clock::Clock
+//! [`SessionResolver`]: crate::resolve::SessionResolver
 //! [`SessionManager`]: crate::session::SessionManager
 //! [`SessionManager::revoke`]: crate::session::SessionManager::revoke
 //! [`revoke_by_id`]: crate::session::SessionManager::revoke_by_id
@@ -46,11 +48,13 @@
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use lru::LruCache;
 
+use crate::clock::Clock;
 use crate::session::SessionInvalidationHook;
 use crate::storage::{Session, SessionId, TokenHash, User, UserId};
 
@@ -72,7 +76,8 @@ pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(60);
 pub struct SessionCacheConfig {
     /// Maximum number of resolved sessions to keep cached (across all shards).
     pub capacity: NonZeroUsize,
-    /// How long a cached entry stays fresh before it is re-resolved.
+    /// How long a cached entry stays fresh before it is re-resolved. A zero
+    /// TTL disables caching: every lookup misses.
     pub ttl: Duration,
 }
 
@@ -101,7 +106,7 @@ pub struct CachedAuth {
 
 struct Entry {
     cached: Arc<CachedAuth>,
-    inserted_at: Instant,
+    inserted_at: DateTime<Utc>,
 }
 
 /// One lock-striped shard of the cache.
@@ -110,19 +115,22 @@ struct Shard {
 }
 
 /// Process-local session-resolution cache. Exposed so advanced hosts and
-/// benches can poke at it directly; the canonical wiring is via the
-/// assembly seam, which constructs one and installs an invalidator on the
-/// `SessionManager`. Cheaply cloneable because all state lives behind
-/// `Arc`.
+/// benches can poke at it directly; the canonical owner is the
+/// [`SessionResolver`](crate::resolve::SessionResolver), which constructs one
+/// and installs its invalidator on the `SessionManager`. Cheaply cloneable
+/// because all state lives behind `Arc`.
 #[derive(Clone)]
 pub struct SessionCache {
     shards: Arc<[Shard; SHARD_COUNT]>,
     ttl: Duration,
+    clock: Arc<dyn Clock>,
 }
 
 impl SessionCache {
     /// Build a sharded session cache from the given capacity/TTL config.
-    pub fn new(config: SessionCacheConfig) -> Self {
+    /// Entry freshness is measured on `clock`, the same domain clock the
+    /// session manager judges expiry by.
+    pub fn new(config: SessionCacheConfig, clock: Arc<dyn Clock>) -> Self {
         // Divide the configured capacity across the shards, keeping at least
         // one slot per shard so a tiny configured capacity still functions.
         let per_shard = NonZeroUsize::new(config.capacity.get().div_ceil(SHARD_COUNT))
@@ -133,7 +141,22 @@ impl SessionCache {
         Self {
             shards: Arc::new(shards),
             ttl: config.ttl,
+            clock,
         }
+    }
+
+    /// The configured freshness window.
+    pub fn ttl(&self) -> Duration {
+        self.ttl
+    }
+
+    /// Whether an entry inserted at `inserted_at` is still fresh at `now`.
+    /// An insert stamped in the future (the clock stepped backwards) counts
+    /// as stale, so a clock step can never extend an entry's life.
+    fn is_fresh(&self, inserted_at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        (now - inserted_at)
+            .to_std()
+            .is_ok_and(|elapsed| elapsed < self.ttl)
     }
 
     /// Pick the shard a token hash belongs to from its leading byte. The
@@ -154,8 +177,9 @@ impl SessionCache {
             .inner
             .lock()
             .expect("session cache lock poisoned");
+        let now = self.clock.now();
         match guard.get(token_hash) {
-            Some(entry) if entry.inserted_at.elapsed() <= self.ttl => Some(entry.cached.clone()),
+            Some(entry) if self.is_fresh(entry.inserted_at, now) => Some(entry.cached.clone()),
             Some(_) => {
                 guard.pop(token_hash);
                 None
@@ -168,33 +192,7 @@ impl SessionCache {
     pub fn insert(&self, token_hash: TokenHash, session: Arc<Session>, user: Arc<User>) {
         let entry = Entry {
             cached: Arc::new(CachedAuth { session, user }),
-            inserted_at: Instant::now(),
-        };
-        self.shard(&token_hash)
-            .inner
-            .lock()
-            .expect("session cache lock poisoned")
-            .put(token_hash, entry);
-    }
-
-    /// Insert an entry whose `inserted_at` is backdated by `age`, so a test
-    /// can make an entry look stale without sleeping. The cache keys
-    /// freshness off the monotonic [`Instant`] clock (not the domain clock),
-    /// so this is the deterministic way to drive TTL expiry in a test.
-    #[cfg(test)]
-    fn insert_aged(
-        &self,
-        token_hash: TokenHash,
-        session: Arc<Session>,
-        user: Arc<User>,
-        age: Duration,
-    ) {
-        let inserted_at = Instant::now()
-            .checked_sub(age)
-            .expect("test backdate stays within the monotonic clock's range");
-        let entry = Entry {
-            cached: Arc::new(CachedAuth { session, user }),
-            inserted_at,
+            inserted_at: self.clock.now(),
         };
         self.shard(&token_hash)
             .inner
@@ -302,7 +300,35 @@ impl SessionInvalidationHook for CacheInvalidator {
 mod tests {
     use super::*;
     use crate::storage::{AccountStatus, SessionId, TokenHash, UserId};
-    use chrono::{TimeZone, Utc};
+    use chrono::TimeZone;
+
+    /// Settable clock, so a test drives TTL expiry without sleeping.
+    struct TestClock(Mutex<DateTime<Utc>>);
+
+    impl TestClock {
+        fn advance(&self, by: Duration) {
+            let mut now = self.0.lock().expect("test clock lock");
+            *now += chrono::Duration::from_std(by).expect("test advance fits chrono");
+        }
+    }
+
+    impl Clock for TestClock {
+        fn now(&self) -> DateTime<Utc> {
+            *self.0.lock().expect("test clock lock")
+        }
+    }
+
+    fn test_clock() -> Arc<TestClock> {
+        Arc::new(TestClock(Mutex::new(
+            Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+        )))
+    }
+
+    fn cache_with(config: SessionCacheConfig) -> SessionCache {
+        SessionCache::new(config, test_clock())
+    }
 
     fn token_hash(byte: u8) -> TokenHash {
         TokenHash([byte; 32])
@@ -360,7 +386,7 @@ mod tests {
 
     #[test]
     fn round_trip_hit() {
-        let cache = SessionCache::new(SessionCacheConfig::default());
+        let cache = cache_with(SessionCacheConfig::default());
         let uid = UserId::new();
         let session = make_session(uid);
         let user = make_user(uid);
@@ -373,33 +399,60 @@ mod tests {
 
     #[test]
     fn miss_returns_none() {
-        let cache = SessionCache::new(SessionCacheConfig::default());
+        let cache = cache_with(SessionCacheConfig::default());
         assert!(cache.get(&token_hash(7)).is_none());
     }
 
     #[test]
     fn stale_entry_evicts_on_get() {
-        let cache = SessionCache::new(SessionCacheConfig {
-            capacity: NonZeroUsize::new(8).expect("non-zero capacity"),
-            ttl: Duration::from_secs(60),
-        });
+        let clock = test_clock();
+        let cache = SessionCache::new(
+            SessionCacheConfig {
+                capacity: NonZeroUsize::new(8).expect("non-zero capacity"),
+                ttl: Duration::from_secs(60),
+            },
+            clock.clone(),
+        );
         let uid = UserId::new();
         let key = token_hash(2);
-        // Backdate the entry well past the TTL so it is stale on read, with no
-        // real sleep: freshness is measured against the monotonic clock.
-        cache.insert_aged(
-            key,
-            Arc::new(make_session(uid)),
-            Arc::new(make_user(uid)),
-            Duration::from_secs(3600),
-        );
+        cache.insert(key, Arc::new(make_session(uid)), Arc::new(make_user(uid)));
+        clock.advance(Duration::from_secs(59));
+        assert!(cache.get(&key).is_some(), "still fresh inside the ttl");
+        clock.advance(Duration::from_secs(1));
         assert!(cache.get(&key).is_none(), "ttl expired");
         assert_eq!(cache.len(), 0, "stale entry dropped on miss");
     }
 
     #[test]
+    fn zero_ttl_disables_caching() {
+        let cache = cache_with(SessionCacheConfig {
+            ttl: Duration::ZERO,
+            ..SessionCacheConfig::default()
+        });
+        let uid = UserId::new();
+        let key = token_hash(8);
+        cache.insert(key, Arc::new(make_session(uid)), Arc::new(make_user(uid)));
+        assert!(cache.get(&key).is_none(), "a zero ttl never serves a hit");
+    }
+
+    #[test]
+    fn clock_stepping_backwards_makes_entries_stale() {
+        let clock = test_clock();
+        let cache = SessionCache::new(SessionCacheConfig::default(), clock.clone());
+        let uid = UserId::new();
+        let key = token_hash(9);
+        clock.advance(Duration::from_secs(3600));
+        cache.insert(key, Arc::new(make_session(uid)), Arc::new(make_user(uid)));
+        *clock.0.lock().expect("test clock lock") -= chrono::Duration::seconds(1);
+        assert!(
+            cache.get(&key).is_none(),
+            "an entry stamped in the future is not served",
+        );
+    }
+
+    #[test]
     fn invalidate_session_drops_only_target() {
-        let cache = SessionCache::new(SessionCacheConfig::default());
+        let cache = cache_with(SessionCacheConfig::default());
         let uid = UserId::new();
         let s1 = make_session(uid);
         let s2 = make_session(uid);
@@ -420,7 +473,7 @@ mod tests {
 
     #[test]
     fn invalidate_user_drops_all_entries_for_user() {
-        let cache = SessionCache::new(SessionCacheConfig::default());
+        let cache = cache_with(SessionCacheConfig::default());
         let alice = UserId::new();
         let bob = UserId::new();
         cache.insert(
@@ -449,7 +502,7 @@ mod tests {
         // capacity 32 over SHARD_COUNT (16) shards => 2 slots per shard. All
         // three keys share shard 0 (same leading byte) so they contend for
         // the same two slots and exercise per-shard LRU eviction.
-        let cache = SessionCache::new(SessionCacheConfig {
+        let cache = cache_with(SessionCacheConfig {
             capacity: NonZeroUsize::new(SHARD_COUNT * 2).expect("non-zero capacity"),
             ttl: DEFAULT_CACHE_TTL,
         });
@@ -469,7 +522,7 @@ mod tests {
     fn keys_spread_across_shards_do_not_share_capacity() {
         // Two keys in different shards both survive even when the per-shard
         // capacity is 1 — independent shards mean no cross-shard eviction.
-        let cache = SessionCache::new(SessionCacheConfig {
+        let cache = cache_with(SessionCacheConfig {
             capacity: NonZeroUsize::new(SHARD_COUNT).expect("non-zero capacity"),
             ttl: DEFAULT_CACHE_TTL,
         });

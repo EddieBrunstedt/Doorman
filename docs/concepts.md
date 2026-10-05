@@ -33,9 +33,9 @@ A session is governed by two configurable bounds (`SessionConfig`):
 
 The **effective expiry** is the earlier of the two: `min(created_at + absolute_lifetime, last_used_at + idle_timeout)`. The crucial design choice is that `Session.expires_at` stores this already-`min`'d effective deadline rather than the raw absolute cap. On each use the session is touched and `expires_at` is rewritten to the new `min(...)`, capped at the absolute lifetime so a slide never extends a session past its hard limit. `last_used_at` is recorded alongside as the legible "last active" field. Because `expires_at` already carries the idle deadline, validation stays a single comparison (`now >= expires_at`) and the existing absolute-expiry purge reclaims idle-dead rows unchanged — there is no separate idle sweep.
 
-Touch writes are throttled so an active session writes at most once per cache-TTL window rather than on every request, and with `idle_timeout = None` there are no touch writes at all — the behaviour is byte-for-byte the fixed-lifetime path.
+Sliding happens in `SessionResolver::resolve`, the one operation a front end runs per request. Touch writes are throttled so an active session writes at most once per cache-TTL window rather than on every request, and with `idle_timeout = None` there are no touch writes at all — the behaviour is byte-for-byte the fixed-lifetime path.
 
-When sliding is enabled, doorman refreshes the session cookie's `Max-Age` on a sliding response so a browser client's local expiry tracks the server's slid deadline. Bearer-token clients track expiry themselves and get no cookie refresh.
+When a request slides the deadline, `resolve` reports it and `doorman-axum` refreshes the session cookie's `Max-Age` so a browser client's local expiry tracks the server's slid deadline. Bearer-token clients track expiry themselves and get no cookie refresh.
 
 ### Build-time invariants
 
@@ -43,7 +43,7 @@ When `idle_timeout` is `Some(d)`, the builder fails closed at `build()` time (ra
 
 - `d` is non-zero and `<= MAX_LIFETIME` (the same bound the absolute lifetime is held to);
 - `d <= absolute_lifetime` — the idle window cannot outlive the hard cap;
-- `cache.ttl < d` — a **liveness** requirement. Touches fire only on a cache miss, and misses only occur after a cached entry ages past the cache TTL. If `ttl >= idle_timeout`, a continuously-active user is served by cache hits (which never touch) right up to the idle deadline, so the session idles out in storage with no touch ever sliding it and the active user is logged out. Sliding only works when a miss-driven touch can fire before the idle deadline. A comfortable margin (e.g. `ttl <= d / 2`) is recommended.
+- `cache.ttl < d` — a **liveness** requirement, enforced by `SessionResolver::new`. Touches fire only on a cache miss, and misses only occur after a cached entry ages past the cache TTL. If `ttl >= idle_timeout`, a continuously-active user is served by cache hits (which never touch) right up to the idle deadline, so the session idles out in storage with no touch ever sliding it and the active user is logged out. Sliding only works when a miss-driven touch can fire before the idle deadline. A comfortable margin (e.g. `ttl <= d / 2`) is recommended.
 
 ### The cache re-checks expiry on hit
 

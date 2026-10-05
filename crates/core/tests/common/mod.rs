@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use doorman_core::account::{AccountConfig, AccountManager};
 use doorman_core::audit::{AuditEvent, AuditEventKind, AuditSink};
+use doorman_core::cache::SessionCacheConfig;
 use doorman_core::clock::Clock;
 use doorman_core::context::CoreDeps;
 use doorman_core::email::{
@@ -38,6 +39,7 @@ use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::reauth::{ReauthManager, ReauthPolicy};
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
+use doorman_core::resolve::SessionResolver;
 use doorman_core::session::hash_token;
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
@@ -114,6 +116,11 @@ pub struct Harness {
     pub account: AccountManager,
     pub reauth: ReauthManager,
     pub operator: OperatorManager,
+    /// The session manager every other manager shares.
+    pub session_manager: SessionManager,
+    /// The request-time resolver over [`session_manager`](Self::session_manager),
+    /// reporting cache hits and misses to [`metrics`](Self::metrics).
+    pub resolver: SessionResolver,
     /// The recovery flow the harness built `recovery` from, kept so tests
     /// can construct another `RecoveryManager` (e.g. to exercise
     /// `RecoveryManager::new`'s cool-down validation) without re-wiring the
@@ -146,6 +153,7 @@ pub struct HarnessBuilder {
     signup: SignupConfig,
     recovery: RecoveryConfig,
     session_config: SessionConfig,
+    cache_config: SessionCacheConfig,
     /// Passkey config the [`PasskeyManager`] is built with. Defaults to the
     /// fixed test relying party; cap / rate-limit tests override it. The
     /// passkey manager reads the limiter from the signup [`CoreDeps`], so a
@@ -181,6 +189,7 @@ impl HarnessBuilder {
                 absolute_lifetime: Duration::from_secs(60 * 60),
                 ..SessionConfig::default()
             },
+            cache_config: SessionCacheConfig::default(),
             passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
             signup_limiter: Arc::new(NoopRateLimiter),
             recovery_limiter: Arc::new(NoopRateLimiter),
@@ -236,6 +245,11 @@ impl HarnessBuilder {
         self
     }
 
+    pub fn cache_config(mut self, config: SessionCacheConfig) -> Self {
+        self.cache_config = config;
+        self
+    }
+
     pub fn passkey_config(mut self, config: PasskeyConfig) -> Self {
         self.passkey = config;
         self
@@ -264,6 +278,13 @@ impl HarnessBuilder {
             self.session_config,
         )
         .with_security_notifier(notifier.clone());
+        let resolver = SessionResolver::new(
+            session_manager.clone(),
+            users.clone() as Arc<dyn UserStore>,
+            self.cache_config,
+        )
+        .expect("cache ttl is below the idle timeout")
+        .with_metrics(metrics.clone() as Arc<dyn MetricSink>);
 
         let storage = Storage {
             users: users.clone(),
@@ -296,7 +317,7 @@ impl HarnessBuilder {
             self.emails.clone(),
             notifier,
             self.signup_limiter,
-            session_manager,
+            session_manager.clone(),
             reauth.clone(),
             storage,
         )
@@ -334,6 +355,8 @@ impl HarnessBuilder {
             account,
             reauth,
             operator,
+            session_manager,
+            resolver,
             recovery_flow,
             users,
             sessions,

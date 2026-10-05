@@ -14,13 +14,12 @@
 use std::sync::Arc;
 
 use doorman_core::assembly::AssemblyError;
-use doorman_core::metrics::{MetricSink, NoopMetricSink};
+use doorman_core::resolve::SessionResolver;
 use doorman_core::session::SessionManager;
 use doorman_core::storage::UserStore;
 use url::Url;
 
 use crate::AuthService;
-use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
 use crate::session::{SessionLayer, SessionLayerState};
@@ -51,6 +50,9 @@ pub enum BuilderError {
     /// No `UserStore` was supplied to the low-level builder.
     #[error("user_store is required")]
     MissingUserStore,
+    /// No `SessionResolver` was supplied to the low-level builder.
+    #[error("session_resolver is required")]
+    MissingSessionResolver,
     /// The [`AuthServiceBuilder`](crate::AuthServiceBuilder) high-level builder, which
     /// constructs the signup / recovery managers itself, was not given an
     /// [`EmailSender`]. There is no silent default; pick a real transport
@@ -278,12 +280,10 @@ impl From<AssemblyError> for BuilderError {
 pub struct ManagerBuilder {
     session_manager: Option<SessionManager>,
     user_store: Option<Arc<dyn UserStore>>,
+    session_resolver: Option<SessionResolver>,
     cookie_config: Option<CookieConfig>,
-    cache_config: Option<SessionCacheConfig>,
-    session_cache: Option<SessionCache>,
     external_origin: Option<Url>,
     csrf_config: Option<CsrfConfig>,
-    metrics: Option<Arc<dyn MetricSink>>,
 
     passkey: Option<PasskeyManager>,
     signup: Option<SignupManager>,
@@ -306,41 +306,20 @@ impl ManagerBuilder {
         self
     }
 
+    /// Supply the session resolver the session layer runs on every request.
+    /// Required. Build it over the same [`SessionManager`] passed to
+    /// [`session_manager`](Self::session_manager):
+    /// [`SessionResolver::new`] installs its cache invalidator on that
+    /// manager, so revocations evict the cache the layer reads, and validates
+    /// the cache TTL against the idle timeout.
+    pub fn session_resolver(mut self, resolver: SessionResolver) -> Self {
+        self.session_resolver = Some(resolver);
+        self
+    }
+
     /// Set the session cookie configuration.
     pub fn cookie(mut self, config: CookieConfig) -> Self {
         self.cookie_config = Some(config);
-        self
-    }
-
-    /// Override the default session-resolution cache parameters. The
-    /// session layer runs an in-process LRU keyed by token hash so the
-    /// hot path (handlers that don't read `AuthUser`, plus high-RPS
-    /// authenticated endpoints) doesn't hit the session and user stores
-    /// on every request.
-    ///
-    /// Ignored if [`session_cache`](Self::session_cache) is supplied.
-    pub fn cache(mut self, config: SessionCacheConfig) -> Self {
-        self.cache_config = Some(config);
-        self
-    }
-
-    /// Hand the builder a pre-constructed [`SessionCache`]. Use this when
-    /// the host wires the cache invalidator onto the [`SessionManager`] (via
-    /// [`SessionManager::with_invalidation_hook`]): passing the same cache
-    /// here ensures the layer reads from the cache the host has hooked into.
-    /// Because the manager shares its hook across every clone, the order of
-    /// installing the invalidator relative to constructing the dependent
-    /// managers does not matter.
-    ///
-    /// If the host neither supplies a cache nor wires an invalidator,
-    /// revocations will only be cleared by the cache TTL. The
-    /// [`AuthService::builder`](crate::AuthService::builder) entry point handles
-    /// all of this automatically.
-    ///
-    /// [`SessionManager`]: doorman_core::session::SessionManager
-    /// [`SessionManager::with_invalidation_hook`]: doorman_core::session::SessionManager::with_invalidation_hook
-    pub fn session_cache(mut self, cache: SessionCache) -> Self {
-        self.session_cache = Some(cache);
         self
     }
 
@@ -361,16 +340,6 @@ impl ManagerBuilder {
     /// [`build`](Self::build) returns [`BuilderError::CsrfDecisionRequired`].
     pub fn csrf(mut self, config: CsrfConfig) -> Self {
         self.csrf_config = Some(config);
-        self
-    }
-
-    /// Wire a [`MetricSink`] sink for the session-layer cache hit / miss
-    /// counters. The core managers report their own counters (login success,
-    /// auth failure, latency) through the metrics sink they were built with;
-    /// this setter covers the axum layer's cache observations. Defaults to
-    /// [`NoopMetricSink`].
-    pub fn metrics(mut self, metrics: Arc<dyn MetricSink>) -> Self {
-        self.metrics = Some(metrics);
         self
     }
 
@@ -420,6 +389,9 @@ impl ManagerBuilder {
             .session_manager
             .ok_or(BuilderError::MissingSessionManager)?;
         let user_store = self.user_store.ok_or(BuilderError::MissingUserStore)?;
+        let resolver = self
+            .session_resolver
+            .ok_or(BuilderError::MissingSessionResolver)?;
         let passkey = self.passkey.ok_or(BuilderError::MissingPasskeyManager)?;
         let signup = self.signup.ok_or(BuilderError::MissingSignupManager)?;
         let recovery = self.recovery.ok_or(BuilderError::MissingRecoveryManager)?;
@@ -448,28 +420,11 @@ impl ManagerBuilder {
             })
             .enabled_config();
 
-        // Use the host-supplied cache when present so the layer reads from
-        // whatever cache the host has already wired an invalidator into;
-        // otherwise construct a fresh one. Wiring the invalidator onto the
-        // session manager is the host's responsibility on this path
-        // because the `SessionManager` is immutable after construction —
-        // see [`session_cache`](Self::session_cache) and
-        // [`AuthService::builder`](crate::AuthService::builder).
-        let cache = self
-            .session_cache
-            .unwrap_or_else(|| SessionCache::new(self.cache_config.unwrap_or_default()));
-
-        let metrics = self
-            .metrics
-            .unwrap_or_else(|| Arc::new(NoopMetricSink) as Arc<dyn MetricSink>);
-
+        let cache = resolver.cache().clone();
         let layer_state = Arc::new(SessionLayerState {
-            session_manager: session_manager.clone(),
-            user_store: user_store.clone(),
+            resolver,
             cookie: (*cookie_config).clone(),
-            cache: cache.clone(),
             csrf: csrf_config,
-            metrics,
         });
 
         let state = AuthState {

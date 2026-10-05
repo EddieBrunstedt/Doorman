@@ -33,6 +33,7 @@ pub mod purge;
 pub mod rate_limit;
 pub mod reauth;
 pub mod recovery;
+pub mod resolve;
 pub mod session;
 pub mod signup;
 pub mod storage;

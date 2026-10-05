@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
-use doorman_axum::{AuthService, AuthServiceBuilder, BuilderError};
+use doorman_axum::{AuthService, AuthServiceBuilder, BuilderError, SessionCacheConfig};
 use doorman_core::account::{AccountConfig, AccountManager};
 use doorman_core::audit::{AuditSink, NoopAuditSink};
 use doorman_core::clock::{Clock, SystemClock};
@@ -26,6 +26,7 @@ use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::reauth::{ReauthManager, ReauthPolicy};
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager};
+use doorman_core::resolve::SessionResolver;
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupManager};
 use doorman_core::storage::{Storage, UserId};
@@ -400,9 +401,17 @@ fn low_level_builder_rejects_missing_passkey_manager() {
         SessionConfig::default(),
     );
 
+    let resolver = SessionResolver::new(
+        session_manager.clone(),
+        storage.users.clone(),
+        SessionCacheConfig::default(),
+    )
+    .expect("resolver");
+
     let err = AuthService::from_managers()
         .session_manager(session_manager)
         .user_store(storage.users.clone())
+        .session_resolver(resolver)
         .build()
         .err();
 
@@ -471,9 +480,17 @@ async fn low_level_from_managers_wires_managers_built_from_core_deps() {
         NotificationPolicy::default(),
     );
 
+    let resolver = SessionResolver::new(
+        session_manager.clone(),
+        storage.users.clone(),
+        SessionCacheConfig::default(),
+    )
+    .expect("resolver");
+
     let auth = AuthService::from_managers()
         .session_manager(session_manager)
         .user_store(storage.users.clone())
+        .session_resolver(resolver)
         .passkey_manager(passkey)
         .signup_manager(signup)
         .recovery_manager(recovery)

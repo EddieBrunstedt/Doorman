@@ -59,7 +59,7 @@ async fn build_scaffold() -> Scaffold {
 
     let session_manager = SessionManager::new(
         session_store,
-        clock,
+        clock.clone(),
         audit,
         SessionConfig {
             absolute_lifetime: Duration::from_secs(60 * 60),
@@ -71,10 +71,13 @@ async fn build_scaffold() -> Scaffold {
     // all shards — the hit bench must never observe an eviction miss. (Shards
     // are keyed on the token-hash prefix, so the per-shard load is uneven; the
     // generous headroom absorbs that skew.)
-    let cache = SessionCache::new(SessionCacheConfig {
-        capacity: NonZeroUsize::new(POOL * 16).expect("non-zero capacity"),
-        ..SessionCacheConfig::default()
-    });
+    let cache = SessionCache::new(
+        SessionCacheConfig {
+            capacity: NonZeroUsize::new(POOL * 16).expect("non-zero capacity"),
+            ..SessionCacheConfig::default()
+        },
+        clock,
+    );
 
     let now = Utc::now();
     let mut token_hashes = Vec::with_capacity(POOL);

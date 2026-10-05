@@ -1,9 +1,8 @@
 //! Verifies the disable gates over HTTP: a user whose account status is
 //! `Disabled` can neither complete a passkey login nor authenticate a request
-//! with an existing session, while an active user is unaffected. Most tests
-//! flip the status directly through the store, so the session-layer gate is
-//! exercised on a cold cache — the request is a cache miss that resolves the
-//! now-disabled user and refuses it.
+//! with an existing session (403 with a stable code, not a silent 401), while
+//! an active user is unaffected. The gate itself — including that a refused
+//! session is never cached — is covered in core (`resolve_flow.rs`).
 
 mod common;
 
@@ -12,7 +11,6 @@ use axum::http::StatusCode;
 use common::{ResidentHttpAuthenticator, TestApp, login};
 use doorman_axum::dto::PasskeyChallenge;
 use doorman_core::audit::OperatorActor;
-use doorman_core::session::hash_token;
 use doorman_core::storage::AccountStatus;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
@@ -36,10 +34,6 @@ async fn disabled_user_is_refused_with_403() {
     let client = reqwest::Client::new();
 
     let auth = login(&client, &app, "disabled@example.com").await;
-
-    // Disable before the first authenticated request so the cache is never
-    // warmed with the active snapshot: the request below is a cache miss that
-    // hits the read-time gate.
     app.set_user_status(
         auth.user.id,
         AccountStatus::Disabled {
@@ -52,13 +46,6 @@ async fn disabled_user_is_refused_with_403() {
         me(&client, &app, &auth.token).await,
         StatusCode::FORBIDDEN,
         "a disabled account is refused, not served"
-    );
-
-    // The refusal happens before the cache insert, so a disabled user never
-    // enters the cache.
-    assert!(
-        app.cache.get(&hash_token(&auth.token)).is_none(),
-        "a disabled user is not cached"
     );
 
     app.shutdown().await;
@@ -115,25 +102,18 @@ async fn active_user_is_unaffected() {
 
 #[tokio::test]
 async fn operator_disable_locks_out_live_session_then_enable_restores() {
-    // End-to-end through the real operator flow: `disable` flips the status,
-    // revokes the live session, and fires the invalidation hook so the warm
-    // cache is evicted. The very next authenticated request is refused (Step 2
-    // auth gate), and `enable` lifts the freeze.
+    // End-to-end through the real operator flow: `disable` flips the status
+    // and revokes the live session, so the very next authenticated request is
+    // refused even after a warm one, and `enable` lifts the freeze.
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
     let auth = login(&client, &app, "locked@example.com").await;
 
-    // Warm the cache with an authenticated request so we prove `disable`
-    // evicts it rather than relying on a cold miss.
     assert_eq!(
         me(&client, &app, &auth.token).await,
         StatusCode::OK,
-        "an active user authenticates and warms the cache",
-    );
-    assert!(
-        app.cache.get(&hash_token(&auth.token)).is_some(),
-        "the active session is cached",
+        "an active user authenticates",
     );
 
     app.operator
@@ -141,12 +121,8 @@ async fn operator_disable_locks_out_live_session_then_enable_restores() {
         .await
         .expect("operator disable");
 
-    // The disable revoked the live session and evicted the cache, so the token
-    // no longer authenticates.
-    assert!(
-        app.cache.get(&hash_token(&auth.token)).is_none(),
-        "disable evicted the warm cache entry",
-    );
+    // The disable revoked the live session, so the token no longer
+    // authenticates.
     assert_eq!(
         me(&client, &app, &auth.token).await,
         StatusCode::UNAUTHORIZED,

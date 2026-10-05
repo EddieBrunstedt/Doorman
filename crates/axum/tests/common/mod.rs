@@ -19,7 +19,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use doorman_axum::AuthService;
-use doorman_axum::SessionCache;
 use doorman_axum::SessionCacheConfig;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
@@ -67,13 +66,9 @@ pub struct TestApp {
     pub email: Arc<CapturingEmailSender>,
     pub rp_origin: ServerUrl,
     pub passkey_credentials: Arc<InMemoryPasskeyCredentialStore>,
-    /// The session-resolution cache the running layer reads from, and the
-    /// one the `session_manager` below evicts on revoke. Surfaced so the
-    /// cache-invalidation tests can observe eviction directly.
-    pub cache: SessionCache,
     /// The live, invalidation-hooked `SessionManager` the app runs on
     /// (cloned out of the built `AuthService`). `login` mints sessions
-    /// through it, and revoking through it evicts [`Self::cache`].
+    /// through it, and revoking through it evicts the resolver's cache.
     pub session_manager: SessionManager,
     /// The live operator manager the app runs on, so operator-flow tests can
     /// drive a host-side operation (e.g. deleting a user) and observe its
@@ -94,9 +89,8 @@ impl TestApp {
     /// Start an app whose session manager and rate limiter both read time
     /// through the supplied `clock`, so a test can drive token/session/window
     /// expiry by advancing a [`MockClock`] rather than sleeping. The
-    /// resolution cache is configured with a zero freshness window so an
-    /// advance of the (domain) clock is observed on the very next request,
-    /// instead of being masked until the monotonic cache TTL lapses.
+    /// resolution cache is disabled (zero TTL), so every request resolves
+    /// from storage and sees a clock advance or store change immediately.
     ///
     /// [`MockClock`]: doorman_test_support::MockClock
     pub async fn start_with_clock(
@@ -179,12 +173,9 @@ impl TestApp {
 
         // `login` mints sessions directly through the same live,
         // invalidation-hooked `SessionManager` the app runs on, so a
-        // revoke routed through it evicts the cache the layer reads. The
-        // high-level builder wires the cache invalidator onto this manager,
-        // so the cache-invalidation tests can drive it via `session_manager`.
+        // revoke routed through it evicts the cache the layer reads.
         let session_manager = auth.state().session_manager().clone();
         let operator = auth.state().operator().clone();
-        let cache = auth.cache().clone();
 
         let passkey_credentials_dyn: Arc<dyn PasskeyCredentialStore> = passkey_credentials.clone();
         let app = Router::new()
@@ -217,7 +208,6 @@ impl TestApp {
             email,
             rp_origin,
             passkey_credentials,
-            cache,
             session_manager,
             operator,
             user_store,

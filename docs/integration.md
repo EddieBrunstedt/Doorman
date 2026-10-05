@@ -49,7 +49,7 @@ axum::serve(
 
 ## The builder setters
 
-Every collaborator and config has a bare-noun setter on `AuthServiceBuilder` (and the same names on the low-level `ManagerBuilder`):
+Every collaborator and config has a bare-noun setter on `AuthServiceBuilder` (the low-level `ManagerBuilder` takes pre-built managers and a `SessionResolver` instead):
 
 | Setter                                                                                                   | Purpose                                                     |
 | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -184,11 +184,11 @@ User-facing copy is the host's responsibility on the **client** too: doorman ret
 
 ## Layering: core assembly and the Axum front end
 
-doorman is batteries-included and Axum-first. The auth engine and its assembly live in `doorman-core`. `AuthCore::builder(storage)` is the composition root: it resolves the collaborator defaults, validates the signup/recovery/account URL templates and the configured lifetimes, wires the security notifier and the session-resolution cache (installing the cache invalidator on the `SessionManager`), and constructs the five managers — `SessionManager`, `PasskeyManager`, `SignupManager`, `RecoveryManager`, `AccountManager` — in the order their shared collaborators require. Its `AssemblyError` carries those portable failure modes.
+doorman is batteries-included and Axum-first. The auth engine and its assembly live in `doorman-core`. `AuthCore::builder(storage)` is the composition root: it resolves the collaborator defaults, validates the signup/recovery/account URL templates and the configured lifetimes, wires the security notifier and the `SessionResolver` — the per-request operation that owns the session-resolution cache, the expiry and account-status checks, and idle sliding, and installs its cache invalidator on the `SessionManager` — and constructs the five managers — `SessionManager`, `PasskeyManager`, `SignupManager`, `RecoveryManager`, `AccountManager` — in the order their shared collaborators require. Its `AssemblyError` carries those portable failure modes.
 
 `doorman-axum` is the first-party HTTP integration. `AuthService::builder(storage)` delegates that portable assembly to `doorman-core` and then adds the HTTP layer: the cookie config and its `__Host-`/`__Secure-` prefix rules, the CSRF posture, and the mountable router plus session layer. Its `BuilderError` embeds the core `AssemblyError` variants so a host sees one error type.
 
-The high-level builder still exposes the assembled managers the routes drive via the `AuthState::session_manager()`, `passkey()`, `signup()`, `recovery()`, and `account()` accessors, so host code can run the same logic alongside the bundled routes. Hosts that construct the managers themselves hand them to the low-level `AuthService::from_managers()` path.
+The high-level builder still exposes the assembled managers the routes drive via the `AuthState::session_manager()`, `passkey()`, `signup()`, `recovery()`, and `account()` accessors, so host code can run the same logic alongside the bundled routes. Hosts that construct the managers themselves build a `SessionResolver` over their `SessionManager` and hand both, with the managers, to the low-level `AuthService::from_managers()` path.
 
 ## Extractors
 

@@ -1,8 +1,8 @@
 //! Session-loading middleware and the resolved per-request `AuthContext`.
 //!
 //! The layer reads a session token from either the configured cookie or an
-//! `Authorization: Bearer <token>` header, validates it through the
-//! framework-agnostic [`SessionManager`], and — on success — attaches an
+//! `Authorization: Bearer <token>` header, resolves it through the
+//! framework-agnostic [`SessionResolver`], and — on success — attaches an
 //! [`AuthContext`] to the request extensions. Extractors elsewhere in the
 //! crate (`AuthUser`, `OptionalAuthUser`, `AuthSession`) read from that
 //! extension instead of re-validating the session per handler.
@@ -11,7 +11,10 @@
 //! a hard error from the layer itself: the request continues without an
 //! [`AuthContext`], and protected handlers reject through their own
 //! extractor (which returns 401). This keeps `OPTIONS` preflights, public
-//! endpoints, and the login endpoints from being short-circuited.
+//! endpoints, and the login endpoints from being short-circuited. The one
+//! exception is a disabled account, refused with 403.
+//!
+//! [`SessionResolver`]: doorman_core::resolve::SessionResolver
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -19,19 +22,16 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::http::{HeaderMap, Request, header};
+use axum::http::{HeaderMap, HeaderValue, Request, header};
 use axum::response::Response;
 use doorman_core::Error;
 use doorman_core::clock::Clock;
-use doorman_core::metrics::{MetricEvent, MetricSink};
-use doorman_core::session::SessionManager;
-use doorman_core::storage::{Session, User, UserStore};
-use doorman_core::token::hash_token;
+use doorman_core::resolve::SessionResolver;
+use doorman_core::storage::{Session, User};
 use tower_layer::Layer;
 use tower_service::Service;
 use tracing::Instrument;
 
-use crate::cache::SessionCache;
 use crate::config::CookieConfig;
 use crate::cookies::{bearer_token, read_cookie, session_cookie_with_max_age};
 use crate::csrf::{self, CsrfConfig};
@@ -54,8 +54,10 @@ pub struct AuthContext {
     /// The raw bearer token, as it appeared in the request. Kept so
     /// `logout` (and any other "revoke this session" path) can call
     /// [`SessionManager::revoke`] without re-deriving it.
+    ///
+    /// [`SessionManager::revoke`]: doorman_core::session::SessionManager::revoke
     pub token: String,
-    /// The clock the session manager reads time through, threaded so the
+    /// The clock sessions are resolved by, threaded so the
     /// [`AuthSession`](crate::extractors::AuthSession) recovery-cool-down
     /// helper answers through the configured clock rather than reading
     /// `chrono::Utc::now()` directly.
@@ -64,15 +66,12 @@ pub struct AuthContext {
 
 /// Internal shared state for [`SessionLayer`] services.
 pub(crate) struct SessionLayerState {
-    pub(crate) session_manager: SessionManager,
-    pub(crate) user_store: Arc<dyn UserStore>,
+    pub(crate) resolver: SessionResolver,
     /// Full cookie attribute set (name, Secure, SameSite, Path, …). Held so a
     /// sliding-renewal refresh can re-emit the session cookie with every
     /// attribute matching the one issued at login, only changing `Max-Age`.
     pub(crate) cookie: CookieConfig,
-    pub(crate) cache: SessionCache,
     pub(crate) csrf: Option<CsrfConfig>,
-    pub(crate) metrics: Arc<dyn MetricSink>,
 }
 
 /// Tower layer constructed via
@@ -144,82 +143,22 @@ where
                     return Ok(csrf::rejection_response());
                 }
 
-                // When sliding renewal refreshes a cookie-sourced session, hold
-                // the `Set-Cookie` to append after the inner service runs so the
-                // browser's expiry tracks the slid server deadline.
-                let mut cookie_refresh: Option<axum::http::HeaderValue> = None;
+                // When resolution slides a cookie-sourced session, hold the
+                // `Set-Cookie` to append after the inner service runs so the
+                // browser's expiry tracks the slid server deadline. Bearer
+                // clients track expiry themselves.
+                let mut cookie_refresh: Option<HeaderValue> = None;
                 if let Some((token, source)) = extract_token(req.headers(), cookie_name) {
-                    // Hash the token exactly once per request; both the cache
-                    // lookup and the on-miss validate path are keyed by hash.
-                    let token_hash = hash_token(&token);
-                    let now = state.session_manager.clock().now();
-                    // A cached entry whose effective deadline has passed is
-                    // treated as a miss: the in-memory expiry re-check makes the
-                    // cache self-correcting independent of its TTL, so an expired
-                    // session is never served from a still-warm entry.
-                    let cached = state
-                        .cache
-                        .get(&token_hash)
-                        .filter(|cached| cached.session.expires_at > now);
-                    // Cache hit short-circuits both the session lookup and the
-                    // user-store fetch. On miss, fall through to the canonical
-                    // validate path and seed the cache with the result.
-                    if let Some(cached) = cached {
-                        state.metrics.record(MetricEvent::CacheHit);
-                        let span = tracing::Span::current();
-                        span.record("session_id", tracing::field::display(cached.session.id));
-                        span.record("user_id", tracing::field::display(cached.user.id));
-                        req.extensions_mut().insert(AuthContext {
-                            user: cached.user.clone(),
-                            session: cached.session.clone(),
-                            token,
-                            clock: state.session_manager.clock().clone(),
-                        });
-                    } else {
-                        // Miss: the cache did not serve this token, regardless
-                        // of whether the fall-through validate then succeeds.
-                        state.metrics.record(MetricEvent::CacheMiss);
-                        if let Ok(session) =
-                            state.session_manager.validate_by_hash(&token_hash).await
-                            && let Ok(Some(user)) =
-                                state.user_store.find_user_by_id(session.user_id).await
-                        {
-                            // Read-time disable gate. A disabled account is
-                            // refused outright (403) rather than silently
-                            // dropped to unauthenticated, so the host can tell
-                            // "disabled" from "no session". The shared
-                            // `AccountStatus::is_active` predicate is the single
-                            // place the enum is interpreted. Rejecting here,
-                            // before the cache insert below, also keeps a
-                            // disabled user from ever entering the cache.
-                            //
-                            // Immediacy depends on the write-time cache
-                            // invalidation wired in with the operator `disable`
-                            // flow: a warm cache hit (the branch above) serves a
-                            // still-active snapshot and can mask a fresh disable
-                            // for up to the cache TTL until that invalidation
-                            // evicts the entry.
-                            if !user.status.is_active() {
-                                return Ok(error_response(&Error::AccountDisabled));
-                            }
+                    match state.resolver.resolve(&token).await {
+                        Ok(resolved) => {
                             let span = tracing::Span::current();
-                            span.record("session_id", tracing::field::display(session.id));
-                            span.record("user_id", tracing::field::display(user.id));
-                            let session = Arc::new(session);
-                            let user = Arc::new(user);
-                            state
-                                .cache
-                                .insert(token_hash, session.clone(), user.clone());
-                            // Slide the cookie only for cookie-sourced tokens and
-                            // only when an idle window is configured. Bearer
-                            // clients track expiry themselves, and with sliding
-                            // off the cookie behaviour is byte-for-byte unchanged.
-                            if source == TokenSource::Cookie
-                                && state.session_manager.idle_timeout().is_some()
-                            {
-                                let remaining = (session.expires_at - now)
-                                    .to_std()
-                                    .unwrap_or(Duration::ZERO);
+                            span.record("session_id", tracing::field::display(resolved.session.id));
+                            span.record("user_id", tracing::field::display(resolved.user.id));
+                            if resolved.slid && source == TokenSource::Cookie {
+                                let remaining = (resolved.session.expires_at
+                                    - state.resolver.clock().now())
+                                .to_std()
+                                .unwrap_or(Duration::ZERO);
                                 cookie_refresh = Some(session_cookie_with_max_age(
                                     &state.cookie,
                                     &token,
@@ -227,12 +166,20 @@ where
                                 ));
                             }
                             req.extensions_mut().insert(AuthContext {
-                                user,
-                                session,
+                                user: resolved.user,
+                                session: resolved.session,
                                 token,
-                                clock: state.session_manager.clock().clone(),
+                                clock: state.resolver.clock().clone(),
                             });
                         }
+                        // A disabled account is refused outright (403) so the
+                        // host can tell "disabled" from "no session".
+                        Err(error @ Error::AccountDisabled) => {
+                            return Ok(error_response(&error));
+                        }
+                        // Any other refusal leaves the request
+                        // unauthenticated; protected extractors reject it.
+                        Err(_) => {}
                     }
                 }
                 let mut response = inner.call(req).await?;

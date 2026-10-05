@@ -3,8 +3,8 @@
 //! A host that wants production telemetry implements [`MetricSink`] and wires it
 //! in (through the high-level builder, or [`CoreDeps::with_metrics`]). The
 //! managers call [`MetricSink::record`] on the hot paths — successful logins,
-//! authentication failures, and per-ceremony latency — and the axum session
-//! layer reports cache hits and misses through the same hook. The default
+//! authentication failures, and per-ceremony latency — and the session
+//! resolver reports cache hits and misses through the same hook. The default
 //! [`NoopMetricSink`] discards everything, so the hooks cost a single
 //! non-inlined call when no host backend is attached.
 //!
@@ -39,10 +39,11 @@ pub enum MetricEvent {
     /// auth-latency histogram.
     AuthLatency(Duration),
     /// A session-resolution cache lookup served the request without touching
-    /// the session / user stores (axum session layer).
+    /// the session / user stores
+    /// ([`SessionResolver`](crate::resolve::SessionResolver)).
     CacheHit,
     /// A session-resolution cache lookup missed and fell through to the
-    /// stores (axum session layer).
+    /// stores ([`SessionResolver`](crate::resolve::SessionResolver)).
     CacheMiss,
 }
 

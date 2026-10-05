@@ -35,6 +35,7 @@ use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
 use crate::rate_limit::{RateLimitPolicy, RateLimiter};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
+use crate::resolve::find_active_user;
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,
@@ -800,28 +801,16 @@ impl PasskeyManager {
         // flight) before anything is persisted or minted. The check sits after
         // the assertion verifies so only the credential holder learns the
         // account is disabled; the single-use challenge stays consumed.
-        match self.users.find_user_by_id(user_id).await? {
-            None => {
-                self.emit_auth_failure(
-                    now,
-                    &context,
-                    Some(user_id),
-                    AuthFailureReason::UnknownCredential,
-                )
+        // The gate is the one session resolution applies on every request.
+        if let Err(error) = find_active_user(self.users.as_ref(), user_id).await {
+            let reason = match error {
+                Error::UserNotFound => AuthFailureReason::UnknownCredential,
+                Error::AccountDisabled => AuthFailureReason::AccountDisabled,
+                _ => return Err(error),
+            };
+            self.emit_auth_failure(now, &context, Some(user_id), reason)
                 .await;
-                return Err(Error::UserNotFound);
-            }
-            Some(user) if !user.status.is_active() => {
-                self.emit_auth_failure(
-                    now,
-                    &context,
-                    Some(user_id),
-                    AuthFailureReason::AccountDisabled,
-                )
-                .await;
-                return Err(Error::AccountDisabled);
-            }
-            Some(_) => {}
+            return Err(error);
         }
 
         let active_recovery_cooldown_until = credential.active_recovery_cooldown_until(now);

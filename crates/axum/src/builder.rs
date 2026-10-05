@@ -11,7 +11,7 @@
 //!
 //! The portable half of that work — resolving the collaborator defaults,
 //! validating the URL templates and lifetimes, wiring the security notifier
-//! and cache invalidator, and constructing the managers in dependency order —
+//! and session resolver, and constructing the managers in dependency order —
 //! lives in [`doorman_core::assembly`]. This builder delegates to
 //! [`AuthCore::builder`](doorman_core::assembly::AuthCore::builder) for that
 //! part and then layers on the HTTP-specific decisions (cookie config and its
@@ -219,7 +219,7 @@ impl AuthServiceBuilder {
 
     /// Wire a [`MetricSink`] sink for production telemetry. The auth managers
     /// report login success, authentication failure, and per-ceremony
-    /// latency through it, and the session layer reports cache hit / miss.
+    /// latency through it, and the session resolver reports cache hit / miss.
     /// Defaults to [`NoopMetricSink`], which discards every observation.
     ///
     /// [`MetricSink`]: doorman_core::metrics::MetricSink
@@ -318,7 +318,7 @@ impl AuthServiceBuilder {
     /// Construct the managers and return a wired-up [`AuthService`].
     ///
     /// The portable assembly (collaborator defaults, URL / lifetime
-    /// validation, notifier + cache wiring, manager construction) is
+    /// validation, notifier + resolver wiring, manager construction) is
     /// delegated to [`AuthCore::builder`]; any [`AssemblyError`] it returns is
     /// mapped onto the matching [`BuilderError`] variant. This method then
     /// adds the HTTP decisions — the cookie `Max-Age` vs session-lifetime
@@ -404,8 +404,7 @@ impl AuthServiceBuilder {
         let mut builder = ManagerBuilder::default()
             .session_manager(core.session_manager.clone())
             .user_store(core.user_store.clone())
-            .session_cache(core.cache.clone())
-            .metrics(core.metrics.clone())
+            .session_resolver(core.resolver.clone())
             .cookie(cookie_config)
             .passkey_manager(core.passkey)
             .signup_manager(core.signup)
