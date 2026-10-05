@@ -8,8 +8,8 @@
 //!
 //! All expose `connect`, `from_pool`, `pool`, `migrate`, and `all_stores`.
 //! `all_stores()` returns a [`doorman_core::storage::Storage`] populated with
-//! every store implementation, ready to hand to `AuthService::builder` in
-//! `doorman-axum`.
+//! every store implementation, ready to hand to `AuthCore::builder` in
+//! `doorman-core`.
 //!
 //! ```ignore
 //! use doorman_sqlx::SqliteStorage;

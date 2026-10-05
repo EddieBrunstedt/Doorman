@@ -16,7 +16,7 @@ use doorman_redb::RedbStorage;
 
 let storage = RedbStorage::open("doorman.redb")?;
 
-let auth = AuthService::builder(storage.all_stores())
+let core = AuthCore::builder(storage.all_stores())
     // ... rest of the builder
     .build()?;
 ```

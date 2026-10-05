@@ -1,249 +1,126 @@
-//! High-level [`AuthServiceBuilder`] entry point, reached via
-//! [`AuthService::builder`].
+//! [`AuthServiceBuilder`], reached via [`AuthService::builder`].
 //!
-//! Most hosts want one wired-up auth surface, not a tour of every manager
-//! they need to construct. [`AuthService::builder`] takes the composite
-//! [`doorman_core::storage::Storage`] (typically obtained in one call from a
-//! storage adapter such as `doorman-sqlx`) plus the passkey config,
-//! constructs the `SessionManager`/`PasskeyManager`/`SignupManager`/
-//! `RecoveryManager` internally with sensible defaults, and returns a
-//! fully built [`AuthService`].
+//! Every portable option — collaborators, per-flow configs, the session and
+//! cache settings, the re-auth and notification policies — is set on
+//! [`AuthCore::builder`], which validates it and wires the managers. This
+//! builder takes the resulting [`AuthCore`] and adds only the HTTP settings:
+//! the session cookie (its `__Host-`/`__Secure-` prefix rules and its
+//! `Max-Age` bound) and the CSRF posture. A new core option therefore never
+//! touches this file.
 //!
-//! The portable half of that work — resolving the collaborator defaults,
-//! validating the URL templates and lifetimes, wiring the security notifier
-//! and session resolver, and constructing the managers in dependency order —
-//! lives in [`doorman_core::assembly`]. This builder delegates to
-//! [`AuthCore::builder`](doorman_core::assembly::AuthCore::builder) for that
-//! part and then layers on the HTTP-specific decisions (cookie config and its
-//! `__Host-`/`__Secure-` prefix rules, the CSRF posture, and the router /
-//! session layer).
+//! [`build`](AuthServiceBuilder::build) fails closed with a [`BuilderError`]:
 //!
-//! The builder is strict by default: the only collaborator with a silent
-//! default is the [`Clock`] → [`SystemClock`]. Everything whose wrong choice
-//! is a security or delivery footgun must be wired explicitly, so the unsafe
-//! option is always a visible, greppable call rather than an implicit default
-//! the host has to be warned about. [`build`](AuthServiceBuilder::build)
-//! returns a [`BuilderError`] when a required input is missing:
-//!
-//! - [`EmailSender`] → [`BuilderError::MissingEmailSender`]
-//! - [`PasskeyConfig`] → [`BuilderError::MissingPasskeyConfig`]
-//! - [`AuditSink`] → [`BuilderError::MissingAuditSink`] (pass
-//!   [`NoopAuditSink`] explicitly to discard events)
-//! - [`RateLimiter`] → [`BuilderError::MissingRateLimiter`] (pass
-//!   [`InMemoryRateLimiter`], a shared backend, or `NoopRateLimiter`)
 //! - a CSRF decision → [`BuilderError::CsrfDecisionRequired`] unless
 //!   [`external_origin`](AuthServiceBuilder::external_origin) is set or CSRF
 //!   is explicitly configured
-//! - a real signup / recovery / account `url_template` → the stock
-//!   `example.invalid` placeholder is rejected with
-//!   [`BuilderError::PlaceholderUrlTemplate`]
-//!
-//! First-party email transports [`TerminalEmailSender`] (stdout) and
-//! [`FileEmailSender`] (`.eml` files on disk) are intended for local
-//! development; production hosts plug in their real transport (lettre,
-//! resend, SES, …) through the [`EmailSender`] trait. The same sender is also
-//! used for best-effort security notifications such as passkey-registration
-//! notices. We keep build-time errors rather than typestate because the
-//! required inputs are few and the simpler builder is easier to read.
-//!
-//! [`Clock`]: doorman_core::clock::Clock
-//! [`SystemClock`]: doorman_core::clock::SystemClock
-//! [`AuditSink`]: doorman_core::audit::AuditSink
-//! [`NoopAuditSink`]: doorman_core::audit::NoopAuditSink
-//! [`RateLimiter`]: doorman_core::rate_limit::RateLimiter
-//! [`InMemoryRateLimiter`]: doorman_core::memory::InMemoryRateLimiter
-//! [`EmailSender`]: doorman_core::email::EmailSender
-//! [`PasskeyConfig`]: doorman_core::passkey::PasskeyConfig
-//! [`TerminalEmailSender`]: doorman_core::email::TerminalEmailSender
-//! [`FileEmailSender`]: doorman_core::email::FileEmailSender
+//! - a `__Host-`/`__Secure-` cookie name without the attributes its prefix
+//!   requires → [`BuilderError::InvalidCookiePrefix`]
+//! - a cookie `Max-Age` longer than the session can go unused →
+//!   [`BuilderError::CookieMaxAgeExceedsSessionLifetime`]
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use doorman_core::account::AccountConfig;
 use doorman_core::assembly::AuthCore;
-use doorman_core::audit::AuditSink;
-use doorman_core::clock::Clock;
-use doorman_core::email::{EmailSender, EmailTemplates};
-use doorman_core::metrics::MetricSink;
-use doorman_core::passkey::PasskeyConfig;
-use doorman_core::rate_limit::RateLimiter;
-use doorman_core::reauth::ReauthPolicy;
-use doorman_core::recovery::RecoveryConfig;
-use doorman_core::session::SessionConfig;
-use doorman_core::signup::SignupConfig;
-use doorman_core::storage::Storage;
 
 use url::Url;
 
 use crate::AuthService;
-use crate::cache::SessionCacheConfig;
 use crate::config::CookieConfig;
 use crate::csrf::CsrfConfig;
-use crate::manager_builder::{BuilderError, ManagerBuilder};
+use crate::session::{SessionLayer, SessionLayerState};
+use crate::state::AuthState;
 
-/// High-level builder returned from [`AuthService::builder`].
-///
-/// This is the headline path: hand it a composite [`Storage`] (typically
-/// from a storage adapter such as `doorman-sqlx`) plus the passkey config
-/// and email transport, and it constructs the core managers for you. Hosts
-/// that have already built the managers themselves want the lower-level
-/// [`ManagerBuilder`] via [`AuthService::from_managers`] instead.
-///
-/// See the module-level docs for the full picture. Typical use:
+/// Errors returned when the HTTP settings layered over an [`AuthCore`] are
+/// incomplete or invalid. Portable misconfiguration is reported earlier, by
+/// [`AuthCore::builder`], as an
+/// [`AssemblyError`](doorman_core::assembly::AssemblyError).
+#[derive(Debug, thiserror::Error)]
+pub enum BuilderError {
+    /// No CSRF decision was made: the builder was given neither an
+    /// [`external_origin`](AuthServiceBuilder::external_origin) (which
+    /// enables origin checks) nor an explicit
+    /// [`csrf`](AuthServiceBuilder::csrf) config. Cookie-authenticated
+    /// mutations would rest on `SameSite=Lax` alone, so the build refuses to
+    /// guess: set the origin, or opt out deliberately with
+    /// `.csrf(CsrfConfig::disabled())`.
+    #[error(
+        "a CSRF decision is required: set external_origin to enable origin checks, or pass CsrfConfig::disabled() to opt out"
+    )]
+    CsrfDecisionRequired,
+    /// The session cookie name carries a `__Host-` or `__Secure-` prefix but
+    /// the cookie attributes do not satisfy what that prefix requires (per
+    /// the cookie-prefix spec). A browser would silently reject the cookie,
+    /// so the build fails closed instead.
+    #[error("cookie name `{name}` carries a {prefix} prefix but {requirement}")]
+    InvalidCookiePrefix {
+        /// The configured cookie name.
+        name: String,
+        /// The prefix that imposed the requirement (`__Host-`/`__Secure-`).
+        prefix: &'static str,
+        /// The attribute requirement that was not met.
+        requirement: &'static str,
+    },
+    /// The session cookie `Max-Age` outlives the window the server will keep
+    /// the session alive, so the browser would keep replaying a cookie whose
+    /// session is already dead. The bound is
+    /// [`SessionManager::unused_lifetime`](doorman_core::session::SessionManager::unused_lifetime):
+    /// the idle window when sliding is on, otherwise the absolute lifetime.
+    #[error(
+        "cookie Max-Age ({cookie_max_age:?}) exceeds the session lifetime ({session_lifetime:?})"
+    )]
+    CookieMaxAgeExceedsSessionLifetime {
+        /// The configured cookie `Max-Age`.
+        cookie_max_age: Duration,
+        /// The session lifetime it exceeds — the absolute lifetime, or the
+        /// idle window when sliding is enabled.
+        session_lifetime: Duration,
+    },
+}
+
+/// Builder returned from [`AuthService::builder`]: an assembled [`AuthCore`]
+/// plus the cookie and CSRF settings.
 ///
 /// ```ignore
 /// use doorman_axum::prelude::*;
 /// use doorman_core::verification::TOKEN_PLACEHOLDER;
 ///
 /// let base = origin.as_str().trim_end_matches('/');
-/// let auth = AuthService::builder(storage)
+/// let core = AuthCore::builder(storage)
 ///     .email(Arc::new(TerminalEmailSender))
 ///     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
+///     .audit(Arc::new(NoopAuditSink))
+///     .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
 ///     .reauthentication(ReauthPolicy::required_for([ReauthAction::DeleteAccount, ReauthAction::RemovePasskey]))
 ///     .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
 ///     .recovery(RecoveryConfig { url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
+///     .account(AccountConfig { url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
+///     .build()?;
+/// let auth = AuthService::builder(core)
 ///     .external_origin(origin)
 ///     .cookie(CookieConfig::default())
 ///     .build()?;
 /// ```
-///
-/// Collects the storage, the collaborators (clock / audit / email / rate
-/// limiter), the session config, the cookie config, and the
-/// passkey config. The signup flow is part of the only login UX and is
-/// configured implicitly; hosts that want to override its defaults call
-/// [`signup`](Self::signup). The portable assembly is delegated to
-/// [`AuthCore::builder`] in [`build`](Self::build); this builder adds the
-/// cookie / CSRF decisions on top.
 pub struct AuthServiceBuilder {
-    storage: Storage,
-    clock: Option<Arc<dyn Clock>>,
-    audit: Option<Arc<dyn AuditSink>>,
-    email: Option<Arc<dyn EmailSender>>,
-    emails: Option<Arc<dyn EmailTemplates>>,
-    rate_limiter: Option<Arc<dyn RateLimiter>>,
-    metrics: Option<Arc<dyn MetricSink>>,
-    session_config: Option<SessionConfig>,
+    core: AuthCore,
     cookie_config: Option<CookieConfig>,
-    cache_config: Option<SessionCacheConfig>,
     csrf_config: Option<CsrfConfig>,
-
     external_origin: Option<Url>,
-
-    passkey: Option<PasskeyConfig>,
-    signup: Option<SignupConfig>,
-    recovery: Option<RecoveryConfig>,
-    account: Option<AccountConfig>,
-    reauth: Option<ReauthPolicy>,
 }
 
 impl AuthServiceBuilder {
-    pub(crate) fn new(storage: Storage) -> Self {
+    pub(crate) fn new(core: AuthCore) -> Self {
         Self {
-            storage,
-            clock: None,
-            audit: None,
-            email: None,
-            emails: None,
-            rate_limiter: None,
-            metrics: None,
-            session_config: None,
+            core,
             cookie_config: None,
-            cache_config: None,
             csrf_config: None,
             external_origin: None,
-            passkey: None,
-            signup: None,
-            recovery: None,
-            account: None,
-            reauth: None,
         }
-    }
-
-    /// Override the default [`SystemClock`].
-    ///
-    /// [`SystemClock`]: doorman_core::clock::SystemClock
-    pub fn clock(mut self, clock: Arc<dyn Clock>) -> Self {
-        self.clock = Some(clock);
-        self
-    }
-
-    /// Wire the [`AuditSink`] security events are written to. Required —
-    /// [`build`](Self::build) returns [`BuilderError::MissingAuditSink`] when
-    /// not set. To discard events deliberately, pass
-    /// `Arc::new(NoopAuditSink)` explicitly.
-    ///
-    /// [`AuditSink`]: doorman_core::audit::AuditSink
-    pub fn audit(mut self, audit: Arc<dyn AuditSink>) -> Self {
-        self.audit = Some(audit);
-        self
-    }
-
-    /// Wire the [`EmailSender`] used by signup / recovery link delivery and
-    /// best-effort security notifications. Required — [`build`](Self::build) returns
-    /// [`BuilderError::MissingEmailSender`] when not set.
-    ///
-    /// [`EmailSender`]: doorman_core::email::EmailSender
-    pub fn email(mut self, email: Arc<dyn EmailSender>) -> Self {
-        self.email = Some(email);
-        self
-    }
-
-    /// Wire the one [`EmailTemplates`] renderer for every transactional email
-    /// the app sends: the signup link, the recovery link and notices, the
-    /// email-change confirmation, and the best-effort security notices (passkey
-    /// lifecycle, session revocation). This is the single place to brand all
-    /// transactional copy.
-    ///
-    /// Defaults to [`DefaultEmailTemplates`](doorman_core::email::DefaultEmailTemplates),
-    /// whose trait methods each have a stock body — implement [`EmailTemplates`]
-    /// and override only the messages you want to change, inheriting the rest.
-    ///
-    /// [`EmailTemplates`]: doorman_core::email::EmailTemplates
-    pub fn emails(mut self, emails: Arc<dyn EmailTemplates>) -> Self {
-        self.emails = Some(emails);
-        self
-    }
-
-    /// Wire the [`RateLimiter`] enforcing per-flow budgets. Required —
-    /// [`build`](Self::build) returns [`BuilderError::MissingRateLimiter`]
-    /// when not set. The bundled [`InMemoryRateLimiter`] is per-process (fine
-    /// single-process; a multi-replica deployment should swap in a shared
-    /// backend); pass `NoopRateLimiter` to disable enforcement deliberately.
-    ///
-    /// [`RateLimiter`]: doorman_core::rate_limit::RateLimiter
-    /// [`InMemoryRateLimiter`]: doorman_core::memory::InMemoryRateLimiter
-    pub fn limiter(mut self, limiter: Arc<dyn RateLimiter>) -> Self {
-        self.rate_limiter = Some(limiter);
-        self
-    }
-
-    /// Wire a [`MetricSink`] sink for production telemetry. The auth managers
-    /// report login success, authentication failure, and per-ceremony
-    /// latency through it, and the session resolver reports cache hit / miss.
-    /// Defaults to [`NoopMetricSink`], which discards every observation.
-    ///
-    /// [`MetricSink`]: doorman_core::metrics::MetricSink
-    /// [`NoopMetricSink`]: doorman_core::metrics::NoopMetricSink
-    pub fn metrics(mut self, metrics: Arc<dyn MetricSink>) -> Self {
-        self.metrics = Some(metrics);
-        self
-    }
-
-    /// Override the default [`SessionConfig`] (30-day lifetime).
-    pub fn session(mut self, config: SessionConfig) -> Self {
-        self.session_config = Some(config);
-        self
     }
 
     /// Override the default [`CookieConfig`].
     pub fn cookie(mut self, config: CookieConfig) -> Self {
         self.cookie_config = Some(config);
-        self
-    }
-
-    /// Override the session-resolution cache parameters.
-    pub fn cache(mut self, config: SessionCacheConfig) -> Self {
-        self.cache_config = Some(config);
         self
     }
 
@@ -258,142 +135,26 @@ impl AuthServiceBuilder {
         self
     }
 
-    /// Configure the WebAuthn relying party for the always-on passkey
-    /// flows. Required — [`build`](Self::build) returns
-    /// [`BuilderError::MissingPasskeyConfig`] when not set.
-    pub fn passkey(mut self, config: PasskeyConfig) -> Self {
-        self.passkey = Some(config);
-        self
-    }
-
-    /// Override the default [`SignupConfig`] (15-minute token lifetime,
-    /// default rate limits). Pair with [`email`](Self::email) so the
-    /// rendered links actually leave the process; the signup flow is on
-    /// implicitly.
-    pub fn signup(mut self, config: SignupConfig) -> Self {
-        self.signup = Some(config);
-        self
-    }
-
-    /// Override the default [`RecoveryConfig`] (15-minute token lifetime,
-    /// aggressive default rate limits). Like signup, the recovery flow is
-    /// always on.
-    pub fn recovery(mut self, config: RecoveryConfig) -> Self {
-        self.recovery = Some(config);
-        self
-    }
-
-    /// Override the default [`AccountConfig`] backing the verified
-    /// email-change flow (15-minute confirmation-token lifetime). Set the
-    /// `url_template` to a route in your app that posts the token back to
-    /// `/auth/account/email/confirm`; like signup / recovery, the template
-    /// must contain the `{token}` placeholder.
-    pub fn account(mut self, config: AccountConfig) -> Self {
-        self.account = Some(config);
-        self
-    }
-
-    /// Decide which destructive actions (account deletion, email-change
-    /// request, passkey removal) require a fresh passkey re-authentication.
-    /// **Required** — like the CSRF decision there is no default, so
-    /// [`build`](Self::build) returns [`BuilderError::ReauthDecisionRequired`]
-    /// until this is called. Pass
-    /// [`ReauthPolicy::required_for`](doorman_core::reauth::ReauthPolicy::required_for)
-    /// to gate actions, or
-    /// [`ReauthPolicy::disabled`](doorman_core::reauth::ReauthPolicy::disabled)
-    /// to opt out deliberately.
-    pub fn reauthentication(mut self, policy: ReauthPolicy) -> Self {
-        self.reauth = Some(policy);
-        self
-    }
-
-    /// Absolute public origin clients use to reach the auth routes.
-    /// Supplying an origin enables CSRF origin checks and satisfies the
-    /// required CSRF decision (see [`csrf`](Self::csrf)).
+    /// Absolute public origin (scheme + host [+ port] [+ path prefix]) that
+    /// clients use to reach the auth routes. Supplying an origin enables CSRF
+    /// origin checks and satisfies the required CSRF decision (see
+    /// [`csrf`](Self::csrf)).
     pub fn external_origin(mut self, origin: Url) -> Self {
         self.external_origin = Some(origin);
         self
     }
 
-    /// Construct the managers and return a wired-up [`AuthService`].
-    ///
-    /// The portable assembly (collaborator defaults, URL / lifetime
-    /// validation, notifier + resolver wiring, manager construction) is
-    /// delegated to [`AuthCore::builder`]; any [`AssemblyError`] it returns is
-    /// mapped onto the matching [`BuilderError`] variant. This method then
-    /// adds the HTTP decisions — the cookie `Max-Age` vs session-lifetime
-    /// check here, the `__Host-`/`__Secure-` prefix rules and the CSRF posture
-    /// in [`ManagerBuilder::build`].
-    ///
-    /// [`AssemblyError`]: doorman_core::assembly::AssemblyError
+    /// Validate the HTTP settings and return a wired-up [`AuthService`], or
+    /// the first [`BuilderError`] found.
     pub fn build(self) -> Result<AuthService, BuilderError> {
-        let session_config = self.session_config.unwrap_or_default();
-        // The window the session cookie may legitimately cover. With sliding
-        // renewal on, each use refreshes the cookie to at most one idle window
-        // and a session never survives one idle window of inactivity, so the
-        // cookie `Max-Age` is checked against the idle window. With sliding off
-        // the bound is the absolute lifetime, exactly as before. (Core
-        // guarantees `idle_timeout <= absolute_lifetime`.)
-        let session_lifetime = session_config
-            .idle_timeout
-            .unwrap_or(session_config.absolute_lifetime);
+        let core = self.core;
         let cookie_config = self.cookie_config.unwrap_or_default();
+        validate_cookie_prefix(&cookie_config)?;
 
-        // Keep a handle to the composite storage before it is consumed by the
-        // core assembly below, so the built service can sweep expired rows via
-        // `AuthService::purge_expired`. `Storage` is a bundle of `Arc` stores,
-        // so the clone is cheap and shares the same underlying data.
-        let storage = self.storage.clone();
-
-        // Delegate the portable half. Each input is threaded through only when
-        // the host set it, so the core builder applies the same defaults this
-        // builder used to. The required-input and validation errors come back
-        // as `AssemblyError` and map onto the matching `BuilderError` variant.
-        let mut core_builder = AuthCore::builder(self.storage).session(session_config);
-        if let Some(clock) = self.clock {
-            core_builder = core_builder.clock(clock);
-        }
-        if let Some(audit) = self.audit {
-            core_builder = core_builder.audit(audit);
-        }
-        if let Some(email) = self.email {
-            core_builder = core_builder.email(email);
-        }
-        if let Some(emails) = self.emails {
-            core_builder = core_builder.emails(emails);
-        }
-        if let Some(limiter) = self.rate_limiter {
-            core_builder = core_builder.limiter(limiter);
-        }
-        if let Some(metrics) = self.metrics {
-            core_builder = core_builder.metrics(metrics);
-        }
-        if let Some(cache_config) = self.cache_config {
-            core_builder = core_builder.cache(cache_config);
-        }
-        if let Some(passkey) = self.passkey {
-            core_builder = core_builder.passkey(passkey);
-        }
-        if let Some(signup) = self.signup {
-            core_builder = core_builder.signup(signup);
-        }
-        if let Some(recovery) = self.recovery {
-            core_builder = core_builder.recovery(recovery);
-        }
-        if let Some(account) = self.account {
-            core_builder = core_builder.account(account);
-        }
-        if let Some(reauth) = self.reauth {
-            core_builder = core_builder.reauthentication(reauth);
-        }
-
-        let core = core_builder.build()?;
-
-        // The cookie Max-Age vs session-lifetime check is HTTP-specific: it
-        // compares a cookie attribute against the session lifetime. Run it
-        // after the portable assembly so a misconfigured lifetime (validated
-        // in core) is reported as the lifetime error, not masked by a cookie
-        // that now "exceeds" a rejected lifetime.
+        // A sliding session's cookie is refreshed to at most one idle window
+        // per use, and the session never survives one idle window unused, so
+        // the cookie must not outlive that window.
+        let session_lifetime = core.session_manager.unused_lifetime();
         if cookie_config.session_max_age > session_lifetime {
             return Err(BuilderError::CookieMaxAgeExceedsSessionLifetime {
                 cookie_max_age: cookie_config.session_max_age,
@@ -401,28 +162,70 @@ impl AuthServiceBuilder {
             });
         }
 
-        let mut builder = ManagerBuilder::default()
-            .session_manager(core.session_manager.clone())
-            .user_store(core.user_store.clone())
-            .session_resolver(core.resolver.clone())
-            .cookie(cookie_config)
-            .passkey_manager(core.passkey)
-            .signup_manager(core.signup)
-            .recovery_manager(core.recovery)
-            .account_manager(core.account)
-            .reauth_manager(core.reauth)
-            .operator_manager(core.operator);
-
-        if let Some(csrf_config) = self.csrf_config {
-            builder = builder.csrf(csrf_config);
+        // CSRF is not guessed. Cookie-authenticated mutations need an origin
+        // check or a deliberate opt-out; with neither an origin nor an
+        // explicit config we cannot tell which the host intended, so fail
+        // closed rather than silently leaving the check off.
+        let csrf_config = match (self.csrf_config, self.external_origin) {
+            (Some(config), _) => config,
+            (None, Some(origin)) => CsrfConfig::new(origin),
+            (None, None) => return Err(BuilderError::CsrfDecisionRequired),
         }
+        .enabled_config();
 
-        if let Some(origin) = self.external_origin {
-            builder = builder.external_origin(origin);
-        }
+        let cache = core.resolver.cache().clone();
+        let layer_state = Arc::new(SessionLayerState {
+            resolver: core.resolver,
+            cookie: cookie_config.clone(),
+            csrf: csrf_config,
+        });
 
-        let mut service = builder.build()?;
-        service.storage = Some(storage);
-        Ok(service)
+        let state = AuthState {
+            session_manager: core.session_manager,
+            user_store: core.storage.users.clone(),
+            cookie_config: Arc::new(cookie_config),
+            passkey: core.passkey,
+            signup: core.signup,
+            recovery: core.recovery,
+            account: core.account,
+            reauth: core.reauth,
+            operator: core.operator,
+        };
+
+        Ok(AuthService {
+            state,
+            session_layer: SessionLayer::new(layer_state),
+            cache,
+            storage: core.storage,
+        })
     }
+}
+
+/// Enforce the cookie-prefix rules from the cookie-name spec so a
+/// misconfigured cookie fails the build instead of being silently dropped
+/// by the browser at runtime.
+///
+/// - `__Host-` requires `Secure`, `Path=/`, and **no** `Domain` attribute.
+/// - `__Secure-` requires `Secure`.
+fn validate_cookie_prefix(config: &CookieConfig) -> Result<(), BuilderError> {
+    let name = config.session_cookie_name.as_str();
+    let invalid = |prefix, requirement| BuilderError::InvalidCookiePrefix {
+        name: name.to_string(),
+        prefix,
+        requirement,
+    };
+    if name.starts_with("__Host-") {
+        if !config.secure {
+            return Err(invalid("__Host-", "requires secure = true"));
+        }
+        if config.path != "/" {
+            return Err(invalid("__Host-", "requires path = \"/\""));
+        }
+        if config.domain.is_some() {
+            return Err(invalid("__Host-", "must not set a Domain attribute"));
+        }
+    } else if name.starts_with("__Secure-") && !config.secure {
+        return Err(invalid("__Secure-", "requires secure = true"));
+    }
+    Ok(())
 }

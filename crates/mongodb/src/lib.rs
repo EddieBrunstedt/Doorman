@@ -75,7 +75,7 @@ use crate::db::MongoDb;
 ///
 /// Construct one at startup with [`new`](Self::new) from a [`mongodb::Database`],
 /// provision the indexes once with [`ensure_indexes`](Self::ensure_indexes), then
-/// either hand [`all_stores`](Self::all_stores) to `AuthService::builder` or pull
+/// either hand [`all_stores`](Self::all_stores) to `AuthCore::builder` or pull
 /// individual stores when wiring managers by hand. Cloning is cheap — `Database`
 /// is reference-counted internally.
 #[derive(Clone)]

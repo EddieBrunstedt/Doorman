@@ -18,7 +18,6 @@ use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
-use doorman_axum::AuthService;
 use doorman_axum::SessionCacheConfig;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
@@ -27,7 +26,9 @@ use doorman_axum::dto::{
     SignupConsumeRequest, SignupRequest, UserDto,
 };
 use doorman_axum::extractors::AuthSession;
+use doorman_axum::{AuthService, AuthServiceBuilder};
 use doorman_core::account::AccountConfig;
+use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
 use doorman_core::audit::NoopAuditSink;
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::email::EmailSender;
@@ -80,8 +81,9 @@ pub struct TestApp {
 }
 
 impl TestApp {
-    /// Start an app wired through [`AuthService::builder`] with the in-memory
-    /// stores and the passkey + signup configs needed for full HTTP coverage.
+    /// Start an app wired through [`AuthCore::builder`] and
+    /// [`AuthService::builder`] with the in-memory stores and the passkey +
+    /// signup configs needed for full HTTP coverage.
     pub async fn start(host_routes: Router, secure_cookies: bool) -> Self {
         Self::start_with(host_routes, secure_cookies, |b| b).await
     }
@@ -109,11 +111,27 @@ impl TestApp {
         .await
     }
 
-    /// Start an app, letting the caller tweak the `AuthServiceBuilder`
-    /// (e.g. to set an `external_origin` for CSRF coverage).
+    /// Start an app, letting the caller tweak the [`AuthCoreBuilder`] (e.g.
+    /// to swap the clock or a flow config).
     pub async fn start_with<F>(host_routes: Router, secure_cookies: bool, customise: F) -> Self
     where
-        F: FnOnce(doorman_axum::AuthServiceBuilder) -> doorman_axum::AuthServiceBuilder,
+        F: FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
+    {
+        Self::start_configured(host_routes, secure_cookies, customise, |b| b).await
+    }
+
+    /// Start an app, letting the caller tweak both the [`AuthCoreBuilder`]
+    /// and the HTTP-only [`AuthServiceBuilder`] (e.g. to set an
+    /// `external_origin` for CSRF coverage).
+    pub async fn start_configured<C, H>(
+        host_routes: Router,
+        secure_cookies: bool,
+        customise_core: C,
+        customise_http: H,
+    ) -> Self
+    where
+        C: FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
+        H: FnOnce(AuthServiceBuilder) -> AuthServiceBuilder,
     {
         let email = Arc::new(CapturingEmailSender::new());
         let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
@@ -134,7 +152,7 @@ impl TestApp {
             passkey_challenges,
         };
 
-        let builder = AuthService::builder(storage)
+        let core_builder = AuthCore::builder(storage)
             .email(email.clone() as Arc<dyn EmailSender>)
             .passkey(PasskeyConfig::new(
                 "localhost",
@@ -160,16 +178,21 @@ impl TestApp {
             // Default off so the existing suites need no proof; the reauth
             // suite overrides this in its `customise` closure (last setter
             // wins) to gate the destructive actions it exercises.
-            .reauthentication(ReauthPolicy::disabled())
-            // Tests that exercise CSRF opt in via `customise`; the default
-            // app is a non-browser test client, so opt out deliberately.
+            .reauthentication(ReauthPolicy::disabled());
+        let core = customise_core(core_builder)
+            .build()
+            .expect("auth core built");
+
+        let builder = AuthService::builder(core)
+            // Tests that exercise CSRF opt in via `customise_http`; the
+            // default app is a non-browser test client, so opt out
+            // deliberately.
             .csrf(CsrfConfig::disabled())
             .cookie(CookieConfig {
                 secure: secure_cookies,
                 ..CookieConfig::default()
             });
-
-        let auth = customise(builder).build().expect("auth built");
+        let auth = customise_http(builder).build().expect("auth built");
 
         // `login` mints sessions directly through the same live,
         // invalidation-hooked `SessionManager` the app runs on, so a

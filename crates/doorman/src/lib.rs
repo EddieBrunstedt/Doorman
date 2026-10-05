@@ -55,7 +55,7 @@
 //! // 2. Build the auth service.
 //! let origin: Url = "https://app.example.com".parse()?;
 //! let base = origin.as_str().trim_end_matches('/');
-//! let auth = AuthService::builder(storage.all_stores())
+//! let core = AuthCore::builder(storage.all_stores())
 //!     .email(Arc::new(TerminalEmailSender)) // dev transport; swap for production
 //!     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
 //!     .audit(Arc::new(NoopAuditSink)) // discards events; wire a durable sink in prod
@@ -76,6 +76,8 @@
 //!         ReauthAction::DeleteAccount,
 //!         ReauthAction::RemovePasskey,
 //!     ]))
+//!     .build()?;
+//! let auth = AuthService::builder(core)
 //!     .external_origin(origin) // enables CSRF origin checks; required CSRF decision
 //!     .cookie(CookieConfig::default())
 //!     .build()?;

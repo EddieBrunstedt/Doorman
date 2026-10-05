@@ -100,7 +100,7 @@ Re-authentication requires a **fresh, user-verified passkey assertion immediatel
 
 **Threat model.** Re-auth defends against a _stolen or stale session_ — an XSS-exfiltrated bearer token, a borrowed unlocked laptop, a session left open. The attacker holds a valid session but cannot produce a fresh user-verified passkey assertion. It does **not** defend against a stolen _authenticator_: an attacker who holds the passkey and can satisfy user verification is indistinguishable from the user, and that is out of scope. Re-auth **complements, never replaces, the recovery cool-down** — the cool-down distrusts a freshly-recovered session, re-auth distrusts an old one. Both gate the same actions, and the cool-down is checked **first**: it is a hard block you cannot re-auth your way out of.
 
-**No default — the host must decide.** Like the CSRF decision, the build fails closed: `AuthService::builder` (and the core `AuthCore::builder`) returns a `ReauthDecisionRequired` error unless the host either lists the protected actions with `ReauthPolicy::required_for([...])` or opts out explicitly with `ReauthPolicy::disabled()`. There is no silent default.
+**No default — the host must decide.** Like the CSRF decision, the build fails closed: `AuthCore::builder` returns an `AssemblyError::ReauthDecisionRequired` unless the host either lists the protected actions with `ReauthPolicy::required_for([...])` or opts out explicitly with `ReauthPolicy::disabled()`. There is no silent default.
 
 **Shape.** Re-auth is an inline, per-action assertion — no intermediate token, no session stamp, and no storage migration (it reuses the passkey challenge store). The client recipe is identical for every protected action:
 

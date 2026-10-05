@@ -31,7 +31,7 @@ let storage = Storage {
     passkey_challenges:  redis.passkey_challenge_store(),
 };
 
-let auth = AuthService::builder(storage)
+let core = AuthCore::builder(storage)
     .limiter(redis.rate_limiter())
     // ... rest of the builder
     .build()?;

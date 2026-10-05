@@ -152,7 +152,7 @@ impl RedisStorage {
     ///
     /// The limiter is not a store, so it is wired separately from the `Storage`
     /// literal — pass it to the builder via
-    /// `AuthService::builder(storage).limiter(redis.rate_limiter())`. It uses a
+    /// `AuthCore::builder(storage).limiter(redis.rate_limiter())`. It uses a
     /// sliding-window log matching the in-memory limiter's semantics, sourcing
     /// `now` from a [`SystemClock`]. Use
     /// [`rate_limiter_with_clock`](Self::rate_limiter_with_clock) to inject a

@@ -58,7 +58,7 @@ storage.migrate().await?; // applies pending embedded migrations; idempotent, sa
 // 2. Build the auth service.
 let origin: Url = "https://app.example.com".parse()?;
 let base = origin.as_str().trim_end_matches('/');
-let auth = AuthService::builder(storage.all_stores())
+let core = AuthCore::builder(storage.all_stores())
     .email(Arc::new(TerminalEmailSender)) // dev transport; swap for production
     .passkey(PasskeyConfig::new("example.com", origin.clone(), "Example"))
     .audit(Arc::new(NoopAuditSink)) // discards events; wire a durable sink in prod
@@ -79,6 +79,8 @@ let auth = AuthService::builder(storage.all_stores())
         ReauthAction::DeleteAccount,
         ReauthAction::RemovePasskey,
     ]))
+    .build()?;
+let auth = AuthService::builder(core)
     .external_origin(origin) // enables CSRF origin checks; required CSRF decision
     .cookie(CookieConfig::default())
     .build()?;
@@ -253,7 +255,7 @@ To support a database doorman doesn't ship, implement the five traits yourself. 
 
 ## Going to production
 
-`AuthService::builder().build()` is strict by default: there is no silent insecure default, so every footgun is a choice you make explicitly at the call site rather than a warning you have to remember to act on. The build fails closed (returns a `BuilderError`) until each of these is wired:
+`AuthCore::builder(..).build()` and `AuthService::builder(core).build()` are strict by default: there is no silent insecure default, so every footgun is a choice you make explicitly at the call site rather than a warning you have to remember to act on. The builds fail closed (returning an `AssemblyError` or, for the cookie and CSRF settings, a `BuilderError`) until each of these is wired:
 
 - **Email** — required. Use `TerminalEmailSender` / `FileEmailSender` for local development, or a real `EmailSender` in production (used for both the link emails and the security notifications).
 - **Audit** — required. Wire a durable `AuditSink`, or pass `NoopAuditSink` explicitly. Every audit event is also written to the `doorman::audit` `tracing` target, so even `NoopAuditSink` still leaves a structured log trail — it only discards the _durable_ sink record.
@@ -268,7 +270,7 @@ To support a database doorman doesn't ship, implement the five traits yourself. 
 
 ## Layering
 
-doorman is batteries-included and Axum-first. The auth engine and its assembly live in `doorman-core`: `AuthCore::builder(storage)` resolves the collaborator defaults, validates the URL templates and lifetimes, wires the security notifier and session resolver, and constructs the managers (`SessionManager`, `PasskeyManager`, `SignupManager`, `RecoveryManager`, `AccountManager`) in dependency order. `doorman-axum` is the first-party HTTP integration: `AuthService::builder(storage)` delegates that portable assembly to `doorman-core` and adds the HTTP layer (cookies, CSRF, the router and session layer). Hosts that have already constructed the managers themselves can hand them to `AuthService::from_managers()`.
+doorman is batteries-included and Axum-first. The auth engine and its assembly live in `doorman-core`: `AuthCore::builder(storage)` resolves the collaborator defaults, validates the URL templates and lifetimes, wires the security notifier and session resolver, and constructs the managers (`SessionManager`, `PasskeyManager`, `SignupManager`, `RecoveryManager`, `AccountManager`) in dependency order. `doorman-axum` is the first-party HTTP integration: `AuthService::builder(core)` takes the built `AuthCore` and adds only the HTTP layer (cookies, CSRF, the router and session layer).
 
 ## Workspace layout
 

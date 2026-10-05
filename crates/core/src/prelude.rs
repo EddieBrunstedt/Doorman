@@ -10,6 +10,7 @@
 //! the individual modules instead.
 
 pub use crate::account::{AccountConfig, AccountManager};
+pub use crate::assembly::{AssemblyError, AuthCore, AuthCoreBuilder};
 pub use crate::audit::{
     Actor, AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, OperatorActor,
     ReauthFailureReason, RecoveryFailureReason,

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Duration as ChronoDuration;
+use doorman_core::assembly::AssemblyError;
 use doorman_core::audit::{AuditEventKind, RecoveryFailureReason};
 use doorman_core::clock::Clock;
 use doorman_core::email::{Email, EmailTemplates};
@@ -13,7 +14,7 @@ use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::recovery::{
-    MIN_COOLDOWN, RecoveryConfig, RecoveryConfigError, RecoveryManager, RecoveryRateLimits,
+    MIN_COOLDOWN, RecoveryConfig, RecoveryConfigError, RecoveryRateLimits,
 };
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{AccountStatus, PasskeyCredentialStore, User, UserStore};
@@ -1169,35 +1170,31 @@ async fn signup_does_not_invalidate_other_pending_registrations() {
 
 #[test]
 fn recovery_config_with_subhour_cooldown_is_rejected() {
-    let h = Harness::fresh();
-    let result = RecoveryManager::new(
-        h.recovery_flow.clone(),
-        RecoveryConfig {
+    let result = Harness::builder()
+        .recovery_config(RecoveryConfig {
             cooldown: Duration::from_secs(60 * 30),
             ..recovery_config()
-        },
-    );
+        })
+        .try_build();
     assert!(matches!(
         result.err(),
-        Some(RecoveryConfigError::CooldownTooShort {
+        Some(AssemblyError::RecoveryCooldownTooShort(RecoveryConfigError::CooldownTooShort {
             configured,
             minimum,
-        }) if configured == Duration::from_secs(60 * 30) && minimum == MIN_COOLDOWN
+        })) if configured == Duration::from_secs(60 * 30) && minimum == MIN_COOLDOWN
     ));
 }
 
 #[test]
 fn recovery_config_at_floor_is_accepted() {
-    let h = Harness::fresh();
     assert!(
-        RecoveryManager::new(
-            h.recovery_flow.clone(),
-            RecoveryConfig {
+        Harness::builder()
+            .recovery_config(RecoveryConfig {
                 cooldown: MIN_COOLDOWN,
                 ..recovery_config()
-            },
-        )
-        .is_ok()
+            })
+            .try_build()
+            .is_ok()
     );
 }
 

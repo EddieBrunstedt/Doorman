@@ -23,19 +23,24 @@ const IDLE: StdDuration = StdDuration::from_secs(60 * 60);
 /// TTL) on a mock clock, and a cookie `Max-Age` no larger than the idle window
 /// so the build-time cookie invariant holds.
 async fn sliding_app(clock: Arc<MockClock>) -> TestApp {
-    TestApp::start_with(Router::new(), false, move |b| {
-        b.clock(clock as Arc<dyn Clock>)
-            .session(SessionConfig {
+    TestApp::start_configured(
+        Router::new(),
+        false,
+        move |b| {
+            b.clock(clock as Arc<dyn Clock>).session(SessionConfig {
                 absolute_lifetime: StdDuration::from_secs(60 * 60 * 24),
                 idle_timeout: Some(IDLE),
                 max_sessions_per_user: None,
             })
-            .cookie(CookieConfig {
+        },
+        |b| {
+            b.cookie(CookieConfig {
                 secure: false,
                 session_max_age: IDLE,
                 ..CookieConfig::default()
             })
-    })
+        },
+    )
     .await
 }
 

@@ -81,7 +81,7 @@ pub use crate::token::TokenHash;
 /// Composite handle to every storage trait the managers need.
 ///
 /// Bundles the per-concern `Arc<dyn ...>` stores so a host can pass
-/// one value to the high-level builder (or assemble it once and reuse it
+/// one value to [`AuthCore::builder`](crate::assembly::AuthCore::builder) (or assemble it once and reuse it
 /// across multiple managers) instead of threading each store through by
 /// hand. Storage adapters that can fill every field typically expose a
 /// `fn all_stores(&self) -> Storage` that returns this struct populated against

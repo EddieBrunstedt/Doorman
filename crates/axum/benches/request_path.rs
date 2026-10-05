@@ -32,6 +32,7 @@ use doorman_axum::csrf::CsrfConfig;
 use doorman_axum::dto::UserDto;
 use doorman_axum::extractors::AuthSession;
 use doorman_core::account::AccountConfig;
+use doorman_core::assembly::AuthCore;
 use doorman_core::audit::NoopAuditSink;
 use doorman_core::clock::SystemClock;
 use doorman_core::email::EmailSender;
@@ -77,7 +78,7 @@ async fn build_scaffold() -> Scaffold {
         passkey_challenges,
     };
 
-    let auth = AuthService::builder(storage)
+    let core = AuthCore::builder(storage)
         .email(email as Arc<dyn EmailSender>)
         .passkey(PasskeyConfig::new("localhost", rp_origin, "doorman bench"))
         .reauthentication(doorman_core::reauth::ReauthPolicy::disabled())
@@ -95,6 +96,9 @@ async fn build_scaffold() -> Scaffold {
             url_template: "https://app.test/email-change?token={token}".to_string(),
             ..AccountConfig::default()
         })
+        .build()
+        .expect("auth core built");
+    let auth = AuthService::builder(core)
         .csrf(CsrfConfig::disabled())
         .cookie(CookieConfig {
             secure: false,

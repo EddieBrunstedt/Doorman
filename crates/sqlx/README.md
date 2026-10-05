@@ -21,7 +21,7 @@ use doorman_sqlx::SqliteStorage;
 let storage = SqliteStorage::connect("sqlite:///var/lib/myapp/auth.db?mode=rwc").await?;
 storage.migrate().await?;
 
-let composite = storage.all_stores();   // doorman_core::storage::Storage — hand to AuthService::builder
+let composite = storage.all_stores();   // doorman_core::storage::Storage — hand to AuthCore::builder
 ```
 
 For an ephemeral in-memory database (handy in tests), use `"sqlite::memory:"` as the URL.

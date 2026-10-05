@@ -1,213 +1,123 @@
-//! Build-time configuration contract for `AuthService::builder().build()`
-//! and `AuthService::from_managers().build()`.
+//! Build-time contract for `AuthService::builder(core).build()`: the HTTP
+//! settings layered over an assembled `AuthCore`.
 //!
-//! The builder is strict by default: a missing required collaborator, a
-//! placeholder URL, an undecided CSRF posture, or any other misconfiguration
-//! is a hard [`BuilderError`] rather than a silenceable warning. These tests
-//! pin each failure mode and the successful happy path.
+//! The portable assembly is pinned by core's `assembly_contract` tests; these
+//! pin what this crate adds — the CSRF decision, the cookie-prefix rules, and
+//! the cookie `Max-Age` bound — plus that the built service drives the very
+//! managers the core assembled.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
-use doorman_axum::{AuthService, AuthServiceBuilder, BuilderError, SessionCacheConfig};
-use doorman_core::account::{AccountConfig, AccountManager};
-use doorman_core::audit::{AuditSink, NoopAuditSink};
-use doorman_core::clock::{Clock, SystemClock};
-use doorman_core::context::CoreDeps;
-use doorman_core::email::{DefaultEmailTemplates, EmailSender, SecurityEmailNotifier};
-use doorman_core::memory::{
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemoryRateLimiter,
-    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
-};
-use doorman_core::operator::{NotificationPolicy, OperatorManager};
-use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
-use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
-use doorman_core::reauth::{ReauthManager, ReauthPolicy};
-use doorman_core::recovery::{RecoveryConfig, RecoveryManager};
-use doorman_core::resolve::SessionResolver;
-use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
-use doorman_core::signup::{SignupConfig, SignupManager};
-use doorman_core::storage::{Storage, UserId};
-use doorman_core::verification::EnrollmentFlow;
+use doorman_axum::{AuthService, AuthServiceBuilder, BuilderError};
+use doorman_core::account::AccountConfig;
+use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
+use doorman_core::audit::NoopAuditSink;
+use doorman_core::email::EmailSender;
+use doorman_core::memory::InMemoryStorage;
+use doorman_core::operator::{NotificationPolicy, OperatorNotice};
+use doorman_core::passkey::PasskeyConfig;
+use doorman_core::rate_limit::NoopRateLimiter;
+use doorman_core::reauth::ReauthPolicy;
+use doorman_core::recovery::RecoveryConfig;
+use doorman_core::session::{SessionConfig, SessionContext};
+use doorman_core::signup::SignupConfig;
+use doorman_core::storage::UserId;
 use doorman_test_support::CapturingEmailSender;
 
-fn fresh_storage() -> Storage {
-    Storage {
-        users: Arc::new(InMemoryUserStore::new()),
-        sessions: Arc::new(InMemorySessionStore::new()),
-        verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
-        passkey_credentials: Arc::new(InMemoryPasskeyCredentialStore::new()),
-        passkey_challenges: Arc::new(InMemoryPasskeyChallengeStore::new()),
-    }
-}
-
-fn capturing_email() -> Arc<dyn EmailSender> {
-    Arc::new(CapturingEmailSender::new())
-}
-
-fn noop_audit() -> Arc<dyn AuditSink> {
-    Arc::new(NoopAuditSink)
-}
-
-fn in_memory_limiter() -> Arc<dyn RateLimiter> {
-    Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock)))
-}
-
-fn passkey_config() -> PasskeyConfig {
-    PasskeyConfig::new(
-        "localhost",
-        "http://localhost:8080".parse().expect("rp origin"),
-        "doorman tests",
-    )
-}
-
-const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
-const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
-const ACCOUNT_URL: &str = "https://app.test/email-change?token={token}";
-
-fn real_signup() -> SignupConfig {
-    SignupConfig {
-        url_template: SIGNUP_URL.to_string(),
-        ..SignupConfig::default()
-    }
-}
-
-fn real_recovery() -> RecoveryConfig {
-    RecoveryConfig {
-        url_template: RECOVERY_URL.to_string(),
-        ..RecoveryConfig::default()
-    }
-}
-
-fn real_account() -> AccountConfig {
-    AccountConfig {
-        url_template: ACCOUNT_URL.to_string(),
-        ..AccountConfig::default()
-    }
-}
-
-/// A builder with every required input wired correctly, so `build()`
-/// succeeds. Tests that probe a single validation start here and override the
-/// one field under test; tests that probe a *missing* required input build a
-/// chain by hand instead (you cannot un-set a builder field).
-fn valid_builder() -> AuthServiceBuilder {
-    AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .audit(noop_audit())
-        .limiter(in_memory_limiter())
-        .signup(real_signup())
-        .recovery(real_recovery())
-        .account(real_account())
+/// A core builder with every required input wired correctly.
+fn core_builder(email: Arc<dyn EmailSender>) -> AuthCoreBuilder {
+    AuthCore::builder(InMemoryStorage::new().all_stores())
+        .email(email)
+        .passkey(PasskeyConfig::new(
+            "localhost",
+            "http://localhost:8080".parse().expect("rp origin"),
+            "doorman tests",
+        ))
+        .audit(Arc::new(NoopAuditSink))
+        .limiter(Arc::new(NoopRateLimiter))
+        .signup(SignupConfig {
+            url_template: "https://app.test/signup?token={token}".to_string(),
+            ..SignupConfig::default()
+        })
+        .recovery(RecoveryConfig {
+            url_template: "https://app.test/recovery?token={token}".to_string(),
+            ..RecoveryConfig::default()
+        })
+        .account(AccountConfig {
+            url_template: "https://app.test/email-change?token={token}".to_string(),
+            ..AccountConfig::default()
+        })
         .reauthentication(ReauthPolicy::disabled())
-        .csrf(CsrfConfig::disabled())
 }
 
-// --- A fully-wired builder succeeds ---
+fn core() -> AuthCore {
+    core_builder(Arc::new(CapturingEmailSender::new()))
+        .build()
+        .expect("core")
+}
+
+/// An HTTP builder over a valid core with the CSRF decision made, so
+/// `build()` succeeds. Tests that probe a single HTTP setting override it.
+fn valid_builder() -> AuthServiceBuilder {
+    AuthService::builder(core()).csrf(CsrfConfig::disabled())
+}
+
+// --- A fully-wired builder succeeds and drives the core's managers ---
 
 #[test]
 fn fully_wired_builder_builds() {
     valid_builder().build().expect("build");
 }
 
-// --- Required collaborators (strict by default, no silent defaults) ---
-
-#[test]
-fn missing_email_sender_returns_build_error() {
-    let err = AuthService::builder(fresh_storage()).build().err();
-    assert!(
-        matches!(err, Some(BuilderError::MissingEmailSender)),
-        "expected MissingEmailSender, got: {err:?}"
-    );
-}
-
-#[test]
-fn missing_passkey_config_returns_build_error() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
+#[tokio::test]
+async fn service_drives_the_managers_the_core_assembled() {
+    // Core options reach the service unchanged: the operator manager the
+    // routes drive carries the notification policy set on the core builder,
+    // and signup sends through the core's email transport.
+    let email = Arc::new(CapturingEmailSender::new());
+    let policy = NotificationPolicy {
+        sessions_revoked: OperatorNotice::Send,
+        ..NotificationPolicy::default()
+    };
+    let core = core_builder(email.clone() as Arc<dyn EmailSender>)
+        .notification_policy(policy)
         .build()
-        .err();
-    assert!(
-        matches!(err, Some(BuilderError::MissingPasskeyConfig)),
-        "expected MissingPasskeyConfig, got: {err:?}"
-    );
-}
-
-#[test]
-fn missing_audit_sink_returns_build_error() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .limiter(in_memory_limiter())
-        .signup(real_signup())
-        .recovery(real_recovery())
-        .account(real_account())
+        .expect("core");
+    let auth = AuthService::builder(core)
         .csrf(CsrfConfig::disabled())
         .build()
-        .err();
-    assert!(
-        matches!(err, Some(BuilderError::MissingAuditSink)),
-        "expected MissingAuditSink when no audit sink is wired, got: {err:?}"
-    );
-}
+        .expect("build");
 
-#[test]
-fn missing_rate_limiter_returns_build_error() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .audit(noop_audit())
-        .signup(real_signup())
-        .recovery(real_recovery())
-        .account(real_account())
-        .csrf(CsrfConfig::disabled())
-        .build()
-        .err();
-    assert!(
-        matches!(err, Some(BuilderError::MissingRateLimiter)),
-        "expected MissingRateLimiter when no limiter is wired, got: {err:?}"
-    );
-}
+    assert_eq!(*auth.state().operator().notification_policy(), policy);
 
-#[test]
-fn explicit_noop_collaborators_are_accepted() {
-    // The dev/opt-out choices are still available — they are just explicit
-    // now, so they build without any warning.
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .audit(noop_audit())
-        .limiter(Arc::new(NoopRateLimiter))
-        .signup(real_signup())
-        .recovery(real_recovery())
-        .account(real_account())
-        .reauthentication(ReauthPolicy::disabled())
-        .csrf(CsrfConfig::disabled())
-        .build()
-        .err();
-    assert!(
-        err.is_none(),
-        "explicitly chosen noop collaborators should build, got: {err:?}"
+    auth.state()
+        .signup()
+        .request_signup("wire@example.com", None, SessionContext::default())
+        .await
+        .expect("request signup");
+    assert_eq!(
+        email.sent().len(),
+        1,
+        "signup request should enqueue exactly one link email via the core's transport"
     );
+
+    let summaries = auth
+        .state()
+        .passkey()
+        .list_passkey_summaries(UserId::new())
+        .await
+        .expect("list summaries");
+    assert!(summaries.is_empty());
 }
 
 // --- CSRF decision is required ---
 
 #[test]
 fn csrf_decision_required_when_neither_origin_nor_config_set() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .audit(noop_audit())
-        .limiter(in_memory_limiter())
-        .signup(real_signup())
-        .recovery(real_recovery())
-        .account(real_account())
-        .reauthentication(ReauthPolicy::disabled())
-        .build()
-        .err();
+    let err = AuthService::builder(core()).build().err();
     assert!(
         matches!(err, Some(BuilderError::CsrfDecisionRequired)),
         "expected CsrfDecisionRequired with neither origin nor csrf config, got: {err:?}"
@@ -216,15 +126,7 @@ fn csrf_decision_required_when_neither_origin_nor_config_set() {
 
 #[test]
 fn external_origin_satisfies_the_csrf_decision() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .audit(noop_audit())
-        .limiter(in_memory_limiter())
-        .signup(real_signup())
-        .recovery(real_recovery())
-        .account(real_account())
-        .reauthentication(ReauthPolicy::disabled())
+    let err = AuthService::builder(core())
         .external_origin("https://app.test".parse().expect("origin"))
         .build()
         .err();
@@ -243,306 +145,7 @@ fn explicit_csrf_disabled_satisfies_the_csrf_decision() {
     );
 }
 
-// --- Re-authentication decision is required ---
-
-#[test]
-fn reauth_decision_required_when_policy_not_set() {
-    // Every other input is valid; only the re-auth decision is missing. Like
-    // the CSRF decision, the build refuses to guess whether destructive
-    // actions should require a fresh passkey assertion.
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .audit(noop_audit())
-        .limiter(in_memory_limiter())
-        .signup(real_signup())
-        .recovery(real_recovery())
-        .account(real_account())
-        .csrf(CsrfConfig::disabled())
-        .build()
-        .err();
-    assert!(
-        matches!(err, Some(BuilderError::ReauthDecisionRequired)),
-        "expected ReauthDecisionRequired when no policy is wired, got: {err:?}"
-    );
-}
-
-#[test]
-fn explicit_reauth_disabled_satisfies_the_decision() {
-    let err = valid_builder().build().err();
-    assert!(
-        err.is_none(),
-        "explicit ReauthPolicy::disabled() should satisfy the decision, got: {err:?}"
-    );
-}
-
-// --- Placeholder URL templates fail closed ---
-
-#[test]
-fn default_signup_template_is_rejected_as_placeholder() {
-    // Leave signup at its example.invalid default; recovery and account real.
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .audit(noop_audit())
-        .limiter(in_memory_limiter())
-        .recovery(real_recovery())
-        .account(real_account())
-        .csrf(CsrfConfig::disabled())
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::PlaceholderUrlTemplate { flow: "signup", .. })
-        ),
-        "expected PlaceholderUrlTemplate for signup, got: {err:?}"
-    );
-}
-
-#[test]
-fn default_recovery_template_is_rejected_as_placeholder() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .audit(noop_audit())
-        .limiter(in_memory_limiter())
-        .signup(real_signup())
-        .account(real_account())
-        .csrf(CsrfConfig::disabled())
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::PlaceholderUrlTemplate {
-                flow: "recovery",
-                ..
-            })
-        ),
-        "expected PlaceholderUrlTemplate for recovery, got: {err:?}"
-    );
-}
-
-#[test]
-fn default_account_template_is_rejected_as_placeholder() {
-    let err = AuthService::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .audit(noop_audit())
-        .limiter(in_memory_limiter())
-        .signup(real_signup())
-        .recovery(real_recovery())
-        .csrf(CsrfConfig::disabled())
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::PlaceholderUrlTemplate {
-                flow: "account email change",
-                ..
-            })
-        ),
-        "expected PlaceholderUrlTemplate for account, got: {err:?}"
-    );
-}
-
-// --- URL templates must still carry the token placeholder ---
-
-#[test]
-fn signup_url_template_without_token_is_rejected() {
-    let err = valid_builder()
-        .signup(SignupConfig {
-            url_template: "https://app.test/signup".to_string(),
-            ..SignupConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::InvalidUrlTemplate { flow: "signup", .. })
-        ),
-        "expected InvalidUrlTemplate for signup, got: {err:?}"
-    );
-}
-
-#[test]
-fn recovery_url_template_without_token_is_rejected() {
-    let err = valid_builder()
-        .recovery(RecoveryConfig {
-            url_template: "https://app.test/recovery".to_string(),
-            ..RecoveryConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::InvalidUrlTemplate {
-                flow: "recovery",
-                ..
-            })
-        ),
-        "expected InvalidUrlTemplate for recovery, got: {err:?}"
-    );
-}
-
-// --- Low-level `from_managers` builder ---
-
-#[test]
-fn low_level_builder_rejects_missing_passkey_manager() {
-    let storage = fresh_storage();
-    let session_manager = SessionManager::new(
-        storage.sessions.clone(),
-        Arc::new(SystemClock),
-        Arc::new(NoopAuditSink),
-        SessionConfig::default(),
-    );
-
-    let resolver = SessionResolver::new(
-        session_manager.clone(),
-        storage.users.clone(),
-        SessionCacheConfig::default(),
-    )
-    .expect("resolver");
-
-    let err = AuthService::from_managers()
-        .session_manager(session_manager)
-        .user_store(storage.users.clone())
-        .session_resolver(resolver)
-        .build()
-        .err();
-
-    assert!(
-        matches!(err, Some(BuilderError::MissingPasskeyManager)),
-        "expected MissingPasskeyManager, got: {err:?}"
-    );
-}
-
-#[tokio::test]
-async fn low_level_from_managers_wires_managers_built_from_core_deps() {
-    // Build every core manager from one shared `CoreDeps` and hand them to
-    // the low-level `from_managers` builder. Asserts the path builds and,
-    // crucially, that the `EnrollmentFlow` reaches its email transport
-    // through the shared context rather than a copy of its own: a signup
-    // request must enqueue a link email on the sender that lives in `deps`.
-    let storage = fresh_storage();
-    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-    let email = Arc::new(CapturingEmailSender::new());
-    let limiter: Arc<dyn RateLimiter> = Arc::new(NoopRateLimiter);
-
-    let emails = Arc::new(DefaultEmailTemplates);
-    let notifier =
-        SecurityEmailNotifier::new(email.clone() as Arc<dyn EmailSender>, emails.clone());
-    let session_manager = SessionManager::new(
-        storage.sessions.clone(),
-        clock.clone(),
-        audit.clone(),
-        SessionConfig::default(),
-    )
-    .with_security_notifier(notifier.clone());
-
-    let reauth = ReauthManager::new(
-        &passkey_config(),
-        storage.passkey_credentials.clone(),
-        storage.passkey_challenges.clone(),
-        clock.clone(),
-        audit.clone(),
-        ReauthPolicy::disabled(),
-    )
-    .expect("reauth manager");
-
-    let deps = CoreDeps::new(
-        clock,
-        audit,
-        email.clone() as Arc<dyn EmailSender>,
-        emails,
-        notifier,
-        limiter,
-        session_manager.clone(),
-        reauth.clone(),
-        storage.clone(),
-    );
-
-    let passkey = PasskeyManager::new(&deps, passkey_config()).expect("passkey manager");
-    let flow = EnrollmentFlow::new(&deps, passkey.clone());
-    let signup = SignupManager::new(flow.clone(), SignupConfig::default());
-    let recovery =
-        RecoveryManager::new(flow, RecoveryConfig::default()).expect("recovery cooldown valid");
-    let account = AccountManager::new(&deps, AccountConfig::default());
-    let operator = OperatorManager::new(&deps, passkey.clone(), NotificationPolicy::default());
-
-    let resolver = SessionResolver::new(
-        session_manager.clone(),
-        storage.users.clone(),
-        SessionCacheConfig::default(),
-    )
-    .expect("resolver");
-
-    let auth = AuthService::from_managers()
-        .session_manager(session_manager)
-        .user_store(storage.users.clone())
-        .session_resolver(resolver)
-        .passkey_manager(passkey)
-        .signup_manager(signup)
-        .recovery_manager(recovery)
-        .account_manager(account)
-        .reauth_manager(reauth)
-        .operator_manager(operator)
-        // Pre-built managers already own their transport and embed their
-        // re-auth policy; the only build-time decision left on this path is the
-        // CSRF posture.
-        .csrf(CsrfConfig::disabled())
-        .build()
-        .expect("low-level build should succeed when every manager is supplied");
-
-    // The `AuthState` flow accessors must reach the very managers the
-    // routes drive. Driving signup through `state().signup()` (rather than a
-    // separately held handle) proves the accessor returns the wired manager:
-    // the request must enqueue a link email on the shared transport.
-    auth.state()
-        .signup()
-        .request_signup("wire@example.com", None, SessionContext::default())
-        .await
-        .expect("request signup");
-    assert_eq!(
-        email.sent().len(),
-        1,
-        "signup request should enqueue exactly one link email via the shared transport"
-    );
-
-    // The passkey and recovery accessors reach usable managers too: a fresh
-    // user has no credentials, and recovery cool-down config is readable.
-    let summaries = auth
-        .state()
-        .passkey()
-        .list_passkey_summaries(UserId::new())
-        .await
-        .expect("list summaries");
-    assert!(summaries.is_empty());
-    let _ = auth.state().recovery();
-}
-
-// --- Build-time validation (fail closed on misconfiguration) ---
-
-#[test]
-fn subfloor_recovery_cooldown_is_rejected() {
-    let err = valid_builder()
-        .recovery(RecoveryConfig {
-            cooldown: Duration::from_secs(60),
-            url_template: RECOVERY_URL.to_string(),
-            ..RecoveryConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(err, Some(BuilderError::RecoveryCooldownTooShort(_))),
-        "expected RecoveryCooldownTooShort, got: {err:?}"
-    );
-}
+// --- Cookie settings fail closed on misconfiguration ---
 
 #[test]
 fn host_prefixed_cookie_without_secure_is_rejected() {
@@ -630,55 +233,16 @@ fn host_prefixed_cookie_with_correct_attributes_builds() {
 }
 
 #[test]
-fn zero_session_lifetime_is_rejected() {
-    let err = valid_builder()
-        .session(SessionConfig {
-            absolute_lifetime: Duration::ZERO,
-            ..SessionConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::InvalidLifetime {
-                field: "session absolute_lifetime",
-                ..
-            })
-        ),
-        "expected InvalidLifetime for a zero session lifetime, got: {err:?}"
-    );
-}
-
-#[test]
-fn zero_signup_token_lifetime_is_rejected() {
-    let err = valid_builder()
-        .signup(SignupConfig {
-            url_template: SIGNUP_URL.to_string(),
-            token_lifetime: Duration::ZERO,
-            ..SignupConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::InvalidLifetime {
-                field: "signup token_lifetime",
-                ..
-            })
-        ),
-        "expected InvalidLifetime for a zero signup token lifetime, got: {err:?}"
-    );
-}
-
-#[test]
 fn cookie_max_age_exceeding_session_lifetime_is_rejected() {
-    let err = valid_builder()
+    let core = core_builder(Arc::new(CapturingEmailSender::new()))
         .session(SessionConfig {
             absolute_lifetime: Duration::from_secs(60 * 60),
             ..SessionConfig::default()
         })
+        .build()
+        .expect("core");
+    let err = AuthService::builder(core)
+        .csrf(CsrfConfig::disabled())
         .cookie(CookieConfig {
             session_max_age: Duration::from_secs(60 * 60 * 2),
             ..CookieConfig::default()
@@ -691,5 +255,34 @@ fn cookie_max_age_exceeding_session_lifetime_is_rejected() {
             Some(BuilderError::CookieMaxAgeExceedsSessionLifetime { .. })
         ),
         "expected CookieMaxAgeExceedsSessionLifetime, got: {err:?}"
+    );
+}
+
+#[test]
+fn cookie_max_age_is_bounded_by_the_idle_window_when_sliding() {
+    let idle = Duration::from_secs(60 * 60);
+    let core = core_builder(Arc::new(CapturingEmailSender::new()))
+        .session(SessionConfig {
+            absolute_lifetime: Duration::from_secs(60 * 60 * 24),
+            idle_timeout: Some(idle),
+            ..SessionConfig::default()
+        })
+        .build()
+        .expect("core");
+    let err = AuthService::builder(core)
+        .csrf(CsrfConfig::disabled())
+        .cookie(CookieConfig {
+            session_max_age: idle * 2,
+            ..CookieConfig::default()
+        })
+        .build()
+        .err();
+    assert!(
+        matches!(
+            err,
+            Some(BuilderError::CookieMaxAgeExceedsSessionLifetime { session_lifetime, .. })
+                if session_lifetime == idle
+        ),
+        "expected CookieMaxAgeExceedsSessionLifetime against the idle window, got: {err:?}"
     );
 }

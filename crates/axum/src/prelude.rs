@@ -21,4 +21,4 @@ pub use crate::error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use crate::extractors::{AuthSession, AuthUser, ClientIp, OptionalAuthUser, RequestContext};
 pub use crate::session::{AuthContext, SessionLayer};
 pub use crate::state::AuthState;
-pub use crate::{AuthService, AuthServiceBuilder, BuilderError, ManagerBuilder};
+pub use crate::{AuthService, AuthServiceBuilder, BuilderError};

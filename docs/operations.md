@@ -4,7 +4,7 @@ Running doorman in production: purging expired rows, configuration, rate limitin
 
 ## Production checklist
 
-`build()` is strict by default and fails closed (`BuilderError`) until each required input is wired — there are no silent insecure defaults to remember to override. Make a deliberate choice for each:
+`AuthCore::builder(..).build()` and `AuthService::builder(core).build()` are strict by default and fail closed (`AssemblyError` / `BuilderError`) until each required input is wired — there are no silent insecure defaults to remember to override. Make a deliberate choice for each:
 
 - Replace `TerminalEmailSender` / `FileEmailSender` with a real `EmailSender`.
 - Wire a durable `AuditSink`, or pass `NoopAuditSink` explicitly to discard security events.
@@ -68,7 +68,7 @@ doorman ships only this backend-blind runner — never a ready-made binary. A Ru
 ```
 myapp/
 ├── crates/app/   # shared lib — owns build_storage() ONCE
-├── bins/server/  # main: app::build_storage() -> AuthService::builder(..).build()
+├── bins/server/  # main: app::build_storage() -> AuthCore::builder(..) -> AuthService::builder(core)
 └── bins/purge/   # main: app::build_storage() -> doorman::ops::run_purge(storage)
 ```
 
@@ -93,7 +93,7 @@ All tunables flow through the builder configs; see the defaults table in [securi
 
 Managers consult the `RateLimiter` before sensitive endpoints: signup request, recovery request, and passkey authentication start/finish (keyed per-IP and per-credential). The limiter key is structured — an operation plus ordered `(dimension, value)` pairs — so a single-string backend can flatten it via `RateLimitKey::canonical()` while a structured backend reads the dimensions directly.
 
-The bundled `InMemoryRateLimiter` is correct only within one process. A multi-node deployment must supply a shared backend, or the limits are per-instance and trivially bypassed by spreading requests across instances. The first-party `doorman-redis` adapter provides one — a cross-replica sliding-window limiter wired with `AuthService::builder(storage).limiter(redis.rate_limiter())`. Hosts on another stack implement `RateLimiter` themselves.
+The bundled `InMemoryRateLimiter` is correct only within one process. A multi-node deployment must supply a shared backend, or the limits are per-instance and trivially bypassed by spreading requests across instances. The first-party `doorman-redis` adapter provides one — a cross-replica sliding-window limiter wired with `AuthCore::builder(storage).limiter(redis.rate_limiter())`. Hosts on another stack implement `RateLimiter` themselves.
 
 To put a host-side bot check (CAPTCHA, allow/deny lists) in front of signup, add it as Axum middleware on the signup route before it reaches doorman — doorman does not ship a CAPTCHA hook.
 

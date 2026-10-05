@@ -1,5 +1,5 @@
 //! Verifies the session layer reports cache hit / miss through the optional
-//! [`MetricSink`] hook wired in via [`AuthServiceBuilder::metrics`]. The first
+//! [`MetricSink`] hook wired in via `AuthCoreBuilder::metrics`. The first
 //! authenticated request resolves against a cold cache (a miss + a store
 //! validate); the second is served from the warm cache (a hit).
 

@@ -67,7 +67,7 @@ use crate::db::RedbHandle;
 /// Construct one at startup with [`open`](Self::open) (or
 /// [`from_database`](Self::from_database)) — no migration step is needed,
 /// the tables are provisioned automatically — then either hand
-/// [`all_stores`](Self::all_stores) to `AuthService::builder` or pull
+/// [`all_stores`](Self::all_stores) to `AuthCore::builder` or pull
 /// individual stores when wiring managers by hand.
 ///
 /// Cloning is cheap: the underlying [`Database`] is reference-counted and

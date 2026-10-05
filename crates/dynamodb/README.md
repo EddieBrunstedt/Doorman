@@ -24,7 +24,7 @@ let client = aws_sdk_dynamodb::Client::new(&config);
 let storage = DynamoDbStorage::new(client, "doorman");
 storage.create_table().await?; // idempotent; safe on every boot
 
-let auth = AuthService::builder(storage.all_stores())
+let core = AuthCore::builder(storage.all_stores())
     // ... rest of the builder
     .build()?;
 ```

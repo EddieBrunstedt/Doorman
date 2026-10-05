@@ -1,4 +1,4 @@
-//! `AuthServiceBuilder::emails` threads one renderer into every transactional
+//! `AuthCoreBuilder::emails` threads one renderer into every transactional
 //! email the app sends — the signup link, the recovery link, and the
 //! best-effort security notices — without the host having to brand each
 //! flow's config individually.

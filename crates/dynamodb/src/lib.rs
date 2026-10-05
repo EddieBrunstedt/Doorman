@@ -85,7 +85,7 @@ use crate::client::DynamoClient;
 /// Construct one at startup with [`new`](Self::new) from a configured AWS SDK
 /// client and a table name, provision the table once with
 /// [`create_table`](Self::create_table), then either hand
-/// [`all_stores`](Self::all_stores) to `AuthService::builder` or pull individual
+/// [`all_stores`](Self::all_stores) to `AuthCore::builder` or pull individual
 /// stores when wiring managers by hand. Cloning is cheap — the SDK client is
 /// reference-counted internally.
 #[derive(Clone)]

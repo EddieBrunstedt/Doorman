@@ -1,11 +1,11 @@
 //! Shared scaffolding for the core flow integration tests.
 //!
-//! [`Harness`] wires the in-memory stores into one set of managers
-//! (passkey / signup / recovery) sharing a single clock, audit sink, and
-//! email sender, so the `signup_flow`, `recovery_flow`, and `passkey_flow`
-//! suites build their world the same way. [`HarnessBuilder`] varies the
-//! few knobs individual tests need (the signup / recovery configs and
-//! per-flow rate limiters); everything else is fixed test defaults.
+//! [`Harness`] assembles the in-memory stores through the production
+//! composition root, [`AuthCore::builder`], with a mock clock, capturing
+//! audit sink, email sender and metrics, so every flow suite runs against the
+//! same wiring a host gets. [`HarnessBuilder`] varies the few knobs
+//! individual tests need (the signup / recovery configs and per-flow rate
+//! limiters); everything else is fixed test defaults.
 //!
 //! [`ResidentTestAuthenticator`] is the one shared WebAuthn test client:
 //! `SoftPasskey` cannot mint resident keys, so it verifies doorman's
@@ -22,13 +22,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use doorman_core::account::{AccountConfig, AccountManager};
+use doorman_core::assembly::{AssemblyError, AuthCore};
 use doorman_core::audit::{AuditEvent, AuditEventKind, AuditSink};
 use doorman_core::cache::SessionCacheConfig;
 use doorman_core::clock::Clock;
-use doorman_core::context::CoreDeps;
-use doorman_core::email::{
-    DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityEmailNotifier,
-};
+use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
 use doorman_core::memory::{
     InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
     InMemoryUserStore, InMemoryVerificationTokenStore,
@@ -44,10 +42,8 @@ use doorman_core::session::hash_token;
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use doorman_core::storage::{
-    AccountStatus, Session, SessionId, SessionStore, Storage, StoredPasskey, User, UserId,
-    UserStore,
+    AccountStatus, Session, SessionId, Storage, StoredPasskey, User, UserId, UserStore,
 };
-use doorman_core::verification::EnrollmentFlow;
 use doorman_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
 // Re-export the shared token extractor so the flow suites can keep importing
 // it from `common` while the one implementation lives in `doorman-test-support`.
@@ -107,8 +103,8 @@ pub fn recovery_config() -> RecoveryConfig {
     }
 }
 
-/// In-memory stores plus the three flow managers, all sharing one clock,
-/// audit sink, and email sender.
+/// In-memory stores plus every manager [`AuthCore::builder`] wires over them,
+/// all sharing one clock, audit sink, and email sender.
 pub struct Harness {
     pub passkey: PasskeyManager,
     pub signup: SignupManager,
@@ -121,11 +117,6 @@ pub struct Harness {
     /// The request-time resolver over [`session_manager`](Self::session_manager),
     /// reporting cache hits and misses to [`metrics`](Self::metrics).
     pub resolver: SessionResolver,
-    /// The recovery flow the harness built `recovery` from, kept so tests
-    /// can construct another `RecoveryManager` (e.g. to exercise
-    /// `RecoveryManager::new`'s cool-down validation) without re-wiring the
-    /// stores.
-    pub recovery_flow: EnrollmentFlow,
     pub users: Arc<InMemoryUserStore>,
     pub sessions: Arc<InMemorySessionStore>,
     pub tokens: Arc<InMemoryVerificationTokenStore>,
@@ -156,19 +147,19 @@ pub struct HarnessBuilder {
     cache_config: SessionCacheConfig,
     /// Passkey config the [`PasskeyManager`] is built with. Defaults to the
     /// fixed test relying party; cap / rate-limit tests override it. The
-    /// passkey manager reads the limiter from the signup [`CoreDeps`], so a
-    /// passkey-ceremony rate-limit test pairs an override here with
+    /// passkey manager shares the signup limiter, so a passkey-ceremony
+    /// rate-limit test pairs an override here with
     /// [`signup_limiter`](Self::signup_limiter).
     passkey: PasskeyConfig,
-    /// Rate limiter for the signup manager (and, via the shared `CoreDeps`,
-    /// the passkey manager). Kept separate from the recovery limiter so a
+    /// The assembly's main rate limiter: signup, passkey, and every flow
+    /// other than recovery. Kept separate from the recovery limiter so a
     /// recovery rate-limit test can provision users through signup without
     /// spending the budget it is measuring.
     signup_limiter: Arc<dyn RateLimiter>,
+    /// Wired as the assembly's recovery-only limiter.
     recovery_limiter: Arc<dyn RateLimiter>,
-    /// The single renderer threaded through `CoreDeps` and used for every
-    /// flow's link copy and security notices. Defaults to the stock copy;
-    /// branding tests override it.
+    /// The single renderer used for every flow's link copy and security
+    /// notices. Defaults to the stock copy; branding tests override it.
     emails: Arc<dyn EmailTemplates>,
     /// The [`NotificationPolicy`] the [`OperatorManager`] is built with.
     /// Defaults to the asymmetric stock policy; the operator notice tests
@@ -255,7 +246,13 @@ impl HarnessBuilder {
         self
     }
 
+    /// Build the harness, panicking on an assembly error. Tests probing a
+    /// configuration the assembly rejects use [`try_build`](Self::try_build).
     pub fn build(self) -> Harness {
+        self.try_build().expect("harness assembles")
+    }
+
+    pub fn try_build(self) -> Result<Harness, AssemblyError> {
         let users: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
         let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
         let tokens: Arc<InMemoryVerificationTokenStore> =
@@ -269,23 +266,6 @@ impl HarnessBuilder {
         let clock: Arc<MockClock> = Arc::new(MockClock::new(ts(2026, 1, 1)));
         let metrics: Arc<CapturingMetrics> = Arc::new(CapturingMetrics::new());
 
-        let notifier =
-            SecurityEmailNotifier::new(email.clone() as Arc<dyn EmailSender>, self.emails.clone());
-        let session_manager = SessionManager::new(
-            sessions.clone() as Arc<dyn SessionStore>,
-            clock.clone() as Arc<dyn Clock>,
-            audit.clone() as Arc<dyn AuditSink>,
-            self.session_config,
-        )
-        .with_security_notifier(notifier.clone());
-        let resolver = SessionResolver::new(
-            session_manager.clone(),
-            users.clone() as Arc<dyn UserStore>,
-            self.cache_config,
-        )
-        .expect("cache ttl is below the idle timeout")
-        .with_metrics(metrics.clone() as Arc<dyn MetricSink>);
-
         let storage = Storage {
             users: users.clone(),
             sessions: sessions.clone(),
@@ -294,66 +274,36 @@ impl HarnessBuilder {
             passkey_challenges: challenges.clone(),
         };
 
-        // The destructive managers gate through one shared re-auth manager.
-        let reauth = ReauthManager::new(
-            &self.passkey,
-            credentials.clone(),
-            challenges.clone(),
-            clock.clone() as Arc<dyn Clock>,
-            audit.clone() as Arc<dyn AuditSink>,
-            self.reauth_policy,
-        )
-        .expect("build reauth manager");
-
-        // Signup and recovery hold their own EnrollmentFlow. The two flows
-        // share every collaborator except the rate limiter, kept separate so
-        // a recovery rate-limit test can provision users through signup
-        // without spending the budget it is measuring — so we build one
-        // `CoreDeps` and override just that field for recovery.
-        let signup_deps = CoreDeps::new(
-            clock.clone() as Arc<dyn Clock>,
-            audit.clone() as Arc<dyn AuditSink>,
-            email.clone() as Arc<dyn EmailSender>,
-            self.emails.clone(),
-            notifier,
-            self.signup_limiter,
-            session_manager.clone(),
-            reauth.clone(),
-            storage,
-        )
-        .with_metrics(metrics.clone() as Arc<dyn MetricSink>);
-        let recovery_deps = CoreDeps {
-            rate_limiter: self.recovery_limiter,
-            ..signup_deps.clone()
-        };
-
-        let passkey =
-            PasskeyManager::new(&signup_deps, self.passkey).expect("build passkey manager");
-        let signup_flow = EnrollmentFlow::new(&signup_deps, passkey.clone());
-        let recovery_flow = EnrollmentFlow::new(&recovery_deps, passkey.clone());
-        let signup = SignupManager::new(signup_flow, self.signup);
-        let recovery = RecoveryManager::new(recovery_flow.clone(), self.recovery)
-            .expect("recovery cooldown is at or above the floor");
-        let account = AccountManager::new(
-            &signup_deps,
-            AccountConfig {
+        let core = AuthCore::builder(storage)
+            .clock(clock.clone() as Arc<dyn Clock>)
+            .audit(audit.clone() as Arc<dyn AuditSink>)
+            .email(email.clone() as Arc<dyn EmailSender>)
+            .emails(self.emails)
+            .limiter(self.signup_limiter)
+            .recovery_limiter(self.recovery_limiter)
+            .metrics(metrics.clone() as Arc<dyn MetricSink>)
+            .session(self.session_config)
+            .cache(self.cache_config)
+            .passkey(self.passkey)
+            .signup(self.signup)
+            .recovery(self.recovery)
+            .account(AccountConfig {
                 url_template: ACCOUNT_URL.to_string(),
                 ..AccountConfig::default()
-            },
-        );
-        let operator =
-            OperatorManager::new(&signup_deps, passkey.clone(), self.notification_policy);
+            })
+            .reauthentication(self.reauth_policy)
+            .notification_policy(self.notification_policy)
+            .build()?;
 
-        Harness {
-            passkey,
-            signup,
-            recovery,
-            account,
-            reauth,
-            operator,
-            session_manager,
-            resolver,
-            recovery_flow,
+        Ok(Harness {
+            passkey: core.passkey,
+            signup: core.signup,
+            recovery: core.recovery,
+            account: core.account,
+            reauth: core.reauth,
+            operator: core.operator,
+            session_manager: core.session_manager,
+            resolver: core.resolver,
             users,
             sessions,
             tokens,
@@ -363,7 +313,7 @@ impl HarnessBuilder {
             email,
             clock,
             metrics,
-        }
+        })
     }
 }
 

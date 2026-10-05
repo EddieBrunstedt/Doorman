@@ -4,7 +4,7 @@ How to wire doorman into an Axum application, swap in your own stores, and brand
 
 ## The five-minute path
 
-The shortest route is `doorman-sqlx` for storage plus the high-level `AuthService::builder`. This is the quickstart from the [top-level README](../README.md):
+The shortest route is `doorman-sqlx` for storage, `AuthCore::builder` to assemble the auth engine, and `AuthService::builder` to add the HTTP layer. This is the quickstart from the [top-level README](../README.md):
 
 ```rust
 use std::sync::Arc;
@@ -17,7 +17,7 @@ storage.migrate().await?;
 
 let origin = "https://app.example.com".parse()?;
 let base = origin.as_str().trim_end_matches('/');
-let auth = AuthService::builder(storage.all_stores())
+let core = AuthCore::builder(storage.all_stores())
     .email(Arc::new(TerminalEmailSender))
     .passkey(PasskeyConfig::from_origin(origin.clone(), "Example")?)
     .audit(Arc::new(NoopAuditSink))
@@ -26,6 +26,8 @@ let auth = AuthService::builder(storage.all_stores())
     .recovery(RecoveryConfig { url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
     .account(AccountConfig { url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
     .reauthentication(ReauthPolicy::required_for([ReauthAction::DeleteAccount, ReauthAction::RemovePasskey]))
+    .build()?;
+let auth = AuthService::builder(core)
     .external_origin(origin)
     .cookie(CookieConfig::default())
     .build()?;
@@ -49,23 +51,32 @@ axum::serve(
 
 ## The builder setters
 
-Every collaborator and config has a bare-noun setter on `AuthServiceBuilder` (the low-level `ManagerBuilder` takes pre-built managers and a `SessionResolver` instead):
+Every portable option has a bare-noun setter on `AuthCoreBuilder` (from `AuthCore::builder(storage)`), the one place managers are wired:
 
-| Setter                                                                                                   | Purpose                                                     |
-| -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `.email(Arc<dyn EmailSender>)`                                                                           | Transport for links and notices. Required.                  |
-| `.emails(Arc<dyn EmailTemplates>)`                                                                       | One renderer branding every email (see below).              |
-| `.audit(Arc<dyn AuditSink>)`                                                                             | Sink for security events. Required.                         |
-| `.limiter(Arc<dyn RateLimiter>)`                                                                         | Rate-limit backend. Required.                               |
-| `.metrics(Arc<dyn MetricSink>)`                                                                          | Observability hook.                                         |
-| `.clock(Arc<dyn Clock>)`                                                                                 | Time source (mock in tests). Defaults to `SystemClock`.     |
-| `.passkey(PasskeyConfig)`                                                                                | Relying party + ceremony config. Required.                  |
-| `.signup(SignupConfig)` / `.recovery(RecoveryConfig)` / `.account(AccountConfig)`                        | Flow configs (URL templates, lifetimes, cool-down).         |
-| `.reauthentication(ReauthPolicy)`                                                                        | Which destructive actions need a fresh assertion. Required. |
-| `.session(SessionConfig)` / `.cookie(CookieConfig)` / `.cache(SessionCacheConfig)` / `.csrf(CsrfConfig)` | Session presentation + caching + CSRF.                      |
-| `.external_origin(Url)`                                                                                  | Public origin, enables CSRF origin checks.                  |
+| Setter                                                                            | Purpose                                                       |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `.email(Arc<dyn EmailSender>)`                                                    | Transport for links and notices. Required.                    |
+| `.emails(Arc<dyn EmailTemplates>)`                                                | One renderer branding every email (see below).                |
+| `.audit(Arc<dyn AuditSink>)`                                                      | Sink for security events. Required.                           |
+| `.limiter(Arc<dyn RateLimiter>)`                                                  | Rate-limit backend. Required.                                 |
+| `.recovery_limiter(Arc<dyn RateLimiter>)`                                         | Separate backend for recovery budgets. Defaults to `limiter`. |
+| `.metrics(Arc<dyn MetricSink>)`                                                   | Observability hook.                                           |
+| `.clock(Arc<dyn Clock>)`                                                          | Time source (mock in tests). Defaults to `SystemClock`.       |
+| `.passkey(PasskeyConfig)`                                                         | Relying party + ceremony config. Required.                    |
+| `.signup(SignupConfig)` / `.recovery(RecoveryConfig)` / `.account(AccountConfig)` | Flow configs (URL templates, lifetimes, cool-down).           |
+| `.reauthentication(ReauthPolicy)`                                                 | Which destructive actions need a fresh assertion. Required.   |
+| `.notification_policy(NotificationPolicy)`                                        | Which operator actions notify the subject.                    |
+| `.session(SessionConfig)` / `.cache(SessionCacheConfig)`                          | Session lifetimes + resolution cache.                         |
 
-The builder is strict by default — there is no silent insecure default, so every footgun is an explicit call rather than a warning. `build()` returns a `BuilderError` until each required input is wired: the email transport (`MissingEmailSender`), passkey config (`MissingPasskeyConfig`), audit sink (`MissingAuditSink` — pass `NoopAuditSink` to discard events), rate limiter (`MissingRateLimiter` — pass `InMemoryRateLimiter`, a shared backend, or `NoopRateLimiter`), a CSRF decision (`CsrfDecisionRequired` — set `external_origin` or `CsrfConfig::disabled()`), and a re-authentication decision (`ReauthDecisionRequired` — pass `ReauthPolicy::required_for([..])` or `ReauthPolicy::disabled()`). It also fails closed on a stock `example.invalid` URL template (`PlaceholderUrlTemplate`), a URL template missing `{token}` (`TOKEN_PLACEHOLDER`), a sub-floor recovery cool-down, a `__Host-`/`__Secure-` cookie name without the matching attributes, an out-of-bounds TTL, or a cookie max-age exceeding the session lifetime. No public config value panics the build.
+`AuthService::builder(core)` takes the built `AuthCore` and adds only the HTTP settings:
+
+| Setter                  | Purpose                                    |
+| ----------------------- | ------------------------------------------ |
+| `.cookie(CookieConfig)` | Session cookie attributes and `Max-Age`.   |
+| `.csrf(CsrfConfig)`     | CSRF origin-check posture.                 |
+| `.external_origin(Url)` | Public origin, enables CSRF origin checks. |
+
+Both builders are strict by default — there is no silent insecure default, so every footgun is an explicit call rather than a warning. `AuthCoreBuilder::build()` returns an `AssemblyError` until each required input is wired: the email transport (`MissingEmailSender`), passkey config (`MissingPasskeyConfig`), audit sink (`MissingAuditSink` — pass `NoopAuditSink` to discard events), rate limiter (`MissingRateLimiter` — pass `InMemoryRateLimiter`, a shared backend, or `NoopRateLimiter`), and a re-authentication decision (`ReauthDecisionRequired` — pass `ReauthPolicy::required_for([..])` or `ReauthPolicy::disabled()`). It also fails closed on a stock `example.invalid` URL template (`PlaceholderUrlTemplate`), a URL template missing `{token}` (`TOKEN_PLACEHOLDER`), a sub-floor recovery cool-down, an out-of-bounds TTL, or a cache TTL not below the idle timeout. `AuthServiceBuilder::build()` returns a `BuilderError` without a CSRF decision (`CsrfDecisionRequired` — set `external_origin` or `CsrfConfig::disabled()`), for a `__Host-`/`__Secure-` cookie name without the matching attributes, or for a cookie max-age exceeding the session lifetime. No public config value panics the build.
 
 ## Choosing or implementing a store
 
@@ -85,7 +96,7 @@ let storage = Storage {
     verification_tokens: redis.verification_token_store(),
     passkey_challenges:  redis.passkey_challenge_store(),
 };
-let auth = AuthService::builder(storage).limiter(redis.rate_limiter()) /* … */ ;
+let core = AuthCore::builder(storage).limiter(redis.rate_limiter()) /* … */ ;
 ```
 
 Redis cannot hold the system-of-record stores, so it has no `all_stores()` and is always paired with a SQL backend like this. See [`crates/redis/README.md`](../crates/redis/README.md).
@@ -118,7 +129,7 @@ Key your tables on the doorman `UserId` and reference `users(id) ON DELETE CASCA
 
 ## Testing your integration with `InMemoryStorage`
 
-`InMemoryStorage` is a supported testing adapter that lives in `doorman-core` and is held to the same conformance and semver guarantees as the shipped database adapters. It fills all five stores from one process-local handle, so a host's integration test can stand up a real `AuthService` with no database, container, or migration step — `InMemoryStorage::new().all_stores()` drops straight into the same builder the quickstart uses:
+`InMemoryStorage` is a supported testing adapter that lives in `doorman-core` and is held to the same conformance and semver guarantees as the shipped database adapters. It fills all five stores from one process-local handle, so a host's integration test can stand up a real `AuthService` with no database, container, or migration step — `InMemoryStorage::new().all_stores()` drops straight into the same builders the quickstart uses:
 
 ```rust
 use std::sync::Arc;
@@ -132,7 +143,7 @@ async fn signup_route_is_mounted() -> Result<(), Box<dyn std::error::Error>> {
     let origin: url::Url = "http://localhost:3000".parse()?;
     let base = origin.as_str().trim_end_matches('/');
 
-    let auth = AuthService::builder(InMemoryStorage::new().all_stores())
+    let core = AuthCore::builder(InMemoryStorage::new().all_stores())
         .email(Arc::new(TerminalEmailSender))
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
         .audit(Arc::new(NoopAuditSink))
@@ -140,6 +151,8 @@ async fn signup_route_is_mounted() -> Result<(), Box<dyn std::error::Error>> {
         .signup(SignupConfig { url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
         .recovery(RecoveryConfig { url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
         .account(AccountConfig { url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"), ..Default::default() })
+        .build()?;
+    let auth = AuthService::builder(core)
         .external_origin(origin)
         .cookie(CookieConfig::default())
         .build()?;
@@ -186,9 +199,9 @@ User-facing copy is the host's responsibility on the **client** too: doorman ret
 
 doorman is batteries-included and Axum-first. The auth engine and its assembly live in `doorman-core`. `AuthCore::builder(storage)` is the composition root: it resolves the collaborator defaults, validates the signup/recovery/account URL templates and the configured lifetimes, wires the security notifier and the `SessionResolver` — the per-request operation that owns the session-resolution cache, the expiry and account-status checks, and idle sliding, and installs its cache invalidator on the `SessionManager` — and constructs the five managers — `SessionManager`, `PasskeyManager`, `SignupManager`, `RecoveryManager`, `AccountManager` — in the order their shared collaborators require. Its `AssemblyError` carries those portable failure modes.
 
-`doorman-axum` is the first-party HTTP integration. `AuthService::builder(storage)` delegates that portable assembly to `doorman-core` and then adds the HTTP layer: the cookie config and its `__Host-`/`__Secure-` prefix rules, the CSRF posture, and the mountable router plus session layer. Its `BuilderError` embeds the core `AssemblyError` variants so a host sees one error type.
+`doorman-axum` is the first-party HTTP integration. `AuthService::builder(core)` takes the built `AuthCore` and adds only the HTTP layer: the cookie config with its `__Host-`/`__Secure-` prefix rules and `Max-Age` bound, the CSRF posture, and the mountable router plus session layer. Its `BuilderError` covers only those HTTP settings; a new portable option is added to `AuthCoreBuilder` alone.
 
-The high-level builder still exposes the assembled managers the routes drive via the `AuthState::session_manager()`, `passkey()`, `signup()`, `recovery()`, and `account()` accessors, so host code can run the same logic alongside the bundled routes. Hosts that construct the managers themselves build a `SessionResolver` over their `SessionManager` and hand both, with the managers, to the low-level `AuthService::from_managers()` path.
+The built service exposes the managers the routes drive via the `AuthState::session_manager()`, `passkey()`, `signup()`, `recovery()`, `account()`, and `operator()` accessors, so host code can run the same logic alongside the bundled routes.
 
 ## Extractors
 

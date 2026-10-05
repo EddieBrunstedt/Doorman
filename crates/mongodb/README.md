@@ -23,7 +23,7 @@ let database = client.database("my_app");
 let storage = MongoDbStorage::new(database);
 storage.ensure_indexes().await?; // idempotent; safe on every boot
 
-let auth = AuthService::builder(storage.all_stores())
+let core = AuthCore::builder(storage.all_stores())
     // ... rest of the builder
     .build()?;
 ```

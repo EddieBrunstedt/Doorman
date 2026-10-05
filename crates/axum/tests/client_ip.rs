@@ -36,7 +36,7 @@ fn router(limits: PasskeyRateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAud
     let audit = Arc::new(InMemoryAuditSink::new());
     let mut passkey = PasskeyConfig::new("localhost", ORIGIN.parse().expect("origin"), "tests");
     passkey.rate_limits = limits;
-    let auth = AuthService::builder(InMemoryStorage::new().all_stores())
+    let core = AuthCore::builder(InMemoryStorage::new().all_stores())
         .email(Arc::new(CapturingEmailSender::new()))
         .passkey(passkey)
         .signup(SignupConfig {
@@ -55,6 +55,9 @@ fn router(limits: PasskeyRateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAud
         .audit(audit.clone())
         .clock(clock.clone())
         .limiter(Arc::new(InMemoryRateLimiter::new(clock.clone())))
+        .build()
+        .expect("auth core built");
+    let auth = AuthService::builder(core)
         .external_origin(ORIGIN.parse().expect("origin"))
         .build()
         .expect("build");

@@ -170,6 +170,16 @@ impl SessionManager {
         self.config.idle_timeout
     }
 
+    /// The longest a session can go unused before it ends: the idle window
+    /// when sliding is on, otherwise the absolute lifetime. A front end that
+    /// mirrors the session client-side (a cookie `Max-Age`) must not outlive
+    /// it.
+    pub fn unused_lifetime(&self) -> Duration {
+        self.config
+            .idle_timeout
+            .unwrap_or(self.config.absolute_lifetime)
+    }
+
     /// Install the best-effort security [`SecurityEmailNotifier`] used for
     /// session-revocation notices and return `self`. Set this at the
     /// composition root *before* the manager is cloned into the other

@@ -1,5 +1,5 @@
 //! `AuthService::purge_expired` delegates to the composite storage the
-//! high-level builder was handed, so an in-process job or test can sweep
+//! core was assembled over, so an in-process job or test can sweep
 //! expired rows through the built service rather than the raw `Storage`.
 
 use std::sync::Arc;
@@ -9,6 +9,7 @@ use doorman_axum::AuthService;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
 use doorman_core::account::AccountConfig;
+use doorman_core::assembly::AuthCore;
 use doorman_core::audit::NoopAuditSink;
 use doorman_core::clock::SystemClock;
 use doorman_core::email::{EmailSender, TerminalEmailSender};
@@ -28,7 +29,7 @@ fn ts(secs: i64) -> DateTime<Utc> {
     DateTime::<Utc>::from_timestamp(secs, 0).expect("valid timestamp")
 }
 
-/// Build a service through the high-level builder over in-memory storage,
+/// Build a service through `AuthCore::builder` over in-memory storage,
 /// returning the service plus a clone of the storage to seed rows through. The
 /// clone shares the same `Arc` stores, so rows seeded via it are visible to the
 /// service's sweep.
@@ -43,7 +44,7 @@ fn service_with_storage() -> (AuthService, Storage) {
     let seed = storage.clone();
 
     let origin = Url::parse("http://localhost:8080").expect("origin");
-    let service = AuthService::builder(storage)
+    let core = AuthCore::builder(storage)
         .email(Arc::new(TerminalEmailSender) as Arc<dyn EmailSender>)
         .passkey(PasskeyConfig::new("localhost", origin, "doorman tests"))
         .reauthentication(doorman_core::reauth::ReauthPolicy::disabled())
@@ -63,6 +64,9 @@ fn service_with_storage() -> (AuthService, Storage) {
             url_template: "https://app.test/email-change?token={token}".to_string(),
             ..AccountConfig::default()
         })
+        .build()
+        .expect("auth core built");
+    let service = AuthService::builder(core)
         .csrf(CsrfConfig::disabled())
         .cookie(CookieConfig::default())
         .build()

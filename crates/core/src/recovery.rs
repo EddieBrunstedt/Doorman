@@ -95,7 +95,9 @@ pub const MIN_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 /// Rejection returned by [`RecoveryManager::new`] when the supplied
 /// [`RecoveryConfig`] is invalid. Construction is fallible rather than a
 /// panic so the misconfiguration is threaded back to the host through the
-/// builder (the axum builder maps this onto its `BuilderError`).
+/// assembly builder as [`AssemblyError::RecoveryCooldownTooShort`].
+///
+/// [`AssemblyError::RecoveryCooldownTooShort`]: crate::assembly::AssemblyError::RecoveryCooldownTooShort
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RecoveryConfigError {
     /// `cooldown` is below the documented [`MIN_COOLDOWN`] floor and

@@ -27,7 +27,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     let base = external_origin.as_str().trim_end_matches('/');
 
-    let auth = AuthService::builder(storage)
+    let core = AuthCore::builder(storage)
         .email(Arc::new(TerminalEmailSender))
         .passkey(PasskeyConfig::from_origin(
             external_origin.clone(),
@@ -53,6 +53,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             url_template: format!("{base}/?email_change_token={TOKEN_PLACEHOLDER}"),
             ..AccountConfig::default()
         })
+        .build()?;
+    let auth = AuthService::builder(core)
         .external_origin(external_origin.clone())
         .cookie(CookieConfig {
             secure: external_origin.scheme() == "https",

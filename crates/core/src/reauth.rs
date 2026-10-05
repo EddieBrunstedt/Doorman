@@ -93,7 +93,7 @@ pub enum ReauthAction {
 ///
 /// There is **no default**: a host must make an explicit decision, either
 /// listing the protected actions with [`required_for`](Self::required_for) or
-/// opting out with [`disabled`](Self::disabled). The high-level builders fail
+/// opting out with [`disabled`](Self::disabled). [`AuthCore::builder`](crate::assembly::AuthCore::builder) fails
 /// closed until one is supplied, mirroring the CSRF decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReauthPolicy {

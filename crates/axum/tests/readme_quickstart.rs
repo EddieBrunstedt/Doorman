@@ -53,7 +53,7 @@ async fn readme_quickstart_drives_signup_login_recovery() {
     let email = Arc::new(CapturingEmailSender::new());
     let origin: Url = ORIGIN.parse().expect("origin");
     let base = origin.as_str().trim_end_matches('/');
-    let auth = AuthService::builder(storage.all_stores())
+    let core = AuthCore::builder(storage.all_stores())
         .email(email.clone() as Arc<dyn doorman_core::email::EmailSender>)
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
         .reauthentication(ReauthPolicy::disabled())
@@ -71,6 +71,9 @@ async fn readme_quickstart_drives_signup_login_recovery() {
             url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"),
             ..Default::default()
         })
+        .build()
+        .expect("auth core built");
+    let auth = AuthService::builder(core)
         .external_origin(origin.clone())
         .cookie(CookieConfig::default())
         .build()

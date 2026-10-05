@@ -21,7 +21,7 @@ async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn 
 
     let origin: Url = "http://localhost:3000".parse()?;
     let base = origin.as_str().trim_end_matches('/');
-    let auth = AuthService::builder(storage.all_stores())
+    let core = AuthCore::builder(storage.all_stores())
         .email(Arc::new(TerminalEmailSender))
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
         .reauthentication(ReauthPolicy::required_for([
@@ -42,6 +42,8 @@ async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn 
             url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"),
             ..Default::default()
         })
+        .build()?;
+    let auth = AuthService::builder(core)
         .external_origin(origin)
         .cookie(CookieConfig::default())
         .build()?;

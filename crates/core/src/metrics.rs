@@ -1,7 +1,7 @@
 //! Optional metrics hooks for the key auth counters.
 //!
 //! A host that wants production telemetry implements [`MetricSink`] and wires it
-//! in (through the high-level builder, or [`CoreDeps::with_metrics`]). The
+//! in (through [`AuthCoreBuilder::metrics`], or [`CoreDeps::with_metrics`]). The
 //! managers call [`MetricSink::record`] on the hot paths — successful logins,
 //! authentication failures, and per-ceremony latency — and the session
 //! resolver reports cache hits and misses through the same hook. The default
@@ -14,6 +14,7 @@
 //! out of band.
 //!
 //! [`CoreDeps::with_metrics`]: crate::context::CoreDeps::with_metrics
+//! [`AuthCoreBuilder::metrics`]: crate::assembly::AuthCoreBuilder::metrics
 
 use std::time::Duration;
 

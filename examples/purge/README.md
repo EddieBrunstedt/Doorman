@@ -10,7 +10,7 @@ One crate, one shared storage builder, two binaries:
 examples/purge/
 ├── src/lib.rs          # build_storage() — the single source of truth
 └── src/bin/
-    ├── server.rs       # main: app::build_storage() -> AuthService::builder(..).build()
+    ├── server.rs       # main: app::build_storage() -> AuthCore::builder(..) -> AuthService::builder(core)
     └── purge.rs        # main: app::build_storage() -> doorman::ops::run_purge(storage)
 ```
 

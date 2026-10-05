@@ -6,9 +6,11 @@
 //! storage adapter such as `doorman-sqlx`) plus the passkey config and email
 //! transport, resolves the silent defaults, validates everything whose wrong
 //! choice is a security or delivery footgun, and constructs the managers in
-//! the order their shared collaborators require. A front end — `doorman-axum`
-//! is the first-party one — consumes the resulting [`AuthCore`] and bolts on
-//! its HTTP presentation (cookies, CSRF, the router and session layer).
+//! the order their shared collaborators require. It is the one place managers
+//! get wired and the one place every portable option is set. A front end —
+//! `doorman-axum` is the first-party one — takes the resulting [`AuthCore`]
+//! and adds only its own presentation settings (cookies, CSRF, the router and
+//! session layer).
 //!
 //! The builder is strict by default: the only collaborator with a silent
 //! default is the [`Clock`] → [`SystemClock`]. Everything whose wrong choice
@@ -54,7 +56,7 @@ use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
 use crate::resolve::SessionResolver;
 use crate::session::{SessionConfig, SessionManager};
 use crate::signup::{SignupConfig, SignupManager};
-use crate::storage::{Storage, UserStore};
+use crate::storage::Storage;
 use crate::verification::{EnrollmentFlow, TOKEN_PLACEHOLDER};
 
 /// Upper bound on any host-supplied lifetime (session / token). Ten years —
@@ -69,10 +71,6 @@ pub(crate) const PLACEHOLDER_URL_HOST: &str = "example.invalid";
 
 /// Errors returned when the framework-agnostic auth engine is incompletely
 /// or invalidly configured through [`AuthCore::builder`].
-///
-/// A front end wrapping this builder (such as `doorman-axum`) typically
-/// embeds these variants in its own builder error so a host sees one error
-/// type covering both the portable assembly and the HTTP presentation.
 #[derive(Debug, thiserror::Error)]
 pub enum AssemblyError {
     /// No [`EmailSender`] was supplied. There is no
@@ -241,9 +239,10 @@ fn reject_placeholder_url(flow: &'static str, template: &str) -> Result<(), Asse
 /// The assembled, framework-agnostic auth engine.
 ///
 /// Holds the wired-up managers — each already sharing one [`CoreDeps`] bundle
-/// — plus the [`SessionResolver`] a front end runs on every request. A front
-/// end consumes these to mount its routes and resolve sessions;
-/// `doorman-axum` hands `resolver` to its session layer and threads the
+/// — plus the [`SessionResolver`] a front end runs on every request and the
+/// [`Storage`] it was built over. A front end consumes these to mount its
+/// routes and resolve sessions; `doorman-axum`'s `AuthService::builder` takes
+/// an `AuthCore` whole, hands `resolver` to its session layer and threads the
 /// managers into its router state.
 ///
 /// Cheap to move and clone — every field is `Arc`-backed.
@@ -254,8 +253,10 @@ pub struct AuthCore {
     /// idle sliding behind one call. Its cache invalidator is installed on
     /// [`session_manager`](Self::session_manager).
     pub resolver: SessionResolver,
-    /// User store, surfaced for front-end handlers that read user records.
-    pub user_store: Arc<dyn UserStore>,
+    /// The composite storage the engine was built over. Front-end handlers
+    /// read user records through [`Storage::users`], and an in-process job
+    /// sweeps expired rows with [`Storage::purge_all_expired`].
+    pub storage: Storage,
     /// Passkey registration / authentication manager.
     pub passkey: PasskeyManager,
     /// Signup (email-the-link, enrol a passkey) manager.
@@ -293,6 +294,7 @@ pub struct AuthCoreBuilder {
     email: Option<Arc<dyn EmailSender>>,
     emails: Option<Arc<dyn EmailTemplates>>,
     rate_limiter: Option<Arc<dyn RateLimiter>>,
+    recovery_rate_limiter: Option<Arc<dyn RateLimiter>>,
     metrics: Option<Arc<dyn MetricSink>>,
     session_config: Option<SessionConfig>,
     cache_config: Option<SessionCacheConfig>,
@@ -313,6 +315,7 @@ impl AuthCoreBuilder {
             email: None,
             emails: None,
             rate_limiter: None,
+            recovery_rate_limiter: None,
             metrics: None,
             session_config: None,
             cache_config: None,
@@ -358,6 +361,14 @@ impl AuthCoreBuilder {
     /// per-flow budgets. Required.
     pub fn limiter(mut self, limiter: Arc<dyn RateLimiter>) -> Self {
         self.rate_limiter = Some(limiter);
+        self
+    }
+
+    /// Wire a separate [`RateLimiter`] for the recovery flow's budgets, so
+    /// recovery can run on a different backend (or a stricter shared store)
+    /// than every other flow. Defaults to the [`limiter`](Self::limiter).
+    pub fn recovery_limiter(mut self, limiter: Arc<dyn RateLimiter>) -> Self {
+        self.recovery_rate_limiter = Some(limiter);
         self
     }
 
@@ -532,21 +543,31 @@ impl AuthCoreBuilder {
         )
         .with_metrics(metrics);
 
-        let user_store = deps.users.clone();
-
         let passkey = PasskeyManager::new(&deps, passkey_config).map_err(AssemblyError::Passkey)?;
 
-        // Signup and recovery share the same dependencies and consume/finish
-        // skeleton; build one EnrollmentFlow and hand a clone to each manager.
-        let enrollment_flow = EnrollmentFlow::new(&deps, passkey.clone());
+        // Signup and recovery share the consume/finish skeleton and every
+        // collaborator except, optionally, the rate limiter: recovery gets its
+        // own flow over a copy of the bundle only when the host wired a
+        // recovery limiter.
+        let signup_flow = EnrollmentFlow::new(&deps, passkey.clone());
+        let recovery_flow = match self.recovery_rate_limiter {
+            Some(rate_limiter) => EnrollmentFlow::new(
+                &CoreDeps {
+                    rate_limiter,
+                    ..deps.clone()
+                },
+                passkey.clone(),
+            ),
+            None => signup_flow.clone(),
+        };
 
         // Signup is part of the only login UX — always on. Hosts that need to
         // tune the rate limits or token lifetime call `.signup(...)`.
-        let signup = SignupManager::new(enrollment_flow.clone(), signup_config);
+        let signup = SignupManager::new(signup_flow, signup_config);
 
         // Recovery rides on the same primitives as signup and is similarly
         // always-on. The sub-floor cool-down check is enforced here.
-        let recovery = RecoveryManager::new(enrollment_flow, recovery_config)?;
+        let recovery = RecoveryManager::new(recovery_flow, recovery_config)?;
 
         // The account manager reads its collaborators (stores, clock, audit,
         // email transport, session manager) from the same shared context.
@@ -565,7 +586,7 @@ impl AuthCoreBuilder {
         Ok(AuthCore {
             session_manager,
             resolver,
-            user_store,
+            storage: self.storage,
             passkey,
             signup,
             recovery,

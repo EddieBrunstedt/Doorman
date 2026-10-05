@@ -9,7 +9,7 @@
 //!
 //! The in-memory storage adapters and [`InMemoryRateLimiter`] are *not*
 //! here — those live in [`doorman_core::memory`] because they back local
-//! experiments and the high-level builder default, not just tests.
+//! experiments and production single-process deployments, not just tests.
 //!
 //! [`Clock`]: doorman_core::clock::Clock
 //! [`AuditSink`]: doorman_core::audit::AuditSink

@@ -49,7 +49,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     };
     let base = external_origin.as_str().trim_end_matches('/');
 
-    let auth = AuthService::builder(storage.all_stores())
+    let core = AuthCore::builder(storage.all_stores())
         .email(Arc::new(TerminalEmailSender))
         .passkey(passkey_config)
         // Require a fresh passkey re-authentication before the irreversible
@@ -79,6 +79,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             url_template: format!("{base}/?email_change_token={TOKEN_PLACEHOLDER}"),
             ..AccountConfig::default()
         })
+        .build()?;
+    let auth = AuthService::builder(core)
         // CSRF origin checks are enabled by configuring the public origin.
         .external_origin(external_origin)
         .cookie(cookie_config)
