@@ -1,47 +1,26 @@
-//! CSRF origin check.
-//!
-//! Cookie-backed sessions are ambient authority: a browser will attach the
-//! session cookie to a cross-site form POST unless the application rejects
-//! the request. [`AuthService::session_layer`](crate::AuthService::session_layer)
-//! runs the simple, storage-free defence doorman recommends for Axum hosts
-//! whenever a [`CsrfConfig`] enables it: state-changing requests that carry the
-//! configured session cookie must present a same-origin `Origin` header, or
-//! a same-origin `Referer` when `Origin` is absent. Requests authenticated
-//! with `Authorization: Bearer ...` are not in CSRF scope.
-
 use axum::http::{HeaderMap, Method, header};
 use url::Url;
 
 use crate::cookies::{bearer_token, read_cookie};
 
-/// CSRF origin-check configuration.
-///
-/// `CsrfConfig::new(origin)` enables checks against the supplied public
-/// application origin. `CsrfConfig::disabled()` is the explicit escape
-/// hatch for tests and known non-browser deployments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CsrfConfig {
     external_origin: Option<Url>,
 }
 
 impl CsrfConfig {
-    /// Enable CSRF origin checks against the public application origin.
-    /// Only the URL origin (scheme, host, and port) is compared; any path
-    /// prefix on the URL is ignored.
     pub fn new(external_origin: Url) -> Self {
         Self {
             external_origin: Some(external_origin),
         }
     }
 
-    /// Disable CSRF checks.
     pub fn disabled() -> Self {
         Self {
             external_origin: None,
         }
     }
 
-    /// `true` when CSRF checks are enabled.
     pub fn is_enabled(&self) -> bool {
         self.external_origin.is_some()
     }
@@ -76,22 +55,14 @@ pub(crate) fn should_reject(
         return false;
     }
 
-    // Origin is the stronger signal, so it wins when present: a matching
-    // Origin allows, a mismatched one rejects.
     if let Some(matches) = header_origin_matches(headers, header::ORIGIN, expected_origin) {
         return !matches;
     }
 
-    // Fall back to Referer only when Origin is absent (some same-origin
-    // navigations omit Origin).
     if let Some(matches) = header_origin_matches(headers, header::REFERER, expected_origin) {
         return !matches;
     }
 
-    // Fail closed: a state-changing cookie request that presents neither a
-    // usable Origin nor Referer gives us no same-origin proof, so we must
-    // reject rather than wave it through. Reaching here means a cookie session
-    // is in play and the safe-method / bearer escape hatches did not apply.
     true
 }
 
@@ -99,10 +70,6 @@ fn is_safe_method(method: &Method) -> bool {
     matches!(method, &Method::GET | &Method::HEAD | &Method::OPTIONS)
 }
 
-/// Compare a URL-valued header (`Origin` or `Referer`) against the expected
-/// origin. Returns `None` when the header is absent; a present-but-malformed
-/// header returns `Some(false)` so callers fail closed instead of falling
-/// through to a weaker signal.
 fn header_origin_matches(
     headers: &HeaderMap,
     name: header::HeaderName,
@@ -219,9 +186,6 @@ mod tests {
 
     #[test]
     fn missing_origin_and_referer_with_cookie_is_rejected() {
-        // Fail closed: a state-changing cookie request that presents neither
-        // an Origin nor a Referer header gives the layer no same-origin
-        // signal, so it must be rejected rather than waved through.
         let headers = headers(true, None, None);
         assert!(should_reject(
             &Method::POST,
@@ -233,7 +197,6 @@ mod tests {
 
     #[test]
     fn missing_origin_and_referer_without_cookie_is_allowed() {
-        // No cookie session means nothing for CSRF to protect.
         let headers = headers(false, None, None);
         assert!(!should_reject(
             &Method::POST,

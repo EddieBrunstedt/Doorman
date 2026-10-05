@@ -1,44 +1,22 @@
-//! Expiry sweeping helpers.
-//!
-//! [`Storage::purge_all_expired`] runs every store's `purge_expired` in one
-//! call so a host need not reimplement the per-table sweep by hand. With the
-//! `background-purge` feature enabled, `spawn_purge_task` spawns a tokio
-//! task that calls it on a fixed interval.
-
 use chrono::{DateTime, Utc};
 
 use crate::error::StorageResult;
 use crate::storage::Storage;
 
-/// Per-store counts from a [`Storage::purge_all_expired`] sweep.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PurgeSummary {
-    /// Expired sessions removed.
     pub sessions: u64,
-    /// Expired verification tokens removed.
     pub verification_tokens: u64,
-    /// Expired passkey ceremony challenges removed (registrations and
-    /// authentications combined).
     pub passkey_challenges: u64,
 }
 
 impl PurgeSummary {
-    /// Total rows removed across every store.
     pub fn total(&self) -> u64 {
         self.sessions + self.verification_tokens + self.passkey_challenges
     }
 }
 
 impl Storage {
-    /// Sweep every store of rows whose expiry is at or before `now`,
-    /// returning the per-store counts.
-    ///
-    /// Covers the three stores that hold time-limited rows — sessions,
-    /// verification tokens, and passkey ceremony challenges. User and
-    /// credential records never expire and are left untouched. The sweeps run
-    /// in sequence; if one store errors the call returns early and the
-    /// remaining stores are not swept on that pass (the next pass retries
-    /// them).
     pub async fn purge_all_expired(&self, now: DateTime<Utc>) -> StorageResult<PurgeSummary> {
         let sessions = self.sessions.purge_expired(now).await?;
         let verification_tokens = self.verification_tokens.purge_expired(now).await?;
@@ -51,16 +29,6 @@ impl Storage {
     }
 }
 
-/// Spawn a background task that sweeps expired rows from `storage` every
-/// `interval`, reading the current time from `clock`.
-///
-/// The first sweep runs immediately; subsequent sweeps run once per
-/// `interval`. A sweep error is logged and the loop continues, so a transient
-/// store failure does not kill the task. Drop or
-/// [`abort`](tokio::task::JoinHandle::abort) the returned handle to stop it.
-///
-/// Gated behind the `background-purge` feature so the default core build does
-/// not pull tokio's runtime/timer features.
 #[cfg(feature = "background-purge")]
 pub fn spawn_purge_task(
     storage: Storage,
@@ -103,9 +71,6 @@ mod tests {
         DateTime::<Utc>::from_timestamp(secs, 0).expect("valid timestamp")
     }
 
-    /// Seed `storage` with one expired and one live row in each
-    /// time-limited store. `now` is the sweep instant; "expired" rows have
-    /// `expires_at <= now`, "live" rows expire after it.
     async fn seed(storage: &Storage, user_id: UserId, now: DateTime<Utc>) {
         let expired = now - chrono::Duration::hours(1);
         let live = now + chrono::Duration::hours(1);
@@ -194,11 +159,9 @@ mod tests {
 
         assert_eq!(summary.sessions, 1);
         assert_eq!(summary.verification_tokens, 1);
-        // One expired registration + one expired authentication.
         assert_eq!(summary.passkey_challenges, 2);
         assert_eq!(summary.total(), 4);
 
-        // The live rows survive: a second sweep removes nothing.
         let second = storage.purge_all_expired(now).await.expect("second purge");
         assert_eq!(second.total(), 0);
     }
@@ -208,8 +171,6 @@ mod tests {
     async fn spawn_purge_task_sweeps_on_its_interval() {
         use crate::clock::Clock;
 
-        // A fixed clock whose `now` sits after the seeded expired rows but
-        // before the live ones, so a sweep removes exactly the expired set.
         struct FixedClock(DateTime<Utc>);
         impl Clock for FixedClock {
             fn now(&self) -> DateTime<Utc> {
@@ -228,16 +189,11 @@ mod tests {
             std::time::Duration::from_secs(3600),
         );
 
-        // The first interval tick fires immediately; yield so the spawned
-        // task runs its first sweep, then stop it.
         for _ in 0..8 {
             tokio::task::yield_now().await;
         }
         handle.abort();
 
-        // The reference store returns rows unfiltered, so a non-empty list
-        // that holds only the live session proves the task removed the
-        // expired one (an un-run task would leave two rows).
         let remaining = storage
             .sessions
             .list_for_user(user_id, now)

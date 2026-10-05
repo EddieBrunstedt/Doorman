@@ -1,14 +1,3 @@
-//! redb-backed [`SessionStore`].
-//!
-//! Sessions span three tables: the primary record (`sessions`), a
-//! token-hash → session-id index (`session_hash_idx`), and a per-user
-//! compound-key index (`user_sessions_idx`) whose keys have the form
-//! `"{user_id}\x00{session_id}"`. All three are updated atomically inside a
-//! single write transaction.
-//!
-//! There is no native TTL: every expiry is emulated by the `expires_at > now`
-//! filter in `list_for_user` and the authoritative `purge_expired` sweep.
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
@@ -28,8 +17,6 @@ impl RedbSessionStore {
     }
 }
 
-/// Extract the session-id component from a `user_sessions_idx` key of the
-/// form `"{user_id}\x00{session_id}"`.
 fn session_id_from_idx_key(key: &str) -> StorageResult<&str> {
     key.split_once('\x00')
         .map(|x| x.1)
@@ -57,12 +44,6 @@ impl SessionStore for RedbSessionStore {
             .write(move |wtxn| {
                 let key = id.0.to_string();
                 let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
-                // Conditional write: read the row first and re-insert the slid
-                // timestamps only if it still exists. A session deleted between
-                // resolution and touch must not be resurrected, so an absent id
-                // is a no-op (never an insert). redb has no native eviction, so
-                // only the two timestamps change; the hash and user indexes
-                // already point at this id and need no update.
                 let existing = match sessions.get(key.as_str()).map_err(db::err)? {
                     Some(guard) => Some(db::decode::<Session>(guard.value())?),
                     None => None,
@@ -123,7 +104,6 @@ impl SessionStore for RedbSessionStore {
                 let prefix = db::user_sessions_prefix(user_id);
                 let end = db::prefix_end(&prefix);
 
-                // Collect session ids from the index.
                 let session_ids: Vec<String> = {
                     let idx_tbl = rtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
                     idx_tbl
@@ -145,7 +125,6 @@ impl SessionStore for RedbSessionStore {
                         if session.expires_at > now {
                             out.push(session);
                         }
-                        // expired or missing: skip (dangling index entry)
                     }
                 }
                 Ok(out)
@@ -184,9 +163,6 @@ impl SessionStore for RedbSessionStore {
                 let end = db::prefix_end(&prefix);
                 let except_key = except.map(|id| id.0.to_string());
 
-                // One write transaction: redb serializes writers, so a concurrent
-                // create commits either before this sweep (and is deleted) or after
-                // it (and is untouched).
                 let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
                 let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
@@ -225,9 +201,6 @@ impl SessionStore for RedbSessionStore {
                 let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
 
-                // Scan inside the write transaction: redb serializes writers, so
-                // no `touch_session` can slide a row between this expiry check
-                // and its removal, and the index keys come from the row removed.
                 let expired: Vec<(String, Session)> = sessions
                     .iter()
                     .map_err(db::err)?

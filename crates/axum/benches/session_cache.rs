@@ -1,25 +1,3 @@
-//! Session-cache microbenchmarks for the real `doorman-axum` request cache.
-//!
-//! These benches intentionally do **not** drive the full `SessionLayer` or
-//! router. They isolate the session resolution the layer runs on real
-//! requests:
-//!
-//! - `cache_hit` — raw `SessionCache::get` hit with a precomputed token
-//!   hash. This is the lower bound for a warm session-resolution cache.
-//! - `cache_miss_populate` — `SessionResolver::resolve` on a cold cache:
-//!   hash the token, miss, validate the session, fetch and check the user,
-//!   and insert the resolved pair. The cache clear happens in untimed setup.
-//!
-//! For the authoritative full request path, including token extraction,
-//! middleware, router dispatch, extension insertion, and handler work, see
-//! `request_path.rs`.
-//!
-//! Run with:
-//!
-//! ```sh
-//! cargo bench -p doorman-axum --bench session_cache
-//! ```
-
 mod support;
 
 use chrono::Utc;
@@ -74,10 +52,6 @@ fn session_cache(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("session_cache");
 
-    // Seed once, then measure the raw in-process cache hit. The token hash
-    // is precomputed deliberately: this function answers "how expensive is
-    // the LRU lookup + clone?" rather than "how expensive is the whole
-    // session layer?".
     let token_hash = hash_token(&scaffold.token);
     runtime.block_on(async {
         scaffold
@@ -95,8 +69,6 @@ fn session_cache(c: &mut Criterion) {
         });
     });
 
-    // Clear the cache outside the timed section for each measured iteration,
-    // so every timed resolve is a cold miss that repopulates the cache.
     group.bench_function("cache_miss_populate", |b| {
         b.to_async(&runtime).iter_batched(
             || {

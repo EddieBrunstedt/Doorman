@@ -1,27 +1,3 @@
-//! Passkey-authentication benches: the only crypto-heavy steady-state path.
-//!
-//! A credential is registered once during setup; two benches then drive it:
-//!
-//! - `passkey_authenticate` — the full discoverable ceremony per iteration:
-//!   `start_authentication`, the `SoftPasskey` signs the challenge, then
-//!   `finish_authentication` verifies the assertion and issues a session. The
-//!   headline login-throughput number.
-//! - `passkey_finish` — isolates the server-side verify cost. Each iteration's
-//!   `start_authentication` + signing happens in an untimed `iter_custom`
-//!   setup, so only `finish_authentication` (assertion verification, counter
-//!   check, user-handle binding, session issue) is timed.
-//!
-//! `SoftPasskey` cannot mint resident keys, so registration relaxes the
-//! resident-key flags locally (doorman still issues `residentKey=required`)
-//! and the bench records the user handle to replay it on authentication,
-//! mirroring the test harness's `ResidentTestAuthenticator`.
-//!
-//! Run with:
-//!
-//! ```sh
-//! cargo bench -p doorman-core --bench passkey_auth
-//! ```
-
 mod support;
 
 use std::sync::{Arc, Mutex};
@@ -80,7 +56,6 @@ async fn build_scaffold() -> Scaffold {
     }
 }
 
-/// Register a single credential and return its `(credential_id, user_handle)`.
 async fn register(
     scaffold: &Scaffold,
     wa: &mut WebauthnAuthenticator<SoftPasskey>,
@@ -119,9 +94,6 @@ fn passkey_auth(c: &mut Criterion) {
 
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
     let (credential_id, user_handle) = runtime.block_on(register(&scaffold, &mut authenticator));
-    // Shared so each iteration's future can own a handle without borrowing
-    // `authenticator` from the (FnMut) closure. The lock is only held for
-    // the synchronous signing call, never across an await.
     let authenticator = Arc::new(Mutex::new(authenticator));
 
     c.bench_function("passkey_authenticate", |b| {
@@ -137,8 +109,6 @@ fn passkey_auth(c: &mut Criterion) {
                     .await
                     .expect("start authentication");
 
-                // SoftPasskey needs an allow-list to pick a key; the
-                // server-issued challenge stays discoverable.
                 let mut compatible = rcr;
                 compatible.public_key.allow_credentials = vec![AllowCredentials {
                     type_: "public-key".to_string(),
@@ -161,7 +131,6 @@ fn passkey_auth(c: &mut Criterion) {
         });
     });
 
-    // Finish-only: start + sign in untimed setup, time just the verify path.
     c.bench_function("passkey_finish", |b| {
         b.to_async(&runtime).iter_custom(|iters| {
             let scaffold = &scaffold;
@@ -171,7 +140,6 @@ fn passkey_auth(c: &mut Criterion) {
             async move {
                 let mut total = Duration::ZERO;
                 for _ in 0..iters {
-                    // Untimed: fresh challenge and a signed assertion for it.
                     let (auth_id, rcr) = scaffold
                         .manager
                         .start_authentication(SessionContext::default())
@@ -190,7 +158,6 @@ fn passkey_auth(c: &mut Criterion) {
                         .expect("authenticator auth");
                     assertion.response.user_handle = Some(user_handle.clone().into());
 
-                    // Timed: server-side assertion verification + session issue.
                     let start = Instant::now();
                     scaffold
                         .manager

@@ -19,23 +19,12 @@ all-features = true
 
 [dependencies]
 async-trait.workspace = true
-# The adapter takes a caller-built `aws_sdk_dynamodb::Client`, so it does not
-# bundle an HTTP client or a TLS stack of its own: `default-features = false`
-# drops the SDK's default HTTPS client (which would otherwise pull `aws-lc`, a
-# second crypto stack the workspace deliberately avoids — everything else here
-# is ring-backed rustls). The host supplies the connector when it builds the
-# client. `behavior-version-latest` pins the client behaviour so hosts need not
-# set it explicitly; `rt-tokio` provides the tokio sleep/timer plumbing.
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 chrono.workspace = true
 doorman-core = { path = "../core", version = "0.1.0" }
 uuid.workspace = true
 
 [dev-dependencies]
-# The conformance harness builds a client against a throwaway DynamoDB Local
-# container. It wires a ring-backed rustls HTTP client explicitly (rather than
-# `aws-config`, whose default TLS pulls `aws-lc`) so the test tree stays on the
-# workspace's single ring crypto stack.
 aws-smithy-http-client = { version = "1", features = ["rustls-ring"] }
 doorman-conformance = { path = "../conformance" }
 testcontainers-modules = { version = "0.15", features = ["dynamodb"] }

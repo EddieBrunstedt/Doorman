@@ -1,18 +1,3 @@
-//! redb-backed [`UserStore`].
-//!
-//! Users are the system of record, so this store reproduces the relational
-//! guarantees a SQL backend gives for free:
-//!
-//! - **Duplicate id** — rejected: `create_user` checks the `users` table
-//!   before inserting; the check and insert share a single write transaction
-//!   (redb serializes writers), so they are effectively atomic.
-//! - **Email uniqueness** — a dedicated `email_guard` table maps every in-use
-//!   address to its owner. The same write transaction checks and writes the
-//!   guard, so a concurrent attempt at the same address fails.
-//! - **Email lookup** — `find_user_by_email` reads the guard to get the
-//!   user id, then fetches the user record; both reads are in one read
-//!   transaction for snapshot consistency.
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
@@ -31,10 +16,6 @@ impl RedbUserStore {
         Self { handle }
     }
 
-    /// Read the user, apply `change`, and write it back in one write
-    /// transaction. redb serializes writers, so no other change can land
-    /// between the read and the write. `change` also gets the email guard
-    /// table, for the one change that moves the user's address.
     async fn modify(
         &self,
         id: UserId,
@@ -116,16 +97,13 @@ impl UserStore for RedbUserStore {
         let email = email.to_owned();
         self.handle
             .read(move |rtxn| {
-                // Look up the user id via the email guard.
                 let user_id_str = {
                     let guard_tbl = rtxn.open_table(db::EMAIL_GUARD).map_err(db::err)?;
                     match guard_tbl.get(email.as_str()).map_err(db::err)? {
                         Some(guard) => guard.value().to_owned(),
                         None => return Ok(None),
                     }
-                    // guard_tbl dropped here, releasing its borrow of rtxn.
                 };
-                // Now look up the user record using the same read transaction.
                 let users_tbl = rtxn.open_table(db::USERS).map_err(db::err)?;
                 match users_tbl.get(user_id_str.as_str()).map_err(db::err)? {
                     Some(guard) => Ok(Some(db::decode(guard.value())?)),

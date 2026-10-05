@@ -1,19 +1,3 @@
-//! Email transport and email-template customization.
-//!
-//! Managers build transactional emails through [`EmailTemplates`] and hand
-//! them to an [`EmailSender`]. The library ships no transport that silently
-//! drops mail — every host wires an explicit sender. First-party
-//! implementations: [`TerminalEmailSender`] (prints rendered messages to
-//! stdout) and `FileEmailSender` (writes RFC 822-shaped `.eml` files into a
-//! directory, behind the `file-email` feature). Tests use
-//! `CapturingEmailSender` from `doorman-test-support`; hosts plug in real
-//! transports (lettre, resend, SES, …) through the [`EmailSender`] trait.
-//!
-//! The library uses email purely as a side channel for **signup links**,
-//! **recovery links**, and security notifications for recovery, passkey
-//! lifecycle, and high-risk session revocation events. The default copy
-//! describes a passkey-driven flow; hosts override [`EmailTemplates`] to brand it.
-
 #[cfg(feature = "file-email")]
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,32 +17,19 @@ use crate::error::EmailError;
 use crate::error::EmailResult;
 use crate::storage::User;
 
-/// Transactional email ready to hand to a transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Email {
-    /// Recipient address.
     pub to: String,
-    /// Subject line.
     pub subject: String,
-    /// Plain-text body (always present).
     pub body_text: String,
-    /// Optional HTML body for clients that render it.
     pub body_html: Option<String>,
 }
 
-/// Transport for sending rendered transactional emails.
 #[async_trait]
 pub trait EmailSender: Send + Sync {
-    /// Deliver one rendered email. Link-delivery sends are awaited and their
-    /// errors propagate; security-notice sends are best-effort (see
-    /// [`SecurityEmailNotifier`]).
     async fn send(&self, email: Email) -> EmailResult<()>;
 }
 
-/// Prints every rendered email to stdout in a clearly-labelled block.
-///
-/// Intended for local development and the bundled example app. Does not
-/// deliver mail; swap in a real [`EmailSender`] for production.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TerminalEmailSender;
 
@@ -73,25 +44,6 @@ impl EmailSender for TerminalEmailSender {
     }
 }
 
-/// Writes each rendered email to `dir/<timestamp>-<seq>.eml` in an
-/// RFC 822-shaped layout. Intended for local development and inspecting
-/// flows without wiring a real SMTP / API transport.
-///
-/// The directory must already exist; the sender does not create it.
-/// Filenames combine an RFC 3339 UTC timestamp with a per-process
-/// counter so multiple emails sent in the same second do not collide.
-///
-/// Available only with the `file-email` feature, which is what pulls
-/// `tokio`'s filesystem support into the build.
-///
-/// # Unbounded growth
-///
-/// This is a development-only transport. It writes one `.eml` per send and
-/// **never prunes** them, so the directory grows without bound over a long dev
-/// session. Point it at a scratch/temp directory and clear it periodically
-/// (e.g. on startup, or with a cron/`tmpwatch` job); it caps nothing itself.
-/// Do not use it in production — implement [`EmailSender`] against a real
-/// transactional-email provider there.
 #[cfg(feature = "file-email")]
 #[derive(Debug)]
 pub struct FileEmailSender {
@@ -101,8 +53,6 @@ pub struct FileEmailSender {
 
 #[cfg(feature = "file-email")]
 impl FileEmailSender {
-    /// Create a sender writing `.eml` files into `dir`. The directory must
-    /// already exist.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
             dir: dir.into(),
@@ -110,7 +60,6 @@ impl FileEmailSender {
         }
     }
 
-    /// The directory `.eml` files are written into.
     pub fn dir(&self) -> &std::path::Path {
         &self.dir
     }
@@ -147,42 +96,7 @@ impl EmailSender for FileEmailSender {
     }
 }
 
-/// Renders the subject and body for each transactional email the library
-/// sends. Hosts implement this trait when they want to customise the copy
-/// (brand name, language, HTML body, etc.) without rewriting the auth
-/// flows that send them.
-///
-/// The default impl, [`DefaultEmailTemplates`], ships with neutral copy for
-/// the built-in passkey-driven flows. Each method has a default body so a
-/// host can override one method and inherit the rest:
-///
-/// ```ignore
-/// use doorman_core::email::{EmailTemplates, Email};
-/// use doorman_core::storage::User;
-///
-/// struct MyEmails {
-///     brand: String,
-/// }
-///
-/// impl EmailTemplates for MyEmails {
-///     fn signup_email(&self, user: &User, url: &str) -> Email {
-///         Email {
-///             to: user.email.clone().unwrap_or_default(),
-///             subject: format!("Finish creating your {} account", self.brand),
-///             body_text: format!("Visit {url} to finish setting up your account."),
-///             body_html: None,
-///         }
-///     }
-/// }
-/// ```
-///
-/// The methods only run when [`User::email`] is `Some` — the auth flows
-/// guard on that before calling. Default impls populate the `to` field
-/// from `user.email.clone().unwrap_or_default()` for convenience; custom
-/// impls should do the same.
 pub trait EmailTemplates: Send + Sync {
-    /// The signup link emailed to a new address. The link redeems once and
-    /// starts first-passkey registration; it does not create a session.
     fn signup_email(&self, user: &User, url: &str) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
@@ -198,10 +112,6 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    /// Sent to a registered user when their address shows up at the
-    /// recovery request endpoint. The link redeems for exactly one action:
-    /// starting a passkey registration ceremony against the user. No
-    /// session is issued from the click.
     fn recovery_email(&self, user: &User, url: &str) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
@@ -219,9 +129,6 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    /// Sent to the registered user alongside the recovery link. The goal
-    /// is to make every recovery request visible to the legitimate inbox
-    /// owner before a new passkey can be enrolled.
     fn recovery_requested_notification_email(&self, user: &User) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
@@ -239,9 +146,6 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    /// Sent when a recovery completes successfully. The goal is to make the
-    /// newly-enrolled passkey visible while the recovery cool-down still
-    /// blocks destructive account changes.
     fn recovery_completed_notification_email(&self, user: &User) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
@@ -258,10 +162,6 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    /// Sent to the **new** address when a verified email-change is requested.
-    /// Clicking the link confirms the user controls the new address and moves
-    /// the account's email to it. `new_email` is the requested address (also
-    /// the recipient); `url` carries the single-use confirmation token.
     fn email_change_confirmation_email(&self, _user: &User, new_email: &str, url: &str) -> Email {
         Email {
             to: new_email.to_string(),
@@ -278,9 +178,6 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    /// Sent to the **old** address when a verified email-change is requested,
-    /// so the current inbox owner sees that a change was initiated before it
-    /// takes effect. `new_email` is the address the account would move to.
     fn email_change_requested_notification_email(&self, user: &User, new_email: &str) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
@@ -298,10 +195,6 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    /// Sent whenever a passkey is successfully registered for the account.
-    /// `passkey_name` is the optional user-supplied friendly label; raw
-    /// credential ids, attestation data, tokens, and other secrets are not
-    /// exposed to email templates.
     fn passkey_registered_notification_email(
         &self,
         user: &User,
@@ -326,10 +219,6 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    /// Sent whenever a passkey is successfully removed from the account.
-    /// `passkey_name` is the optional user-supplied friendly label; raw
-    /// credential ids and other credential material are not exposed to email
-    /// templates.
     fn passkey_removed_notification_email(&self, user: &User, passkey_name: Option<&str>) -> Email {
         let detail = display_passkey_name(passkey_name)
             .map(|name| format!("The passkey named \"{name}\" was just removed from your account."))
@@ -350,13 +239,6 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    /// Sent when an **operator** (a host admin, support agent, CLI, or backend
-    /// job — not the account owner) removes a passkey from the account. Uses
-    /// operator-aware copy: it states plainly that an administrator performed
-    /// the action and never the self-service "was this you?" wording, which
-    /// would mislead the owner into treating a legitimate admin action as a
-    /// possible compromise. `passkey_name` is the optional user-supplied
-    /// friendly label; raw credential material is never exposed to templates.
     fn operator_passkey_removed_notification_email(
         &self,
         user: &User,
@@ -380,10 +262,6 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    /// Sent when an **operator** revokes every session on the account (not the
-    /// account owner signing themselves out). Uses operator-aware copy: it
-    /// states that an administrator signed the account out everywhere and never
-    /// the self-service "was this you?" wording.
     fn operator_sessions_revoked_notification_email(&self, user: &User) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
@@ -398,12 +276,6 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    /// Sent when an **operator** disables (freezes) the account: a reversible
-    /// hold that refuses both sign-in and recovery until an operator re-enables
-    /// it. Uses operator-aware copy — it states plainly that an administrator
-    /// disabled the account and never the self-service "was this you?" wording.
-    /// This notice ships **opt-in** (the disable policy defaults to suppress),
-    /// so it is sent only when the host turns it on.
     fn operator_account_disabled_notification_email(&self, user: &User) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
@@ -419,8 +291,6 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    /// Sent whenever a session other than the caller's current session is
-    /// successfully revoked from the account.
     fn other_session_revoked_notification_email(&self, user: &User) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
@@ -436,7 +306,6 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    /// Sent whenever the caller uses the "sign out everywhere else" action.
     fn other_sessions_revoked_notification_email(&self, user: &User) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
@@ -462,23 +331,11 @@ fn display_passkey_name(passkey_name: Option<&str>) -> Option<String> {
     Some(name.replace(['\r', '\n'], " "))
 }
 
-/// Stock [`EmailTemplates`] impl. Produces neutral copy for the built-in
-/// passkey-driven flows. Used as the default when a config does not
-/// specify its own.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultEmailTemplates;
 
 impl EmailTemplates for DefaultEmailTemplates {}
 
-/// Best-effort sender for security notifications.
-///
-/// Managers and bundled HTTP handlers call this only after the protected
-/// action has already succeeded. Send failures are logged and deliberately
-/// do not roll back the action. Every best-effort send in the library goes
-/// through here, including the signup and recovery link emails (whose
-/// delivery must not surface as an enumeration signal). The email-change
-/// confirmation link is the one hard failure: it is the whole flow, so the
-/// account manager sends it on the transport directly.
 #[derive(Clone)]
 pub struct SecurityEmailNotifier {
     sender: Arc<dyn EmailSender>,
@@ -486,12 +343,10 @@ pub struct SecurityEmailNotifier {
 }
 
 impl SecurityEmailNotifier {
-    /// Build a notifier from a transport and an email renderer.
     pub fn new(sender: Arc<dyn EmailSender>, emails: Arc<dyn EmailTemplates>) -> Self {
         Self { sender, emails }
     }
 
-    /// Send the best-effort "passkey registered" notification.
     pub async fn passkey_registered(&self, user: &User, passkey_name: Option<&str>) {
         self.send_best_effort(user, "passkey registered notification", |emails| {
             emails.passkey_registered_notification_email(user, passkey_name)
@@ -499,7 +354,6 @@ impl SecurityEmailNotifier {
         .await;
     }
 
-    /// Send the best-effort "passkey removed" notification.
     pub async fn passkey_removed(&self, user: &User, passkey_name: Option<&str>) {
         self.send_best_effort(user, "passkey removed notification", |emails| {
             emails.passkey_removed_notification_email(user, passkey_name)
@@ -507,8 +361,6 @@ impl SecurityEmailNotifier {
         .await;
     }
 
-    /// Send the best-effort operator-aware "passkey removed by an
-    /// administrator" notification.
     pub async fn operator_passkey_removed(&self, user: &User, passkey_name: Option<&str>) {
         self.send_best_effort(user, "operator passkey removed notification", |emails| {
             emails.operator_passkey_removed_notification_email(user, passkey_name)
@@ -516,8 +368,6 @@ impl SecurityEmailNotifier {
         .await;
     }
 
-    /// Send the best-effort operator-aware "signed out by an administrator"
-    /// notification for an operator revoking all of a user's sessions.
     pub async fn operator_sessions_revoked(&self, user: &User) {
         self.send_best_effort(user, "operator sessions revoked notification", |emails| {
             emails.operator_sessions_revoked_notification_email(user)
@@ -525,8 +375,6 @@ impl SecurityEmailNotifier {
         .await;
     }
 
-    /// Send the best-effort operator-aware "your account was disabled by an
-    /// administrator" notification.
     pub async fn operator_account_disabled(&self, user: &User) {
         self.send_best_effort(user, "operator account disabled notification", |emails| {
             emails.operator_account_disabled_notification_email(user)
@@ -534,7 +382,6 @@ impl SecurityEmailNotifier {
         .await;
     }
 
-    /// Send the best-effort notification for revoking one other session.
     pub async fn other_session_revoked(&self, user: &User) {
         self.send_best_effort(user, "other-session revoked notification", |emails| {
             emails.other_session_revoked_notification_email(user)
@@ -542,7 +389,6 @@ impl SecurityEmailNotifier {
         .await;
     }
 
-    /// Send the best-effort notification for "sign out everywhere else".
     pub async fn other_sessions_revoked(&self, user: &User) {
         self.send_best_effort(user, "other-sessions revoked notification", |emails| {
             emails.other_sessions_revoked_notification_email(user)
@@ -550,8 +396,6 @@ impl SecurityEmailNotifier {
         .await;
     }
 
-    /// Send the best-effort "account recovery requested" notification, which
-    /// accompanies the recovery link.
     pub async fn recovery_requested(&self, user: &User) {
         self.send_best_effort(user, "recovery requested notification", |emails| {
             emails.recovery_requested_notification_email(user)
@@ -559,7 +403,6 @@ impl SecurityEmailNotifier {
         .await;
     }
 
-    /// Send the best-effort "account recovery completed" notification.
     pub async fn recovery_completed(&self, user: &User) {
         self.send_best_effort(user, "recovery completed notification", |emails| {
             emails.recovery_completed_notification_email(user)
@@ -567,8 +410,6 @@ impl SecurityEmailNotifier {
         .await;
     }
 
-    /// Send the best-effort "email change requested" notification to the
-    /// account's current (old) address. `new_email` is the requested address.
     pub async fn email_change_requested(&self, user: &User, new_email: &str) {
         self.send_best_effort(user, "email change requested notification", |emails| {
             emails.email_change_requested_notification_email(user, new_email)
@@ -576,10 +417,6 @@ impl SecurityEmailNotifier {
         .await;
     }
 
-    /// Shared best-effort skeleton: skip (with a debug log) when the user has
-    /// no email address, render through the configured templates, and log —
-    /// never propagate — a transport failure. `what` names the email in the
-    /// log line.
     pub(crate) async fn send_best_effort(
         &self,
         user: &User,
@@ -655,7 +492,6 @@ mod tests {
         assert!(body.contains("Subject: Hello"));
         assert!(body.contains("body line"));
 
-        // Best-effort cleanup.
         let _ = fs::remove_dir_all(&dir).await;
     }
 }

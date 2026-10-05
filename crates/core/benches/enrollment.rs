@@ -1,21 +1,3 @@
-//! Signup-request bench: the work `request_signup` does behind an
-//! enrollment flow — email normalize/validate, rate-limit check, user
-//! provisioning, single-use token issuance, link render, and the (captured,
-//! non-networked) email send.
-//!
-//! Each iteration runs against a fresh, empty manager (built in the
-//! untimed `iter_batched` setup) so it measures the steady-state cost of a
-//! single provision-and-issue against an empty store. Reusing one manager
-//! across iterations would instead measure the cost of an ever-growing
-//! token store (the `Vec`-backed in-memory store scans every entry on each
-//! write), which is a property of the test double, not the signup path.
-//!
-//! Run with:
-//!
-//! ```sh
-//! cargo bench -p doorman-core --bench enrollment
-//! ```
-
 mod support;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};

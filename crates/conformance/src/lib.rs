@@ -1,24 +1,3 @@
-//! Backend-agnostic storage-conformance suite for doorman storage adapters.
-//!
-//! Every check takes a [`Storage`] and asserts the contract the
-//! `doorman-core` managers rely on, independent of how the rows are stored.
-//! Depend on this crate under `[dev-dependencies]` and call [`run`] from a
-//! test to validate any adapter against the same assertions every first-party
-//! adapter runs (`doorman-sqlx` across SQLite/Postgres/MySQL plus the
-//! in-memory reference stores, `doorman-redis`, `doorman-dynamodb`,
-//! `doorman-mongodb`, and `doorman-redb`). Running the identical assertions
-//! everywhere keeps adapters from drifting apart and pins the in-memory
-//! stores to the same contract the docs claim they model.
-//!
-//! Checks share a single `Storage` instance, so each uses freshly minted
-//! ids and token hashes to stay isolated; assertions that touch
-//! whole-table operations (`purge_expired`) target a specific row rather
-//! than an exact count.
-//!
-//! The concurrency checks spawn tasks, so the suite must be awaited inside a
-//! Tokio runtime (`#[tokio::test]` is enough). Under a multi-thread runtime
-//! the racing callers also run in parallel.
-
 use std::future::Future;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -36,7 +15,6 @@ fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
         .expect("valid timestamp")
 }
 
-/// Assert `result` failed with `kind`; `what` names the refused operation.
 #[track_caller]
 fn assert_refused<T: std::fmt::Debug>(
     result: StorageResult<T>,
@@ -60,12 +38,8 @@ fn user(id: UserId, email: &str) -> User {
     }
 }
 
-/// Number of concurrent callers racing to redeem one single-use row.
 const RACERS: usize = 64;
 
-/// Run the full backend-agnostic suite against `storage`.
-///
-/// Must be awaited inside a Tokio runtime; see the crate docs.
 pub async fn run(storage: &Storage) {
     users_round_trip(storage).await;
     users_email_change(storage).await;
@@ -93,8 +67,6 @@ pub async fn run(storage: &Storage) {
     absent_lookups_return_none(storage).await;
 }
 
-/// `SessionStore::list_for_user` must drop rows whose `expires_at <= now`
-/// before they leave the database.
 async fn sessions_list_excludes_expired(storage: &Storage) {
     let now = ts(2026, 3, 1);
     let user_id = UserId::new();
@@ -156,13 +128,11 @@ async fn users_round_trip(storage: &Storage) {
         Some(record.clone()),
     );
 
-    // Duplicate id is rejected.
     assert_refused(
         users.create_user(user(id, "different@example.com")).await,
         StorageErrorKind::Conflict,
         "duplicate id should error",
     );
-    // Duplicate email is rejected.
     assert_refused(
         users
             .create_user(user(UserId::new(), "round-trip@example.com"))
@@ -171,7 +141,6 @@ async fn users_round_trip(storage: &Storage) {
         "duplicate email should error",
     );
 
-    // Marking the email verified is observable.
     users
         .mark_email_verified(id, ts(2026, 2, 1))
         .await
@@ -186,9 +155,6 @@ async fn users_round_trip(storage: &Storage) {
         Some(verified.clone()),
     );
 
-    // Account status round-trips: flipping to `Disabled { at }` and back must
-    // survive a write/read cycle, variant and timestamp intact. This is what
-    // proves every adapter actually persists the new state.
     let disabled_at = ts(2026, 2, 15);
     users
         .set_user_status(id, AccountStatus::Disabled { at: disabled_at }, disabled_at)
@@ -207,7 +173,6 @@ async fn users_round_trip(storage: &Storage) {
     assert_eq!(reread, disabled, "disabled status round-trips");
     assert!(!reread.status.is_active(), "disabled account is not active");
 
-    // And back to active.
     users
         .set_user_status(id, AccountStatus::Active, ts(2026, 2, 20))
         .await
@@ -227,7 +192,6 @@ async fn users_round_trip(storage: &Storage) {
         "reactivation clears the disabled timestamp",
     );
 
-    // Delete removes both lookups.
     users.delete_user(id).await.expect("delete");
     assert!(
         users
@@ -245,9 +209,6 @@ async fn users_round_trip(storage: &Storage) {
     );
 }
 
-/// `set_user_email` moves the address: the new one resolves to the user, the
-/// old one is released for reuse, and an address another user holds is
-/// refused without changing either user.
 async fn users_email_change(storage: &Storage) {
     let users = &storage.users;
     let id = UserId::new();
@@ -314,17 +275,12 @@ async fn users_email_change(storage: &Storage) {
         "a refused change leaves the holder untouched",
     );
 
-    // Setting the address the user already has is allowed.
     users
         .set_user_email(id, "after-change@example.com", ts(2026, 3, 3))
         .await
         .expect("re-set own address");
 }
 
-/// Field-level changes never overwrite each other: a status change and an
-/// email change to the same user both survive, in either order. Each setter is
-/// a single atomic write that touches only its own fields, so any concurrent
-/// interleaving of the two is equivalent to one of these orders.
 async fn users_field_changes_compose(storage: &Storage) {
     let users = &storage.users;
     let disabled = AccountStatus::Disabled { at: ts(2026, 4, 1) };
@@ -380,8 +336,6 @@ async fn users_field_changes_compose(storage: &Storage) {
     assert_eq!(reread.email_verified_at, Some(ts(2026, 4, 1)));
 }
 
-/// Every field-level setter refuses a user that does not exist rather than
-/// creating one.
 async fn users_setters_refuse_missing_user(storage: &Storage) {
     let users = &storage.users;
     let missing = UserId::new();
@@ -461,7 +415,6 @@ async fn verification_token_single_use(storage: &Storage) {
         "second consume returns nothing",
     );
 
-    // A token of one purpose cannot be redeemed under another.
     let signup_hash = hash_token("purpose-scoped-token");
     tokens
         .create_token(VerificationToken {
@@ -492,8 +445,6 @@ async fn verification_token_single_use(storage: &Storage) {
     );
 }
 
-/// An email-change token carries the target address in `new_email`; it must
-/// round-trip through `create`/`consume` so the confirm step can read it back.
 async fn verification_token_email_change_payload(storage: &Storage) {
     let user_id = UserId::new();
     storage
@@ -563,7 +514,6 @@ async fn verification_token_purge_and_delete(storage: &Storage) {
         .await
         .expect("create recovery");
 
-    // Deleting one purpose leaves the other intact.
     let removed = tokens
         .delete_tokens_for_user(user_id, VerificationPurpose::Signup)
         .await
@@ -586,7 +536,6 @@ async fn verification_token_purge_and_delete(storage: &Storage) {
         "the recovery token of another purpose survived the delete",
     );
 
-    // An expired token is purged; a live one is not.
     let expired_hash = hash_token("expired-token");
     tokens
         .create_token(VerificationToken {
@@ -643,8 +592,6 @@ async fn sessions_crud_and_queries(storage: &Storage) {
     let other_a = mk("other-a", user_id, None);
     let other_b = mk("other-b", user_id, None);
     let neighbour = mk("neighbour", other_user, None);
-    // Recovery-issued session carries a cool-down instant that must survive
-    // the round-trip through storage.
     let cooldown_until = now + Duration::hours(24);
     let with_cooldown = mk("cooldown", user_id, Some(cooldown_until));
 
@@ -655,7 +602,6 @@ async fn sessions_crud_and_queries(storage: &Storage) {
             .expect("create session");
     }
 
-    // find_session_by_token_hash round-trips the row, cool-down included.
     let by_hash = sessions
         .find_session_by_token_hash(&hash_token("cooldown"))
         .await
@@ -672,7 +618,6 @@ async fn sessions_crud_and_queries(storage: &Storage) {
         .expect("session present");
     assert_eq!(by_id.recovery_cooldown_until, Some(cooldown_until));
 
-    // list_for_user returns every (unexpired) session for the user.
     let listed = sessions.list_for_user(user_id, now).await.expect("list");
     let listed_ids: std::collections::HashSet<_> = listed.iter().map(|s| s.id).collect();
     let expected: std::collections::HashSet<_> =
@@ -682,7 +627,6 @@ async fn sessions_crud_and_queries(storage: &Storage) {
         "list returns only this user's sessions"
     );
 
-    // delete_sessions_for_user with an exception keeps it, removes the rest.
     let removed = sessions
         .delete_sessions_for_user(user_id, Some(keep.id))
         .await
@@ -695,7 +639,6 @@ async fn sessions_crud_and_queries(storage: &Storage) {
     assert_eq!(after.len(), 1);
     assert_eq!(after[0].id, keep.id);
 
-    // The neighbouring user's session is untouched.
     assert!(
         sessions
             .find_session_by_id(neighbour.id)
@@ -704,7 +647,6 @@ async fn sessions_crud_and_queries(storage: &Storage) {
             .is_some()
     );
 
-    // delete_sessions_for_user without one clears the rest for this user.
     let removed = sessions
         .delete_sessions_for_user(user_id, None)
         .await
@@ -717,7 +659,6 @@ async fn sessions_crud_and_queries(storage: &Storage) {
             .expect("list cleared")
             .is_empty()
     );
-    // delete_session on the neighbour's row.
     sessions
         .delete_session(neighbour.id)
         .await
@@ -792,9 +733,6 @@ async fn sessions_purge_expired(storage: &Storage) {
     );
 }
 
-/// `SessionStore::touch_session` persists the slid `last_used_at` and
-/// `expires_at` for a present session — visible through both resolution paths —
-/// while leaving every other field unchanged.
 async fn session_touch_slides_deadline(storage: &Storage) {
     let created_at = ts(2026, 1, 1);
     let user_id = UserId::new();
@@ -812,8 +750,6 @@ async fn session_touch_slides_deadline(storage: &Storage) {
         token_hash,
         created_at,
         last_used_at: created_at,
-        // Future-dated so the row is never evicted out from under the read
-        // assertions on TTL-bearing backends.
         expires_at: ts(2099, 1, 1),
         ip: Some("203.0.113.9".into()),
         user_agent: Some("touch-agent".into()),
@@ -831,7 +767,6 @@ async fn session_touch_slides_deadline(storage: &Storage) {
         .await
         .expect("touch session");
 
-    // Both resolution paths reflect the slid timestamps.
     let by_id = sessions
         .find_session_by_id(original.id)
         .await
@@ -848,7 +783,6 @@ async fn session_touch_slides_deadline(storage: &Storage) {
     assert_eq!(by_hash.last_used_at, new_last_used_at);
     assert_eq!(by_hash.expires_at, new_expires_at);
 
-    // Every other field is untouched.
     assert_eq!(by_id.id, original.id);
     assert_eq!(by_id.token_hash, original.token_hash);
     assert_eq!(by_id.created_at, original.created_at);
@@ -865,9 +799,6 @@ async fn session_touch_slides_deadline(storage: &Storage) {
         .expect("cleanup session");
 }
 
-/// Anti-resurrection: touching a session id that does not exist (deleted, or
-/// never created) returns `Ok` and MUST NOT create a row. This is the security
-/// contract that stops a touch racing a revoke from bringing a session back.
 async fn session_touch_does_not_resurrect(storage: &Storage) {
     let created_at = ts(2026, 1, 1);
     let user_id = UserId::new();
@@ -879,7 +810,6 @@ async fn session_touch_does_not_resurrect(storage: &Storage) {
 
     let sessions = &storage.sessions;
 
-    // Case 1: an id that was never created.
     let phantom = Session {
         id: SessionId::new(),
         user_id,
@@ -904,7 +834,6 @@ async fn session_touch_does_not_resurrect(storage: &Storage) {
         "touching a never-created id must not create a row",
     );
 
-    // Case 2: an id created then deleted, touched afterwards.
     let revoked = Session {
         token_hash: hash_token("touch-after-delete"),
         ..phantom.clone()
@@ -943,16 +872,8 @@ async fn session_touch_does_not_resurrect(storage: &Storage) {
     );
 }
 
-/// Rounds of [`session_revoke_races_creation`]: each round races one bulk
-/// revoke against [`RACERS`] session creations.
 const REVOKE_ROUNDS: usize = 8;
 
-/// A bulk revoke racing session creation never half-removes a session. Every
-/// session that survives the revoke is still listed for its user and is
-/// removed by the next revoke. Odd rounds revoke with an exception, which must
-/// survive its round. An adapter that drops its whole per-user index
-/// after enumerating it would orphan a session created in between: the
-/// session still resolves, but no listing or later revoke can reach it.
 async fn session_revoke_races_creation(storage: &Storage) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
@@ -1078,9 +999,6 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
         .await
         .expect("user");
 
-    // The store treats both the credential id and the credential blob as
-    // opaque bytes: it persists whatever doorman-core hands it and returns it
-    // verbatim, with no webauthn-rs knowledge of its own.
     let credential_id = b"conformance-credential-id".to_vec();
     let passkey_blob = b"opaque-serialised-passkey-blob".to_vec();
     let cooldown_until = now + Duration::hours(24);
@@ -1119,9 +1037,6 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
     assert!(!by_id.backup_state);
     assert_eq!(by_id.recovery_cooldown_until, Some(cooldown_until));
 
-    // A recorded use writes the blob, the backup flags and the last-used time;
-    // a rename writes only the name. Every other field keeps the value it was
-    // registered with.
     let updated_blob = b"opaque-serialised-passkey-blob-v2".to_vec();
     let used_at = now + Duration::minutes(5);
     credentials
@@ -1129,7 +1044,6 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
             &credential_id,
             PasskeyUse {
                 passkey: updated_blob.clone(),
-                // The credential became backed up after registration.
                 backup_eligible: true,
                 backup_state: true,
                 used_at,
@@ -1173,8 +1087,6 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
         "cool-down preserved on update",
     );
 
-    // The metadata-only projection carries the same fields as the full
-    // record, derived without deserialising the credential blob.
     let summaries = credentials
         .list_passkey_summaries_for_user(user_id)
         .await
@@ -1194,13 +1106,8 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
     assert!(summary.backup_eligible);
     assert!(summary.backup_state);
     assert_eq!(summary.recovery_cooldown_until, Some(cooldown_until));
-    // The same record viewed as a summary is byte-for-byte the projection.
     assert_eq!(*summary, PasskeySummary::from(listed[0].clone()));
 
-    // A second `add_passkey` with the same credential id must be rejected,
-    // even when it claims a different owner and carries a different blob.
-    // This is what stops one user from registering another user's credential
-    // id; the lookup must keep resolving to the original owner.
     let other_user_id = UserId::new();
     storage
         .users
@@ -1237,8 +1144,6 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
     );
 }
 
-/// A credential with the given id, owned by `user_id`, registered at
-/// `created_at` with no name, no use and no backup.
 fn passkey(user_id: UserId, credential_id: &[u8], created_at: DateTime<Utc>) -> StoredPasskey {
     StoredPasskey {
         credential_id: credential_id.to_vec(),
@@ -1255,12 +1160,6 @@ fn passkey(user_id: UserId, credential_id: &[u8], created_at: DateTime<Utc>) -> 
     }
 }
 
-/// Field-level credential writes never overwrite each other: a recorded use
-/// and a rename of the same credential both survive, in either order, and
-/// neither moves the owner or the registration time. Each write is a single
-/// atomic change to its own fields, so any concurrent interleaving of the two
-/// (a sign-in and a rename racing from the same read of the row) is
-/// equivalent to one of these orders.
 async fn passkey_field_changes_compose(storage: &Storage) {
     let created_at = ts(2026, 6, 1);
     let used_at = ts(2026, 6, 2);
@@ -1324,7 +1223,6 @@ async fn passkey_field_changes_compose(storage: &Storage) {
         assert_eq!(reread.created_at, created_at, "registration time is fixed");
     }
 
-    // Clearing the name removes it and leaves the recorded use in place.
     credentials
         .set_passkey_name(b"compose-use-first", None)
         .await
@@ -1338,8 +1236,6 @@ async fn passkey_field_changes_compose(storage: &Storage) {
     assert_eq!(cleared.last_used_at, Some(used_at));
 }
 
-/// Every field-level credential write refuses a credential that does not
-/// exist rather than creating one.
 async fn passkey_writes_refuse_missing_credential(storage: &Storage) {
     let credentials = &storage.passkey_credentials;
     let missing = b"conformance-missing-credential";
@@ -1373,11 +1269,6 @@ async fn passkey_writes_refuse_missing_credential(storage: &Storage) {
     );
 }
 
-/// `PasskeyCredentialStore::delete_passkeys_for_user` removes every credential
-/// belonging to the target user in one set-based operation, returns the number
-/// removed, and leaves another user's credential untouched. This backs account
-/// deletion's credential cascade. `count_passkeys_for_user` is checked along
-/// the way: it is owner-scoped and tracks single and bulk removals.
 async fn passkey_credentials_bulk_delete_for_user(storage: &Storage) {
     let now = ts(2026, 1, 1);
     let target = UserId::new();
@@ -1422,7 +1313,6 @@ async fn passkey_credentials_bulk_delete_for_user(storage: &Storage) {
     let bystander_cred = b"bulk-delete-bystander-cred".to_vec();
     add(bystander, bystander_cred.clone()).await;
 
-    // The count is scoped to the owner and tracks a single removal.
     let count = |user_id: UserId| async move {
         credentials
             .count_passkeys_for_user(user_id)
@@ -1469,7 +1359,6 @@ async fn passkey_credentials_bulk_delete_for_user(storage: &Storage) {
         "all of the target user's credentials are removed",
     );
 
-    // The bystander's credential is untouched.
     let surviving = credentials
         .list_passkeys_for_user(bystander)
         .await
@@ -1487,8 +1376,6 @@ async fn passkey_registration_cooldown_round_trip(storage: &Storage) {
         .await
         .expect("user");
 
-    // The ceremony state is opaque to the store: an arbitrary byte blob must
-    // survive the round-trip through `put`/`take` unchanged.
     let state_blob = b"opaque-serialised-registration-state".to_vec();
     let cooldown_until = now + Duration::hours(24);
     let challenge_id = PasskeyChallengeId::new();
@@ -1531,9 +1418,6 @@ async fn passkey_registration_cooldown_round_trip(storage: &Storage) {
     );
 }
 
-/// `delete_registrations_for_user` drops every pending registration for the
-/// target user and leaves other users' challenges untouched. Recovery
-/// completion relies on this to close the pre-recovery-challenge bypass.
 async fn passkey_registration_delete_for_user(storage: &Storage) {
     let now = ts(2026, 1, 1);
     let target = UserId::new();
@@ -1572,8 +1456,6 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
     let _target_b = put(target).await;
     let bystander_challenge = put(bystander).await;
 
-    // The per-user count backs the pending-registration cap and must scope to
-    // the user it is asked about.
     assert_eq!(
         storage
             .passkey_challenges
@@ -1612,7 +1494,6 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
         "count drops to zero after the user's challenges are deleted",
     );
 
-    // The bystander's challenge survives.
     assert_eq!(
         storage
             .passkey_challenges
@@ -1632,7 +1513,6 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
         "another user's pending registration must be untouched",
     );
 
-    // A second delete is a no-op.
     let dropped_again = storage
         .passkey_challenges
         .delete_registrations_for_user(target)
@@ -1641,13 +1521,6 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
     assert_eq!(dropped_again, 0);
 }
 
-/// An authentication ceremony round-trips its purpose and opaque state
-/// through `put`/`take` and is single-use: `take_authentication` removes the
-/// challenge before returning it, so a second take observes nothing. Both
-/// purposes share the one table, so each must come back as it was stored —
-/// core relies on the purpose to keep login and re-authentication apart.
-/// Authentications are not user-scoped, so unlike registrations they carry no
-/// secondary index.
 async fn passkey_authentication_single_use(storage: &Storage) {
     let now = ts(2026, 1, 1);
     for purpose in [AuthenticationPurpose::Login, AuthenticationPurpose::Reauth] {
@@ -1691,9 +1564,6 @@ async fn passkey_authentication_single_use(storage: &Storage) {
     }
 }
 
-/// `PasskeyChallengeStore::purge_expired` drops expired ceremonies and spares
-/// live ones, across both ceremony kinds: a registration (reached through its
-/// per-user index) and an authentication (no index, reached by row scan).
 async fn passkey_challenge_purge_expired(storage: &Storage) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
@@ -1768,8 +1638,6 @@ async fn passkey_challenge_purge_expired(storage: &Storage) {
     );
 }
 
-/// Spawn [`RACERS`] copies of `redeem` as concurrent tasks and return how many
-/// of them observed the row.
 async fn count_redeemers<F, Fut>(redeem: F) -> usize
 where
     F: Fn() -> Fut,
@@ -1785,11 +1653,6 @@ where
     redeemed
 }
 
-/// Single-use holds under concurrency: when many callers race to consume one
-/// verification token, or to take one registration or authentication
-/// ceremony, exactly one observes it. A look-up followed by a separate delete
-/// would let two requests carrying the same secret both succeed; the stores
-/// must remove and return the row in one atomic step.
 async fn single_use_under_concurrency(storage: &Storage) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
@@ -1877,11 +1740,6 @@ async fn single_use_under_concurrency(storage: &Storage) {
     assert_eq!(taken, 1, "exactly one caller takes the authentication");
 }
 
-/// Removing one row also drops it from its owner's index. After a consume,
-/// take, single delete, or purge, the per-user count and the bulk deletes see
-/// only the rows that remain. An adapter that maintains its own per-user index
-/// must unlink the entry together with the row; a stale entry inflates
-/// `count_registrations_for_user` toward the outstanding-ceremony cap.
 async fn owner_indexes_track_removals(storage: &Storage) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
@@ -1891,7 +1749,6 @@ async fn owner_indexes_track_removals(storage: &Storage) {
         .await
         .expect("user");
 
-    // Sessions: one deleted by id, one purged, one kept, one left over.
     let sessions = &storage.sessions;
     let session = |token: &str, expires_at| Session {
         id: SessionId::new(),
@@ -1939,7 +1796,6 @@ async fn owner_indexes_track_removals(storage: &Storage) {
         "only the kept session is left to remove",
     );
 
-    // Verification tokens: one consumed, one purged, one left over.
     let tokens = &storage.verification_tokens;
     let token = |raw: &str, expires_at| VerificationToken {
         token_hash: hash_token(raw),
@@ -1976,8 +1832,6 @@ async fn owner_indexes_track_removals(storage: &Storage) {
         "only the remaining token is left to remove",
     );
 
-    // Registrations: one taken, one purged, one left over. The count is the
-    // index read the outstanding-ceremony cap relies on.
     let challenges = &storage.passkey_challenges;
     let registration = |expires_at| StoredPasskeyRegistration {
         id: PasskeyChallengeId::new(),
@@ -2040,8 +1894,6 @@ async fn owner_indexes_track_removals(storage: &Storage) {
     assert_eq!(count().await, 0, "no registrations remain");
 }
 
-/// Looking up an id or token that was never stored resolves to `None` rather
-/// than erroring, on every read and take path the managers depend on.
 async fn absent_lookups_return_none(storage: &Storage) {
     assert!(
         storage

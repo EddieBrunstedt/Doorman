@@ -1,7 +1,3 @@
-//! Verify the umbrella crate re-exports wire up the full stack through a
-//! single dependency: `doorman::prelude::*` plus the `doorman::core` /
-//! `doorman::axum` / `doorman::sqlx` module paths.
-
 #![cfg(all(feature = "axum", feature = "sqlite"))]
 
 use std::sync::Arc;
@@ -14,8 +10,6 @@ use url::Url;
 #[tokio::test]
 async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn std::error::Error>>
 {
-    // `SqliteStorage` comes from the re-exported `doorman-sqlx`, the builder and
-    // configs from the re-exported `doorman-axum` prelude (which folds in core).
     let storage = SqliteStorage::connect("sqlite::memory:").await?;
     storage.migrate().await?;
 
@@ -51,7 +45,6 @@ async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn 
     let _ = auth.router();
     let _ = auth.session_layer();
 
-    // The module paths resolve too.
     let _: Option<doorman::sqlx::SqliteStorage> = None;
     Ok(())
 }

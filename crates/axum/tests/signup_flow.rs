@@ -1,10 +1,3 @@
-//! End-to-end HTTP tests for the signup routes.
-//!
-//! Exercises the high-level builder wiring path so the test covers manager
-//! construction, route mounting, email delivery, the passkey ceremony at
-//! consume / finish time, session cookie issuance, and the session layer
-//! loading the newly issued session.
-
 mod common;
 
 use std::sync::{Arc, Mutex};
@@ -57,8 +50,6 @@ async fn full_signup_round_trip_cookie_path() {
     );
     assert!(!auth.token.is_empty());
 
-    // Cookie-based call: the SignupClient used a cookie store, so the
-    // Set-Cookie from /signup/finish replays automatically.
     let me = client
         .get(app.url("/me"))
         .send()
@@ -69,7 +60,6 @@ async fn full_signup_round_trip_cookie_path() {
         .expect("json");
     assert_eq!(me["email"], "alice@example.com");
 
-    // Bearer-based call against a fresh client (no cookies).
     let bearer_only = reqwest::Client::new();
     let bearer = bearer_only
         .get(app.url("/me"))
@@ -90,13 +80,11 @@ async fn signup_request_for_credentialed_email_is_silent() {
         .build()
         .expect("client");
 
-    // Full signup leaves the user with a passkey on their account.
     SignupClient::new(&app)
         .signup(&cookie_client, &app, "alice@example.com")
         .await;
     let emails_before = app.email.sent().len();
 
-    // Second request for the now-credentialed email → silent, no new email.
     let again = reqwest::Client::new()
         .post(app.url("/auth/signup/request"))
         .json(&SignupRequest {
@@ -125,8 +113,6 @@ async fn signup_request_for_passkeyless_user_reissues_link() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
-    // First request creates the user record but no passkey is enrolled, so the
-    // account holds zero credentials.
     let initial = client
         .post(app.url("/auth/signup/request"))
         .json(&SignupRequest {
@@ -139,8 +125,6 @@ async fn signup_request_for_passkeyless_user_reissues_link() {
     assert_eq!(initial.status(), StatusCode::NO_CONTENT);
     assert_eq!(app.email.sent().len(), 1, "first request sent one email");
 
-    // Second request: the passkey-less account gets a fresh link rather than a
-    // silent no-op, while the response shape stays identical (204).
     let again = client
         .post(app.url("/auth/signup/request"))
         .json(&SignupRequest {
@@ -206,9 +190,6 @@ async fn consume_replay_is_rejected() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
-    // Fresh request → grab the token but only consume it once via the
-    // full flow; the second attempt should fail because consume deletes
-    // the token atomically.
     let resp = client
         .post(app.url("/auth/signup/request"))
         .json(&SignupRequest {
@@ -252,7 +233,6 @@ async fn passkey_count_reflects_register_and_delete() {
         .build()
         .expect("client");
 
-    // Signup leaves the user with exactly one passkey on their account.
     let mut primary = SignupClient::new(&app);
     let auth: AuthResponse = primary.signup(&client, &app, "count@example.com").await;
     assert_eq!(auth.user.passkey_count, 1);
@@ -268,8 +248,6 @@ async fn passkey_count_reflects_register_and_delete() {
         .expect("me json");
     assert_eq!(me_after_signup["passkey_count"], 1);
 
-    // A fresh SoftPasskey enrols a distinct credential against the same
-    // authenticated session, so the count climbs to two.
     let mail_before_backup = app.email.sent().len();
     let mut backup = SignupClient::new(&app);
     let backup_passkey = backup
@@ -295,7 +273,6 @@ async fn passkey_count_reflects_register_and_delete() {
         .expect("me json");
     assert_eq!(me_after_backup["passkey_count"], 2);
 
-    // Deleting the backup credential drops the count back to one.
     let delete = client
         .delete(app.url(&format!("/auth/passkey/{}", backup_passkey.credential_id)))
         .bearer_auth(&auth.token)
@@ -326,9 +303,6 @@ async fn signup_finish_emits_set_cookie() {
     let mut signup = SignupClient::new(&app);
     let _: AuthResponse = signup.signup(&client, &app, "cookie@example.com").await;
 
-    // The cookie store on `client` is off, but a follow-up cookie-aware
-    // client should be able to obtain a Set-Cookie too — re-running signup
-    // for a fresh user via a cookie-bearing client gives us the header.
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
         .build()
@@ -339,24 +313,16 @@ async fn signup_finish_emits_set_cookie() {
         .await;
     let me = cookie_client.get(app.url("/me")).send().await.expect("me");
     assert_eq!(me.status(), StatusCode::OK);
-    // Sanity-check the header constant stays imported.
     let _ = header::SET_COOKIE;
 
     app.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// Signup gating policy (HTTP surface)
-// ---------------------------------------------------------------------------
 
 enum StubOutcome {
     DenySilently,
     Deny,
 }
 
-/// Test [`SignupPolicy`] returning a preset decision and recording the
-/// invite token doorman handed it, so the HTTP tests can assert both the
-/// wire-level denial behavior and the verbatim token pass-through.
 struct StubPolicy {
     outcome: StubOutcome,
     tokens: Mutex<Vec<Option<String>>>,
@@ -480,8 +446,6 @@ async fn invite_token_reaches_policy_verbatim_from_the_wire() {
         .expect("request with token");
     assert_eq!(with_token.status(), StatusCode::NO_CONTENT);
 
-    // Omitting the field entirely must still parse (serde default) and arrive
-    // as `None` at the policy.
     let without_token = client
         .post(app.url("/auth/signup/request"))
         .json(&serde_json::json!({ "email": "walkin@example.com" }))

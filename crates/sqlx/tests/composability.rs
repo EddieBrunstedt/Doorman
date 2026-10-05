@@ -1,15 +1,3 @@
-//! Proves the "override one sub-store method, reuse the rest" pattern on the
-//! SQLx adapter, which is the transactional-audit beachhead: a host that needs
-//! "no audit, no action" writes the session row and its own audit/outbox row in
-//! a single transaction, and delegates every other `SessionStore` method to the
-//! bundled store.
-//!
-//! This needs zero library code beyond the already-public `pool()`: the host
-//! wraps the `Arc<dyn SessionStore>` doorman hands out, writes its own `INSERT`
-//! in its own `tx`, and the bundled (delegated) reads still find the row. If
-//! this stops compiling for want of a missing `pub`, that gap is the only SQLx
-//! work; otherwise SQLx needs nothing. It is also a permanent regression guard.
-
 #![cfg(feature = "sqlite")]
 
 use std::sync::Arc;
@@ -24,8 +12,6 @@ use doorman_core::storage::{
 use doorman_sqlx::SqliteStorage;
 use sqlx::SqlitePool;
 
-/// A host's `SessionStore` that commits the session row and its own audit row
-/// in one transaction, delegating every read/delete to the bundled store.
 struct AuditedSessions {
     inner: Arc<dyn SessionStore>,
     pool: SqlitePool,
@@ -34,10 +20,6 @@ struct AuditedSessions {
 #[async_trait]
 impl SessionStore for AuditedSessions {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
-        // The host owns the transaction. The session row is written with the
-        // same column encoding the bundled reads expect (UUIDs as their raw 16
-        // bytes, the token hash as its raw bytes), so a row written here is
-        // later found by the delegated `find_session_by_token_hash`.
         let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query(
             "INSERT INTO sessions (id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cooldown_until)
@@ -118,13 +100,11 @@ async fn override_create_session_reuses_bundled_reads() {
         .expect("connect");
     storage.migrate().await.expect("migrate");
 
-    // The host's own table, living alongside doorman's schema.
     sqlx::query("CREATE TABLE audit_outbox (session_id BLOB NOT NULL, event TEXT NOT NULL)")
         .execute(storage.pool())
         .await
         .expect("create audit table");
 
-    // Swap one slot, keep the rest.
     let composite = Storage {
         sessions: Arc::new(AuditedSessions {
             inner: storage.session_store(),
@@ -166,7 +146,6 @@ async fn override_create_session_reuses_bundled_reads() {
         .await
         .expect("transactional create_session");
 
-    // The delegated read finds the row the overridden write committed.
     let found = composite
         .sessions
         .find_session_by_token_hash(&session.token_hash)
@@ -176,7 +155,6 @@ async fn override_create_session_reuses_bundled_reads() {
     assert_eq!(found.id, session.id);
     assert_eq!(found.user_id, user_id);
 
-    // The host's audit row committed in the same transaction.
     let audit_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM audit_outbox WHERE session_id = ?")
             .bind(session.id.0.as_bytes().to_vec())

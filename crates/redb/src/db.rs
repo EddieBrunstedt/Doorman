@@ -1,35 +1,3 @@
-//! Table definitions, key builders, value encoding, and the shared database
-//! handle the store implementations build on.
-//!
-//! ## Table layout
-//!
-//! Every record type occupies a dedicated redb table. Secondary lookups and
-//! per-user collections use separate index tables with compound string keys,
-//! kept consistent with the primary table inside every write transaction that
-//! touches them.
-//!
-//! | Table                | Key                                     | Value          |
-//! | -------------------- | --------------------------------------- | -------------- |
-//! | `users`              | user UUID                               | JSON           |
-//! | `email_guard`        | email address                           | user UUID str  |
-//! | `sessions`           | session UUID                            | JSON           |
-//! | `session_hash_idx`   | token hash hex                          | session UUID   |
-//! | `user_sessions_idx`  | `{user_id}\x00{session_id}`             | ()             |
-//! | `vtokens`            | `{purpose}\x00{hash_hex}`               | JSON           |
-//! | `user_vtokens_idx`   | `{user_id}\x00{purpose}\x00{hash_hex}`  | ()             |
-//! | `passkey_creds`      | credential id hex                       | JSON           |
-//! | `user_creds_idx`     | `{user_id}\x00{cred_id_hex}`            | ()             |
-//! | `pkregs`             | challenge UUID                          | JSON           |
-//! | `user_pkregs_idx`    | `{user_id}\x00{challenge_id}`           | ()             |
-//! | `pkauths`            | challenge UUID                          | JSON           |
-//!
-//! ## Compound-key prefix scans
-//!
-//! The separator `\x00` (NUL byte, `SEP`) never appears in UUIDs, hex strings,
-//! or purpose names (all printable ASCII). A prefix scan for all entries under
-//! `"{user_id}\x00"` uses the half-open range `[prefix, prefix_end(prefix))`
-//! where `prefix_end` replaces the trailing `\x00` with `\x01`.
-
 use std::sync::Arc;
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -40,10 +8,6 @@ use doorman_core::storage::{
 use redb::{Database, ReadTransaction, ReadableDatabase as _, TableDefinition, WriteTransaction};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-
-// ---------------------------------------------------------------------------
-// Table definitions
-// ---------------------------------------------------------------------------
 
 pub(crate) const USERS: TableDefinition<&str, &[u8]> = TableDefinition::new("users");
 pub(crate) const EMAIL_GUARD: TableDefinition<&str, &str> = TableDefinition::new("email_guard");
@@ -63,18 +27,7 @@ pub(crate) const USER_PKREGS_IDX: TableDefinition<&str, ()> =
     TableDefinition::new("user_pkregs_idx");
 pub(crate) const PKAUTHS: TableDefinition<&str, &[u8]> = TableDefinition::new("pkauths");
 
-// ---------------------------------------------------------------------------
-// Separator
-// ---------------------------------------------------------------------------
-
-/// The byte used to join components of a compound key. NUL (`\x00`) never
-/// appears in UUIDs, lowercase hex strings, or purpose names, so it is
-/// unambiguous and lets prefix scans use `\x01` as an exclusive upper bound.
 pub(crate) const SEP: char = '\x00';
-
-// ---------------------------------------------------------------------------
-// Key builders
-// ---------------------------------------------------------------------------
 
 pub(crate) fn token_hash_hex(hash: &TokenHash) -> String {
     hex_bytes(&hash.0)
@@ -88,8 +41,6 @@ pub(crate) fn vtoken_key(purpose: VerificationPurpose, hash: &TokenHash) -> Stri
     format!("{}{SEP}{}", purpose_str(purpose), token_hash_hex(hash))
 }
 
-/// Reconstruct a `vtokens` primary key from the purpose and the already-hex
-/// hash component (avoids decoding hex back to bytes just to re-encode it).
 pub(crate) fn vtoken_key_raw(purpose: VerificationPurpose, hash_hex: &str) -> String {
     format!("{}{SEP}{}", purpose_str(purpose), hash_hex)
 }
@@ -141,25 +92,13 @@ pub(crate) fn user_pkregs_prefix(user_id: UserId) -> String {
     format!("{}{SEP}", user_id.0)
 }
 
-/// Return the exclusive upper bound for a prefix scan.
-///
-/// Every prefix ends with `SEP` (`\x00`); the end replaces that with `\x01`
-/// so the range `[prefix, prefix_end(prefix))` exactly covers every key that
-/// starts with the prefix. The sub-key components (UUIDs, hex, purpose names)
-/// only contain printable ASCII (`>= ' '`), so no key starting with the
-/// prefix can equal or exceed `prefix_end`.
 pub(crate) fn prefix_end(prefix: &str) -> String {
     debug_assert!(prefix.ends_with(SEP));
-    // Replace the trailing \x00 (1 byte in UTF-8) with \x01.
     let stem = &prefix[..prefix.len() - SEP.len_utf8()];
     format!("{stem}\x01")
 }
 
 pub(crate) use doorman_core::encoding::purpose_to_str as purpose_str;
-
-// ---------------------------------------------------------------------------
-// Timestamp helpers
-// ---------------------------------------------------------------------------
 
 pub(crate) fn fmt_ts(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::Nanos, true)
@@ -171,10 +110,6 @@ pub(crate) fn parse_ts(s: &str) -> StorageResult<DateTime<Utc>> {
         .map_err(err)
 }
 
-// ---------------------------------------------------------------------------
-// Generic encode / decode (for types that already have Serialize + Deserialize)
-// ---------------------------------------------------------------------------
-
 pub(crate) fn encode<T: Serialize>(value: &T) -> StorageResult<Vec<u8>> {
     serde_json::to_vec(value).map_err(err)
 }
@@ -182,14 +117,6 @@ pub(crate) fn encode<T: Serialize>(value: &T) -> StorageResult<Vec<u8>> {
 pub(crate) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> StorageResult<T> {
     serde_json::from_slice(bytes).map_err(err)
 }
-
-// ---------------------------------------------------------------------------
-// StoredPasskey encoding
-//
-// `StoredPasskey` does not implement `Serialize`/`Deserialize` (it lives in
-// doorman-core and carries no serde dep). We bridge the gap with a private
-// record type that mirrors every field verbatim.
-// ---------------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct PasskeyRow {
@@ -223,8 +150,6 @@ pub(crate) fn encode_passkey(cred: &StoredPasskey) -> StorageResult<Vec<u8>> {
     serde_json::to_vec(&row).map_err(err)
 }
 
-/// Rebuild a full [`StoredPasskey`] from its stored row, parsing every metadata
-/// field and carrying the opaque `passkey` blob through verbatim.
 fn row_to_passkey(row: PasskeyRow) -> StorageResult<StoredPasskey> {
     Ok(StoredPasskey {
         credential_id: decode_hex(&row.credential_id_hex)?,
@@ -256,9 +181,6 @@ pub(crate) fn decode_passkey(bytes: &[u8]) -> StorageResult<StoredPasskey> {
 
 pub(crate) fn decode_passkey_summary(bytes: &[u8]) -> StorageResult<PasskeySummary> {
     let row: PasskeyRow = serde_json::from_slice(bytes).map_err(err)?;
-    // The record is one JSON blob, so the metadata fields share one assembly with
-    // the full decoder; the summary projects from the borrowed credential via the
-    // core `From<&StoredPasskey>` impl rather than re-listing every field.
     Ok(PasskeySummary::from(&row_to_passkey(row)?))
 }
 
@@ -275,14 +197,6 @@ fn decode_hex(s: &str) -> StorageResult<Vec<u8>> {
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
-// RedbHandle
-// ---------------------------------------------------------------------------
-
-/// Shared handle over the [`Database`], cheaply cloned across store instances.
-///
-/// Each clone shares the same underlying `Arc<Database>` so all five stores
-/// in an `all_stores()` composite share one database file.
 #[derive(Clone)]
 pub(crate) struct RedbHandle {
     db: Arc<Database>,
@@ -293,13 +207,10 @@ impl RedbHandle {
         Self { db }
     }
 
-    /// Clone the inner `Arc<Database>`, for a host that opens its own
-    /// transaction.
     pub(crate) fn db(&self) -> Arc<Database> {
         self.db.clone()
     }
 
-    /// Run `f` over a read transaction on the blocking pool.
     pub(crate) async fn read<T, F>(&self, f: F) -> StorageResult<T>
     where
         F: FnOnce(&ReadTransaction) -> StorageResult<T> + Send + 'static,
@@ -314,9 +225,6 @@ impl RedbHandle {
         .map_err(err)?
     }
 
-    /// Run `f` inside a write transaction on the blocking pool, committing it
-    /// when `f` returns `Ok`. An `Err` drops the transaction, which aborts
-    /// every write `f` made.
     pub(crate) async fn write<T, F>(&self, f: F) -> StorageResult<T>
     where
         F: FnOnce(&WriteTransaction) -> StorageResult<T> + Send + 'static,
@@ -334,17 +242,6 @@ impl RedbHandle {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Session write step
-// ---------------------------------------------------------------------------
-
-/// Insert a session and both of its secondary indexes inside `wtxn`.
-///
-/// A session spans three tables — the primary record, the token-hash index, and
-/// the per-user index — that must move together. This performs all three inserts
-/// against the caller's open write transaction without committing it, so the
-/// store's own `create_session` and a host's transactional override share the
-/// one index-maintenance implementation and can never drift.
 pub(crate) fn write_session(wtxn: &WriteTransaction, session: &Session) -> StorageResult<()> {
     let session_key = session.id.0.to_string();
     let hash_key = token_hash_hex(&session.token_hash);
@@ -365,13 +262,6 @@ pub(crate) fn write_session(wtxn: &WriteTransaction, session: &Session) -> Stora
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Table provisioning
-// ---------------------------------------------------------------------------
-
-/// Ensure every table exists by opening (thus creating) each one in a single
-/// write transaction. Safe to call on every boot — already-existing tables are
-/// a no-op.
 #[allow(clippy::result_large_err)]
 pub(crate) fn ensure_tables(db: &Database) -> Result<(), redb::Error> {
     let wtxn = db.begin_write()?;
@@ -391,11 +281,6 @@ pub(crate) fn ensure_tables(db: &Database) -> Result<(), redb::Error> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Error helper
-// ---------------------------------------------------------------------------
-
-/// Wrap any concrete backend error as an opaque [`StorageError`].
 pub(crate) fn err<E>(e: E) -> StorageError
 where
     E: std::error::Error + Send + Sync + 'static,

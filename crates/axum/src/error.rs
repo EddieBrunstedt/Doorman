@@ -1,37 +1,20 @@
-//! Canonical mapping from [`doorman_core::Error`] to HTTP responses.
-//!
-//! Every variant is assigned a stable string code so a frontend can switch
-//! on it without scraping the human-readable message. [`Error::RateLimited`]
-//! additionally emits a `Retry-After` header (rounded up to whole seconds)
-//! so well-behaved clients can back off without parsing the body. The one
-//! HTTP-only rejection, the CSRF origin check, takes its code from here too,
-//! so every error response shares one body shape and one code table.
-
 use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use doorman_core::Error;
 use serde::Serialize;
 
-/// JSON body returned with every error response.
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorBody {
-    /// The error payload, nested under the `error` key.
     pub error: ErrorPayload,
 }
 
-/// Stable machine-readable error payload nested under `error`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorPayload {
-    /// Stable machine-readable code clients map to user-facing copy.
     pub code: &'static str,
-    /// Human-readable English description; not a stable API.
     pub message: String,
 }
 
-/// Wrapper type so we can `impl IntoResponse for ErrorResponse` without
-/// orphan-rule trouble — `doorman_core::Error` lives in another crate, but
-/// callers can still use `?` thanks to the `From<Error>` impl below.
 #[derive(Debug)]
 pub struct ErrorResponse(pub Error);
 
@@ -49,12 +32,6 @@ impl IntoResponse for ErrorResponse {
 
 pub(crate) fn error_response(err: &Error) -> Response {
     let (status, code) = classify(err);
-    // Client-facing messages stay coarse for server-side failures: the inner
-    // detail (DB driver text, SMTP transport errors, relying-party config) can
-    // carry sensitive internals, so it is logged here and replaced with an
-    // opaque message. The stable `code` still lets a client distinguish the
-    // category. Client errors (4xx) carry domain messages that are safe to
-    // surface.
     let message = if status.is_server_error() {
         tracing::error!(error = %err, code, "doorman request failed with internal error");
         "internal server error".to_owned()
@@ -63,10 +40,6 @@ pub(crate) fn error_response(err: &Error) -> Response {
     };
     let mut response = json_error(status, code, message);
     if let Error::RateLimited { retry_after } = err {
-        // Round up to whole seconds (floored at 1) so a client that waits the
-        // advertised time is past the window, never told to retry while the
-        // limiter would still reject. Truncating would under-state the back-off
-        // by up to ~1s.
         let round_up = u64::from(retry_after.subsec_nanos() > 0);
         let secs = retry_after.as_secs().saturating_add(round_up).max(1);
         if let Ok(value) = HeaderValue::from_str(&secs.to_string()) {
@@ -76,9 +49,6 @@ pub(crate) fn error_response(err: &Error) -> Response {
     response
 }
 
-/// The response for a cookie-authenticated state-changing request that failed
-/// the CSRF origin check. Not a [`doorman_core::Error`]: the check is an HTTP
-/// concern that core never sees.
 pub(crate) fn csrf_rejection_response() -> Response {
     json_error(
         StatusCode::FORBIDDEN,
@@ -116,11 +86,6 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         }
         Error::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         Error::RecoveryCooldownActive => (StatusCode::CONFLICT, "recovery_cooldown_active"),
-        // 401, not 403: the session is valid but the action needs fresh proof.
-        // 401 + the machine-readable `reauth_required` code is the step-up
-        // convention and keeps the client's retry branch simple (403 reads as
-        // "forbidden, don't retry", the wrong signal — the client *should*
-        // retry after re-authenticating).
         Error::ReauthRequired => (StatusCode::UNAUTHORIZED, "reauth_required"),
         Error::AccountDisabled => (StatusCode::FORBIDDEN, "account_disabled"),
         Error::SignupNotAllowed => (StatusCode::FORBIDDEN, "signup_not_allowed"),
@@ -149,19 +114,12 @@ mod tests {
 
     #[test]
     fn retry_after_rounds_up_to_whole_seconds() {
-        // 2.4 s rounds up to 3 s: a client waiting the advertised time is past
-        // the window.
         assert_eq!(retry_after_secs(Duration::from_millis(2400)), "3");
-        // Whole seconds are not inflated.
         assert_eq!(retry_after_secs(Duration::from_secs(2)), "2");
-        // Sub-second and zero back-offs floor at 1 s.
         assert_eq!(retry_after_secs(Duration::from_millis(10)), "1");
         assert_eq!(retry_after_secs(Duration::ZERO), "1");
     }
 
-    /// Every `Error` variant must map to a stable `(status, code)`. This pins
-    /// the contract a frontend switches on: a mis-edit turning a 4xx into a 5xx,
-    /// or renaming a code, fails here.
     #[test]
     fn classify_covers_every_variant() {
         use StatusCode as S;
@@ -275,8 +233,6 @@ mod tests {
         assert_eq!(body["error"]["message"], "CSRF origin check failed");
     }
 
-    /// Server-error responses must not leak the inner error detail into the
-    /// client-facing message; the stable code is still present.
     #[test]
     fn internal_errors_do_not_leak_detail() {
         let secret = "connection refused to db.internal:5432 (password=hunter2)";
@@ -295,8 +251,6 @@ mod tests {
         );
     }
 
-    /// `Error::Internal` carries opaque-blob (de)serialisation detail meant for
-    /// operators only; like other 5xx it must be coarsened, never surfaced.
     #[test]
     fn internal_variant_does_not_leak_detail() {
         let secret = "deserialise credential: unexpected token at byte 0xdeadbeef";
@@ -316,8 +270,6 @@ mod tests {
     }
 
     fn body_bytes(response: Response) -> Vec<u8> {
-        // The error body is a small in-memory JSON value, so collecting it
-        // synchronously via a minimal runtime is fine for a unit test.
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("runtime");

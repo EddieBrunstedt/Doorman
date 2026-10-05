@@ -21,9 +21,6 @@ all-features = true
 async-trait.workspace = true
 chrono.workspace = true
 doorman-core = { path = "../core", version = "0.1.0" }
-# `rustls-tls` picks the ring-backed rustls TLS stack, keeping the workspace
-# on its single ring crypto provider and off aws-lc. `default-features = false`
-# drops the default TLS (OpenSSL on most platforms) so only rustls is compiled.
 mongodb = { version = "3", default-features = false, features = ["rustls-tls", "bson-3", "compat-3-3-0"] }
 uuid.workspace = true
 

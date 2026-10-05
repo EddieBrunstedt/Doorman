@@ -1,7 +1,3 @@
-//! HTTP coverage for sliding renewal: the session layer refreshes the session
-//! cookie when resolution slides the deadline, and only for cookie-sourced
-//! tokens. When a resolution slides is covered in core (`resolve_flow.rs`).
-
 mod common;
 
 use std::sync::Arc;
@@ -19,9 +15,6 @@ use doorman_test_support::MockClock;
 
 const IDLE: StdDuration = StdDuration::from_secs(60 * 60);
 
-/// An app with sliding enabled (idle window well above the default 60s cache
-/// TTL) on a mock clock, and a cookie `Max-Age` no larger than the idle window
-/// so the build-time cookie invariant holds.
 async fn sliding_app(clock: Arc<MockClock>) -> TestApp {
     TestApp::start_configured(
         Router::new(),
@@ -60,8 +53,6 @@ async fn slid_cookie_session_gets_a_refreshed_cookie() {
     let client = reqwest::Client::new();
     let session = common::login(&client, &app, "alice@example.com").await;
 
-    // Past the touch throttle, so this request slides the deadline to one
-    // idle window from now.
     clock.advance(ChronoDuration::minutes(2));
     let resp = me_with_cookie(&client, &app, &session.token).await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -91,7 +82,6 @@ async fn unslid_request_sets_no_cookie() {
     let client = reqwest::Client::new();
     let session = common::login(&client, &app, "carol@example.com").await;
 
-    // Straight after login the session is inside the touch throttle.
     let resp = me_with_cookie(&client, &app, &session.token).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(

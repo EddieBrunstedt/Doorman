@@ -1,5 +1,3 @@
-//! HTTP tests for the `/auth/account` routes and "log out everywhere".
-
 mod common;
 
 use axum::Router;
@@ -7,9 +5,6 @@ use axum::http::StatusCode;
 use common::{TestApp, token_from_email_with};
 use doorman_axum::dto::{AuthResponse, UserDto};
 
-/// The account email-change url_template the `TestApp` wires (see
-/// `common::ACCOUNT_URL`), used to recover the confirmation token from the
-/// email body.
 const EMAIL_CHANGE_URL: &str = "https://app.test/email-change?token={token}";
 
 async fn login(client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
@@ -39,7 +34,6 @@ async fn logout_all_revokes_every_session_and_clears_cookie() {
         .expect("ascii cookie");
     assert!(set_cookie.contains("Max-Age=0"));
 
-    // Both sessions — the caller's and the other one — are revoked.
     for token in [&first.token, &second.token] {
         let stale = client
             .get(app.url("/me"))
@@ -114,7 +108,6 @@ async fn email_change_to_taken_address_conflicts() {
     let client = reqwest::Client::new();
 
     let session = login(&client, &app, "mover@example.com").await;
-    // Register the target address to another account.
     let _ = login(&client, &app, "occupied@example.com").await;
 
     let resp = client
@@ -169,7 +162,6 @@ async fn delete_account_revokes_session_and_clears_cookie() {
         .expect("ascii cookie");
     assert!(set_cookie.contains("Max-Age=0"));
 
-    // The session no longer authenticates.
     let stale = client
         .get(app.url("/me"))
         .bearer_auth(&session.token)

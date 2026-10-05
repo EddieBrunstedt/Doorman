@@ -1,41 +1,3 @@
-//! DynamoDB-backed [`SessionStore`].
-//!
-//! A session is one item under `session#<id>` carrying a `lookup-index` GSI key
-//! on its hashed bearer token, the hot per-request lookup. The GSI lags the
-//! table, so [`find_session_by_token_hash`](DynamoSessionStore::find_session_by_token_hash)
-//! takes only the session id from it and then reads the row
-//! strongly-consistently: a revoked session never resolves. A user's sessions are
-//! found through their **session index item** under `usess#<uid>`, which holds
-//! the user's session ids as a string set.
-//!
-//! The index item exists because the bulk revoke must see every session that
-//! exists when it starts. A GSI read is only eventually consistent, so a revoke
-//! that enumerated an `owner-index` GSI could miss a session created a moment
-//! earlier. The index item is read strongly-consistently instead:
-//!
-//! - [`create_session`](DynamoSessionStore::create_session) writes the row and
-//!   adds its id to the index item in one `TransactWriteItems`, so a session id
-//!   is indexed exactly when its row exists.
-//! - [`delete_sessions_for_user`](DynamoSessionStore::delete_sessions_for_user)
-//!   reads the index item, deletes those rows, then removes exactly the ids it
-//!   read. A session created meanwhile keeps both its row and its id, so it
-//!   stays listed and the next revoke deletes it.
-//! - Every delete removes the row before its id. An interrupted delete, or a
-//!   row evicted by native TTL, leaves only a dangling id: reads skip it and
-//!   drop it, and [`purge_expired`](DynamoSessionStore::purge_expired) reclaims
-//!   the rest. A row never comes back once gone, so dropping a dangling id
-//!   cannot unlist a live session.
-//!
-//! An item is capped at 400 KB, which bounds a user to roughly ten thousand
-//! concurrent sessions.
-//!
-//! `create_session` puts the row unconditionally (an upsert); the random id and
-//! 256-bit token hash make a real collision a non-issue, and the contract
-//! permits the upsert for key-value adapters. Native TTL is a memory backstop
-//! only: reads re-apply `expires_at > now` and
-//! [`purge_expired`](DynamoSessionStore::purge_expired) does the authoritative
-//! reclamation.
-
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
@@ -47,9 +9,6 @@ use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId}
 use crate::client::{self, DynamoClient, PK};
 use crate::model::{self, ENTITY_SESSION, ENTITY_SESSION_INDEX, SESSION_IDS};
 
-/// The writes that create `session` in `table`: a `Put` of the row and an
-/// `Update` adding its id to the user's session index item. They must commit
-/// together in one `TransactWriteItems`, or a bulk revoke can miss the session.
 pub(crate) fn create_writes(
     table: &str,
     session: &Session,
@@ -77,7 +36,6 @@ pub(crate) fn create_writes(
     ])
 }
 
-/// Session store backed by a DynamoDB connection.
 pub(crate) struct DynamoSessionStore {
     client: DynamoClient,
 }
@@ -87,7 +45,6 @@ impl DynamoSessionStore {
         Self { client }
     }
 
-    /// The ids in `user_id`'s session index item, read strongly-consistently.
     async fn indexed_ids(&self, user_id: UserId) -> StorageResult<Vec<String>> {
         match self.client.get(&model::session_index_pk(user_id)).await? {
             Some(item) => client::get_ss(&item, SESSION_IDS),
@@ -95,8 +52,6 @@ impl DynamoSessionStore {
         }
     }
 
-    /// Read the rows for `ids` strongly-consistently. Returns the sessions
-    /// found and the ids whose row is gone.
     async fn load(&self, ids: &[String]) -> StorageResult<(Vec<Session>, Vec<String>)> {
         let pks: Vec<String> = ids.iter().map(|id| model::session_pk_for(id)).collect();
         let sessions = self
@@ -115,10 +70,6 @@ impl DynamoSessionStore {
         Ok((sessions, gone))
     }
 
-    /// Remove exactly `ids` from `user_id`'s session index item, then delete
-    /// the item if that emptied it. Both writes are conditional: the first never
-    /// creates a missing item, and the second keeps an item that a concurrent
-    /// create has added an id to.
     async fn unindex(&self, user_id: UserId, ids: Vec<String>) -> StorageResult<()> {
         if ids.is_empty() {
             return Ok(());
@@ -142,7 +93,6 @@ impl DynamoSessionStore {
             Ok(out) => out
                 .attributes
                 .is_some_and(|item| !item.contains_key(SESSION_IDS)),
-            // No index item, so there is nothing to remove.
             Err(e) if client::is_condition_failure(&e) => false,
             Err(e) => return Err(client::err(e)),
         };
@@ -161,7 +111,6 @@ impl DynamoSessionStore {
             .await;
         match deleted {
             Ok(_) => Ok(()),
-            // A concurrent create re-filled the item; keep it.
             Err(e) if client::is_condition_failure(&e) => Ok(()),
             Err(e) => Err(client::err(e)),
         }
@@ -187,11 +136,6 @@ impl SessionStore for DynamoSessionStore {
         last_used_at: DateTime<Utc>,
         expires_at: DateTime<Utc>,
     ) -> StorageResult<()> {
-        // `UpdateItem` guarded by `attribute_exists(pk)`: it writes the slid
-        // `last_used_at`/`expires_at` and the native TTL attribute (TTL
-        // coupling) only if the row still exists, so a session revoked between
-        // resolution and touch is never resurrected. Mirroring `session_item`,
-        // the TTL attribute is present only for a future-dated expiry.
         let mut request = self
             .client
             .inner()
@@ -217,7 +161,6 @@ impl SessionStore for DynamoSessionStore {
         };
         match request.send().await {
             Ok(_) => Ok(()),
-            // The row no longer exists; the conditional touch is a no-op.
             Err(e)
                 if e.as_service_error()
                     .is_some_and(|svc| svc.is_conditional_check_failed_exception()) =>
@@ -236,9 +179,6 @@ impl SessionStore for DynamoSessionStore {
         let Some(item) = items.first() else {
             return Ok(None);
         };
-        // The GSI lags the table and can still return a deleted row's
-        // projection, so resolve the row itself with a strongly-consistent read:
-        // a revoked session never resolves.
         let id = SessionId(client::get_uuid(item, "id")?);
         self.find_session_by_id(id).await
     }
@@ -257,11 +197,7 @@ impl SessionStore for DynamoSessionStore {
     ) -> StorageResult<Vec<Session>> {
         let ids = self.indexed_ids(user_id).await?;
         let (sessions, gone) = self.load(&ids).await?;
-        // Opportunistic read-time hygiene: drop ids whose row is gone.
         let _ = self.unindex(user_id, gone).await;
-        // Push the expiry predicate into the store, like the SQL adapters: an
-        // expired-but-present row never leaves via the listing (purge reclaims
-        // it).
         Ok(sessions
             .into_iter()
             .filter(|session| session.expires_at > now)
@@ -269,8 +205,6 @@ impl SessionStore for DynamoSessionStore {
     }
 
     async fn delete_session(&self, id: SessionId) -> StorageResult<()> {
-        // The row first, then its id: an interruption in between leaves only a
-        // dangling id.
         if let Some(item) = self.client.take(&model::session_pk(id)).await? {
             let session = model::session_from_item(&item)?;
             self.unindex(session.user_id, vec![id.0.to_string()])
@@ -290,8 +224,6 @@ impl SessionStore for DynamoSessionStore {
         if ids.is_empty() {
             return Ok(0);
         }
-        // Read the rows only to count the sessions that still existed; dangling
-        // ids are unindexed below but not counted.
         let (sessions, _) = self.load(&ids).await?;
         let pks = ids.iter().map(|id| model::session_pk_for(id)).collect();
         self.client.batch_delete(pks).await?;
@@ -330,9 +262,6 @@ impl SessionStore for DynamoSessionStore {
         self.client.batch_delete(expired_pks).await?;
         for (user_id, ids) in indexes {
             let mut gone = expired.remove(&user_id).unwrap_or_default();
-            // The scan is no snapshot: an id whose row it did not see may belong
-            // to a session created after the scan passed. Re-read those rows and
-            // drop only the ids whose row is really gone.
             let unseen: Vec<String> = ids
                 .into_iter()
                 .filter(|id| !live.contains(id) && !gone.contains(id))
@@ -344,7 +273,6 @@ impl SessionStore for DynamoSessionStore {
             }
             self.unindex(user_id, gone).await?;
         }
-        // Expired rows whose index item the scan did not return.
         for (user_id, ids) in expired {
             self.unindex(user_id, ids).await?;
         }

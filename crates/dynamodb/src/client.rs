@@ -1,38 +1,3 @@
-//! Connection handle, attribute-value helpers, and the low-level DynamoDB
-//! operations the stores build on.
-//!
-//! The adapter models every doorman record in a **single table** (see
-//! [`crate::model`] for the item layout). This module owns the thin wrapper
-//! around the AWS SDK client plus the table name, the helpers that translate
-//! between Rust values and DynamoDB [`AttributeValue`]s, and a small set of
-//! reusable operations (`get`, `put`, the atomic `take`, the two GSI queries, a
-//! filtered table scan, a batch get, a batch delete, and the owner-scoped and
-//! expiry bulk deletes built on them) that the per-trait stores compose.
-//!
-//! ## Indexes
-//!
-//! Two global secondary indexes back the secondary access patterns:
-//!
-//! - **`lookup-index`** ([`GSI1PK`]) — point lookups by a non-unique-constrained
-//!   secondary key, currently a session's token hash. The GSI is eventually
-//!   consistent, so the session store confirms each hit against the row with a
-//!   strongly-consistent read.
-//! - **`owner-index`** ([`GSI2PK`]) — the per-user collections (a user's
-//!   passkeys, verification tokens of a purpose, and registration ceremonies)
-//!   that back the listing, counting, and bulk-delete paths. A user's sessions
-//!   use a strongly-consistent index item instead; see
-//!   [`crate::stores::session`].
-//!
-//! Both project every attribute (`ALL`) so an owner query returns whole records
-//! in one round trip. DynamoDB maintains the indexes automatically, so — unlike
-//! a hand-rolled key-value index — deleting or TTL-evicting a row drops its
-//! index entries for free; there are no dangling members to reclaim.
-//!
-//! The one secondary lookup that needs a *uniqueness* guarantee — a user's
-//! email — cannot use a GSI (indexes enforce no constraints and are only
-//! eventually consistent), so it lives as a strongly-consistent guard item on
-//! the main table; see [`crate::stores::user`].
-
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -52,31 +17,18 @@ use uuid::Uuid;
 
 use doorman_core::storage::TokenHash;
 
-/// A DynamoDB item: the attribute map the SDK reads and writes.
 pub(crate) type Item = HashMap<String, AttributeValue>;
 
-/// The table's partition-key attribute. The table has no sort key — every
-/// record is addressed by a single, globally-unique `pk` string.
 pub(crate) const PK: &str = "pk";
-/// Partition-key attribute of the `lookup-index` GSI.
 pub(crate) const GSI1PK: &str = "gsi1pk";
-/// Partition-key attribute of the `owner-index` GSI.
 pub(crate) const GSI2PK: &str = "gsi2pk";
-/// Native-TTL attribute (epoch seconds). Present only on ephemeral records, and
-/// only when their expiry is in the wall-clock future (see [`ttl_attr`]).
 pub(crate) const TTL: &str = "ttl";
-/// Discriminator naming which kind of record an item holds; the purge scans
-/// filter on it.
 pub(crate) const ENTITY: &str = "entity";
-/// Expiry timestamp attribute (RFC3339), read back for the purge/expiry filter.
 pub(crate) const EXPIRES_AT: &str = "expires_at";
 
-/// Name of the secondary-lookup GSI (token hash → session).
 const GSI1: &str = "lookup-index";
-/// Name of the per-user-collection GSI.
 const GSI2: &str = "owner-index";
 
-/// Wrap a concrete backend error as an opaque [`StorageError`].
 pub(crate) fn err<E>(e: E) -> StorageError
 where
     E: std::error::Error + Send + Sync + 'static,
@@ -84,9 +36,6 @@ where
     StorageError::new(e)
 }
 
-/// Map a failed conditional write: a failed condition expression becomes
-/// `on_condition()`, which names what the condition guarded (a missing row
-/// or a taken key), and anything else a backend failure.
 pub(crate) fn condition_err<E>(
     e: SdkError<E>,
     on_condition: impl FnOnce() -> StorageError,
@@ -101,7 +50,6 @@ where
     }
 }
 
-/// Whether `e` is a failed condition expression.
 pub(crate) fn is_condition_failure<E>(e: &SdkError<E>) -> bool
 where
     E: ProvideErrorMetadata,
@@ -111,8 +59,6 @@ where
         .is_some_and(|code| code == "ConditionalCheckFailedException")
 }
 
-/// The positions of the items whose condition failed when `e` cancelled a
-/// `TransactWriteItems`; empty for any other failure.
 pub(crate) fn failed_conditions(e: &SdkError<TransactWriteItemsError>) -> Vec<usize> {
     match e.as_service_error() {
         Some(TransactWriteItemsError::TransactionCanceledException(cancelled)) => cancelled
@@ -126,59 +72,33 @@ pub(crate) fn failed_conditions(e: &SdkError<TransactWriteItemsError>) -> Vec<us
     }
 }
 
-// ---------------------------------------------------------------------------
-// AttributeValue builders
-// ---------------------------------------------------------------------------
-
-/// A DynamoDB string (`S`) attribute.
 pub(crate) fn s(v: impl Into<String>) -> AttributeValue {
     AttributeValue::S(v.into())
 }
 
-/// A DynamoDB number (`N`) attribute from an `i64`.
 pub(crate) fn n(v: i64) -> AttributeValue {
     AttributeValue::N(v.to_string())
 }
 
-/// A DynamoDB binary (`B`) attribute.
 pub(crate) fn b(bytes: Vec<u8>) -> AttributeValue {
     AttributeValue::B(Blob::new(bytes))
 }
 
-/// A DynamoDB boolean (`BOOL`) attribute.
 pub(crate) fn boolean(v: bool) -> AttributeValue {
     AttributeValue::Bool(v)
 }
 
-/// A DynamoDB list (`L`) of strings. An ordered list (not a string set) so the
-/// order and any empties of the source `Vec` survive the round trip.
 pub(crate) fn list_s(items: impl IntoIterator<Item = String>) -> AttributeValue {
     AttributeValue::L(items.into_iter().map(AttributeValue::S).collect())
 }
 
-/// A DynamoDB string set (`SS`). DynamoDB rejects an empty set, so callers
-/// pass at least one member.
 pub(crate) fn ss(items: impl IntoIterator<Item = String>) -> AttributeValue {
     AttributeValue::Ss(items.into_iter().collect())
 }
 
-/// The TTL attribute value for a record expiring at `expires_at`, or `None`
-/// when the expiry is already in the past.
-///
-/// DynamoDB's native TTL is a *production* memory-reclamation backstop, never a
-/// correctness mechanism: deletion lags by up to ~48h, so the stores filter
-/// `expires_at > now` on read and reclaim in `purge_expired` regardless. Gating
-/// on a future expiry mirrors the Redis adapter's `PEXPIREAT` gate: the
-/// conformance suite's fixed test instants sit in the real past, so without the
-/// gate their rows would carry an already-elapsed TTL and could be swept out
-/// from under the very purge/read-filter assertions that exercise them.
 pub(crate) fn ttl_attr(expires_at: DateTime<Utc>) -> Option<AttributeValue> {
     (expires_at > Utc::now()).then(|| n(expires_at.timestamp()))
 }
-
-// ---------------------------------------------------------------------------
-// AttributeValue extractors
-// ---------------------------------------------------------------------------
 
 fn missing(key: &str) -> StorageError {
     StorageError::msg(format!("item is missing attribute `{key}`"))
@@ -188,7 +108,6 @@ fn wrong_type(key: &str, want: &str) -> StorageError {
     StorageError::msg(format!("attribute `{key}` is not a {want}"))
 }
 
-/// Read a required string attribute.
 pub(crate) fn get_s(item: &Item, key: &str) -> StorageResult<String> {
     item.get(key)
         .ok_or_else(|| missing(key))?
@@ -197,7 +116,6 @@ pub(crate) fn get_s(item: &Item, key: &str) -> StorageResult<String> {
         .map_err(|_| wrong_type(key, "string"))
 }
 
-/// Read an optional string attribute. A missing or `NULL` attribute is `None`.
 pub(crate) fn get_opt_s(item: &Item, key: &str) -> StorageResult<Option<String>> {
     match item.get(key) {
         None | Some(AttributeValue::Null(_)) => Ok(None),
@@ -208,7 +126,6 @@ pub(crate) fn get_opt_s(item: &Item, key: &str) -> StorageResult<Option<String>>
     }
 }
 
-/// Read a required binary attribute as owned bytes.
 pub(crate) fn get_b(item: &Item, key: &str) -> StorageResult<Vec<u8>> {
     item.get(key)
         .ok_or_else(|| missing(key))?
@@ -217,7 +134,6 @@ pub(crate) fn get_b(item: &Item, key: &str) -> StorageResult<Vec<u8>> {
         .map_err(|_| wrong_type(key, "binary"))
 }
 
-/// Read a required boolean attribute.
 pub(crate) fn get_bool(item: &Item, key: &str) -> StorageResult<bool> {
     item.get(key)
         .ok_or_else(|| missing(key))?
@@ -226,7 +142,6 @@ pub(crate) fn get_bool(item: &Item, key: &str) -> StorageResult<bool> {
         .map_err(|_| wrong_type(key, "bool"))
 }
 
-/// Read a list-of-strings attribute. A missing attribute yields an empty `Vec`.
 pub(crate) fn get_list_s(item: &Item, key: &str) -> StorageResult<Vec<String>> {
     match item.get(key) {
         None => Ok(Vec::new()),
@@ -243,8 +158,6 @@ pub(crate) fn get_list_s(item: &Item, key: &str) -> StorageResult<Vec<String>> {
     }
 }
 
-/// Read a string-set attribute. A missing attribute yields an empty `Vec`:
-/// DynamoDB removes a set attribute once its last member is deleted.
 pub(crate) fn get_ss(item: &Item, key: &str) -> StorageResult<Vec<String>> {
     match item.get(key) {
         None => Ok(Vec::new()),
@@ -255,12 +168,10 @@ pub(crate) fn get_ss(item: &Item, key: &str) -> StorageResult<Vec<String>> {
     }
 }
 
-/// Read a UUID stored as a string attribute.
 pub(crate) fn get_uuid(item: &Item, key: &str) -> StorageResult<Uuid> {
     Uuid::parse_str(&get_s(item, key)?).map_err(err)
 }
 
-/// Read a 32-byte token hash stored as a binary attribute.
 pub(crate) fn get_token_hash(item: &Item, key: &str) -> StorageResult<TokenHash> {
     let arr: [u8; 32] = get_b(item, key)?
         .try_into()
@@ -268,12 +179,10 @@ pub(crate) fn get_token_hash(item: &Item, key: &str) -> StorageResult<TokenHash>
     Ok(TokenHash(arr))
 }
 
-/// Read a required timestamp attribute (RFC3339 string).
 pub(crate) fn get_ts(item: &Item, key: &str) -> StorageResult<DateTime<Utc>> {
     parse_ts(&get_s(item, key)?)
 }
 
-/// Read an optional timestamp attribute (RFC3339 string).
 pub(crate) fn get_opt_ts(item: &Item, key: &str) -> StorageResult<Option<DateTime<Utc>>> {
     match get_opt_s(item, key)? {
         Some(raw) => Ok(Some(parse_ts(&raw)?)),
@@ -281,13 +190,10 @@ pub(crate) fn get_opt_ts(item: &Item, key: &str) -> StorageResult<Option<DateTim
     }
 }
 
-/// The primary key of a queried/scanned item, for addressing it in a delete.
 pub(crate) fn item_pk(item: &Item) -> StorageResult<String> {
     get_s(item, PK)
 }
 
-/// Render a timestamp as a fixed-width RFC3339 string (nanosecond precision,
-/// `Z` suffix). Fixed width keeps the encoding lossless and lexically ordered.
 pub(crate) fn fmt_ts(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::Nanos, true)
 }
@@ -298,14 +204,6 @@ fn parse_ts(raw: &str) -> StorageResult<DateTime<Utc>> {
         .map_err(err)
 }
 
-// ---------------------------------------------------------------------------
-// The connection wrapper
-// ---------------------------------------------------------------------------
-
-/// A cloneable handle bundling the AWS SDK client with the table name.
-///
-/// Cloning is cheap: the SDK [`Client`] is internally reference-counted and the
-/// table name is a small `String`, so each store holds its own clone.
 #[derive(Clone)]
 pub(crate) struct DynamoClient {
     client: Client,
@@ -313,23 +211,18 @@ pub(crate) struct DynamoClient {
 }
 
 impl DynamoClient {
-    /// Build a handle over `client`, targeting `table`.
     pub(crate) fn new(client: Client, table: String) -> Self {
         Self { client, table }
     }
 
-    /// The configured table name.
     pub(crate) fn table(&self) -> &str {
         &self.table
     }
 
-    /// The underlying SDK client, for the few stores that issue conditional
-    /// writes or transactions directly.
     pub(crate) fn inner(&self) -> &Client {
         &self.client
     }
 
-    /// Strongly-consistent `GetItem` by primary key.
     pub(crate) async fn get(&self, pk: &str) -> StorageResult<Option<Item>> {
         let out = self
             .client
@@ -343,8 +236,6 @@ impl DynamoClient {
         Ok(out.item)
     }
 
-    /// Plain `PutItem`. This is an upsert (a repeated key overwrites), which the
-    /// storage contract permits for the ephemeral, randomly-keyed records.
     pub(crate) async fn put(&self, item: Item) -> StorageResult<()> {
         self.client
             .put_item()
@@ -356,7 +247,6 @@ impl DynamoClient {
         Ok(())
     }
 
-    /// `DeleteItem` by primary key. A delete of an absent key is a no-op.
     pub(crate) async fn delete(&self, pk: &str) -> StorageResult<()> {
         self.client
             .delete_item()
@@ -368,15 +258,6 @@ impl DynamoClient {
         Ok(())
     }
 
-    /// Atomic delete-and-return: `DeleteItem` with `ReturnValues=ALL_OLD`,
-    /// guarded by `attribute_exists(pk)`.
-    ///
-    /// The condition is what makes the take single-use: a conditional write is
-    /// evaluated against the item's current state, so under concurrency exactly
-    /// one caller's delete succeeds and returns the old image. Every other
-    /// caller fails the condition, which is swallowed into `None`. An
-    /// unconditional delete gives no such guarantee; DynamoDB Local returns the
-    /// old image to several concurrent deleters.
     pub(crate) async fn take(&self, pk: &str) -> StorageResult<Option<Item>> {
         let result = self
             .client
@@ -394,7 +275,6 @@ impl DynamoClient {
                 if e.as_service_error()
                     .is_some_and(|svc| svc.is_conditional_check_failed_exception())
                 {
-                    // Absent, or another caller took it first.
                     return Ok(None);
                 }
                 Err(err(e))
@@ -402,17 +282,14 @@ impl DynamoClient {
         }
     }
 
-    /// Query the `owner-index` partition `key`, returning every projected item.
     pub(crate) async fn query_owner(&self, key: &str) -> StorageResult<Vec<Item>> {
         self.query_index(GSI2, GSI2PK, key).await
     }
 
-    /// Query the `lookup-index` partition `key`, returning every projected item.
     pub(crate) async fn query_lookup(&self, key: &str) -> StorageResult<Vec<Item>> {
         self.query_index(GSI1, GSI1PK, key).await
     }
 
-    /// Count the items in an `owner-index` partition without fetching them.
     pub(crate) async fn count_owner(&self, key: &str) -> StorageResult<u64> {
         let mut total: i64 = 0;
         let mut start: Option<Item> = None;
@@ -471,10 +348,6 @@ impl DynamoClient {
         Ok(out)
     }
 
-    /// Strongly-consistent table `Scan` returning every item whose `entity`
-    /// discriminator is one of `entities`. Backs the `purge_expired` sweeps,
-    /// which then filter on `expires_at`. Consistent so a row written moments
-    /// earlier (as the conformance suite does) is visible.
     pub(crate) async fn scan_entities(&self, entities: &[&str]) -> StorageResult<Vec<Item>> {
         let mut names = HashMap::new();
         names.insert("#e".to_string(), ENTITY.to_string());
@@ -513,10 +386,6 @@ impl DynamoClient {
         Ok(out)
     }
 
-    /// Strongly-consistent `BatchGetItem` of `pks`, chunked to the 100-key
-    /// limit and retrying any unprocessed keys the service returns. Absent keys
-    /// are simply missing from the result, which comes back in no particular
-    /// order.
     pub(crate) async fn batch_get(&self, pks: &[String]) -> StorageResult<Vec<Item>> {
         let mut out = Vec::with_capacity(pks.len());
         for chunk in pks.chunks(100) {
@@ -531,7 +400,6 @@ impl DynamoClient {
                 .map_err(err)?;
             let mut pending = HashMap::from([(self.table.clone(), request)]);
 
-            // DynamoDB may defer some keys under load; resubmit until drained.
             for _ in 0..8 {
                 if pending.is_empty() {
                     break;
@@ -560,8 +428,6 @@ impl DynamoClient {
         Ok(out)
     }
 
-    /// Delete a batch of primary keys with `BatchWriteItem`, chunked to the
-    /// 25-item limit and retrying any unprocessed items the service returns.
     pub(crate) async fn batch_delete(&self, pks: Vec<String>) -> StorageResult<()> {
         for chunk in pks.chunks(25) {
             let mut requests = Vec::with_capacity(chunk.len());
@@ -575,7 +441,6 @@ impl DynamoClient {
             let mut pending: HashMap<String, Vec<WriteRequest>> = HashMap::new();
             pending.insert(self.table.clone(), requests);
 
-            // DynamoDB may decline some writes under load; resubmit until drained.
             for _ in 0..8 {
                 if pending.is_empty() {
                     break;
@@ -599,12 +464,6 @@ impl DynamoClient {
         Ok(())
     }
 
-    /// Delete every item in the `owner-index` partition `key`, returning how
-    /// many were removed.
-    ///
-    /// The partition is read through the eventually-consistent GSI, so an item
-    /// written immediately before the call may not be visible yet and survives
-    /// it; a later bulk delete, `purge_expired`, or native TTL reclaims it.
     pub(crate) async fn delete_owned(&self, key: &str) -> StorageResult<u64> {
         let pks = self
             .query_owner(key)
@@ -617,9 +476,6 @@ impl DynamoClient {
         Ok(removed)
     }
 
-    /// Delete every item of the given `entities` whose `expires_at` is at or
-    /// before `now`, returning how many were removed. Backs the authoritative
-    /// `purge_expired` sweeps; native TTL is only a memory backstop.
     pub(crate) async fn delete_expired(
         &self,
         entities: &[&str],
@@ -636,11 +492,6 @@ impl DynamoClient {
         Ok(removed)
     }
 
-    /// Provision the table, its two GSIs, and native TTL — idempotently.
-    ///
-    /// Safe to call on every boot: an already-existing table short-circuits on
-    /// the `ResourceInUseException`. Uses on-demand (`PAY_PER_REQUEST`) billing
-    /// so a host need not provision throughput.
     pub(crate) async fn ensure_table(&self) -> StorageResult<()> {
         let string_attr = |name: &str| {
             AttributeDefinition::builder()
@@ -691,15 +542,12 @@ impl DynamoClient {
                 if e.as_service_error()
                     .is_some_and(|svc| svc.is_resource_in_use_exception())
                 {
-                    // The table already exists; assume it was provisioned by a
-                    // previous call and leave its TTL settings as they are.
                     return Ok(());
                 }
                 return Err(err(e));
             }
         }
 
-        // The table (and its GSIs) must be ACTIVE before TTL can be configured.
         self.client
             .wait_until_table_exists()
             .table_name(&self.table)

@@ -1,14 +1,7 @@
--- Reference schema for the doorman SQLx+Postgres adapter.
---
--- UUIDs and 32-byte token hashes are stored as BYTEA to match what the
--- shared adapter code binds. Timestamps use TIMESTAMPTZ.
-
 CREATE TABLE users (
     id BYTEA PRIMARY KEY,
     email TEXT UNIQUE,
     email_verified_at TIMESTAMPTZ,
-    -- The `AccountStatus` enum projected onto a discriminant (`active` /
-    -- `disabled`) plus a nullable timestamp carrying `Disabled { at }`.
     status TEXT NOT NULL DEFAULT 'active',
     disabled_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL,
@@ -20,8 +13,6 @@ CREATE TABLE sessions (
     user_id BYTEA NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token_hash BYTEA NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL,
-    -- Three-bound session model: `expires_at` is the effective, already-min'd
-    -- deadline; `last_used_at` records when the session last slid it forward.
     last_used_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
     ip TEXT,
@@ -35,7 +26,6 @@ CREATE TABLE verification_tokens (
     token_hash BYTEA NOT NULL,
     purpose TEXT NOT NULL,
     user_id BYTEA NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    -- Target address for an email-change token; NULL for signup/recovery.
     new_email TEXT,
     created_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
@@ -51,7 +41,6 @@ CREATE TABLE passkey_credentials (
     name TEXT,
     created_at TIMESTAMPTZ NOT NULL,
     last_used_at TIMESTAMPTZ,
-    -- Device metadata captured at registration.
     aaguid TEXT,
     transports TEXT NOT NULL DEFAULT '',
     backup_eligible BOOLEAN NOT NULL DEFAULT FALSE,

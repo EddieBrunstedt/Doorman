@@ -1,21 +1,3 @@
-//! End-to-end request-path benches, driven through the real router and
-//! `SessionLayer` via `tower::ServiceExt::oneshot` (no TCP, no `reqwest`).
-//!
-//! - `me_cached` — `GET /me` with a valid bearer token, cache warm. The
-//!   realistic per-request auth overhead a host adds to every endpoint.
-//! - `me_uncached` — the same request with the session cache cleared in
-//!   untimed setup for each iteration, forcing the full store round-trip
-//!   the layer does on a cold cache.
-//! - `layer_no_auth` — an unauthenticated `GET` through the layer to a
-//!   public route, measuring the layer's fixed cost on traffic that carries
-//!   no session.
-//!
-//! Run with:
-//!
-//! ```sh
-//! cargo bench -p doorman-axum --bench request_path
-//! ```
-
 use std::sync::Arc;
 
 use axum::Router;
@@ -110,7 +92,6 @@ async fn build_scaffold() -> Scaffold {
     let session_manager: SessionManager = auth.state().session_manager().clone();
     let cache = auth.cache().clone();
 
-    // Seed a verified user and a live session token.
     let now = chrono::Utc::now();
     let user = User {
         id: UserId::new(),
@@ -171,7 +152,6 @@ fn request_path(c: &mut Criterion) {
     let runtime = Runtime::new().expect("tokio runtime");
     let scaffold = runtime.block_on(build_scaffold());
 
-    // Warm the cache once for the cached path.
     runtime.block_on(async {
         let response = scaffold
             .router

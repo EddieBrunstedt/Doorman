@@ -1,10 +1,3 @@
-//! Signup HTTP routes.
-//!
-//! Mounted under `/auth/signup` by [`crate::routes::router`]. The three
-//! endpoints mirror the three-step signup flow: request a link, consume
-//! the link and start a passkey registration ceremony, finish the
-//! registration and receive a session.
-
 use axum::Json;
 use axum::Router;
 use axum::extract::State;

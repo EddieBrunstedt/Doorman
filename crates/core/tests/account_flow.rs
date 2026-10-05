@@ -1,6 +1,3 @@
-//! Integration tests for the account self-service flows: verified email
-//! change, account deletion, and revoking the user's other sessions.
-
 mod common;
 
 use chrono::Duration as ChronoDuration;
@@ -34,7 +31,6 @@ async fn email_change_happy_path() {
         .await
         .expect("request email change");
 
-    // Two emails: a confirmation to the new address and a notice to the old.
     let sent = h.email.sent();
     let new_mail = &sent[mail_before..];
     assert_eq!(new_mail.len(), 2, "confirmation + old-address notice");
@@ -56,7 +52,6 @@ async fn email_change_happy_path() {
         "notice goes to the old address"
     );
 
-    // The account email is unchanged until the link is confirmed.
     let pre = h
         .users
         .find_user_by_id(user.id)
@@ -85,7 +80,6 @@ async fn email_change_happy_path() {
         .expect("user present");
     assert_eq!(stored.email.as_deref(), Some("new@example.com"));
 
-    // The token is single-use: a replay fails.
     assert!(matches!(
         h.account
             .confirm_email_change(&token, SessionContext::default())
@@ -158,8 +152,6 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
         .expect("request email change");
     let token = last_email_change_token(&h);
 
-    // The signup reads the address as free, then the confirm claims it
-    // before the signup provisions it.
     let release = h.user_store.hold_email_lookups(1);
     let (signed_up, confirmed) = within_deadline(async {
         tokio::join!(
@@ -179,8 +171,6 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
 
     let updated = confirmed.expect("the confirm lands first");
     assert_eq!(updated.email.as_deref(), Some("wanted@example.com"));
-    // The signup that lost the race answers as it would for an address that
-    // was already registered: silent success, and no link.
     signed_up.expect("the signup that lost the race still succeeds");
     assert!(
         h.email
@@ -227,9 +217,6 @@ async fn email_change_rejects_address_already_in_use() {
 
 #[tokio::test]
 async fn request_email_change_refused_during_recovery_cooldown() {
-    // The post-recovery cool-down gate lives in the manager, so a restricted
-    // session is refused even when driving core directly — a phished recovery
-    // session must not repoint the account's address. (F1)
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
     let cooldown_until = h.clock.now() + chrono::Duration::hours(24);
@@ -257,8 +244,6 @@ async fn request_email_change_refused_during_recovery_cooldown() {
 
 #[tokio::test]
 async fn delete_account_refused_during_recovery_cooldown() {
-    // Account deletion is likewise gated in the manager: a phished recovery
-    // session must not be able to delete the account before the owner reacts. (F1)
     let h = Harness::fresh();
     let user = provision_user(&h, "doomed@example.com").await;
     let cooldown_until = h.clock.now() + chrono::Duration::hours(24);
@@ -287,15 +272,11 @@ async fn delete_account_refused_during_recovery_cooldown() {
 
 #[tokio::test]
 async fn request_email_change_allowed_once_recovery_cooldown_lapses() {
-    // The cool-down releases: once the deadline passes, the same recovery
-    // session can request the email change. A regression making the gate
-    // permanent would lock the owner out of email changes forever. (F1)
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
     let cooldown_until = h.clock.now() + chrono::Duration::hours(24);
     let restricted = restricted_session_for(&h, &user, cooldown_until);
 
-    // Blocked while the cool-down is active.
     let err = h
         .account
         .request_email_change(
@@ -309,7 +290,6 @@ async fn request_email_change_allowed_once_recovery_cooldown_lapses() {
         .expect_err("blocked during the cool-down");
     assert!(matches!(err, Error::RecoveryCooldownActive));
 
-    // After the deadline the request is allowed and issues the confirmation.
     h.clock.advance(chrono::Duration::hours(25));
     let mail_before = h.email.sent().len();
     h.account
@@ -334,7 +314,6 @@ async fn request_email_change_allowed_once_recovery_cooldown_lapses() {
 
 #[tokio::test]
 async fn delete_account_allowed_once_recovery_cooldown_lapses() {
-    // Releasing the cool-down restores the ability to delete the account. (F1)
     let h = Harness::fresh();
     let user = provision_user(&h, "doomed@example.com").await;
     let cooldown_until = h.clock.now() + chrono::Duration::hours(24);
@@ -364,8 +343,6 @@ async fn delete_account_allowed_once_recovery_cooldown_lapses() {
 
 #[tokio::test]
 async fn confirm_rejects_expired_token() {
-    // The email-change link expires like signup and recovery links do: a
-    // confirm after `token_lifetime` is rejected and the address is unchanged.
     let h = Harness::fresh();
     let user = provision_user(&h, "old@example.com").await;
     let session = session_for(&h, &user);
@@ -389,7 +366,6 @@ async fn confirm_rejects_expired_token() {
         .expect("confirmation email queued");
     let token = token_from_email(&confirmation.body_text, ACCOUNT_URL);
 
-    // Step past the default 15-minute token lifetime before confirming.
     h.clock.advance(chrono::Duration::minutes(16));
 
     let err = h
@@ -422,8 +398,6 @@ async fn confirm_rejects_expired_token() {
 
 #[tokio::test]
 async fn confirm_refused_for_disabled_account() {
-    // A link requested while active must not repoint the address of an
-    // account an operator has since disabled.
     let h = Harness::fresh();
     let user = provision_user(&h, "old@example.com").await;
     let session = session_for(&h, &user);
@@ -495,8 +469,6 @@ async fn confirm_rejects_unknown_token() {
 
 #[tokio::test]
 async fn email_change_token_cannot_be_redeemed_by_another_flow() {
-    // The purpose binds at redemption: an email-change link never starts a
-    // signup or recovery ceremony, and the failed attempts leave it usable.
     let h = Harness::fresh();
     let user = provision_user(&h, "old@example.com").await;
     let session = session_for(&h, &user);
@@ -561,9 +533,6 @@ async fn delete_account_cascades_all_stores() {
     let user = provision_user(&h, "doomed@example.com").await;
     let session = session_for(&h, &user);
 
-    // Leave behind every kind of row that hangs off the user: a pending
-    // email-change token, a pending registration ceremony, plus the session
-    // and credential that signup already created.
     h.account
         .request_email_change(
             &user,
@@ -617,8 +586,6 @@ async fn delete_account_cascades_all_stores() {
         "deletion emits an audit event",
     );
 
-    // The outstanding link and ceremony are refused as unknown, not as
-    // belonging to a deleted user: their rows went with the account.
     let err = h
         .account
         .confirm_email_change(&email_change_token, SessionContext::default())
@@ -636,9 +603,6 @@ async fn delete_account_cascades_all_stores() {
     assert_last_redemption_unknown(&h, SecretKind::RegistrationChallenge);
 }
 
-/// Issue a stored session for `user`. With `cooldown_until`, the returned
-/// snapshot carries that post-recovery deadline the way a recovery session
-/// does; the gate reads the deadline off the snapshot it is handed.
 async fn stored_session(
     h: &Harness,
     user: &User,
@@ -690,8 +654,6 @@ async fn revoke_other_sessions_keeps_only_the_acting_session_and_notifies() {
         session_exists(&h, bobs.id).await,
         "another user is untouched"
     );
-    // The notice originates in core, so a host driving the manager directly
-    // gets it too.
     let sent = &h.email.sent()[mail_before..];
     assert_eq!(sent.len(), 1, "one bulk-revocation notice");
     assert_eq!(sent[0].subject, "Security notice: other sessions revoked");
@@ -754,8 +716,6 @@ async fn revoke_session_hides_another_users_session() {
 
 #[tokio::test]
 async fn revoke_other_sessions_refused_during_recovery_cooldown() {
-    // A phished recovery session must not kick the legitimate owner off their
-    // devices, whichever transport drives core.
     let h = Harness::fresh();
     let alice = make_user(&h, "alice@example.com").await;
     let current = stored_session(&h, &alice, Some(ChronoDuration::minutes(10))).await;
@@ -771,8 +731,6 @@ async fn revoke_other_sessions_refused_during_recovery_cooldown() {
     assert!(session_exists(&h, other.id).await, "nothing is revoked");
     assert_eq!(h.email.sent().len(), mail_before, "no notice");
 
-    // The cool-down releases: once it lapses the same session may sign out
-    // the other devices.
     h.clock.advance(ChronoDuration::minutes(11));
     let removed = h
         .account
@@ -785,8 +743,6 @@ async fn revoke_other_sessions_refused_during_recovery_cooldown() {
 
 #[tokio::test]
 async fn revoke_session_cooldown_blocks_others_but_allows_self() {
-    // During the cool-down, revoking another device is refused, but the owner
-    // can always sign out the cool-down session itself.
     let h = Harness::fresh();
     let alice = make_user(&h, "alice@example.com").await;
     let current = stored_session(&h, &alice, Some(ChronoDuration::minutes(10))).await;
@@ -803,7 +759,6 @@ async fn revoke_session_cooldown_blocks_others_but_allows_self() {
         "the other device is untouched"
     );
 
-    // Once the cool-down lapses, revoking another device is allowed again.
     h.clock.advance(ChronoDuration::minutes(11));
     h.account
         .revoke_session(&alice, &current, other.id, None, SessionContext::default())

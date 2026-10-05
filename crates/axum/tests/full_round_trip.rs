@@ -1,14 +1,3 @@
-//! Drives the README quickstart wiring end to end.
-//!
-//! The documented snippet's *compilation* is guaranteed by the doctest in the
-//! umbrella crate (`crates/doorman/src/lib.rs`), which cargo-rdme keeps in
-//! sync with the README. This test stands the very same wiring up on a real
-//! socket and drives a full signup -> passkey login -> recovery round trip
-//! against it, so the quickstart is verified to *work*, not merely to compile.
-//! The only departure from the literal snippet is swapping the terminal email
-//! sender for a capturing one, so the test can read the verification links the
-//! flows mail out.
-
 mod common;
 
 use std::net::{Ipv4Addr, SocketAddr};
@@ -30,8 +19,6 @@ use tokio::net::TcpListener;
 use url::Url;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
-/// The relying-party origin the quickstart configures. The WebAuthn
-/// authenticator signs against this; HTTP requests go to the bound address.
 const ORIGIN: &str = "http://localhost:3000";
 const SIGNUP_TEMPLATE: &str = "http://localhost:3000/signup?token={token}";
 const RECOVERY_TEMPLATE: &str = "http://localhost:3000/recovery?token={token}";
@@ -84,7 +71,6 @@ async fn signup_login_recovery_round_trip() {
         .route("/api/me", get(me))
         .layer(auth.session_layer());
 
-    // Stand the app up on an ephemeral port.
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .await
         .expect("bind");
@@ -102,16 +88,10 @@ async fn signup_login_recovery_round_trip() {
         .expect("serve");
     });
 
-    // A non-cookie client: every authenticated call uses a bearer token, so
-    // no session cookie is ever sent and the CSRF layer (which only guards
-    // cookie-backed requests) stays out of the way.
     let client = reqwest::Client::new();
     let url = |path: &str| format!("http://{addr}{path}");
-    // The authenticator signs against the configured origin, not the bound
-    // address — that is what WebAuthn verification checks.
     let mut authenticator = ResidentHttpAuthenticator::new(&origin);
 
-    // --- Signup ---
     let request = client
         .post(url("/auth/signup/request"))
         .json(&SignupRequest {
@@ -157,7 +137,6 @@ async fn signup_login_recovery_round_trip() {
     let signed_up: AuthResponse = finish.json().await.expect("finish body");
     assert!(!signed_up.token.is_empty(), "signup issued a session token");
 
-    // --- Login with the freshly registered passkey (discoverable auth) ---
     let start = client
         .post(url("/auth/passkey/authenticate/start"))
         .send()
@@ -180,7 +159,6 @@ async fn signup_login_recovery_round_trip() {
     let logged_in: AuthResponse = finish.json().await.expect("authenticate finish body");
     assert_eq!(logged_in.user.id, signed_up.user.id, "same account");
 
-    // The login session resolves on a protected route.
     let me = client
         .get(url("/api/me"))
         .bearer_auth(&logged_in.token)
@@ -190,7 +168,6 @@ async fn signup_login_recovery_round_trip() {
     assert_eq!(me.status(), StatusCode::OK);
     assert_eq!(me.text().await.expect("me body"), "alice@example.com");
 
-    // --- Recovery: enrol a new passkey via the emailed link ---
     let request = client
         .post(url("/auth/recovery/request"))
         .json(&RecoveryRequest {
@@ -243,7 +220,6 @@ async fn signup_login_recovery_round_trip() {
         "recovered same account"
     );
 
-    // The recovery session is usable too.
     let me = client
         .get(url("/api/me"))
         .bearer_auth(&recovered.token)

@@ -1,18 +1,7 @@
-//! Shared scaffolding for the core flow integration tests.
-//!
-//! [`Harness`] assembles the in-memory stores through the production
-//! composition root, [`AuthCore::builder`], with a mock clock, capturing
-//! audit sink, email sender and metrics, so every flow suite runs against the
-//! same wiring a host gets. [`HarnessBuilder`] varies the few knobs
-//! individual tests need (the signup / recovery configs and per-flow rate
-//! limiters); everything else is fixed test defaults.
-//!
-//! [`ResidentTestAuthenticator`] is the one shared WebAuthn test client:
-//! `SoftPasskey` cannot mint resident keys, so it verifies doorman's
-//! server-issued options, then relaxes only the local input and records
-//! the credential as if it were discoverable.
-
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test binary compiles this module, and not every binary uses every helper"
+)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::Barrier;
 
+use chrono::{DateTime, TimeZone, Utc};
 use doorman_core::account::{AccountConfig, AccountManager};
 use doorman_core::assembly::{AssemblyError, AuthCore};
 use doorman_core::audit::{
@@ -47,11 +37,8 @@ use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use doorman_core::storage::{
     AccountStatus, Session, SessionId, Storage, StoredPasskey, User, UserId, UserStore,
 };
-use doorman_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
-// Re-export the shared token extractor so the flow suites can keep importing
-// it from `common` while the one implementation lives in `doorman-test-support`.
-use chrono::{DateTime, TimeZone, Utc};
 pub use doorman_test_support::token_from_email;
+use doorman_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
 use url::Url;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::prelude::Url as AuthUrl;
@@ -86,9 +73,6 @@ pub fn kinds(events: &[AuditEvent]) -> Vec<AuditEventKind> {
     events.iter().map(|e| e.kind.clone()).collect()
 }
 
-/// The signup-flow [`SignupConfig`] used by the harness: a known URL
-/// template (so [`token_from_email`] can recover the token) and disabled
-/// rate limits. Tests override individual fields with `..signup_config()`.
 pub fn signup_config() -> SignupConfig {
     SignupConfig {
         url_template: SIGNUP_URL.to_string(),
@@ -97,7 +81,6 @@ pub fn signup_config() -> SignupConfig {
     }
 }
 
-/// The recovery-flow [`RecoveryConfig`] counterpart to [`signup_config`].
 pub fn recovery_config() -> RecoveryConfig {
     RecoveryConfig {
         url_template: RECOVERY_URL.to_string(),
@@ -106,18 +89,13 @@ pub fn recovery_config() -> RecoveryConfig {
     }
 }
 
-/// The harness's [`UserStore`]: the in-memory store, counting lookups by id
-/// so a test can pin how often a flow reads the user, and able to hold
-/// lookups by email so a test can race two flows on one address.
 pub struct CountingUserStore {
     inner: Arc<InMemoryUserStore>,
     reads_by_id: AtomicUsize,
-    /// The barrier the next email lookups wait at, and how many still will.
     email_hold: Mutex<Option<(Arc<Barrier>, usize)>>,
 }
 
 impl CountingUserStore {
-    /// Lookups by id since the last [`reset`](Self::reset).
     pub fn reads_by_id(&self) -> usize {
         self.reads_by_id.load(Ordering::SeqCst)
     }
@@ -126,10 +104,6 @@ impl CountingUserStore {
         self.reads_by_id.store(0, Ordering::SeqCst);
     }
 
-    /// Hold the next `lookups` lookups by email: each reads, then waits
-    /// until the test waits on the returned barrier too. A test holds the
-    /// racers' reads this way, runs whatever should land in between, then
-    /// releases them, so every held racer has read before any of them writes.
     pub fn hold_email_lookups(&self, lookups: usize) -> Arc<Barrier> {
         let barrier = Arc::new(Barrier::new(lookups + 1));
         *self.email_hold.lock().expect("email hold lock") = Some((barrier.clone(), lookups));
@@ -190,8 +164,6 @@ impl UserStore for CountingUserStore {
     }
 }
 
-/// In-memory stores plus every manager [`AuthCore::builder`] wires over them,
-/// all sharing one clock, audit sink, and email sender.
 pub struct Harness {
     pub passkey: PasskeyManager,
     pub signup: SignupManager,
@@ -199,19 +171,14 @@ pub struct Harness {
     pub account: AccountManager,
     pub reauth: ReauthManager,
     pub operator: OperatorManager,
-    /// The session manager every other manager shares.
     pub session_manager: SessionManager,
-    /// The request-time resolver over [`session_manager`](Self::session_manager),
-    /// reporting cache hits and misses to [`metrics`](Self::metrics).
     pub resolver: SessionResolver,
     pub users: Arc<InMemoryUserStore>,
-    /// The store the managers actually read users through.
     pub user_store: Arc<CountingUserStore>,
     pub sessions: Arc<InMemorySessionStore>,
     pub tokens: Arc<InMemoryVerificationTokenStore>,
     pub credentials: Arc<InMemoryPasskeyCredentialStore>,
     pub challenges: Arc<InMemoryPasskeyChallengeStore>,
-    /// The composite the managers were built over.
     pub storage: Storage,
     pub audit: Arc<InMemoryAuditSink>,
     pub email: Arc<CapturingEmailSender>,
@@ -220,7 +187,6 @@ pub struct Harness {
 }
 
 impl Harness {
-    /// Build with all defaults.
     pub fn fresh() -> Harness {
         HarnessBuilder::new().build()
     }
@@ -230,35 +196,16 @@ impl Harness {
     }
 }
 
-/// Varies the knobs individual tests need; everything else is fixed.
 pub struct HarnessBuilder {
     signup: SignupConfig,
     recovery: RecoveryConfig,
     session_config: SessionConfig,
     cache_config: SessionCacheConfig,
-    /// Passkey config the [`PasskeyManager`] is built with. Defaults to the
-    /// fixed test relying party; cap / rate-limit tests override it. The
-    /// passkey manager shares the signup limiter, so a passkey-ceremony
-    /// rate-limit test pairs an override here with
-    /// [`signup_limiter`](Self::signup_limiter).
     passkey: PasskeyConfig,
-    /// The assembly's main rate limiter: signup, passkey, and every flow
-    /// other than recovery. Kept separate from the recovery limiter so a
-    /// recovery rate-limit test can provision users through signup without
-    /// spending the budget it is measuring.
     signup_limiter: Arc<dyn RateLimiter>,
-    /// Wired as the assembly's recovery-only limiter.
     recovery_limiter: Arc<dyn RateLimiter>,
-    /// The single renderer used for every flow's link copy and security
-    /// notices. Defaults to the stock copy; branding tests override it.
     emails: Arc<dyn EmailTemplates>,
-    /// The [`NotificationPolicy`] the [`OperatorManager`] is built with.
-    /// Defaults to the asymmetric stock policy; the operator notice tests
-    /// override it to exercise the send/suppress toggles.
     notification_policy: NotificationPolicy,
-    /// The [`ReauthPolicy`] the destructive managers gate through. Defaults to
-    /// [`ReauthPolicy::disabled`] so the account / passkey flow suites keep
-    /// passing without supplying proofs; the reauth suite overrides it.
     reauth_policy: ReauthPolicy,
 }
 
@@ -281,22 +228,16 @@ impl HarnessBuilder {
         }
     }
 
-    /// Override the [`ReauthPolicy`] the harness gates destructive actions
-    /// with. Defaults to [`ReauthPolicy::disabled`].
     pub fn reauth_policy(mut self, policy: ReauthPolicy) -> Self {
         self.reauth_policy = policy;
         self
     }
 
-    /// Override the operator [`NotificationPolicy`] the harness builds its
-    /// [`OperatorManager`] with.
     pub fn notification_policy(mut self, policy: NotificationPolicy) -> Self {
         self.notification_policy = policy;
         self
     }
 
-    /// Override the renderer used for every flow's link copy and security
-    /// notices.
     pub fn emails(mut self, emails: Arc<dyn EmailTemplates>) -> Self {
         self.emails = emails;
         self
@@ -337,8 +278,6 @@ impl HarnessBuilder {
         self
     }
 
-    /// Build the harness, panicking on an assembly error. Tests probing a
-    /// configuration the assembly rejects use [`try_build`](Self::try_build).
     pub fn build(self) -> Harness {
         self.try_build().expect("harness assembles")
     }
@@ -422,15 +361,12 @@ impl Default for HarnessBuilder {
     }
 }
 
-/// Await `race`, failing the test instead of hanging if a held lookup is
-/// never released.
 pub async fn within_deadline<T>(race: impl Future<Output = T>) -> T {
     tokio::time::timeout(Duration::from_secs(10), race)
         .await
         .expect("the race finishes; is a held lookup never released?")
 }
 
-/// How many live sessions `user_id` holds, read through the session manager.
 pub async fn session_count(h: &Harness, user_id: UserId) -> usize {
     h.session_manager
         .list_for_user(user_id)
@@ -439,7 +375,6 @@ pub async fn session_count(h: &Harness, user_id: UserId) -> usize {
         .len()
 }
 
-/// How many passkeys `user_id` holds, read through the passkey manager.
 pub async fn passkey_count(h: &Harness, user_id: UserId) -> u64 {
     h.passkey
         .count_passkeys(user_id)
@@ -447,7 +382,6 @@ pub async fn passkey_count(h: &Harness, user_id: UserId) -> u64 {
         .expect("count passkeys")
 }
 
-/// The token from the most recent email-change confirmation link.
 pub fn last_email_change_token(h: &Harness) -> String {
     let confirmation = h
         .email
@@ -459,12 +393,6 @@ pub fn last_email_change_token(h: &Harness) -> String {
     token_from_email(&confirmation.body_text, ACCOUNT_URL)
 }
 
-/// Assert the latest audit event refuses `secret` as unknown to its store.
-///
-/// No manager reads outstanding links or ceremonies, so a test proves one is
-/// gone by presenting it: a secret whose row was deleted is refused as
-/// `Unknown`, while one that outlived its deleted owner is refused as
-/// `UserNotFound`.
 pub fn assert_last_redemption_unknown(h: &Harness, secret: SecretKind) {
     let events = h.audit.events();
     let last = events.last().map(|e| &e.kind);
@@ -481,9 +409,6 @@ pub fn assert_last_redemption_unknown(h: &Harness, secret: SecretKind) {
     );
 }
 
-/// Create a verified user directly in the store, bypassing the signup
-/// ceremony. For passkey-flow tests that only need a user to attach
-/// credentials to.
 pub async fn make_user(h: &Harness, email: &str) -> User {
     let now = h.clock.now();
     let user = User {
@@ -498,16 +423,10 @@ pub async fn make_user(h: &Harness, email: &str) -> User {
     user
 }
 
-/// Build an ordinary (non-cool-down) session row for `user` at the harness
-/// clock. The destructive managers read only the owning user and the
-/// cool-down fields off the acting session, so a hand-built row is enough to
-/// drive the cool-down gate in tests that don't go through a full login.
 pub fn session_for(h: &Harness, user: &User) -> Session {
     plain_session(h, user.id, None)
 }
 
-/// Like [`session_for`] but restricted by a post-recovery cool-down ending at
-/// `cooldown_until`, so the destructive managers treat it as locked down.
 pub fn restricted_session_for(h: &Harness, user: &User, cooldown_until: DateTime<Utc>) -> Session {
     plain_session(h, user.id, Some(cooldown_until))
 }
@@ -527,8 +446,6 @@ fn plain_session(h: &Harness, user_id: UserId, cooldown: Option<DateTime<Utc>>) 
     }
 }
 
-/// Register a passkey for `user` through the full ceremony, acting from an
-/// ordinary session, and return the stored credential.
 pub async fn register_passkey(
     h: &Harness,
     user: UserId,
@@ -552,8 +469,6 @@ pub async fn register_passkey(
         .expect("finish_registration")
 }
 
-/// Drive a full signup flow against `h` so subsequent tests have a
-/// registered user with a passkey.
 pub async fn provision_user(h: &Harness, email: &str) -> User {
     h.signup
         .request_signup(email, None, SessionContext::default())
@@ -589,18 +504,12 @@ pub async fn provision_user(h: &Harness, email: &str) -> User {
     outcome.user
 }
 
-/// Discoverable credential the test authenticator has "stored" so a later
-/// usernameless authentication can claim residency.
 #[derive(Clone)]
 struct ResidentCredential {
     credential_id: Vec<u8>,
     user_handle: Vec<u8>,
 }
 
-/// Test authenticator wrapping a `SoftPasskey`. `SoftPasskey` cannot create
-/// resident keys, so on registration it verifies doorman's server-issued
-/// options, relaxes only the local input, and records the credential's
-/// user handle as if it had been stored discoverably.
 pub struct ResidentTestAuthenticator {
     inner: WebauthnAuthenticator<SoftPasskey>,
     resident_credentials: Vec<ResidentCredential>,
@@ -649,12 +558,6 @@ impl ResidentTestAuthenticator {
         self.do_authentication_inner(challenge, credential_id, true)
     }
 
-    /// Drive an allow-list-scoped authentication, as re-authentication issues.
-    /// Unlike sign-in the challenge carries an `allow_credentials` list, so the
-    /// `SoftPasskey` needs no compatibility shim — it picks the key straight
-    /// from the server-issued list. A user handle is *not* attached: the
-    /// scoped finish identifies the credential from the allow-list, and core's
-    /// re-auth gate confirms ownership by looking the asserted credential up.
     pub fn do_scoped_authentication(
         &mut self,
         challenge: RequestChallengeResponse,
@@ -690,9 +593,6 @@ impl ResidentTestAuthenticator {
             .cloned()
             .expect("credential is resident on test authenticator");
 
-        // SoftPasskey still needs an allow-list to pick a key. This is
-        // strictly a test-authenticator compatibility shim: the
-        // server-issued challenge remains discoverable.
         let mut compatible = challenge;
         compatible.public_key.allow_credentials = vec![AllowCredentials {
             type_: "public-key".to_string(),

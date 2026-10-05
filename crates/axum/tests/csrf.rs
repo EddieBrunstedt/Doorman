@@ -1,5 +1,3 @@
-//! HTTP tests for the CSRF origin-check layer.
-
 mod common;
 
 use axum::Router;
@@ -20,9 +18,6 @@ async fn start(csrf_config: Option<CsrfConfig>) -> TestApp {
         false,
         |b| b,
         move |builder| {
-            // The shared `TestApp` builder opts CSRF out by default; set an
-            // explicit config here so these tests drive the real check (enabled
-            // against `APP_ORIGIN` unless the caller overrides it).
             let config = csrf_config.unwrap_or_else(|| CsrfConfig::new(origin.clone()));
             builder.external_origin(origin.clone()).csrf(config)
         },
@@ -85,8 +80,6 @@ async fn cross_origin_post_with_cookie_is_rejected() {
 
 #[tokio::test]
 async fn missing_origin_and_referer_with_cookie_is_rejected() {
-    // Fail closed: a state-changing cookie request that carries neither an
-    // Origin nor a Referer header is rejected rather than waved through.
     let app = start(None).await;
     let client = cookie_client();
     let issued = login(&client, &app, "no-headers@example.com").await;
@@ -100,7 +93,6 @@ async fn missing_origin_and_referer_with_cookie_is_rejected() {
     let body: serde_json::Value = resp.json().await.expect("error body");
     assert_eq!(body["error"]["code"], "csrf_origin_mismatch");
 
-    // The session survived the rejected request.
     let me = client.get(app.url("/me")).send().await.expect("me");
     assert_eq!(me.status(), StatusCode::OK);
 
@@ -109,8 +101,6 @@ async fn missing_origin_and_referer_with_cookie_is_rejected() {
 
 #[tokio::test]
 async fn missing_origin_and_referer_with_bearer_passes() {
-    // A bearer request authenticates outside cookie scope, so the absence
-    // of Origin/Referer must not reject it.
     let app = start(None).await;
     let client = cookie_client();
     let issued = login(&client, &app, "bearer-no-headers@example.com").await;
@@ -128,7 +118,6 @@ async fn missing_origin_and_referer_with_bearer_passes() {
 
 #[tokio::test]
 async fn same_origin_referer_with_cookie_passes() {
-    // Origin absent, same-origin Referer present: allowed.
     let app = start(None).await;
     let client = cookie_client();
     let issued = login(&client, &app, "referer-ok@example.com").await;
@@ -146,7 +135,6 @@ async fn same_origin_referer_with_cookie_passes() {
 
 #[tokio::test]
 async fn cross_origin_referer_with_cookie_is_rejected() {
-    // Origin absent, cross-origin Referer present: rejected.
     let app = start(None).await;
     let client = cookie_client();
     let issued = login(&client, &app, "referer-evil@example.com").await;

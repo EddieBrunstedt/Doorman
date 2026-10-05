@@ -1,17 +1,3 @@
-//! Redis-backed [`VerificationTokenStore`].
-//!
-//! A token is stored as its JSON row under `vtoken:{purpose}:{hash}` plus
-//! membership in the per-user, per-purpose `user:{uid}:vtokens:{purpose}` SET.
-//! Purpose is part of the key so a leaked token of one purpose can never be
-//! redeemed under another. Redemption is the atomic `GETDEL` primitive:
-//! exactly one concurrent caller observes the value, giving the single-use
-//! guarantee; the index `SREM` is a best-effort follow-up.
-//!
-//! `create_token` writes with a plain `SET`, so it is an upsert: a repeated
-//! `(purpose, hash)` overwrites rather than erroring, which the trait permits
-//! for key-value adapters. The 256-bit hashes are random, so a collision is not
-//! a real-world case.
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
@@ -23,13 +9,11 @@ use crate::client::{self, RedisClient};
 use crate::keys;
 use crate::stores;
 
-/// Verification-token store backed by a Redis/Valkey connection.
 pub(crate) struct RedisVerificationTokenStore {
     client: RedisClient,
 }
 
 impl RedisVerificationTokenStore {
-    /// Build a verification-token store over `client`.
     pub(crate) fn new(client: RedisClient) -> Self {
         Self { client }
     }
@@ -72,7 +56,6 @@ impl VerificationTokenStore for RedisVerificationTokenStore {
         else {
             return Ok(None);
         };
-        // Best-effort index cleanup; a lingering member is reclaimed by purge.
         let user_key = keys.user_vtokens(token.user_id, purpose);
         let member = keys::token_hash_hex(hash);
         let _ = client::srem(&mut conn, &user_key, &[member]).await;
@@ -96,8 +79,6 @@ impl VerificationTokenStore for RedisVerificationTokenStore {
             .iter()
             .map(|hex| keys.vtoken_key_for(purpose, hex))
             .collect();
-        // DEL counts only the rows that existed, so dangling members are not
-        // mistaken for live tokens; then drop the SET.
         let removed = client::del(&mut conn, &vtoken_keys).await?;
         client::del(&mut conn, &[user_key]).await?;
         Ok(removed)
@@ -107,8 +88,6 @@ impl VerificationTokenStore for RedisVerificationTokenStore {
         let keys = self.client.keys();
         let mut conn = self.client.conn();
 
-        // The purpose lives in the SET key, so sweep each purpose's SETs in
-        // turn; that pins the purpose needed to rebuild each value key exactly.
         let mut removed = 0u64;
         for purpose in keys::ALL_PURPOSES {
             removed += stores::purge_index_sets::<VerificationToken>(

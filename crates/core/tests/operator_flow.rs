@@ -1,6 +1,3 @@
-//! Integration tests for the operator flows: host-driven operations acting on
-//! a user _other_ than the acting one. The first flow is account deletion.
-
 mod common;
 
 use doorman_core::Error;
@@ -19,7 +16,6 @@ use common::{
     token_from_email,
 };
 
-/// The first credential id registered for `user` by `provision_user`.
 async fn first_credential_id(h: &Harness, user_id: UserId) -> Vec<u8> {
     let creds = h
         .credentials
@@ -32,7 +28,6 @@ async fn first_credential_id(h: &Harness, user_id: UserId) -> Vec<u8> {
         .expect("user has a credential")
 }
 
-/// The id of `user`'s single active session.
 async fn only_session_id(h: &Harness, user_id: UserId) -> SessionId {
     let sessions = h
         .sessions
@@ -58,7 +53,6 @@ async fn operator_delete_cascades_all_stores() {
     let user = provision_user(&h, "doomed@example.com").await;
     let session = session_for(&h, &user);
 
-    // Leave behind every kind of row that hangs off the user.
     h.account
         .request_email_change(
             &user,
@@ -104,8 +98,6 @@ async fn operator_delete_cascades_all_stores() {
     assert_eq!(session_count(&h, user.id).await, 0, "sessions cascaded");
     assert_eq!(passkey_count(&h, user.id).await, 0, "credentials cascaded");
 
-    // The outstanding link and ceremony are refused as unknown, not as
-    // belonging to a deleted user: their rows went with the account.
     let err = h
         .account
         .confirm_email_change(&email_change_token, SessionContext::default())
@@ -155,7 +147,6 @@ async fn operator_delete_emits_account_deleted_with_operator_actor() {
 #[tokio::test]
 async fn operator_delete_unknown_user_fails_before_touching_stores() {
     let h = Harness::fresh();
-    // A surviving user so we can prove the cascade did not run against anyone.
     let bystander = provision_user(&h, "bystander@example.com").await;
 
     let err = h
@@ -168,8 +159,6 @@ async fn operator_delete_unknown_user_fails_before_touching_stores() {
         "expected UserNotFound, got {err:?}"
     );
 
-    // No cascade ran: the bystander's session and credential are untouched and
-    // no audit event was emitted.
     assert!(
         h.users
             .find_user_by_id(bystander.id)
@@ -197,10 +186,6 @@ async fn operator_delete_unknown_user_fails_before_touching_stores() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Operator passkey removal (F8 re-bind, D7 resolve-first, D3 operator copy).
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn operator_remove_passkey_attributes_to_operator_and_sends_operator_copy() {
     let h = Harness::fresh();
@@ -218,7 +203,6 @@ async fn operator_remove_passkey_attributes_to_operator_and_sends_operator_copy(
         "the credential was removed"
     );
 
-    // The removal is attributed to the operator, not the subject.
     let removed = h
         .audit
         .events()
@@ -233,8 +217,6 @@ async fn operator_remove_passkey_attributes_to_operator_and_sends_operator_copy(
     };
     assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
 
-    // The subject receives the operator-aware notice, never the self-service
-    // "was this you?" copy.
     let notices = h.email.sent();
     assert!(
         notices
@@ -252,9 +234,6 @@ async fn operator_remove_passkey_attributes_to_operator_and_sends_operator_copy(
 
 #[tokio::test]
 async fn operator_remove_passkey_refuses_cross_user_credential() {
-    // F8: an operator names user X but hands a credential id that belongs to
-    // user Y. The action must be refused, leave Y's credential intact, and emit
-    // no mis-attributed audit row.
     let h = Harness::fresh();
     let victim = provision_user(&h, "victim@example.com").await;
     let named = provision_user(&h, "named@example.com").await;
@@ -271,7 +250,6 @@ async fn operator_remove_passkey_refuses_cross_user_credential() {
         "expected PasskeyOwnershipMismatch, got {err:?}"
     );
 
-    // The victim's credential survives and no removal event was recorded.
     assert!(
         h.credentials
             .find_passkey_by_credential_id(&victim_credential)
@@ -289,7 +267,6 @@ async fn operator_remove_passkey_refuses_cross_user_credential() {
 
 #[tokio::test]
 async fn operator_remove_passkey_unknown_user_fails_loudly() {
-    // D7: the subject is resolved before the credential store is touched.
     let h = Harness::fresh();
     let victim = provision_user(&h, "victim@example.com").await;
     let credential_id = first_credential_id(&h, victim.id).await;
@@ -326,7 +303,6 @@ async fn operator_remove_passkey_suppresses_notice_when_policy_off() {
         .await
         .expect("operator remove passkey");
 
-    // Still removed and audited, but no subject notice was sent.
     assert_eq!(
         passkey_count(&h, user.id).await,
         0,
@@ -346,10 +322,6 @@ async fn operator_remove_passkey_suppresses_notice_when_policy_off() {
         "Suppress sends no passkey-removed notice",
     );
 }
-
-// ---------------------------------------------------------------------------
-// Operator single-session revoke (F8 re-bind, D7 resolve-first).
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn operator_revoke_session_attributes_to_operator() {
@@ -384,7 +356,6 @@ async fn operator_revoke_session_attributes_to_operator() {
 
 #[tokio::test]
 async fn operator_revoke_session_refuses_cross_user_session() {
-    // F8: an operator names user X but hands user Y's session id.
     let h = Harness::fresh();
     let victim = provision_user(&h, "victim@example.com").await;
     let named = provision_user(&h, "named@example.com").await;
@@ -401,7 +372,6 @@ async fn operator_revoke_session_refuses_cross_user_session() {
         "expected SessionNotFound, got {err:?}"
     );
 
-    // The victim's session survives and no revoke event was recorded.
     assert!(
         h.sessions
             .find_session_by_id(victim_session)
@@ -419,7 +389,6 @@ async fn operator_revoke_session_refuses_cross_user_session() {
 
 #[tokio::test]
 async fn operator_revoke_session_unknown_user_fails_loudly() {
-    // D7: the subject is resolved before the session store is touched.
     let h = Harness::fresh();
     let victim = provision_user(&h, "victim@example.com").await;
     let session_id = only_session_id(&h, victim.id).await;
@@ -440,10 +409,6 @@ async fn operator_revoke_session_unknown_user_fails_loudly() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Operator revoke-all (cache hook, D3 opt-in notice).
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn operator_revoke_all_clears_sessions_and_suppresses_notice_by_default() {
     let h = Harness::fresh();
@@ -462,7 +427,6 @@ async fn operator_revoke_all_clears_sessions_and_suppresses_notice_by_default() 
     assert_eq!(count, 1, "the one active session was revoked");
     assert_eq!(session_count(&h, user.id).await, 0, "every session is gone");
 
-    // sessions_revoked defaults to Suppress, so no notice goes out.
     assert!(
         !h.email.sent().iter().any(|e| e
             .subject
@@ -519,9 +483,6 @@ async fn operator_revoke_all_unknown_user_fails_loudly() {
 
 #[tokio::test]
 async fn operator_revoke_all_emits_audit_with_operator_actor() {
-    // The bulk revoke is the most consequential operator mutation, so it must
-    // leave an audited, operator-attributed trace even though the underlying
-    // revoke-all primitive is silent.
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
 
@@ -549,10 +510,6 @@ async fn operator_revoke_all_emits_audit_with_operator_actor() {
     };
     assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
 }
-
-// ---------------------------------------------------------------------------
-// Operator read listings (D8 audited reads, F9 token_hash never escapes).
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn operator_list_passkeys_returns_summaries_and_audits() {
@@ -598,9 +555,6 @@ async fn operator_list_sessions_returns_summaries_without_token_hash_and_audits(
         .expect("operator list sessions");
     assert_eq!(summaries.len(), 1, "the active session is listed");
 
-    // The returned type is `SessionSummary`, which has no `token_hash` field —
-    // its absence is a compile-time guarantee. Confirm the surviving metadata
-    // identifies the user's session.
     let summary = &summaries[0];
     assert_eq!(summary.user_id, user.id, "summary is the subject's session");
 
@@ -626,9 +580,6 @@ async fn operator_list_sessions_returns_summaries_without_token_hash_and_audits(
 
 #[tokio::test]
 async fn operator_reads_unknown_user_fail_loudly_and_unaudited() {
-    // D7: the subject is resolved before any listing, and a failed resolve
-    // emits no audit row (no "who looked" trace for a lookup that returned
-    // nothing).
     let h = Harness::fresh();
     let _present = provision_user(&h, "present@example.com").await;
     let before = h.audit.events().len();
@@ -660,11 +611,6 @@ async fn operator_reads_unknown_user_fail_loudly_and_unaudited() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Operator disable / enable (reversible freeze, immediate lockout, D7, audit).
-// ---------------------------------------------------------------------------
-
-/// The stored status of `user_id` right now.
 async fn status_of(h: &Harness, user_id: UserId) -> AccountStatus {
     h.users
         .find_user_by_id(user_id)
@@ -689,8 +635,6 @@ async fn operator_disable_freezes_account_and_drops_live_sessions() {
         .await
         .expect("operator disable");
 
-    // The status flipped to Disabled and the live session is gone (immediate
-    // lockout via the revoke-all sweep).
     assert!(
         matches!(status_of(&h, user.id).await, AccountStatus::Disabled { .. }),
         "the account resolves as Disabled",
@@ -731,7 +675,6 @@ async fn operator_disable_emits_status_and_revoke_audit_with_operator_actor() {
     };
     assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
 
-    // The session sweep also leaves its own operator-attributed revoke row.
     assert!(
         h.audit.events().iter().any(|e| matches!(
             e.kind,
@@ -792,8 +735,6 @@ async fn operator_disable_is_idempotent() {
         .disable(user.id, operator())
         .await
         .expect("first disable");
-    // A second disable on an already-disabled account succeeds rather than
-    // erroring, and the account stays disabled.
     h.operator
         .disable(user.id, operator())
         .await
@@ -824,7 +765,6 @@ async fn operator_disable_unknown_user_fails_loudly() {
         matches!(err, Error::UserNotFound),
         "expected UserNotFound, got {err:?}"
     );
-    // The bystander is untouched: still active, session intact, no status event.
     assert!(
         matches!(status_of(&h, bystander.id).await, AccountStatus::Active),
         "bystander stays active",
@@ -910,9 +850,6 @@ async fn operator_enable_unknown_user_fails_loudly() {
 
 #[tokio::test]
 async fn disable_blocks_recovery_then_enable_restores_it() {
-    // End-to-end across the Step 3 recovery gate: an operator disable refuses a
-    // recovery request (no link issued), and a later enable lets recovery flow
-    // again. This drives the same `is_active` gate the auth path uses.
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;
 
@@ -943,7 +880,6 @@ async fn disable_blocks_recovery_then_enable_restores_it() {
         "the refusal is audited as AccountDisabled",
     );
 
-    // Re-enable and recovery flows again: a link is now issued.
     h.operator
         .enable(user.id, operator())
         .await

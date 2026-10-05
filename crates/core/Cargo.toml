@@ -13,12 +13,7 @@ description = "Core authentication primitives for the doorman library: storage t
 
 [features]
 default = []
-# Opt-in `purge::spawn_purge_task` background sweeper. Pulls tokio's runtime
-# and timer so the default build stays lean.
 background-purge = ["dep:tokio", "tokio/time", "tokio/rt"]
-# Bundled `FileEmailSender` dev transport that writes `.eml` files. It is the
-# only thing in core's default build that needs `tokio`'s filesystem/IO, so it
-# is opt-in: the default build pulls no tokio at all.
 file-email = ["dep:tokio", "tokio/fs", "tokio/io-util"]
 
 [dependencies]
@@ -46,13 +41,9 @@ workspace = true
 all-features = true
 
 [dev-dependencies]
-# Test-only collaborators (mock clock, in-memory audit sink, capturing email
-# sender) live in their own crate so they never reach a production build. The
-# path-only edge means a `cargo publish` of doorman-core drops it.
 criterion.workspace = true
 doorman-test-support = { path = "../test-support" }
 proptest.workspace = true
-# `test-util` adds paused-time control for the `background-purge` task test.
 tokio = { workspace = true, features = ["test-util"] }
 webauthn-authenticator-rs.workspace = true
 

@@ -1,18 +1,3 @@
-//! Redemption of single-use secrets: passkey ceremony challenges and emailed
-//! link tokens.
-//!
-//! Every secret is redeemed the same way: take it from its store (which
-//! deletes it, so it cannot be replayed), check it was issued for this
-//! ceremony or flow, check it is still live, read its payload, and — when it
-//! is bound to a user — require that user to be active. [`Redeemer`] owns that
-//! sequence. A caller gets back a live, typed payload, or a refusal that has
-//! already been audited as [`AuditEventKind::RedemptionFailed`].
-//!
-//! A refused secret stays consumed: presenting a challenge to the wrong
-//! ceremony, or a link after its owner was disabled, burns it. Only a secret
-//! the store does not recognise is left untouched, because there is nothing
-//! to take.
-
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -40,20 +25,12 @@ use crate::storage::{
 use crate::token::hash_token;
 use crate::user::find_active_user;
 
-/// A redeemed registration challenge.
 pub(crate) struct RedeemedRegistration {
-    /// The active user the ceremony enrols a passkey for.
     pub user: User,
-    /// The `webauthn-rs` ceremony state.
     pub state: PasskeyRegistration,
-    /// Recovery cool-down deadline the ceremony was started with, if any.
     pub recovery_cooldown_until: Option<DateTime<Utc>>,
 }
 
-/// Takes single-use secrets from their stores and turns each into a live,
-/// typed payload or an audited refusal.
-///
-/// Cheap to clone: every field is `Arc`-backed.
 #[derive(Clone)]
 pub(crate) struct Redeemer {
     users: Arc<dyn UserStore>,
@@ -84,9 +61,6 @@ impl Redeemer {
         }
     }
 
-    /// Redeem a registration challenge. Refusals return
-    /// [`Error::InvalidPasskeyChallenge`], or [`Error::AccountDisabled`] when
-    /// the user it was started for has since been disabled.
     pub(crate) async fn registration(
         &self,
         id: PasskeyChallengeId,
@@ -115,9 +89,6 @@ impl Redeemer {
         })
     }
 
-    /// Redeem a discoverable sign-in challenge. Refusals return
-    /// [`Error::InvalidPasskeyChallenge`]. The challenge names no user; the
-    /// caller resolves one from the assertion.
     pub(crate) async fn login(
         &self,
         id: PasskeyChallengeId,
@@ -139,10 +110,6 @@ impl Redeemer {
         .await
     }
 
-    /// Redeem a re-authentication challenge for the session user `user_id`.
-    /// Refusals return [`Error::ReauthRequired`], so the caller restarts the
-    /// re-authentication handshake. The session was already resolved as an
-    /// active user, so no owner lookup runs.
     pub(crate) async fn reauth(
         &self,
         id: PasskeyChallengeId,
@@ -166,11 +133,6 @@ impl Redeemer {
         .await
     }
 
-    /// Redeem an emailed link of `purpose`: consume the token by hash and
-    /// purpose, re-check the purpose and lifetime, read the payload with
-    /// `payload`, then require the owner to be active. Refusals return
-    /// [`Error::InvalidVerificationToken`], or [`Error::AccountDisabled`] for a
-    /// disabled owner.
     pub(crate) async fn link<T>(
         &self,
         token: &str,
@@ -184,9 +146,6 @@ impl Redeemer {
             return Err(self.refuse(secret, None, Unknown, context).await);
         };
         let owner = Some(record.user_id);
-        // The store is asked for this purpose only, but the returned record is
-        // re-checked so a store that ignores the filter can never let one
-        // flow's link redeem on another.
         self.check_live(
             secret,
             owner,
@@ -202,7 +161,6 @@ impl Redeemer {
         Ok((user, value))
     }
 
-    /// Refuse a secret issued for another purpose, or one past its lifetime.
     async fn check_live(
         &self,
         secret: SecretKind,
@@ -221,7 +179,6 @@ impl Redeemer {
         Err(self.refuse(secret, owner, reason, context).await)
     }
 
-    /// Refuse a secret whose stored ceremony state does not decode.
     async fn decode<T>(
         &self,
         secret: SecretKind,
@@ -238,8 +195,6 @@ impl Redeemer {
         }
     }
 
-    /// Load the user a secret is bound to and require the account to be
-    /// active.
     async fn owner(
         &self,
         secret: SecretKind,
@@ -258,7 +213,6 @@ impl Redeemer {
         }
     }
 
-    /// Audit a refusal and return the error the caller surfaces for it.
     async fn refuse(
         &self,
         secret: SecretKind,
@@ -292,9 +246,6 @@ fn link_secret(purpose: VerificationPurpose) -> SecretKind {
     }
 }
 
-/// The error a refused `secret` surfaces as. A disabled owner is a deliberate
-/// refusal the caller can act on, so it keeps its own error; every other
-/// reason reads as the secret simply no longer being valid.
 fn refusal_error(secret: SecretKind, reason: RedemptionFailureReason) -> Error {
     if reason == AccountDisabled {
         return Error::AccountDisabled;

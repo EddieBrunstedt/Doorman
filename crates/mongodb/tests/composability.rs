@@ -1,16 +1,3 @@
-//! Proves the "override one sub-store method, reuse the rest" pattern on the
-//! MongoDB adapter: a host wraps the bundled `Arc<dyn SessionStore>`, writes the
-//! session via the public [`session_to_document`] encoder into the public
-//! [`MongoDbStorage::sessions_collection`], writes its own audit document, and
-//! delegates every read/delete. The delegated reads still find the row, proving
-//! the host's write carries the encoding the bundled reads expect.
-//!
-//! The throwaway container is a **standalone** node, so the two inserts here run
-//! sequentially rather than in one transaction. On a replica set a host would
-//! wrap both in a `mongodb::ClientSession` transaction for fail-closed audit;
-//! that atomicity is a property of the deployment, not of this adapter, and is
-//! not what this test guards — it guards the encoding parity and wiring.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -26,8 +13,6 @@ use mongodb::bson::{Document, doc};
 use testcontainers_modules::mongo::Mongo;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
-/// A host's `SessionStore` that writes the session and its own audit document,
-/// delegating every read/delete to the bundled store.
 struct AuditedSessions {
     inner: Arc<dyn SessionStore>,
     sessions: Collection<Document>,
@@ -37,9 +22,6 @@ struct AuditedSessions {
 #[async_trait]
 impl SessionStore for AuditedSessions {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
-        // `session_to_document` produces the byte-identical encoding the bundled
-        // reads expect, so a document written here is later found by the
-        // delegated `find_session_by_token_hash`.
         self.sessions
             .insert_one(session_to_document(&session))
             .await

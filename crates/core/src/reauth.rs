@@ -1,56 +1,3 @@
-//! Re-authentication: prove session recency before a destructive action.
-//!
-//! Re-authentication requires a **fresh, user-verified passkey assertion**
-//! immediately before a destructive self-service action (delete account,
-//! email-change request, passkey removal, revoking other sessions). It is the
-//! WebAuthn equivalent of "confirm your password" before something dangerous.
-//!
-//! # What it is, and is not
-//!
-//! Call this **re-authentication**, never "step-up". Step-up classically means
-//! raising the *assurance level* (adding or upgrading a factor). doorman is
-//! single-factor and the passkey is already the strongest rung — there is
-//! nothing to step up to. What re-auth proves is **recency**: that the human
-//! behind this session is still present *right now*.
-//!
-//! ## Threat model
-//!
-//! - **Defends against** a *stolen or stale session* — an XSS-exfiltrated
-//!   bearer token, a borrowed unlocked laptop, a session left open. The
-//!   attacker holds a valid session but cannot produce a fresh user-verified
-//!   passkey assertion.
-//! - **Does not defend against** a stolen *authenticator*. An attacker who
-//!   holds the passkey and can satisfy user verification is indistinguishable
-//!   from the user. That is out of scope.
-//! - **Complements, never replaces, the recovery cool-down.** The cool-down
-//!   distrusts a *freshly-recovered* session; re-auth distrusts an *old* one.
-//!   [`ReauthManager::ensure`] is the one gate for both: every
-//!   [`ReauthAction`] is blocked during the cool-down, which is checked first —
-//!   a hard block you cannot re-auth your way out of.
-//!
-//! # Shape
-//!
-//! Re-auth is an **inline, per-action assertion** — no intermediate token, no
-//! session stamp:
-//!
-//! 1. [`ReauthManager::start`] mints a single-use, user-scoped challenge.
-//! 2. The destructive request carries a [`ReauthProof`] (`challenge_id` +
-//!    `assertion`). The destructive manager calls [`ReauthManager::ensure`],
-//!    which verifies the assertion inline, consumes the challenge, and lets the
-//!    action proceed.
-//!
-//! This is stateless and per-action: it needs no storage migration, reusing
-//! the existing [`PasskeyChallengeStore`] to hold the ceremony state.
-//!
-//! # No rate limiting
-//!
-//! The re-auth endpoints are deliberately **not** rate-limited. Re-auth is
-//! authenticated (a valid session is required to reach it), sends no email,
-//! exposes no enumeration surface, and guards an *unforgeable* signature — so
-//! none of the reasons the library throttles other endpoints (brute-force,
-//! enumeration, email/quota abuse, unauthenticated amplification) apply. The
-//! lever against a stolen session is **revocation**, not throttling.
-
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -74,38 +21,15 @@ use crate::storage::{
     Session, Storage, StoredPasskeyAuthentication, UserId,
 };
 
-/// A destructive self-service action, gated by [`ReauthManager::ensure`].
-///
-/// The set is exactly what the post-recovery cool-down protects: `ensure`
-/// refuses every action while the acting session is inside its cool-down,
-/// before it looks at the policy. Outside the cool-down, an action needs a
-/// re-auth proof only when the host's [`ReauthPolicy`] lists it. A new
-/// protected action becomes a variant here and calls `ensure`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReauthAction {
-    /// [`AccountManager::delete_account`](crate::account::AccountManager::delete_account).
     DeleteAccount,
-    /// [`AccountManager::request_email_change`](crate::account::AccountManager::request_email_change)
-    /// — the session-authenticated *request* step. `confirm_email_change` is
-    /// token-based with no session and is never gated.
     RequestEmailChange,
-    /// [`PasskeyManager::remove_passkey`](crate::passkey::PasskeyManager::remove_passkey).
     RemovePasskey,
-    /// [`AccountManager::revoke_other_sessions`](crate::account::AccountManager::revoke_other_sessions)
-    /// — "sign out everywhere else".
     RevokeOtherSessions,
-    /// [`AccountManager::revoke_session`](crate::account::AccountManager::revoke_session)
-    /// on another of the user's sessions. Revoking the acting session itself
-    /// is never gated, so the owner can always sign it out.
     RevokeSession,
 }
 
-/// Which destructive actions require a fresh re-authentication.
-///
-/// There is **no default**: a host must make an explicit decision, either
-/// listing the protected actions with [`required_for`](Self::required_for) or
-/// opting out with [`disabled`](Self::disabled). [`AuthCore::builder`](crate::assembly::AuthCore::builder) fails
-/// closed until one is supplied, mirroring the CSRF decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReauthPolicy {
     delete_account: bool,
@@ -116,8 +40,6 @@ pub struct ReauthPolicy {
 }
 
 impl ReauthPolicy {
-    /// Require re-authentication for exactly the listed actions; every other
-    /// action is left ungated. Duplicate entries are harmless.
     pub fn required_for(actions: impl IntoIterator<Item = ReauthAction>) -> Self {
         let mut policy = Self::disabled();
         for action in actions {
@@ -132,8 +54,6 @@ impl ReauthPolicy {
         policy
     }
 
-    /// Gate nothing: every destructive action proceeds without a re-auth proof.
-    /// The deliberate opt-out a host passes when it does not want this gate.
     pub const fn disabled() -> Self {
         Self {
             delete_account: false,
@@ -144,7 +64,6 @@ impl ReauthPolicy {
         }
     }
 
-    /// Whether `action` requires a re-auth proof under this policy.
     pub const fn requires(&self, action: ReauthAction) -> bool {
         match action {
             ReauthAction::DeleteAccount => self.delete_account,
@@ -156,27 +75,12 @@ impl ReauthPolicy {
     }
 }
 
-/// The proof a client supplies on a destructive request to satisfy
-/// re-authentication: the `challenge_id` returned by [`ReauthManager::start`]
-/// and the WebAuthn `assertion` the browser produced for it.
 #[derive(Debug, Clone)]
 pub struct ReauthProof {
-    /// The challenge id from the [`ReauthManager::start`] response.
     pub challenge_id: PasskeyChallengeId,
-    /// The assertion `navigator.credentials.get` produced for the challenge.
     pub assertion: PublicKeyCredential,
 }
 
-/// Mints and verifies re-authentication challenges, and gates destructive
-/// actions behind the configured [`ReauthPolicy`].
-///
-/// Holds its own `webauthn-rs` [`Webauthn`] handle. The handle is stateless
-/// across ceremonies (the per-ceremony state lives in the serialized
-/// challenge), so building a second handle from the same [`PasskeyConfig`] the
-/// [`PasskeyManager`](crate::passkey::PasskeyManager) uses is functionally
-/// equivalent to sharing one — and it lets the assembly builder construct this
-/// manager before the passkey manager without threading the handle out of it. The single source of truth for the
-/// relying-party id / origin remains the one [`PasskeyConfig`].
 #[derive(Clone)]
 pub struct ReauthManager {
     webauthn: Arc<Webauthn>,
@@ -190,14 +94,6 @@ pub struct ReauthManager {
 }
 
 impl ReauthManager {
-    /// Build a re-authentication manager.
-    ///
-    /// The relying-party [`PasskeyConfig`] is used only to construct the
-    /// `webauthn-rs` handle (and to read the challenge lifetime); supply the
-    /// same config the [`PasskeyManager`](crate::passkey::PasskeyManager) is
-    /// built with. Challenges and credentials are read from `storage`. The
-    /// [`ReauthPolicy`] is a **required** argument — there is no default; the
-    /// assembly builder refuses to build until the host decides.
     pub(crate) fn new(
         config: &PasskeyConfig,
         storage: &Storage,
@@ -218,25 +114,10 @@ impl ReauthManager {
         })
     }
 
-    /// The configured policy, so a destructive manager can answer
-    /// [`requires`](ReauthPolicy::requires) without re-running a ceremony.
     pub fn policy(&self) -> ReauthPolicy {
         self.policy
     }
 
-    /// Begin a re-authentication ceremony scoped to `user_id`'s own
-    /// credentials.
-    ///
-    /// Unlike sign-in (which is discoverable — any user, identified at finish),
-    /// re-auth already knows the user from their session, so it uses the
-    /// allow-list-scoped `start_passkey_authentication` against *that user's*
-    /// registered credentials. `webauthn-rs` requests
-    /// `UserVerificationPolicy::Required` for this ceremony, and
-    /// [`ensure`](Self::ensure) re-checks the user-verified flag on finish — the
-    /// whole point is a deliberate human gesture.
-    ///
-    /// Returns [`Error::PasskeyNotFound`] if the user has no credentials: there
-    /// is nothing to assert, so they cannot re-authenticate.
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn start(
         &self,
@@ -272,32 +153,6 @@ impl ReauthManager {
         Ok((id, rcr))
     }
 
-    /// Gate `action` for the acting `session`. The one place the recovery
-    /// cool-down and the re-auth policy are enforced; every destructive
-    /// self-service manager method calls it before acting.
-    ///
-    /// - A `session` inside its post-recovery cool-down window is refused with
-    ///   [`Error::RecoveryCooldownActive`] first, whatever the policy and
-    ///   proof: the cool-down is a hard block re-auth cannot satisfy. The
-    ///   check trusts the supplied snapshot, so pass a `session` resolved
-    ///   from storage for this request.
-    /// - If the policy does not require `action`, returns `Ok(())` immediately.
-    /// - Otherwise a [`ReauthProof`] is mandatory: a missing one is
-    ///   [`Error::ReauthRequired`] (the caller should run [`start`](Self::start)
-    ///   and retry).
-    /// - With a proof, the challenge is consumed single-use; one that is
-    ///   unknown, expired, or was minted for sign-in is refused with
-    ///   [`Error::ReauthRequired`]. The assertion is then verified, user verification is required, and the asserted credential
-    ///   must belong to `session.user_id` (defense in depth — the challenge is
-    ///   already user-scoped). A counter regression maps to
-    ///   [`Error::PasskeyPossibleCompromise`].
-    ///
-    /// The challenge is **generic and single-use, not bound to a specific
-    /// action**. `start` does not know the target action, and that is fine: the
-    /// security property is "a fresh user-verified assertion by the session
-    /// user, consumed once". Binding to an action would add coupling for no real
-    /// gain — obtaining any valid assertion already requires the authenticator
-    /// plus user verification.
     #[tracing::instrument(skip(self, session, proof, context), fields(user_id = %session.user_id))]
     pub async fn ensure(
         &self,
@@ -328,9 +183,6 @@ impl ReauthManager {
             .finish_passkey_authentication(&proof.assertion, &auth_state)
         {
             Ok(result) => result,
-            // A non-advancing signature counter is webauthn-rs's possible
-            // cloned-authenticator signal; surface it distinctly, the same way
-            // sign-in does at `passkey.rs`.
             Err(WebauthnError::CredentialPossibleCompromise) => {
                 self.emit_failed(
                     now,
@@ -359,10 +211,6 @@ impl ReauthManager {
             return Err(Error::UserVerificationRequired);
         }
 
-        // Defense in depth: confirm the asserted credential belongs to the
-        // session user. The ceremony was already scoped to this user's
-        // credentials, but re-checking the resolved owner closes any gap
-        // between the allow-list and the stored binding.
         let cred_id: &[u8] = result.cred_id().as_ref();
         match find_owned_passkey(self.credentials.as_ref(), user_id, cred_id).await {
             Ok(_) => {}
@@ -392,9 +240,6 @@ impl ReauthManager {
         Ok(())
     }
 
-    /// Emit a [`ReauthFailed`](AuditEventKind::ReauthFailed) event. Centralised
-    /// so every rejection path records the same shape, mirroring
-    /// `emit_auth_failure` on the passkey manager.
     async fn emit_failed(
         &self,
         now: DateTime<Utc>,

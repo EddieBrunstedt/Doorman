@@ -1,7 +1,3 @@
-//! Runs the shared storage-conformance suite against the SQLx + SQLite
-//! adapter. The assertions live in `doorman-conformance`; this file only stands up
-//! a fresh in-memory SQLite database and points the suite at it.
-
 #![cfg(feature = "sqlite")]
 
 use doorman_sqlx::SqliteStorage;

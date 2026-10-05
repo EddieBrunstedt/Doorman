@@ -1,18 +1,3 @@
-//! Redis-specific index-hygiene checks: the dangling-member reclamation paths
-//! the logical-clock conformance suite cannot reach.
-//!
-//! The shared suite pins its fixtures to fixed past timestamps, so `ttl_at_ms`
-//! never arms a real `PEXPIREAT` and no key is ever evicted — a user-set member
-//! never goes dangling, and the `None =>` reclamation arms stay cold. These
-//! tests simulate that eviction deterministically: a session's primary row is
-//! `DEL`eted directly over a raw connection while its hash index and user-set
-//! membership are left behind, then the store API is driven over the resulting
-//! orphan. They assert the read-time hygiene and the `purge_expired` backstop
-//! the key-value adapter contract relies on.
-//!
-//! Self-contained: each test starts its own throwaway container via
-//! `testcontainers`, so it needs a running Docker daemon and nothing else.
-
 mod common;
 
 use std::fmt::Write as _;
@@ -23,13 +8,10 @@ use doorman_core::session::hash_token;
 use doorman_core::storage::{Session, SessionId, UserId};
 use redis::aio::MultiplexedConnection;
 
-/// Primary key for a session row. Mirrors `KeySchema::session`.
 fn session_key(prefix: &str, id: SessionId) -> String {
     format!("{prefix}session:{}", id.0)
 }
 
-/// Token-hash index key for a session token. Mirrors
-/// `KeySchema::session_hash_index` (and `token_hash_hex`).
 fn hash_index_key(prefix: &str, token: &str) -> String {
     let mut hex = String::new();
     for byte in hash_token(token).0 {
@@ -38,7 +20,6 @@ fn hash_index_key(prefix: &str, token: &str) -> String {
     format!("{prefix}session:hash:{hex}")
 }
 
-/// Per-user session SET key. Mirrors `KeySchema::user_sessions`.
 fn user_sessions_key(prefix: &str, user_id: UserId) -> String {
     format!("{prefix}user:{}:sessions", user_id.0)
 }
@@ -81,14 +62,11 @@ async fn exists(conn: &mut MultiplexedConnection, key: String) -> i64 {
         .expect("EXISTS")
 }
 
-/// Drive every dangling-member reclamation path against `backend`.
 async fn run_index_hygiene(backend: Backend) {
-    // `_node` keeps the container alive until the end of the test.
     let (_node, storage, mut raw, prefix) = common::storage_with_raw(backend).await;
     let sessions = &storage.sessions;
     let now = Utc::now();
 
-    // list_for_user skips the dangling row and reclaims its SET member.
     let lister = UserId::new();
     let list_session = session(lister, "dangling-list-token", now);
     sessions
@@ -114,7 +92,6 @@ async fn run_index_hygiene(backend: Backend) {
         "list_for_user reclaimed the dangling SET member",
     );
 
-    // find_session_by_token_hash drops the orphaned hash index.
     let finder = UserId::new();
     let find_token = "dangling-hash-token";
     let find_session = session(finder, find_token, now);
@@ -137,7 +114,6 @@ async fn run_index_hygiene(backend: Backend) {
         "find_session_by_token_hash dropped the orphaned hash index",
     );
 
-    // purge_expired reclaims a dangling member and reports it in the count.
     let purger = UserId::new();
     let purge_session = session(purger, "dangling-purge-token", now);
     sessions

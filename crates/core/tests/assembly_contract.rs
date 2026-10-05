@@ -1,12 +1,3 @@
-//! Build-time configuration contract for `AuthCore::builder().build()`.
-//!
-//! The assembly is strict by default: a missing required collaborator, a
-//! placeholder URL, an undecided re-auth posture, or any other portable
-//! misconfiguration is a hard [`AssemblyError`] rather than a silenceable
-//! warning. These tests pin each failure mode and the successful happy path.
-//! The HTTP settings a front end layers on top are pinned in that front end's
-//! own contract tests.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -74,10 +65,6 @@ fn real_account() -> AccountConfig {
     }
 }
 
-/// A builder with every required input wired correctly, so `build()`
-/// succeeds. Tests that probe a single validation start here and override the
-/// one field under test; tests that probe a *missing* required input build a
-/// chain by hand instead (you cannot un-set a builder field).
 fn valid_builder() -> AuthCoreBuilder {
     AuthCore::builder(fresh_storage())
         .email(capturing_email())
@@ -90,14 +77,10 @@ fn valid_builder() -> AuthCoreBuilder {
         .reauthentication(ReauthPolicy::disabled())
 }
 
-// --- A fully-wired builder succeeds ---
-
 #[test]
 fn fully_wired_builder_builds() {
     valid_builder().build().expect("build");
 }
-
-// --- Required collaborators (strict by default, no silent defaults) ---
 
 #[test]
 fn missing_email_sender_returns_build_error() {
@@ -156,8 +139,6 @@ fn missing_rate_limiter_returns_build_error() {
 
 #[test]
 fn explicit_noop_collaborators_are_accepted() {
-    // The dev/opt-out choices are still available — they are just explicit,
-    // so they build without any warning.
     let err = valid_builder()
         .audit(noop_audit())
         .limiter(Arc::new(NoopRateLimiter))
@@ -169,13 +150,8 @@ fn explicit_noop_collaborators_are_accepted() {
     );
 }
 
-// --- Re-authentication decision is required ---
-
 #[test]
 fn reauth_decision_required_when_policy_not_set() {
-    // Every other input is valid; only the re-auth decision is missing. The
-    // build refuses to guess whether destructive actions should require a
-    // fresh passkey assertion.
     let err = AuthCore::builder(fresh_storage())
         .email(capturing_email())
         .passkey(passkey_config())
@@ -191,8 +167,6 @@ fn reauth_decision_required_when_policy_not_set() {
         "expected ReauthDecisionRequired when no policy is wired, got: {err:?}"
     );
 }
-
-// --- Placeholder URL templates fail closed ---
 
 #[test]
 fn default_signup_template_is_rejected_as_placeholder() {
@@ -245,8 +219,6 @@ fn default_account_template_is_rejected_as_placeholder() {
     );
 }
 
-// --- URL templates must still carry the token placeholder ---
-
 #[test]
 fn signup_url_template_without_token_is_rejected() {
     let err = valid_builder()
@@ -285,8 +257,6 @@ fn recovery_url_template_without_token_is_rejected() {
         "expected InvalidUrlTemplate for recovery, got: {err:?}"
     );
 }
-
-// --- Lifetimes and the recovery cool-down ---
 
 #[test]
 fn subfloor_recovery_cooldown_is_rejected() {

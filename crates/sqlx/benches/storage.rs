@@ -1,37 +1,3 @@
-//! Storage-adapter benches: the cost of the SQLx adapters, to compare
-//! against the in-memory reference baseline (`doorman-core`'s `session` bench).
-//!
-//! Every benchmark is registered under a per-dialect criterion group so the
-//! ids read `sqlite/...` and (when enabled) `postgres/...`:
-//!
-//! - `session_create` — insert a fresh session row into a table pre-seeded to
-//!   a representative size, so the number reflects a populated B-tree rather
-//!   than the empty-table fast path.
-//! - `find_by_token_hash` — the per-request hot path the session layer runs
-//!   on every authenticated request, against the seeded table.
-//! - `find_by_id` — the indexed primary-key lookup.
-//! - `find_by_token_hash/{1,100,10000}` — the same lookup at three table
-//!   sizes, to show how the hashed-token index scales.
-//! - `list_for_user/{1,100,10000}` — listing a user's active sessions as the
-//!   per-user row count grows.
-//! - `purge_expired` — sweeping a table full of expired rows (the indexed
-//!   `DELETE ... WHERE expires_at <= ?`), re-seeded before each timed pass.
-//!
-//! SQLite always runs against an ephemeral `sqlite::memory:` database.
-//! Postgres runs against a throwaway container started via `testcontainers`,
-//! so enabling it just needs the `postgres` feature and a running Docker
-//! daemon — no external server or connection string. Each store resets the
-//! container's `public` schema for a clean migration state, exactly like the
-//! conformance suite. The container is removed when the bench process exits.
-//!
-//! ```sh
-//! # SQLite only
-//! cargo bench -p doorman-sqlx --features sqlite --bench storage
-//!
-//! # SQLite + Postgres (needs a running Docker daemon)
-//! cargo bench -p doorman-sqlx --features "sqlite postgres" --bench storage
-//! ```
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -41,11 +7,8 @@ use doorman_core::session::hash_token;
 use doorman_core::storage::{AccountStatus, Session, SessionId, Storage, TokenHash, User, UserId};
 use tokio::runtime::Runtime;
 
-/// Table sizes used by the scaling benches.
 const SCALE_SIZES: [u32; 3] = [1, 100, 10_000];
-/// Rows pre-seeded for the fixed-size read/write benches.
 const SEED_ROWS: u32 = 2_000;
-/// Expired rows seeded before each `purge_expired` pass.
 const PURGE_EXPIRED_ROWS: u32 = 500;
 
 fn make_session(
@@ -68,7 +31,6 @@ fn make_session(
     }
 }
 
-/// Create a verified user in `storage` and return its id.
 async fn seed_user(storage: &Storage) -> UserId {
     let now = Utc::now();
     let user = User {
@@ -84,8 +46,6 @@ async fn seed_user(storage: &Storage) -> UserId {
     user_id
 }
 
-/// Insert `count` live sessions for `user_id`, tagging each token hash with
-/// `prefix` so callers can seed disjoint sets.
 async fn seed_sessions(storage: &Storage, user_id: UserId, count: u32, prefix: &str) {
     let now = Utc::now();
     let expires_at = now + chrono::Duration::hours(1);
@@ -104,9 +64,7 @@ async fn seed_sessions(storage: &Storage, user_id: UserId, count: u32, prefix: &
     }
 }
 
-/// Run the full bench suite for one dialect's composite store.
 fn run_backend(c: &mut Criterion, runtime: &Runtime, label: &str, make: &dyn Fn() -> Storage) {
-    // A populated store shared by the fixed-size read/write benches.
     let fixed = make();
     let (user_id, seeded_token_hash, seeded_id) = runtime.block_on(async {
         let user_id = seed_user(&fixed).await;
@@ -173,8 +131,6 @@ fn run_backend(c: &mut Criterion, runtime: &Runtime, label: &str, make: &dyn Fn(
         });
     });
 
-    // Scaling: token-hash lookup against tables of growing size. Each size
-    // gets its own fresh store so the row count is exactly `size + 1`.
     for size in SCALE_SIZES {
         let store = make();
         let token_hash = runtime.block_on(async {
@@ -211,7 +167,6 @@ fn run_backend(c: &mut Criterion, runtime: &Runtime, label: &str, make: &dyn Fn(
         );
     }
 
-    // Scaling: list a user's active sessions as the per-user count grows.
     for size in SCALE_SIZES {
         let store = make();
         let scoped_user = runtime.block_on(async {
@@ -236,9 +191,6 @@ fn run_backend(c: &mut Criterion, runtime: &Runtime, label: &str, make: &dyn Fn(
             },
         );
     }
-    // Purge: sweep a table full of expired rows. Re-seed before each timed
-    // pass via `iter_custom`, since the sweep empties the table. Throughput is
-    // reported per expired row removed.
     let purge_store = make();
     let purge_user = runtime.block_on(seed_user(&purge_store));
     group.throughput(Throughput::Elements(u64::from(PURGE_EXPIRED_ROWS)));
@@ -249,7 +201,6 @@ fn run_backend(c: &mut Criterion, runtime: &Runtime, label: &str, make: &dyn Fn(
             async move {
                 let mut total = Duration::ZERO;
                 for _ in 0..iters {
-                    // Untimed setup: a fresh batch of already-expired rows.
                     let now = Utc::now();
                     let expired = now - chrono::Duration::hours(1);
                     for n in 0..PURGE_EXPIRED_ROWS {
@@ -282,8 +233,6 @@ fn run_backend(c: &mut Criterion, runtime: &Runtime, label: &str, make: &dyn Fn(
     group.finish();
 }
 
-/// Build a fresh, migrated in-memory SQLite composite. Each call is an
-/// independent database, so the scaling benches get exact row counts.
 #[cfg(feature = "sqlite")]
 fn sqlite_storage(runtime: &Runtime) -> Storage {
     runtime.block_on(async {
@@ -301,17 +250,11 @@ fn storage(c: &mut Criterion) {
     #[cfg(feature = "sqlite")]
     run_backend(c, &runtime, "sqlite", &|| sqlite_storage(&runtime));
 
-    // `run_backend` finishes each store's benches before the next `make()`
-    // call, so resetting the shared Postgres schema per call is safe: it only
-    // ever wipes a store whose benches have already completed. This gives each
-    // scaling size an exact row count, mirroring SQLite's fresh databases.
     #[cfg(feature = "postgres")]
     {
         use testcontainers_modules::postgres::Postgres;
         use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
-        // Start one throwaway Postgres container for the whole Postgres group,
-        // mirroring the conformance test.
         let (node, pool) = runtime.block_on(async {
             let node = Postgres::default()
                 .start()
@@ -340,11 +283,6 @@ fn storage(c: &mut Criterion) {
         };
         run_backend(c, &runtime, "postgres", &make);
 
-        // Remove the container explicitly inside the runtime: `ContainerAsync`'s
-        // async `Drop` calls `Handle::current()`, which panics if it runs
-        // outside a runtime context (here the bench drives the runtime with
-        // `block_on`, so there is no ambient one at drop time). `rm` marks the
-        // container dropped, making the later `Drop` a no-op.
         runtime
             .block_on(node.rm())
             .expect("remove postgres container");

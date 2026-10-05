@@ -1,20 +1,3 @@
-//! MongoDB-backed [`PasskeyChallengeStore`].
-//!
-//! Two ceremony kinds share this store, each in its own collection:
-//!
-//! - **`passkey_registrations`** — keyed by challenge UUID; carries a `user_id`
-//!   for the per-user count and bulk-delete paths that the recovery flow needs.
-//! - **`passkey_authentications`** — keyed by challenge UUID; no `user_id`
-//!   (discoverable-credential flow doesn't know the user upfront). Reached only
-//!   by id and by the TTL monitor / `purge_expired` scan.
-//!
-//! Both `take_*` operations use `findOneAndDelete`: MongoDB serializes writes
-//! per document, so exactly one concurrent caller observes the old image —
-//! the single-use guarantee ceremonies rely on.
-//!
-//! `purge_expired` issues a `deleteMany` with `expires_at <= now` on both
-//! collections and returns the combined count.
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::StorageResult;
@@ -27,7 +10,6 @@ use mongodb::bson::doc;
 use crate::db::{Coll, err};
 use crate::model::{self, challenge_id_str, to_bson_dt};
 
-/// Passkey-challenge store backed by two MongoDB collections.
 pub(crate) struct MongoPasskeyChallengeStore {
     registrations: Coll,
     authentications: Coll,
@@ -75,8 +57,6 @@ impl PasskeyChallengeStore for MongoPasskeyChallengeStore {
     }
 
     async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        // Counts all challenges for the user, including technically-expired ones
-        // that `purge_expired` has not yet reclaimed — per the trait contract.
         let filter = doc! { "user_id": user_id.0.to_string() };
         self.registrations
             .count_documents(filter)

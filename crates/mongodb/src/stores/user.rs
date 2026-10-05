@@ -1,21 +1,3 @@
-//! MongoDB-backed [`UserStore`].
-//!
-//! One document per user, keyed by the user's UUID string as `_id`. The email
-//! uniqueness constraint is enforced by a **partial unique index** on `email`
-//! (partial so documents without an email don't collide on a missing field). No
-//! companion guard document or transaction is needed — MongoDB's unique index
-//! provides the constraint directly, and a standalone server (no replica set)
-//! suffices because the constraint is index-level, not transaction-level.
-//!
-//! - `create_user` → `insert_one`: the unique `_id` and the partial unique
-//!   `email` index jointly reject a duplicate id or a duplicate email.
-//! - The field-level setters → `update_one` with `$set` (and `$unset` for a
-//!   cleared `disabled_at`), matched by `_id`: only the named fields are
-//!   written, the index rejects a conflicting email change, and
-//!   `matched_count == 0` surfaces "not found".
-//! - Reads use `find_one` with a strongly-consistent primary read (the default
-//!   for a standalone node).
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
@@ -25,7 +7,6 @@ use mongodb::bson::{Document, doc};
 use crate::db::{Coll, err};
 use crate::model;
 
-/// User store backed by a MongoDB collection.
 pub(crate) struct MongoUserStore {
     coll: Coll,
 }
@@ -35,9 +16,6 @@ impl MongoUserStore {
         Self { coll }
     }
 
-    /// Apply a field-level `update` to the user matched by `id`. The write
-    /// touches only the fields `update` names, so concurrent changes to
-    /// other fields survive.
     async fn update(&self, id: UserId, update: Document) -> StorageResult<()> {
         let filter = doc! { "_id": model::user_id_str(id) };
         let result = self.coll.update_one(filter, update).await.map_err(err)?;

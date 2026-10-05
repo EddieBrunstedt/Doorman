@@ -1,13 +1,3 @@
-//! In-memory implementations of every storage trait, intended for tests and
-//! local experiments. Not suitable for production: data lives only as long as
-//! the process and every operation takes a process-local lock (an `RwLock` on
-//! the read-heavy user/session stores, a `Mutex` elsewhere).
-//!
-//! The stores and [`InMemoryRateLimiter`] are always available: the limiter is
-//! the high-level builder default and the stores back local experiments. The pure
-//! test doubles (mock clock, in-memory audit sink, capturing email sender)
-//! live in `doorman-test-support` so they never compile into a production build.
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -25,20 +15,6 @@ use crate::storage::{
 };
 use crate::sync;
 
-/// A backend handle owning one shared instance of each in-memory store.
-///
-/// Mirrors the SQLx adapter handles (`SqliteStorage`, `PostgresStorage`): the
-/// per-store accessors (`user_store()`, `session_store()`, …) return clones of
-/// the *same* underlying `Arc`, so repeated calls share state — exactly as
-/// `pg.user_store()` shares one pool. [`all_stores()`](Self::all_stores) is the
-/// single-backend shortcut that assembles the full [`Storage`] composite.
-///
-/// In-memory storage is process-local and lost on restart; use it for tests
-/// and local experiments, not production.
-///
-/// This is a supported testing adapter: it is held to the same conformance and
-/// semver guarantees as the shipped database adapters, so host integration
-/// tests can build on `InMemoryStorage::new().all_stores()`.
 #[derive(Clone)]
 pub struct InMemoryStorage {
     users: Arc<InMemoryUserStore>,
@@ -49,7 +25,6 @@ pub struct InMemoryStorage {
 }
 
 impl InMemoryStorage {
-    /// Create a fresh handle with one empty instance of each store.
     pub fn new() -> Self {
         Self {
             users: Arc::new(InMemoryUserStore::new()),
@@ -60,36 +35,26 @@ impl InMemoryStorage {
         }
     }
 
-    /// The user store backed by this handle.
     pub fn user_store(&self) -> Arc<dyn UserStore> {
         self.users.clone()
     }
 
-    /// The session store backed by this handle.
     pub fn session_store(&self) -> Arc<dyn SessionStore> {
         self.sessions.clone()
     }
 
-    /// The verification-token store backed by this handle.
     pub fn verification_token_store(&self) -> Arc<dyn VerificationTokenStore> {
         self.verification_tokens.clone()
     }
 
-    /// The passkey-credential store backed by this handle.
     pub fn passkey_credential_store(&self) -> Arc<dyn PasskeyCredentialStore> {
         self.passkey_credentials.clone()
     }
 
-    /// The passkey-challenge store backed by this handle.
     pub fn passkey_challenge_store(&self) -> Arc<dyn PasskeyChallengeStore> {
         self.passkey_challenges.clone()
     }
 
-    /// Build a [`Storage`] composite from this handle's five shared stores.
-    ///
-    /// The single-backend shortcut, mirroring the SQLx adapters'
-    /// `all_stores()`, so framework-agnostic hosts, quickstarts, and benches
-    /// get a one-call composite instead of hand-assembling the five fields.
     pub fn all_stores(&self) -> Storage {
         Storage {
             users: self.user_store(),
@@ -107,9 +72,6 @@ impl Default for InMemoryStorage {
     }
 }
 
-/// In-memory [`UserStore`] backed by `RwLock`-protected hash maps. The lock
-/// is a read-write lock rather than a `Mutex` so the read-heavy resolution
-/// path (`find_user_by_id`) does not serialize concurrent lookups.
 #[derive(Debug, Default)]
 pub struct InMemoryUserStore {
     inner: RwLock<UserStoreState>,
@@ -122,7 +84,6 @@ struct UserStoreState {
 }
 
 impl InMemoryUserStore {
-    /// Create an empty in-memory store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -233,10 +194,6 @@ impl UserStore for InMemoryUserStore {
     }
 }
 
-/// In-memory [`SessionStore`] backed by `RwLock`-protected hash maps. As with
-/// [`InMemoryUserStore`] the lock is a read-write lock so concurrent
-/// `find_session_by_token_hash` lookups on the resolution path proceed in
-/// parallel.
 #[derive(Debug, Default)]
 pub struct InMemorySessionStore {
     inner: RwLock<SessionStoreState>,
@@ -249,8 +206,6 @@ struct SessionStoreState {
 }
 
 impl SessionStoreState {
-    /// Remove every session matching `predicate` (and its token-hash index
-    /// entry), returning the number removed.
     fn remove_where(&mut self, predicate: impl Fn(&SessionId, &Session) -> bool) -> u64 {
         let ids: Vec<SessionId> = self
             .by_id
@@ -268,7 +223,6 @@ impl SessionStoreState {
 }
 
 impl InMemorySessionStore {
-    /// Create an empty in-memory store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -281,12 +235,10 @@ impl InMemorySessionStore {
         sync::write(&self.inner)
     }
 
-    /// Number of entries currently held.
     pub fn len(&self) -> usize {
         self.read().by_id.len()
     }
 
-    /// Whether the store currently holds no entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -313,10 +265,6 @@ impl SessionStore for InMemorySessionStore {
         last_used_at: DateTime<Utc>,
         expires_at: DateTime<Utc>,
     ) -> StorageResult<()> {
-        // Conditional write: mutate only if the id is still present. A session
-        // deleted between resolution and touch must not be resurrected, so an
-        // absent id is a no-op (never an insert). The in-memory store has no
-        // auto-eviction, so only the two timestamps are rewritten.
         let mut state = self.write();
         if let Some(existing) = state.by_id.get_mut(&id) {
             existing.last_used_at = last_used_at;
@@ -374,14 +322,12 @@ impl SessionStore for InMemorySessionStore {
     }
 }
 
-/// In-memory [`VerificationTokenStore`] preserving single-use semantics.
 #[derive(Debug, Default)]
 pub struct InMemoryVerificationTokenStore {
     inner: Mutex<Vec<VerificationToken>>,
 }
 
 impl InMemoryVerificationTokenStore {
-    /// Create an empty in-memory store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -390,12 +336,10 @@ impl InMemoryVerificationTokenStore {
         sync::lock(&self.inner)
     }
 
-    /// Number of entries currently held.
     pub fn len(&self) -> usize {
         self.lock().len()
     }
 
-    /// Whether the store currently holds no entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -446,14 +390,12 @@ impl VerificationTokenStore for InMemoryVerificationTokenStore {
     }
 }
 
-/// In-memory [`PasskeyCredentialStore`].
 #[derive(Debug, Default)]
 pub struct InMemoryPasskeyCredentialStore {
     inner: Mutex<Vec<StoredPasskey>>,
 }
 
 impl InMemoryPasskeyCredentialStore {
-    /// Create an empty in-memory store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -462,12 +404,10 @@ impl InMemoryPasskeyCredentialStore {
         sync::lock(&self.inner)
     }
 
-    /// Number of entries currently held.
     pub fn len(&self) -> usize {
         self.lock().len()
     }
 
-    /// Whether the store currently holds no entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -531,8 +471,6 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
         &self,
         user_id: UserId,
     ) -> StorageResult<Vec<PasskeySummary>> {
-        // The borrowed projection clones metadata only, so the (otherwise
-        // large) credential blob is never cloned on the listing path.
         Ok(self
             .lock()
             .iter()
@@ -570,7 +508,6 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
     }
 }
 
-/// In-memory [`PasskeyChallengeStore`] with atomic take semantics.
 #[derive(Debug, Default)]
 pub struct InMemoryPasskeyChallengeStore {
     inner: Mutex<PasskeyChallengeState>,
@@ -583,7 +520,6 @@ struct PasskeyChallengeState {
 }
 
 impl InMemoryPasskeyChallengeStore {
-    /// Create an empty in-memory store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -592,13 +528,11 @@ impl InMemoryPasskeyChallengeStore {
         sync::lock(&self.inner)
     }
 
-    /// Number of entries currently held.
     pub fn len(&self) -> usize {
         let s = self.lock();
         s.registrations.len() + s.authentications.len()
     }
 
-    /// Whether the store currently holds no entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -668,17 +602,6 @@ impl PasskeyChallengeStore for InMemoryPasskeyChallengeStore {
     }
 }
 
-/// In-memory sliding-window-log rate limiter.
-///
-/// Each `(key, policy.window)` bucket keeps the timestamps of recent
-/// attempts and evicts ones older than `policy.window` on every check.
-/// Suitable for single-process deployments and tests; a multi-replica
-/// deployment should swap in a shared backend.
-///
-/// Known limitation: the bucket map does not proactively remove empty
-/// buckets, so sustained churn across many unique keys can grow memory
-/// until process restart. Use a shared or evicting production limiter for
-/// hostile or high-cardinality traffic patterns.
 pub struct InMemoryRateLimiter {
     clock: Arc<dyn Clock>,
     inner: Mutex<HashMap<BucketKey, Vec<DateTime<Utc>>>>,
@@ -691,8 +614,6 @@ struct BucketKey {
 }
 
 impl InMemoryRateLimiter {
-    /// Create a per-process rate limiter driven by `clock`. Correct only
-    /// within one process; multi-node deployments need a shared backend.
     pub fn new(clock: Arc<dyn Clock>) -> Self {
         Self {
             clock,
@@ -726,10 +647,6 @@ impl RateLimiter for InMemoryRateLimiter {
         entries.retain(|t| *t > cutoff);
 
         if entries.len() as u32 >= policy.max_attempts {
-            // `retain` above keeps only entries `> cutoff = now - window`, so the
-            // bucket is non-empty and the oldest retained timestamp gives
-            // `retry_at = oldest + window > now`. Floor the advisory hint to one
-            // millisecond at the window boundary so it is always positive.
             let oldest = entries.first().copied().unwrap_or(now);
             let retry_at = oldest.checked_add_signed(window).ok_or_else(out_of_range)?;
             let retry_after = (retry_at - now)
@@ -751,8 +668,6 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_composite_wires_every_store() {
-        // The composite must hand back working, independent stores; exercise
-        // one method per store to prove each field is populated and live.
         let storage = InMemoryStorage::new().all_stores();
         let now = chrono::Utc::now();
 
@@ -814,9 +729,6 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_accessor_calls_share_state() {
-        // The handle's accessors return clones of the *same* underlying store,
-        // so a row written through one accessor handle is visible through
-        // another — matching how a pooled SQL adapter shares one pool.
         let storage = InMemoryStorage::new();
         let now = chrono::Utc::now();
         let user = User {
@@ -846,8 +758,6 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limiter_refuses_a_window_past_the_calendar() {
-        // The window converts to chrono but reaches before the earliest
-        // representable instant; the limiter reports it instead of panicking.
         let limiter = InMemoryRateLimiter::new(Arc::new(crate::clock::SystemClock));
         let policy = RateLimitPolicy::new(1, std::time::Duration::from_millis(i64::MAX as u64));
         let result = limiter

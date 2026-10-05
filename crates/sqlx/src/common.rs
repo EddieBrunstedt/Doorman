@@ -1,16 +1,9 @@
-//! Helpers shared between the SQLite, Postgres, and MySQL/MariaDB adapters:
-//! placeholder rewriting, timestamp bind adapters, type conversions for stored
-//! values, and a uniform error mapper.
-
 use std::borrow::Cow;
 
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::TokenHash;
 use uuid::Uuid;
 
-/// Map a driver error to a [`StorageError`], reporting a unique-constraint
-/// violation as [`StorageErrorKind::Conflict`](doorman_core::error::StorageErrorKind::Conflict)
-/// in every dialect.
 pub(crate) fn storage_err(e: sqlx::Error) -> StorageError {
     match e.as_database_error() {
         Some(db) if db.is_unique_violation() => StorageError::conflict(e.to_string()),
@@ -18,29 +11,16 @@ pub(crate) fn storage_err(e: sqlx::Error) -> StorageError {
     }
 }
 
-/// Placeholder rewriter for the SQLite dialect: a no-op. The shared store
-/// bodies in [`crate::stores`] write every placeholder as `?`, which is
-/// SQLite's native syntax. The bodies only ever pass `&'static` string
-/// literals, so the borrowed result threads straight into sqlx's
-/// `SqlSafeStr` (`'static`-bound) path without a copy.
 #[cfg(feature = "sqlite")]
 pub(crate) fn ph_sqlite(sql: &'static str) -> Cow<'static, str> {
     Cow::Borrowed(sql)
 }
 
-/// Placeholder rewriter for the MySQL/MariaDB dialect: a no-op, like
-/// [`ph_sqlite`]. MySQL's positional placeholder is `?`, which is exactly what
-/// the shared store bodies in [`crate::stores`] already write, so the borrowed
-/// `&'static str` threads straight through without a copy.
 #[cfg(feature = "mysql")]
 pub(crate) fn ph_mysql(sql: &'static str) -> Cow<'static, str> {
     Cow::Borrowed(sql)
 }
 
-/// Placeholder rewriter for the Postgres dialect: rewrites each positional
-/// `?` into the `$1`, `$2`, … form Postgres expects, in order. No SQL the
-/// shared store bodies emit contains a literal `?` outside a placeholder, so
-/// the substitution is unambiguous.
 #[cfg(feature = "postgres")]
 pub(crate) fn ph_postgres(sql: &'static str) -> Cow<'static, str> {
     let mut out = String::with_capacity(sql.len() + 8);
@@ -57,34 +37,16 @@ pub(crate) fn ph_postgres(sql: &'static str) -> Cow<'static, str> {
     Cow::Owned(out)
 }
 
-/// Timestamp bind adapter for the SQLite and Postgres dialects: identity.
-/// Both store `DateTime<Utc>` directly — SQLite as a text/`TIMESTAMP` column,
-/// Postgres as `TIMESTAMPTZ` — so the value binds unchanged. The MySQL adapter
-/// uses [`ts_mysql`] instead; the shared store bodies route every timestamp
-/// bind through whichever adapter their dialect supplies.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn ts_passthrough<T>(t: T) -> T {
     t
 }
 
-/// Timestamp bind adapter for the MySQL/MariaDB dialect: bind the naive UTC
-/// datetime rather than the `DateTime<Utc>`.
-///
-/// sqlx tags `DateTime<Utc>` as MySQL `TIMESTAMP`. MariaDB then applies
-/// `TIMESTAMP` range semantics to the incoming parameter — even when the target
-/// column is `DATETIME` — and silently turns any value past the 2038-01-19
-/// epoch ceiling into NULL, which a `NOT NULL` column then rejects (error
-/// 1048). The conformance suite's year-2099 expiries trip exactly this; MySQL 8
-/// happens to tolerate it, MariaDB does not. Binding the naive datetime instead
-/// tags the parameter as `DATETIME`, so the full `DATETIME` range stores
-/// faithfully. The session runs at UTC, so the naive wall-clock is correct.
 #[cfg(feature = "mysql")]
 pub(crate) fn ts_mysql<T: MysqlDatetime>(t: T) -> T::Bind {
     t.into_datetime()
 }
 
-/// Maps the timestamp types the stores bind (`DateTime<Utc>` and its `Option`)
-/// to the naive-UTC counterparts [`ts_mysql`] hands to the driver.
 #[cfg(feature = "mysql")]
 pub(crate) trait MysqlDatetime {
     type Bind;

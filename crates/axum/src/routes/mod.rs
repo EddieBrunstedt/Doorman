@@ -1,9 +1,3 @@
-//! Mountable HTTP router.
-//!
-//! [`router`] is called by [`AuthService::router`](crate::AuthService::router)
-//! to assemble the always-on passkey, signup, recovery, session, and account
-//! route trees.
-
 use axum::Json;
 use axum::Router;
 use axum::http::{StatusCode, header};
@@ -27,8 +21,6 @@ pub(crate) mod recovery;
 pub(crate) mod sessions;
 pub(crate) mod signup;
 
-/// Build a JSON response that issues a session cookie alongside an
-/// [`AuthResponse`] body. Shared by every route that issues a session.
 pub(crate) fn auth_success(
     status: StatusCode,
     cookie_config: &CookieConfig,
@@ -40,9 +32,6 @@ pub(crate) fn auth_success(
     Ok(response)
 }
 
-/// Build a `204 No Content` response that clears the session cookie, so the
-/// browser stops replaying a token the server just invalidated. Shared by
-/// logout, logout-all, and account deletion.
 pub(crate) fn no_content_clearing_session_cookie(
     cookie_config: &CookieConfig,
 ) -> Result<Response, ErrorResponse> {
@@ -52,20 +41,12 @@ pub(crate) fn no_content_clearing_session_cookie(
     Ok(response)
 }
 
-/// Parse a client-supplied challenge id string into a
-/// [`PasskeyChallengeId`], mapping a malformed value to
-/// [`Error::InvalidPasskeyChallenge`](doorman_core::Error::InvalidPasskeyChallenge).
-/// Shared by every route that echoes a challenge id back at finish time.
 pub(crate) fn parse_challenge_id(raw: &str) -> Result<PasskeyChallengeId, ErrorResponse> {
     Uuid::parse_str(raw)
         .map(PasskeyChallengeId)
         .map_err(|_| ErrorResponse(doorman_core::Error::InvalidPasskeyChallenge))
 }
 
-/// Convert an optional wire [`Reauthentication`] into the core
-/// [`ReauthProof`], parsing (and validating) the challenge id. Shared by every
-/// destructive route that threads a proof into its core call; `None` stays
-/// `None` so the manager's policy decides whether the absence is an error.
 pub(crate) fn reauth_proof(
     reauth: Option<Reauthentication>,
 ) -> Result<Option<ReauthProof>, ErrorResponse> {
@@ -79,9 +60,6 @@ pub(crate) fn reauth_proof(
         .transpose()
 }
 
-/// Build the challenge payload returned by the signup/recovery `consume`
-/// step from a manager [`VerificationConsumeOutcome`]. Both enrollment
-/// flows hand the same shape to `navigator.credentials.create`.
 pub(crate) fn consume_response(
     outcome: VerificationConsumeOutcome,
 ) -> Json<PasskeyChallenge<CreationChallengeResponse>> {
@@ -91,9 +69,6 @@ pub(crate) fn consume_response(
     })
 }
 
-/// Turn a completed enrollment ([`EnrollmentOutcome`]) into a session-
-/// issuing response. Shared by the signup/recovery `finish` steps, which
-/// differ only in which manager produced the outcome.
 pub(crate) async fn enrollment_success(
     state: &AuthState,
     outcome: EnrollmentOutcome,

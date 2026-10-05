@@ -1,7 +1,3 @@
-//! Shared bench scaffolding: an [`AuthCore`] over fresh in-memory storage,
-//! assembled through the production builder so the benches measure the
-//! wiring a host gets.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,9 +15,6 @@ use doorman_core::signup::SignupConfig;
 use doorman_test_support::CapturingEmailSender;
 use url::Url;
 
-/// Assemble an [`AuthCore`] over fresh in-memory storage with the given
-/// session-cache config: one-hour sessions, no rate limiting,
-/// re-authentication disabled, and captured (never sent) email.
 pub fn in_memory_core(cache: SessionCacheConfig) -> AuthCore {
     AuthCore::builder(InMemoryStorage::new().all_stores())
         .email(Arc::new(CapturingEmailSender::new()))

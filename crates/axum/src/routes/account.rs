@@ -1,12 +1,3 @@
-//! Account-management HTTP routes.
-//!
-//! Mounted under `/auth/account` by [`crate::routes::router`]. Covers the
-//! verified email-change flow and account deletion. Both mutating operations
-//! are blocked while the caller's session is inside the post-recovery
-//! cool-down window, the same way passkey removal and "sign out everywhere
-//! else" are — a phished recovery session must not be able to repoint the
-//! account's email or delete it before the legitimate owner can react.
-
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
@@ -27,17 +18,12 @@ pub(crate) fn routes() -> Router<AuthState> {
         .route("/account", delete(delete_account))
 }
 
-/// Start a verified email change. Mails a confirmation link to the new
-/// address and notifies the current one; the account's email is not changed
-/// until the link is confirmed.
 async fn request_email_change(
     State(state): State<AuthState>,
     auth: AuthSession,
     RequestContext(context): RequestContext,
     Json(body): Json<EmailChangeRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
-    // The post-recovery cool-down and re-auth gates live in the manager, so the
-    // guarantees hold for every host driving core, not just this route.
     let proof = reauth_proof(body.reauthentication)?;
     state
         .core
@@ -47,9 +33,6 @@ async fn request_email_change(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Confirm a verified email change by redeeming the token from the link. No
-/// session is required — possession of the single-use token (delivered to the
-/// new address) authorises the change. Returns the updated user.
 async fn confirm_email_change(
     State(state): State<AuthState>,
     RequestContext(context): RequestContext,
@@ -64,18 +47,12 @@ async fn confirm_email_change(
     Ok(Json(UserDto::from_user(&user, passkey_count)))
 }
 
-/// Irreversibly delete the caller's account and every row tied to it, then
-/// clear the session cookie so the browser stops replaying the now-dead token.
 async fn delete_account(
     State(state): State<AuthState>,
     auth: AuthSession,
     RequestContext(context): RequestContext,
     body: Option<Json<DeleteAccountRequest>>,
 ) -> Result<Response, ErrorResponse> {
-    // The body is optional: the proof-less first attempt sends none. A present
-    // body carries the re-auth proof. The post-recovery cool-down and re-auth
-    // gates live in the manager, so the guarantees hold for every host driving
-    // core, not just this route.
     let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     state
         .core

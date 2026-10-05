@@ -1,18 +1,3 @@
-//! Redis-backed [`PasskeyChallengeStore`].
-//!
-//! Two ceremony kinds share this store. A registration is its JSON row under
-//! `pkreg:{id}` plus membership in the per-user `user:{uid}:pkregs` SET, which
-//! backs the per-user count and bulk-delete the recovery flow relies on. An
-//! authentication is a bare `pkauth:{id}` row with **no** secondary index —
-//! nothing queries authentications by user — so it is pure TTL, and its purge
-//! scans the rows directly. Both `take_*` use the atomic `GETDEL` primitive so
-//! a challenge can never be replayed.
-//!
-//! `put_registration` and `put_authentication` write with a plain `SET`, so
-//! they are upserts: a repeated ceremony id overwrites rather than erroring,
-//! which the trait permits for key-value adapters. The ids are random, so a
-//! collision is not a real-world case.
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
@@ -24,13 +9,11 @@ use doorman_core::storage::{
 use crate::client::{self, RedisClient};
 use crate::stores;
 
-/// Passkey-challenge store backed by a Redis/Valkey connection.
 pub(crate) struct RedisPasskeyChallengeStore {
     client: RedisClient,
 }
 
 impl RedisPasskeyChallengeStore {
-    /// Build a passkey-challenge store over `client`.
     pub(crate) fn new(client: RedisClient) -> Self {
         Self { client }
     }
@@ -73,8 +56,6 @@ impl PasskeyChallengeStore for RedisPasskeyChallengeStore {
         else {
             return Ok(None);
         };
-        // Best-effort index cleanup; a lingering member is reclaimed by purge,
-        // and `count_registrations_for_user` is explicitly allowed to be coarse.
         let user_key = keys.user_pkregs(registration.user_id);
         let _ = client::srem(&mut conn, &user_key, &[id.0.to_string()]).await;
         Ok(Some(registration))
@@ -96,9 +77,6 @@ impl PasskeyChallengeStore for RedisPasskeyChallengeStore {
     }
 
     async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        // SCARD counts members directly, including any that have technically
-        // expired — the trait permits this coarse bound, and it avoids fetching
-        // every row just to size the set.
         let user_key = self.client.keys().user_pkregs(user_id);
         let mut conn = self.client.conn();
         client::scard(&mut conn, &user_key).await
@@ -136,8 +114,6 @@ impl PasskeyChallengeStore for RedisPasskeyChallengeStore {
         let keys = self.client.keys();
         let mut conn = self.client.conn();
 
-        // Registrations: reachable through their per-user SETs, which is also
-        // where dangling members are reclaimed.
         let mut removed = stores::purge_index_sets::<StoredPasskeyRegistration>(
             &mut conn,
             keys,
@@ -147,8 +123,6 @@ impl PasskeyChallengeStore for RedisPasskeyChallengeStore {
         )
         .await?;
 
-        // Authentications carry no index, so scan the rows directly and delete
-        // the expired ones.
         let auth_keys = client::scan_all(&mut conn, &keys.pkauth_pattern()).await?;
         if !auth_keys.is_empty() {
             let rows: Vec<Option<StoredPasskeyAuthentication>> =

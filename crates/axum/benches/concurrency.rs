@@ -1,26 +1,3 @@
-//! Contended session-resolution benches.
-//!
-//! The single-threaded `session_cache` and `request_path` benches measure
-//! latency on an uncontended structure. These benches instead put a fixed
-//! fan-out of concurrent work through the two shared structures on the
-//! resolution hot path, to characterize their behaviour under load:
-//!
-//! - `cache_hit` — `CONCURRENCY` concurrent `SessionCache::get` hits across
-//!   distinct token hashes, exercising the cache's internal locking.
-//! - `validate` — `CONCURRENCY` concurrent `SessionManager::validate_by_hash`
-//!   calls against the in-memory session store with no cache in front,
-//!   exercising the reference store's read locking.
-//!
-//! Each measured iteration spawns `CONCURRENCY` tasks onto a fixed-size
-//! multi-threaded runtime and joins them, so the number reflects per-batch
-//! latency; throughput is reported per resolved request.
-//!
-//! Run with:
-//!
-//! ```sh
-//! cargo bench -p doorman-axum --bench concurrency
-//! ```
-
 mod support;
 
 use std::num::NonZeroUsize;
@@ -34,13 +11,8 @@ use doorman_core::storage::{AccountStatus, TokenHash, User, UserId};
 use tokio::runtime::Builder;
 use tokio::task::JoinSet;
 
-/// Concurrent resolutions issued per measured iteration.
 const CONCURRENCY: usize = 32;
-/// Distinct live sessions seeded, so concurrent work hits many keys rather
-/// than serializing on one.
 const POOL: usize = 1_024;
-/// Fixed worker count so contention is reproducible across machines with
-/// different core counts.
 const WORKERS: usize = 4;
 
 struct Scaffold {
@@ -50,10 +22,6 @@ struct Scaffold {
 }
 
 async fn build_scaffold() -> Scaffold {
-    // Capacity well above POOL so every seeded session stays resident across
-    // all shards — the hit bench must never observe an eviction miss. (Shards
-    // are keyed on the token-hash prefix, so the per-shard load is uneven; the
-    // generous headroom absorbs that skew.)
     let core = support::in_memory_core(SessionCacheConfig {
         capacity: NonZeroUsize::new(POOL * 16).expect("non-zero capacity"),
         ..SessionCacheConfig::default()
@@ -81,7 +49,6 @@ async fn build_scaffold() -> Scaffold {
             .create(user_id, SessionContext::default())
             .await
             .expect("create session");
-        // Resolving the token is what seeds the cache on the request path.
         core.resolver
             .resolve(&issued.token)
             .await

@@ -1,16 +1,3 @@
-//! Proves the "override one sub-store method, reuse the rest" pattern on the
-//! DynamoDB adapter: a host wraps the bundled `Arc<dyn SessionStore>` and makes
-//! `create_session` a single [`TransactWriteItems`] over the public
-//! [`create_session_writes`] plus its own audit item — fail-closed audit,
-//! committed atomically — while delegating every read/delete. The delegated
-//! reads and revoke then reach the session, proving the host's writes carry the
-//! encoding the bundled store expects.
-//!
-//! Self-contained: starts a throwaway DynamoDB Local container, which supports
-//! `TransactWriteItems`, so the transaction is exercised for real.
-//!
-//! [`TransactWriteItems`]: aws_sdk_dynamodb::operation::transact_write_items
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -28,9 +15,6 @@ use doorman_dynamodb::{DynamoDbStorage, create_session_writes};
 use testcontainers_modules::dynamodb_local::DynamoDb;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
-/// A host's `SessionStore` that commits the session item and its own audit item
-/// in one DynamoDB transaction, delegating every read/delete to the bundled
-/// store.
 struct AuditedSessions {
     inner: Arc<dyn SessionStore>,
     client: Client,
@@ -40,10 +24,6 @@ struct AuditedSessions {
 #[async_trait]
 impl SessionStore for AuditedSessions {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
-        // `create_session_writes` produces the writes the bundled store makes
-        // (the row with its GSI key, and the session index entry), so a session
-        // created here is later found, listed and revoked by the delegated
-        // methods.
         let mut writes = create_session_writes(&self.table, &session)?;
         let audit_put = Put::builder()
             .table_name(&self.table)
@@ -188,7 +168,6 @@ async fn override_create_session_reuses_bundled_reads() {
         "the session is listed",
     );
 
-    // The host's audit item committed in the same transaction.
     let audit = client
         .get_item()
         .table_name(storage.table_name())
@@ -198,7 +177,6 @@ async fn override_create_session_reuses_bundled_reads() {
         .expect("get audit item");
     assert!(audit.item().is_some(), "audit item present");
 
-    // The delegated bulk revoke reaches the host-created session.
     assert_eq!(
         composite
             .sessions

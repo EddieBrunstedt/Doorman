@@ -13,34 +13,16 @@ description = "Opinionated passkey-only authentication for Rust web apps. Umbrel
 
 [features]
 default = []
-# Axum HTTP integration (the supported user-facing surface).
 axum = ["dep:doorman-axum"]
-# SQLx storage adapters.
 sqlite = ["dep:doorman-sqlx", "doorman-sqlx/sqlite"]
 postgres = ["dep:doorman-sqlx", "doorman-sqlx/postgres"]
-# Covers both MySQL and MariaDB: they share the one sqlx MySql driver.
 mysql = ["dep:doorman-sqlx", "doorman-sqlx/mysql"]
-# Redis/Valkey adapter for the ephemeral stores and the shared rate limiter.
-# Pair it with a SQL feature (e.g. `postgres`) — Redis cannot hold the
-# system-of-record stores. `valkey` is an alias: the same code addresses either
-# server, the feature only lets a host name the one it runs.
 redis = ["dep:doorman-redis"]
 valkey = ["redis"]
-# Amazon DynamoDB adapter, filling all five stores from a single table for
-# AWS-native / serverless deployments.
 dynamodb = ["dep:doorman-dynamodb"]
-# MongoDB adapter, filling all five stores from one database.
 mongodb = ["dep:doorman-mongodb"]
-# redb embedded key-value adapter, filling all five stores from a single local
-# file. Pure-Rust adapter (adds no libsqlite3-sys C dependency).
 redb = ["dep:doorman-redb"]
-# Bundled `.eml` file email transport for local development (pulls tokio's
-# filesystem support). Also enables it in `doorman-axum` when `axum` is on.
 file-email = ["doorman-core/file-email", "doorman-axum?/file-email"]
-# Generic one-shot purge runner (`doorman::ops::run_purge`) for hosts that
-# sweep expired rows from an external scheduler (cron, EventBridge, a k8s
-# CronJob) instead of the in-process `background-purge` task. Off by default so
-# the standard dependency surface is untouched; pulls chrono only when enabled.
 purge-runner = ["dep:chrono"]
 
 [lints]

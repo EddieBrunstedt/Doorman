@@ -1,10 +1,3 @@
-//! The application server — the other consumer of [`app::build_storage`].
-//!
-//! This is a deliberately small Axum app: its job in this example is to prove
-//! that the server and the purge binary construct their storage through the
-//! **same** [`app::build_storage`] call, so neither can drift from the other.
-//! See `examples/minimal-app` for a full-featured doorman server.
-
 use std::{env, net::SocketAddr, sync::Arc};
 
 use axum::{Router, response::Html, routing::get};
@@ -16,7 +9,6 @@ use url::Url;
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let _ = tracing_subscriber::fmt::try_init();
 
-    // The SAME builder the purge binary uses (see `src/lib.rs`).
     let storage = app::build_storage().await;
 
     let external_origin: Url = env::var("EXTERNAL_ORIGIN")
@@ -33,12 +25,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             external_origin.clone(),
             "doorman purge example",
         )?)
-        // This demo does not drive the re-auth client dance, so opt out
-        // explicitly rather than gating the destructive actions. The decision
-        // is required either way — there is no default.
         .reauthentication(ReauthPolicy::disabled())
-        // A single-process demo, so the per-process limiter and a no-op audit
-        // sink are deliberate explicit choices, as in `examples/minimal-app`.
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
         .signup(SignupConfig {

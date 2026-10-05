@@ -111,8 +111,6 @@ async fn request_for_unknown_email_sends_nothing_but_audits() {
     )));
 }
 
-/// Flip `user` to [`AccountStatus::Disabled`] directly through the store,
-/// bypassing the audited operator flow.
 async fn disable_user(h: &Harness, user: &User) {
     let now = h.clock.now();
     h.users
@@ -123,9 +121,6 @@ async fn disable_user(h: &Harness, user: &User) {
 
 #[tokio::test]
 async fn request_for_disabled_user_sends_nothing_but_audits() {
-    // A disabled account must not be able to recover its way back in, and the
-    // refusal must be indistinguishable from the unknown-email path to an
-    // outside caller: same `Ok(())`, no link, no token.
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;
     disable_user(&h, &user).await;
@@ -152,8 +147,6 @@ async fn request_for_disabled_user_sends_nothing_but_audits() {
 
 #[tokio::test]
 async fn consume_refused_for_disabled_user() {
-    // A link issued while the account was active must not redeem after the
-    // account is disabled: the consume seam refuses with `AccountDisabled`.
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;
 
@@ -190,10 +183,6 @@ async fn consume_refused_for_disabled_user() {
 
 #[tokio::test]
 async fn finish_refused_for_disabled_user_enrolls_nothing() {
-    // Backstop: even if the token was consumed and the registration ceremony
-    // completed in the browser while the account was still active, finishing
-    // after the disable lands must refuse — no passkey enrolled, no session
-    // issued.
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;
     let credentials_before = passkey_count(&h, user.id).await;
@@ -219,7 +208,6 @@ async fn finish_refused_for_disabled_user_enrolls_nothing() {
     let mut wa = ResidentTestAuthenticator::new();
     let attestation = wa.do_registration(consume.options);
 
-    // The disable lands after the ceremony was driven but before finish.
     disable_user(&h, &user).await;
 
     let err = h
@@ -576,8 +564,6 @@ async fn request_rejects_invalid_email() {
 #[tokio::test]
 async fn signup_token_cannot_be_redeemed_via_recovery_consume() {
     let h = Harness::fresh();
-    // Take a fresh signup token (the user is in an "unverified" state
-    // after signup request but before signup consume).
     h.signup
         .request_signup("pending@example.com", None, SessionContext::default())
         .await
@@ -591,7 +577,6 @@ async fn signup_token_cannot_be_redeemed_via_recovery_consume() {
         .expect("signup link queued");
     let token = token_from_email(&signup_email.body_text, common::SIGNUP_URL);
 
-    // Recovery consume must refuse it: distinct purpose, distinct surface.
     let err = h
         .recovery
         .consume_recovery(&token, SessionContext::default())
@@ -623,7 +608,6 @@ async fn recovery_request_invalidates_prior_recovery_token() {
         .await
         .expect("second");
 
-    // Replacing the token means the older one no longer redeems.
     let err = h
         .recovery
         .consume_recovery(&first_token, SessionContext::default())
@@ -634,15 +618,9 @@ async fn recovery_request_invalidates_prior_recovery_token() {
 
 #[tokio::test]
 async fn request_response_shape_is_identical_known_unknown_and_on_send_failure() {
-    // Enumeration resistance: a registered address sends a link plus a
-    // requested-recovery notification while an unknown address sends nothing,
-    // yet both must return the same shape (`Ok`). A transport failure on either
-    // of the registered-path sends must not turn into an error response, or a
-    // forced bounce would distinguish a registered address from an unknown one.
     let h = Harness::fresh();
     let _ = provision_user(&h, "known@example.com").await;
 
-    // Unknown address -> Ok (silent), known address -> Ok (two sends).
     h.recovery
         .request_recovery("ghost@example.com", SessionContext::default())
         .await
@@ -661,9 +639,6 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
         .expect("first link sent");
     let first_token = token_from_email(&first_link.body_text, RECOVERY_URL);
 
-    // Fail every subsequent send. The known path attempts two sends, both of
-    // which now bounce — the response must still be Ok, identical to the
-    // unknown path.
     h.email.fail_after_successful_sends(h.email.sent().len());
     h.recovery
         .request_recovery("known@example.com", SessionContext::default())
@@ -674,9 +649,6 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
         .await
         .expect("unknown Ok despite send failures");
 
-    // Delivery is decoupled from token issuance: the failed sends did not stop
-    // the fresh single-use token from being persisted for the known user, and
-    // it replaced the earlier one.
     let bounced_link = h
         .email
         .bounced()
@@ -1015,8 +987,6 @@ async fn recovery_cooldown_expires_after_window() {
 
 #[tokio::test]
 async fn passkey_registered_during_cooldown_inherits_its_deadline() {
-    // A passkey added from the recovery session must not escape the
-    // cool-down, so it carries the same deadline as the session.
     let h = Harness::fresh();
     let _ = provision_user(&h, "alice@example.com").await;
     let outcome = drive_recovery_finish(&h, "alice@example.com").await;
@@ -1049,9 +1019,6 @@ async fn passkey_registered_during_cooldown_inherits_its_deadline() {
 
 #[tokio::test]
 async fn passkey_registered_after_cooldown_is_unrestricted() {
-    // Once the deadline has passed, the same session registers an ordinary
-    // passkey: only an active cool-down is carried onto the ceremony. The
-    // default lifetime keeps the session alive past the 24-hour cool-down.
     let h = Harness::builder()
         .session_config(SessionConfig::default())
         .build();
@@ -1085,13 +1052,9 @@ async fn passkey_registered_after_cooldown_is_unrestricted() {
 
 #[tokio::test]
 async fn pre_recovery_registration_challenge_cannot_finish_after_recovery() {
-    // A registration ceremony begun before recovery completes is minted
-    // without the cool-down stamp. Finishing it after recovery would attach a
-    // credential outside the cool-down — the bypass this test guards against.
     let h = Harness::fresh();
     let user = make_user(&h, "alice@example.com").await;
 
-    // Pre-recovery: start (but do not finish) a registration ceremony.
     let (pre_challenge_id, pre_ccr) = h
         .passkey
         .start_registration(&session_for(&h, &user))
@@ -1100,7 +1063,6 @@ async fn pre_recovery_registration_challenge_cannot_finish_after_recovery() {
     let mut pre_wa = authenticator();
     let pre_attestation = pre_wa.do_registration(pre_ccr);
 
-    // Drive the recovery flow to completion on a separate authenticator.
     h.recovery
         .request_recovery("alice@example.com", SessionContext::default())
         .await
@@ -1137,9 +1099,6 @@ async fn pre_recovery_registration_challenge_cannot_finish_after_recovery() {
             .is_in_recovery_cooldown(h.clock.now())
     );
 
-    // The pre-recovery challenge must have been invalidated by recovery
-    // completion, so finishing it now fails rather than attaching an
-    // unrestricted credential.
     let err = h
         .passkey
         .finish_registration(
@@ -1152,8 +1111,6 @@ async fn pre_recovery_registration_challenge_cannot_finish_after_recovery() {
         .expect_err("pre-recovery challenge must be invalidated");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
 
-    // Only the recovery-created credential exists; the pre-recovery one never
-    // landed.
     let creds = h
         .credentials
         .list_passkeys_for_user(user.id)
@@ -1168,15 +1125,9 @@ async fn pre_recovery_registration_challenge_cannot_finish_after_recovery() {
 
 #[tokio::test]
 async fn pre_recovery_challenge_is_invalidated_before_recovery_session() {
-    // Ordering guarantee: on the recovery success path the pre-recovery
-    // bypass sweep runs before the recovery session is issued. This test pins
-    // the success-path outcome of that ordering — the recovery session exists
-    // AND the pre-recovery challenge is gone — so a regression that lets a
-    // committed session coexist with a finishable bypass challenge is caught.
     let h = Harness::fresh();
     let user = make_user(&h, "alice@example.com").await;
 
-    // Pre-recovery: start (but do not finish) a registration ceremony.
     let (pre_challenge_id, pre_ccr) = h
         .passkey
         .start_registration(&session_for(&h, &user))
@@ -1185,7 +1136,6 @@ async fn pre_recovery_challenge_is_invalidated_before_recovery_session() {
     let mut pre_wa = authenticator();
     let pre_attestation = pre_wa.do_registration(pre_ccr);
 
-    // Drive a full recovery: request -> consume -> finish.
     h.recovery
         .request_recovery("alice@example.com", SessionContext::default())
         .await
@@ -1216,8 +1166,6 @@ async fn pre_recovery_challenge_is_invalidated_before_recovery_session() {
         .await
         .expect("finish recovery succeeds");
 
-    // The sweep ran before issuance, so the recovery session was still minted
-    // and carries the recovery cool-down.
     assert!(
         outcome
             .session
@@ -1226,7 +1174,6 @@ async fn pre_recovery_challenge_is_invalidated_before_recovery_session() {
         "recovery session must be issued with the cool-down on the success path"
     );
 
-    // And the pre-recovery challenge can no longer be finished.
     let err = h
         .passkey
         .finish_registration(
@@ -1242,13 +1189,9 @@ async fn pre_recovery_challenge_is_invalidated_before_recovery_session() {
 
 #[tokio::test]
 async fn signup_does_not_invalidate_other_pending_registrations() {
-    // The sweep belongs to the recovery cool-down: a signup finish must not
-    // drop a user's other in-flight registration ceremonies.
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;
 
-    // Start a second registration ceremony for the same user and leave it
-    // pending.
     let (pending_id, pending_ccr) = h
         .passkey
         .start_registration(&session_for(&h, &user))
@@ -1257,14 +1200,9 @@ async fn signup_does_not_invalidate_other_pending_registrations() {
     let mut wa = authenticator();
     let pending_attestation = wa.do_registration(pending_ccr);
 
-    // Run another full signup for the same address. It silently no-ops on the
-    // known email, but exercising a signup finish is what matters: provision a
-    // fresh user and finish a signup so the shared enrolment runs without a
-    // cool-down.
     let other = provision_user(&h, "bob@example.com").await;
     assert_ne!(other.id, user.id);
 
-    // alice's pending challenge is still finishable — signup did not sweep it.
     let stored = h
         .passkey
         .finish_registration(
@@ -1327,9 +1265,6 @@ fn recovery_config_at_floor_is_accepted() {
     );
 }
 
-/// Drive a full recovery (request → consume → finish) for `email` against
-/// `h` and return the [`EnrollmentOutcome`], so the cool-down assertions can
-/// read the deadline stamped on the recovery session and passkey.
 async fn drive_recovery_finish(
     h: &Harness,
     email: &str,
@@ -1366,9 +1301,6 @@ async fn drive_recovery_finish(
 
 #[tokio::test]
 async fn recovery_config_with_subhour_cooldown_honors_configured_cooldown() {
-    // The escape hatch must actually apply the configured sub-floor cool-down,
-    // not silently clamp it back up to the floor: a 60-second cool-down yields a
-    // deadline exactly 60 seconds out.
     let cooldown = Duration::from_secs(60);
     let h = Harness::builder()
         .recovery_config(RecoveryConfig {
@@ -1396,7 +1328,6 @@ async fn recovery_config_with_subhour_cooldown_honors_configured_cooldown() {
             .is_in_recovery_cooldown(h.clock.now()),
         "the cool-down is active immediately after finish",
     );
-    // Stepping past the short window releases it.
     h.clock.advance(ChronoDuration::seconds(61));
     assert!(
         !outcome
@@ -1408,8 +1339,6 @@ async fn recovery_config_with_subhour_cooldown_honors_configured_cooldown() {
 
 #[tokio::test]
 async fn recovery_config_with_zero_cooldown_yields_inactive_deadline() {
-    // A zero cool-down via the escape hatch stamps a deadline equal to "now",
-    // which the predicate treats as already lapsed (comparison is `now < until`).
     let h = Harness::builder()
         .recovery_config(RecoveryConfig {
             cooldown: Duration::ZERO,
@@ -1456,8 +1385,6 @@ async fn custom_emails_override_recovery_subjects_and_html() {
     assert!(!subjects.contains(&"Acme recovery completed"));
 }
 
-/// A [`PasskeyConfig`] for the harness relying party with the per-user
-/// credential cap set to `cap`.
 fn capped_passkey_config(cap: u32) -> PasskeyConfig {
     PasskeyConfig {
         max_credentials_per_user: NonZeroU32::new(cap),
@@ -1467,15 +1394,11 @@ fn capped_passkey_config(cap: u32) -> PasskeyConfig {
 
 #[tokio::test]
 async fn recovery_succeeds_when_at_credential_cap() {
-    // Recovery is the all-credentials-lost escape hatch: it must land its one
-    // new passkey even when the user already sits at the per-user cap, or the
-    // cap would brick recovery and lock the user out permanently.
     const CAP: u32 = 2;
     let h = Harness::builder()
         .passkey_config(capped_passkey_config(CAP))
         .build();
 
-    // `provision_user` enrols the first passkey; top up to the cap.
     let user = provision_user(&h, "alice@example.com").await;
     let mut filler = authenticator();
     register_passkey(&h, user.id, &mut filler, Some("second device")).await;
@@ -1518,7 +1441,6 @@ async fn recovery_succeeds_when_at_credential_cap() {
         .await
         .expect("recovery finishes despite the credential cap");
 
-    // The recovery passkey was enrolled and a session was issued.
     assert!(!outcome.session.token.is_empty(), "recovery session issued");
     assert_eq!(outcome.session.session.user_id, user.id);
 
@@ -1545,8 +1467,6 @@ async fn recovery_succeeds_when_at_credential_cap() {
 
 #[tokio::test]
 async fn ordinary_registration_still_rejected_at_cap() {
-    // Bypassing the cap is reachable only from recovery: an ordinary
-    // authenticated re-enrollment at the cap must still be rejected.
     const CAP: u32 = 2;
     let h = Harness::builder()
         .passkey_config(capped_passkey_config(CAP))

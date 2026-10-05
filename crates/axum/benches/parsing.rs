@@ -1,28 +1,3 @@
-//! Request-header parsing microbenches on the CSRF decision path.
-//!
-//! Every state-changing request runs through the CSRF origin check inside
-//! `SessionLayer`, whose decision parses the `Cookie` header (to detect an
-//! ambient session), the `Authorization` header (to detect a bearer bypass),
-//! and the `Origin` / `Referer` headers (to check same-origin). These benches
-//! drive the real layer with a trivial route behind it, over the in-memory
-//! stores with the session cache warm:
-//!
-//! - `same_origin_allow` — cookie + matching `Origin`: parses the cookie and
-//!   origin, then resolves the (cached) session and calls the route.
-//! - `cross_origin_reject` — cookie + mismatched `Origin`: parses both and
-//!   short-circuits with a rejection before any session resolution.
-//! - `bearer_bypass` — cookie + `Authorization: Bearer`: the bearer parse wins,
-//!   the request skips the origin check, and the (cached) session resolves.
-//!
-//! The two allowed paths include a cached session resolution; compare them
-//! against `request_path/me_cached` to separate the parsing cost from it.
-//!
-//! Run with:
-//!
-//! ```sh
-//! cargo bench -p doorman-axum --bench parsing
-//! ```
-
 use std::sync::Arc;
 
 use axum::Router;
@@ -55,8 +30,6 @@ use url::Url;
 const SESSION_COOKIE: &str = "doorman_session";
 const APP_ORIGIN: &str = "https://app.test";
 
-/// Build a router with CSRF checks enabled for [`APP_ORIGIN`] and a seeded
-/// live session, returning it with the session's token.
 async fn build_router() -> (Router, String) {
     let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
     let storage = Storage {
@@ -126,9 +99,6 @@ async fn build_router() -> (Router, String) {
     (router, token)
 }
 
-/// Build the header set for one scenario. The `Cookie` header carries the
-/// session plus a couple of unrelated pairs, so the parse does real splitting
-/// work.
 fn headers(token: &str, origin: Option<&'static str>, bearer: bool) -> HeaderMap {
     let mut headers = HeaderMap::new();
     let cookie = format!("theme=dark; {SESSION_COOKIE}={token}; locale=en-US");
@@ -148,7 +118,6 @@ fn headers(token: &str, origin: Option<&'static str>, bearer: bool) -> HeaderMap
     headers
 }
 
-/// Clone a prebuilt header set into a fresh state-changing request.
 fn request(template: &HeaderMap) -> Request<Body> {
     let mut req = Request::new(Body::empty());
     *req.method_mut() = Method::POST;
@@ -175,7 +144,6 @@ fn csrf_parsing(c: &mut Criterion) {
         ("bearer_bypass", headers(&token, None, true), StatusCode::OK),
     ];
 
-    // Warm the session cache so the allowed paths measure a cached resolve.
     runtime.block_on(async {
         let response = router
             .clone()

@@ -1,13 +1,3 @@
-//! Opaque-token scheme shared by session bearer tokens and verification
-//! links.
-//!
-//! This module is the single home for the opaque-token primitives: the
-//! random-token generator, the at-rest hash function, and the [`TokenHash`]
-//! type that sessions and verification tokens are keyed by. Keeping them in
-//! one place ensures the two flows can never diverge on entropy, encoding,
-//! or the comparison used to look a token up — all security-relevant
-//! invariants.
-
 use std::fmt;
 
 use base64::Engine;
@@ -20,18 +10,12 @@ use subtle::ConstantTimeEq;
 
 use crate::error::{Error, Result};
 
-/// Length of the random token in bytes. 256 bits of entropy. Shared by
-/// session tokens and verification tokens (see `generate_token`).
 pub(crate) const TOKEN_BYTES: usize = 32;
 
-/// SHA-256 digest of a token. Tokens are stored keyed by hash so that a
-/// database breach does not yield usable tokens. Equality is constant-time
-/// so that any in-process comparison (including HashMap bucket
-/// disambiguation) does not leak the matched prefix length via timing.
-///
-/// `PartialEq` is constant-time but byte-equivalent to a derived impl, so the
-/// `Hash`/`Eq` contract (`a == b => hash(a) == hash(b)`) still holds.
-#[allow(clippy::derived_hash_with_manual_eq)]
+#[allow(
+    clippy::derived_hash_with_manual_eq,
+    reason = "PartialEq is constant-time but byte-equivalent to a derived impl, so the Hash/Eq contract holds"
+)]
 #[derive(Clone, Copy, Hash, Serialize, Deserialize)]
 pub struct TokenHash(pub [u8; 32]);
 
@@ -53,15 +37,10 @@ impl fmt::Debug for TokenHash {
     }
 }
 
-/// Hash a cleartext token into its at-rest [`TokenHash`].
 pub fn hash_token(token: &str) -> TokenHash {
     TokenHash(Sha256::digest(token.as_bytes()).into())
 }
 
-/// Generate a fresh random token and its at-rest hash. The cleartext token
-/// is handed to the client (session cookie or email link); only the hash is
-/// persisted. Shared by [`SessionManager`](crate::session::SessionManager)
-/// and the verification flows. Fails only if the OS random source does.
 pub(crate) fn generate_token() -> Result<(String, TokenHash)> {
     let mut bytes = [0u8; TOKEN_BYTES];
     SysRng
@@ -78,26 +57,17 @@ mod tests {
     use proptest::prelude::*;
 
     proptest! {
-        /// Hashing is a pure function of its input: the same cleartext always
-        /// hashes to the same [`TokenHash`], for any input string.
         #[test]
         fn hash_token_is_deterministic(s in ".*") {
             prop_assert_eq!(hash_token(&s), hash_token(&s));
         }
 
-        /// Distinct cleartext tokens hash to distinct values. SHA-256 makes a
-        /// collision astronomically unlikely, so any two different inputs the
-        /// generator produces must land on different hashes — a regression that
-        /// truncated or constant-folded the digest would surface here.
         #[test]
         fn distinct_tokens_hash_distinctly(a in ".*", b in ".*") {
             prop_assume!(a != b);
             prop_assert_ne!(hash_token(&a), hash_token(&b));
         }
 
-        /// `TokenHash`'s constant-time `PartialEq` agrees with a plain byte
-        /// comparison of the underlying digests for arbitrary inputs, so the
-        /// constant-time path never changes the equality answer.
         #[test]
         fn token_hash_eq_matches_byte_compare(a in ".*", b in ".*") {
             let ha = hash_token(&a);
@@ -105,10 +75,6 @@ mod tests {
             prop_assert_eq!(ha == hb, ha.0 == hb.0);
         }
 
-        /// Every freshly generated token is URL-safe (base64url, no padding)
-        /// and its returned hash matches `hash_token` of the cleartext, so the
-        /// cleartext handed to the client and the hash persisted at rest stay
-        /// in lock-step. `seed` only varies the proptest case count.
         #[test]
         fn generated_token_is_url_safe_and_hash_matches(_seed in any::<u8>()) {
             let (token, hash) = generate_token().expect("token");
@@ -144,15 +110,6 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    /// Lock in that `TokenHash` equality goes through `subtle`'s
-    /// constant-time comparison rather than a short-circuiting byte compare.
-    /// A naive `==` would return the same booleans, so a pure value test
-    /// cannot prove constant-timeness; instead we assert that the public
-    /// `PartialEq` agrees with `ct_eq` on every interesting case (equal,
-    /// differing in the first byte, differing in the last byte). If someone
-    /// swaps the impl for a derived/short-circuiting one, this stays green —
-    /// the real guarantee is the `ConstantTimeEq` call in `eq`; this test
-    /// guards that the wiring is present and behaviorally correct.
     #[test]
     fn token_hash_eq_matches_constant_time_compare() {
         let base = TokenHash([7u8; 32]);

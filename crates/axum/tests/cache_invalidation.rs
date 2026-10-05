@@ -1,9 +1,3 @@
-//! Over HTTP, a session revoked through the framework-agnostic managers stops
-//! authenticating on the very next request, even right after a request warmed
-//! the resolver's cache. Proves `AuthService::builder` wires the session layer
-//! to the resolver whose invalidator the managers fire; the eviction itself is
-//! covered in core (`resolve_flow.rs`).
-
 mod common;
 
 use axum::Router;

@@ -96,7 +96,6 @@
         try {
           log(await fn());
         } catch (e) {
-          // AuthError carries `.guidance` (human copy) and `.code` (for logs).
           errorEl.textContent = e.guidance ?? e.message;
           log(`${label} error: ${e.code ?? e.message}`);
         }

@@ -1,5 +1,3 @@
-//! Minimal Axum application using doorman with SQLite storage.
-
 use std::{env, io::IsTerminal, net::SocketAddr, sync::Arc};
 
 use axum::{Json, Router, extract::State, response::Html, routing::get};
@@ -35,10 +33,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     storage.migrate().await?;
 
     let rp_name = env::var("PASSKEY_RP_NAME").unwrap_or_else(|_| "doorman minimal app".to_owned());
-    // The common single-origin case derives `rp_id` from the origin host via
-    // `from_origin`. Hosts that need a broader registrable suffix (so one
-    // credential works across subdomains) set `PASSKEY_RP_ID` and we keep the
-    // explicit `new` path for that.
     let passkey_config = match env::var("PASSKEY_RP_ID") {
         Ok(rp_id) => PasskeyConfig::new(rp_id, external_origin.clone(), rp_name),
         Err(_) => PasskeyConfig::from_origin(external_origin.clone(), rp_name)?,
@@ -52,19 +46,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let core = AuthCore::builder(storage.all_stores())
         .email(Arc::new(TerminalEmailSender))
         .passkey(passkey_config)
-        // Require a fresh passkey re-authentication before the irreversible
-        // actions. There is no default — the build fails closed until this
-        // decision is made — so a host either gates the actions like this or
-        // opts out with `ReauthPolicy::disabled()`.
         .reauthentication(ReauthPolicy::required_for([
             ReauthAction::DeleteAccount,
             ReauthAction::RequestEmailChange,
             ReauthAction::RemovePasskey,
         ]))
-        // This demo is a single process, so the bundled per-process limiter
-        // and a no-op audit sink are deliberate choices — spelled out rather
-        // than defaulted. A real deployment wires a persistent audit sink and,
-        // across replicas, a shared rate-limiter backend.
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
         .signup(SignupConfig {
@@ -81,7 +67,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         })
         .build()?;
     let auth = AuthService::builder(core)
-        // CSRF origin checks are enabled by configuring the public origin.
         .external_origin(external_origin)
         .cookie(cookie_config)
         .build()?;

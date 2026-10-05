@@ -1,31 +1,3 @@
-//! The single-table item layout: key schema, entity tags, and the encode/decode
-//! between doorman's domain types and DynamoDB items.
-//!
-//! Every record lives in one table addressed by a single `pk` string built from
-//! its entity and identity (e.g. `session#<uuid>`). Records that have a
-//! secondary access pattern also carry a GSI partition key:
-//!
-//! | Record                 | `pk`                         | `gsi1pk` (lookup) | `gsi2pk` (owner)        |
-//! | ---------------------- | ---------------------------- | ----------------- | ----------------------- |
-//! | User                   | `user#<id>`                  | —                 | —                       |
-//! | Email guard            | `email#<email>`              | —                 | —                       |
-//! | Session                | `session#<id>`               | `shash#<hash>`    | —                       |
-//! | Session index          | `usess#<uid>`                | —                 | —                       |
-//! | Verification token     | `vtoken#<purpose>#<hash>`    | —                 | `uvtok#<uid>#<purpose>` |
-//! | Passkey credential     | `passkey#<credential id>`    | —                 | `upk#<uid>`             |
-//! | Passkey registration   | `pkreg#<id>`                 | —                 | `upkreg#<uid>`          |
-//! | Passkey authentication | `pkauth#<id>`                | —                 | —                       |
-//!
-//! A user's sessions are found through their session index item rather than
-//! the `owner-index` GSI: the item holds the user's session ids as a string set
-//! and is read strongly-consistently, so a bulk revoke sees every session
-//! created before it (see [`crate::stores::session`]).
-//!
-//! Token hashes and credential ids are hex-encoded in keys (they are opaque
-//! bytes) but also stored verbatim as binary attributes so they round-trip
-//! exactly. Timestamps are RFC3339 strings; the native-TTL `ttl` attribute (set
-//! only for future expiries) is a separate epoch-seconds number.
-
 use chrono::{DateTime, Utc};
 use doorman_core::encoding::{
     account_status_from_parts, account_status_to_str, authentication_purpose_from_str,
@@ -41,8 +13,6 @@ use uuid::Uuid;
 
 use crate::client::{self, GSI1PK, GSI2PK, Item};
 
-/// Entity discriminator values, stored in the [`ENTITY`](client::ENTITY)
-/// attribute and matched by the purge scans.
 pub(crate) const ENTITY_USER: &str = "user";
 pub(crate) const ENTITY_EMAIL: &str = "email";
 pub(crate) const ENTITY_SESSION: &str = "session";
@@ -51,10 +21,6 @@ pub(crate) const ENTITY_VTOKEN: &str = "vtoken";
 pub(crate) const ENTITY_PASSKEY: &str = "passkey";
 pub(crate) const ENTITY_PKREG: &str = "pkreg";
 pub(crate) const ENTITY_PKAUTH: &str = "pkauth";
-
-// ---------------------------------------------------------------------------
-// key builders
-// ---------------------------------------------------------------------------
 
 pub(crate) fn user_pk(id: UserId) -> String {
     format!("user#{}", id.0)
@@ -68,32 +34,24 @@ pub(crate) fn session_pk(id: SessionId) -> String {
     session_pk_for(&id.0.to_string())
 }
 
-/// [`session_pk`] for a session id as the session index item stores it.
 pub(crate) fn session_pk_for(id: &str) -> String {
     format!("session#{id}")
 }
 
-/// `lookup-index` key resolving a session's hashed bearer token to its row.
 pub(crate) fn session_hash_key(hash: &TokenHash) -> String {
     format!("shash#{}", hex(&hash.0))
 }
 
-/// Primary key of a user's session index item.
 pub(crate) fn session_index_pk(user_id: UserId) -> String {
     format!("usess#{}", user_id.0)
 }
 
-/// String-set attribute of the session index item holding the user's session
-/// ids.
 pub(crate) const SESSION_IDS: &str = "session_ids";
 
-/// Primary key for a verification token, scoped by purpose so a hash can never
-/// be redeemed under the wrong flow.
 pub(crate) fn vtoken_pk(purpose: VerificationPurpose, hash: &TokenHash) -> String {
     format!("vtoken#{}#{}", purpose_str(purpose), hex(&hash.0))
 }
 
-/// `owner-index` key for a user's verification tokens of one purpose.
 pub(crate) fn user_vtokens_key(user_id: UserId, purpose: VerificationPurpose) -> String {
     format!("uvtok#{}#{}", user_id.0, purpose_str(purpose))
 }
@@ -102,7 +60,6 @@ pub(crate) fn passkey_pk(credential_id: &[u8]) -> String {
     format!("passkey#{}", hex(credential_id))
 }
 
-/// `owner-index` key for a user's passkey credentials.
 pub(crate) fn user_passkeys_key(user_id: UserId) -> String {
     format!("upk#{}", user_id.0)
 }
@@ -111,7 +68,6 @@ pub(crate) fn pkreg_pk(id: PasskeyChallengeId) -> String {
     format!("pkreg#{}", id.0)
 }
 
-/// `owner-index` key for a user's pending registration ceremonies.
 pub(crate) fn user_pkregs_key(user_id: UserId) -> String {
     format!("upkreg#{}", user_id.0)
 }
@@ -119,10 +75,6 @@ pub(crate) fn user_pkregs_key(user_id: UserId) -> String {
 pub(crate) fn pkauth_pk(id: PasskeyChallengeId) -> String {
     format!("pkauth#{}", id.0)
 }
-
-// ---------------------------------------------------------------------------
-// item construction helpers
-// ---------------------------------------------------------------------------
 
 fn base(entity: &str, pk: String) -> Item {
     let mut item = Item::new();
@@ -152,10 +104,6 @@ fn put_ttl(item: &mut Item, expires_at: DateTime<Utc>) {
         item.insert(client::TTL.to_string(), value);
     }
 }
-
-// ---------------------------------------------------------------------------
-// users + email guard
-// ---------------------------------------------------------------------------
 
 pub(crate) fn user_item(user: &User) -> Item {
     let mut item = base(ENTITY_USER, user_pk(user.id));
@@ -187,8 +135,6 @@ pub(crate) fn user_from_item(item: &Item) -> StorageResult<User> {
     })
 }
 
-/// The email-uniqueness guard item, which also serves as the strongly-consistent
-/// email → user pointer.
 pub(crate) fn email_item(email: &str, user_id: UserId) -> Item {
     let mut item = base(ENTITY_EMAIL, email_pk(email));
     item.insert("user_id".to_string(), client::s(user_id.0.to_string()));
@@ -199,10 +145,6 @@ pub(crate) fn email_item(email: &str, user_id: UserId) -> Item {
 pub(crate) fn email_item_user_id(item: &Item) -> StorageResult<UserId> {
     Ok(UserId(client::get_uuid(item, "user_id")?))
 }
-
-// ---------------------------------------------------------------------------
-// sessions
-// ---------------------------------------------------------------------------
 
 pub(crate) fn session_item(session: &Session) -> Item {
     let mut item = base(ENTITY_SESSION, session_pk(session.id));
@@ -247,10 +189,6 @@ pub(crate) fn session_from_item(item: &Item) -> StorageResult<Session> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// verification tokens
-// ---------------------------------------------------------------------------
-
 pub(crate) fn vtoken_item(token: &VerificationToken) -> Item {
     let mut item = base(ENTITY_VTOKEN, vtoken_pk(token.purpose, &token.token_hash));
     item.insert(
@@ -283,10 +221,6 @@ pub(crate) fn vtoken_from_item(item: &Item) -> StorageResult<VerificationToken> 
         expires_at: client::get_ts(item, client::EXPIRES_AT)?,
     })
 }
-
-// ---------------------------------------------------------------------------
-// passkey credentials
-// ---------------------------------------------------------------------------
 
 pub(crate) fn passkey_item(credential: &StoredPasskey) -> Item {
     let mut item = base(ENTITY_PASSKEY, passkey_pk(&credential.credential_id));
@@ -328,10 +262,6 @@ pub(crate) fn passkey_item(credential: &StoredPasskey) -> Item {
     item
 }
 
-/// Read every passkey metadata attribute — everything except the opaque
-/// `passkey` blob — into a [`PasskeySummary`]. Both decoders share this single
-/// field assembly; the summary path returns it directly and the full decoder
-/// adds the blob, so neither re-lists the metadata fields.
 fn passkey_meta_from_item(item: &Item) -> StorageResult<PasskeySummary> {
     Ok(PasskeySummary {
         credential_id: client::get_b(item, "credential_id")?,
@@ -364,9 +294,6 @@ pub(crate) fn passkey_from_item(item: &Item) -> StorageResult<StoredPasskey> {
     })
 }
 
-/// Project a passkey item to its metadata-only summary. Deliberately never reads
-/// the `passkey` blob attribute, satisfying the contract that summaries are
-/// derived without deserialising the credential.
 pub(crate) fn passkey_summary_from_item(item: &Item) -> StorageResult<PasskeySummary> {
     passkey_meta_from_item(item)
 }
@@ -377,10 +304,6 @@ fn aaguid_from_item(item: &Item) -> StorageResult<Option<Uuid>> {
         None => Ok(None),
     }
 }
-
-// ---------------------------------------------------------------------------
-// passkey ceremonies
-// ---------------------------------------------------------------------------
 
 pub(crate) fn pkreg_item(value: &StoredPasskeyRegistration) -> Item {
     let mut item = base(ENTITY_PKREG, pkreg_pk(value.id));

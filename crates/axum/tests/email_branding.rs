@@ -1,8 +1,3 @@
-//! `AuthCoreBuilder::emails` threads one renderer into every transactional
-//! email the app sends — the signup link, the recovery link, and the
-//! best-effort security notices — without the host having to brand each
-//! flow's config individually.
-
 mod common;
 
 use std::sync::Arc;
@@ -16,8 +11,6 @@ const SIGNUP_SUBJECT: &str = "Acme: finish signing up";
 const RECOVERY_SUBJECT: &str = "Acme: recover your account";
 const SESSION_REVOKED_SUBJECT: &str = "Acme: a session was signed out";
 
-/// One renderer that brands the three reachable surfaces with distinctive
-/// subjects so the test can tell branded copy from the stock default.
 struct AcmeEmails;
 
 impl EmailTemplates for AcmeEmails {
@@ -54,7 +47,6 @@ async fn emails_brands_signup_recovery_and_security_notices() {
     let app = TestApp::start_with(Router::new(), false, |b| b.emails(Arc::new(AcmeEmails))).await;
     let client = reqwest::Client::new();
 
-    // Signup link uses the branded renderer.
     let resp = client
         .post(app.url("/auth/signup/request"))
         .json(&serde_json::json!({ "email": "newcomer@example.com" }))
@@ -74,12 +66,9 @@ async fn emails_brands_signup_recovery_and_security_notices() {
         .expect("signup email queued");
     assert_eq!(signup_mail.subject, SIGNUP_SUBJECT);
 
-    // Provision a user with sessions, then drive the recovery + revocation
-    // surfaces, which both read the shared renderer too.
     let caller = common::login(&client, &app, "member@example.com").await;
     let other = common::login(&client, &app, "member@example.com").await;
 
-    // Recovery link uses the branded renderer.
     let before = app.email.sent().len();
     let resp = client
         .post(app.url("/auth/recovery/request"))
@@ -101,8 +90,6 @@ async fn emails_brands_signup_recovery_and_security_notices() {
         "recovery email should use the branded subject"
     );
 
-    // The session-revocation security notice — which originates in core's
-    // SessionManager — uses the same shared renderer.
     let before = app.email.sent().len();
     let resp = client
         .delete(app.url(&format!("/auth/sessions/{}", other.session.id)))

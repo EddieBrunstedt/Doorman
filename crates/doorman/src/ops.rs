@@ -1,27 +1,3 @@
-//! One-shot operational entrypoints for hosts that drive doorman from an
-//! external scheduler rather than a long-lived process.
-//!
-//! The headline is [`run_purge`](crate::ops::run_purge): a generic runner that turns any composite
-//! [`Storage`](crate::core::storage::Storage) into a complete one-shot purge
-//! binary — it parses a couple of flags, sweeps expired rows, prints the
-//! [`PurgeSummary`](crate::core::purge::PurgeSummary), and sets the process
-//! exit code. It names no storage backend: the host builds its own storage and
-//! hands it in, so a host on any backend reuses the same runner.
-//!
-//! ```ignore
-//! // The host's whole purge binary — run it from cron / EventBridge / a k8s CronJob.
-//! #[tokio::main]
-//! async fn main() -> std::process::ExitCode {
-//!     let storage = app::build_storage().await; // the SAME builder the server uses
-//!     doorman::ops::run_purge(storage).await
-//! }
-//! ```
-//!
-//! A Rust binary is a leaf of the dependency graph, so doorman cannot ship a
-//! binary that is generic over the backend — the backend-aware `main` must live
-//! in the host's own crate. doorman ships this library seam instead; see
-//! `examples/purge` for the single-source-of-truth workspace layout.
-
 use std::process::ExitCode;
 
 use chrono::{DateTime, Utc};
@@ -30,25 +6,6 @@ use crate::core::error::StorageError;
 use crate::core::purge::PurgeSummary;
 use crate::core::storage::Storage;
 
-/// Sweep expired rows from `storage` once, report the per-store counts, and
-/// return the process exit code: [`ExitCode::SUCCESS`] when the sweep
-/// completes, [`ExitCode::FAILURE`] when a flag is malformed or a store errors.
-///
-/// Reads two optional flags from the process arguments:
-///
-/// - `--now <rfc3339>` — the sweep instant (anything with `expires_at <= now`
-///   is removed). Defaults to the current time. Useful for tests and for
-///   pinning the instant across a fan-out of shards.
-/// - `--json` — emit the summary as a single JSON line instead of the
-///   human-readable block, for log scraping.
-///
-/// The counts are printed loudly on every run — including a zero sweep — so a
-/// misconfigured invocation that quietly sweeps the wrong namespace is visible
-/// rather than looking like a clean success. No argument carries a secret; the
-/// storage (and thus every credential) is built by the host and handed in.
-///
-/// Reuses [`Storage::purge_all_expired`], so it sweeps exactly the stores the
-/// in-process background task does.
 pub async fn run_purge(storage: Storage) -> ExitCode {
     match execute(storage, std::env::args().skip(1)).await {
         Ok((options, summary)) => {
@@ -62,22 +19,14 @@ pub async fn run_purge(storage: Storage) -> ExitCode {
     }
 }
 
-/// Resolved flag values for a single purge run.
 struct Options {
-    /// The sweep instant — the parsed `--now`, or the current time.
     now: DateTime<Utc>,
-    /// Whether `--json` was given.
     json: bool,
 }
 
-/// What went wrong before or during a run. Both variants map to a non-zero
-/// exit; the split exists so the message can name the cause and so tests can
-/// distinguish a flag error from a sweep error.
 #[derive(Debug)]
 enum PurgeError {
-    /// A flag was missing a value or could not be parsed.
     Args(String),
-    /// The sweep itself failed in the backend.
     Sweep(StorageError),
 }
 
@@ -90,9 +39,6 @@ impl std::fmt::Display for PurgeError {
     }
 }
 
-/// Parse the flags, run the sweep, and hand back the resolved options plus the
-/// summary. Split out of [`run_purge`] so it is driveable from a test without
-/// touching the process arguments or exit code.
 async fn execute(
     storage: Storage,
     args: impl IntoIterator<Item = String>,
@@ -105,9 +51,6 @@ async fn execute(
     Ok((options, summary))
 }
 
-/// Hand-rolled parser for the two supported flags. Deliberately tiny — if this
-/// ever wants subcommands or many options, that is a signal to reconsider the
-/// shape, not to reach for a CLI-parser dependency.
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, PurgeError> {
     let mut now: Option<DateTime<Utc>> = None;
     let mut json = false;
@@ -136,7 +79,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, PurgeEr
     })
 }
 
-/// Parse an RFC 3339 timestamp into a UTC instant.
 fn parse_now(value: &str) -> Result<DateTime<Utc>, PurgeError> {
     DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc))
@@ -147,8 +89,6 @@ fn parse_now(value: &str) -> Result<DateTime<Utc>, PurgeError> {
         })
 }
 
-/// Print the sweep result. Always prints the counts so an unexpected zero is
-/// not mistaken for a clean run against the right data.
 fn print_summary(now: DateTime<Utc>, json: bool, summary: &PurgeSummary) {
     let now = now.to_rfc3339();
     if json {
@@ -242,8 +182,6 @@ mod tests {
         let now = DateTime::<Utc>::from_timestamp(1_000_000, 0).expect("timestamp");
         let storage = InMemoryStorage::new().all_stores();
 
-        // One expired session and one live session: the sweep removes exactly
-        // the expired one.
         let user_id = UserId::new();
         let mk_session = |tag: u8, expires_at: DateTime<Utc>| Session {
             id: SessionId::new(),

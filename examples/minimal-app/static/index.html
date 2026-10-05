@@ -99,7 +99,6 @@
       .li-meta { display: block; margin-top: .15rem; color: var(--dim); font-size: .76rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .li-tag { color: var(--ok); font-size: .76rem; }
 
-      /* ---- Trace ------------------------------------------------------- */
       .trace { position: sticky; top: 1.5rem; display: flex; flex-direction: column; gap: .6rem; }
       .trace .head { display: flex; align-items: center; justify-content: space-between; }
       .trace h2 { font-size: .95rem; font-weight: 600; }
@@ -120,7 +119,6 @@
         text-align: center;
       }
 
-      /* A flow = one action plus every request and ceremony it triggers. */
       .flow { border: 1px solid var(--border); background: var(--panel); }
       .flow.failed { border-color: rgba(224, 108, 108, .4); }
       .flow-head { display: flex; align-items: center; gap: .6rem; padding: .45rem .75rem; border-bottom: 1px solid var(--border); }
@@ -130,8 +128,6 @@
       .flow.failed .flow-state { color: var(--err); }
       .flow.aborted .flow-state { color: var(--warn); }
 
-      /* Every step is one row: tag · what happened · status, with the caption
-         always visible and any payload one click down. */
       .step { border-top: 1px solid var(--border); }
       .flow-head + .step { border-top: 0; }
       .step > summary {
@@ -265,7 +261,6 @@
     </div>
 
     <script>
-      // ---- WebAuthn encoding glue (base64url <-> ArrayBuffer) -------------
       function base64UrlToBuffer(input) {
         const padded = input.padEnd(input.length + ((4 - (input.length % 4)) % 4), "=");
         const bin = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
@@ -296,8 +291,6 @@
         return { id: cred.id, rawId: bufferToBase64Url(cred.rawId), type: cred.type, response: { authenticatorData: bufferToBase64Url(r.authenticatorData), clientDataJSON: bufferToBase64Url(r.clientDataJSON), signature: bufferToBase64Url(r.signature), userHandle: r.userHandle ? bufferToBase64Url(r.userHandle) : null }, clientExtensionResults: cred.getClientExtensionResults() };
       }
 
-      // doorman returns stable machine codes, not end-user prose. Map them to
-      // friendly guidance; the raw code stays visible in the trace.
       const ERROR_GUIDANCE = {
         recovery_cooldown_active: "Recovery cooldown is active — destructive actions are blocked for now.",
         csrf_origin_mismatch: "Origin check failed. Open the app from its configured public origin.",
@@ -321,9 +314,6 @@
         (status === 401 ? ERROR_GUIDANCE.session_not_found : null) ||
         "Something went wrong. Check the server log and try again.";
 
-      // What doorman does at each endpoint, in one line. Keyed by route
-      // template; dynamic ids are normalised to `{id}`. `/api/me` has no note —
-      // the `app` tag already says it is this app's own route, not doorman's.
       const REQUEST_NOTES = {
         "POST /auth/signup/request": "Mints a single-use token and emails the link. No account yet.",
         "POST /auth/signup/consume": "Token valid — returns passkey-creation options.",
@@ -368,9 +358,6 @@
         "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
       }[c]));
 
-      // Render a server timestamp as a friendly relative phrase ("in 30 days",
-      // "2 minutes ago"). The raw ISO strings the API returns are hard to read
-      // and easy to misjudge as past-vs-future; this keeps the direction obvious.
       const RTF = new Intl.RelativeTimeFormat("en", { numeric: "auto", style: "short" });
       const REL_UNITS = [["year", 31536000], ["month", 2592000], ["day", 86400], ["hour", 3600], ["minute", 60], ["second", 1]];
       function relTime(iso) {
@@ -381,14 +368,8 @@
         return RTF.format(Math.round(delta / secs), unit);
       }
 
-      // ---- Trace ---------------------------------------------------------
-      // One user action becomes a labelled flow; the requests and ceremonies
-      // it triggers nest under it as identical, expandable rows.
       let currentFlow = null;
       const RANK = { running: 0, done: 1, aborted: 2, failed: 3 };
-      // Auto-scroll to follow new steps, but only while the reader is already at
-      // the bottom — if they have scrolled up to inspect an earlier flow, leave
-      // the view where they put it.
       let stickToBottom = true;
       timelineEl.addEventListener("scroll", () => {
         stickToBottom = timelineEl.scrollHeight - timelineEl.scrollTop - timelineEl.clientHeight < 40;
@@ -396,8 +377,6 @@
       const scrollEnd = () => { if (stickToBottom) timelineEl.scrollTop = timelineEl.scrollHeight; };
 
       function flow(label) {
-        // A new action owns the alert region: clear any error left from the
-        // previous flow so the message always tracks the current action.
         errorEl.textContent = "";
         errorEl.className = "";
         const el = document.createElement("section");
@@ -433,8 +412,6 @@
           `<div class="step-detail">${parts || '<span class="step-empty">no payload</span>'}</div>`;
         appendStep(det);
       }
-      // Recorded for every fetch the page makes (see the wrapper below), so the
-      // trace shows the whole truth — including the quiet state re-reads.
       function recordHttp(method, path, status, ok, reqBody, resBody) {
         const code = (resBody && resBody.error && resBody.error.code) || null;
         let cls = "err";
@@ -474,7 +451,6 @@
         errorEl.textContent = (err && (err.message || String(err))) || "Something went wrong.";
       }
 
-      // Wrap one user action: open a flow, run it, then settle the flow state.
       async function run(label, fn) {
         flow(label);
         try {
@@ -485,17 +461,12 @@
         }
       }
 
-      // Run a WebAuthn ceremony so the browser's part of the dance shows up in
-      // the trace, between the start and finish requests, with its outcome.
       async function ceremony(title, exec) {
         const cap = CEREMONY_NOTES[title] || "";
         let cred;
         try {
           cred = await exec();
         } catch (e) {
-          // Dismissing or timing out the prompt rejects with NotAllowedError
-          // (AbortError when aborted programmatically) — a cancellation, not a
-          // failure. Mark it soft so the flow reads "aborted", not "failed".
           const cancelled = e && (e.name === "NotAllowedError" || e.name === "AbortError");
           step(`browser ${cancelled ? "cancelled" : "err"}`, "browser", escapeHtml(title), cancelled ? "cancelled" : "failed", cap, jsonPart("error", String(e.message || e)));
           if (cancelled) e.cancelled = true;
@@ -505,8 +476,6 @@
         return cred;
       }
 
-      // Intercept every fetch so the trace is the complete picture, not a
-      // hand-curated subset. The api() helper below only adds error handling.
       const nativeFetch = window.fetch.bind(window);
       window.fetch = async (input, init = {}) => {
         const method = ((init && init.method) || (typeof input !== "string" && input.method) || "GET").toUpperCase();
@@ -544,7 +513,6 @@
         return parsed;
       }
 
-      // ---- Flows ---------------------------------------------------------
       async function signIn() {
         const start = await api("/auth/passkey/authenticate/start", "POST");
         const cred = await ceremony("navigator.credentials.get()", () => navigator.credentials.get(decodeRequestOptions(start.options)));
@@ -569,8 +537,6 @@
         note(kind === "signup" ? "Account created — signed in." : "Recovery complete — new passkey registered.");
         await refresh();
       }
-      // Sensitive actions retry once after a fresh passkey assertion when the
-      // server answers `401 reauth_required`.
       async function withReauth(send) {
         try {
           return await send(undefined);
@@ -583,8 +549,6 @@
         }
       }
 
-      // Re-read state into the left panel. Always resolves: a signed-out read
-      // is a valid outcome, not a flow failure.
       async function refresh() {
         try {
           const me = await api("/api/me");
@@ -620,7 +584,6 @@
         }
       }
 
-      // ---- Wiring --------------------------------------------------------
       const emailValue = (id) => document.querySelector(id).value;
 
       document.querySelector("#signin").addEventListener("click", () => run("Sign in", signIn));

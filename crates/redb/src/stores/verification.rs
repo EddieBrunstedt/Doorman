@@ -1,14 +1,3 @@
-//! redb-backed [`VerificationTokenStore`].
-//!
-//! Tokens occupy two tables: the primary record (`vtokens`) keyed by
-//! `"{purpose}\x00{hash_hex}"` (purpose is part of the key so a token can
-//! never be redeemed under a different flow), and a per-user per-purpose index
-//! (`user_vtokens_idx`) keyed by `"{user_id}\x00{purpose}\x00{hash_hex}"`.
-//!
-//! `consume_token` is the atomic delete-and-return: a single write transaction
-//! removes the record (redb serializes writers) so exactly one concurrent
-//! caller observes the token.
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::StorageResult;
@@ -89,7 +78,6 @@ impl VerificationTokenStore for RedbVerificationTokenStore {
                 let mut vtokens = wtxn.open_table(db::VTOKENS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_VTOKENS_IDX).map_err(db::err)?;
 
-                // Collect the index keys first (prefix = "{uid}\x00{purpose}\x00").
                 let idx_keys: Vec<String> = {
                     user_idx
                         .range(prefix.as_str()..end.as_str())
@@ -100,7 +88,6 @@ impl VerificationTokenStore for RedbVerificationTokenStore {
 
                 let mut count = 0u64;
                 for idx_key in &idx_keys {
-                    // The hash_hex is everything after the prefix.
                     let hash_hex = &idx_key[prefix.len()..];
                     let vt_key = db::vtoken_key_raw(purpose, hash_hex);
                     if vtokens.remove(vt_key.as_str()).map_err(db::err)?.is_some() {
@@ -119,8 +106,6 @@ impl VerificationTokenStore for RedbVerificationTokenStore {
                 let mut vtokens = wtxn.open_table(db::VTOKENS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_VTOKENS_IDX).map_err(db::err)?;
 
-                // Scan inside the write transaction so the expiry check and the
-                // removal see the same row (redb serializes writers).
                 let expired: Vec<(String, VerificationToken)> = vtokens
                     .iter()
                     .map_err(db::err)?

@@ -1,10 +1,3 @@
-// Browser helpers for the doorman-axum passkey-only HTTP surface.
-//
-// The server serializes WebAuthn options and responses as base64url JSON.
-// The browser APIs require ArrayBuffer fields, so these helpers translate
-// challenge/user/credential IDs in both directions and then call the doorman
-// endpoints for signup, sign-in, recovery, passkey management, and sessions.
-
 function base64UrlToBuffer(input: string): ArrayBuffer {
   const padded = input.padEnd(input.length + ((4 - (input.length % 4)) % 4), "=");
   const b64 = padded.replace(/-/g, "+").replace(/_/g, "/");
@@ -142,9 +135,6 @@ function encodeAssertion(cred: PublicKeyCredential) {
   };
 }
 
-// doorman returns a stable machine error code in `{ "error": { "code, message } }`.
-// `AuthError` carries that code so the UI can map it to product copy instead of
-// showing the raw JSON.
 export class AuthError extends Error {
   constructor(
     public code: string | null,
@@ -156,8 +146,6 @@ export class AuthError extends Error {
   }
 }
 
-// Jargon -> end-user guidance. This is the table a host customises per product
-// (wording, localisation). The keys are the codes doorman-axum emits.
 export const ERROR_GUIDANCE: Record<string, string> = {
   recovery_cooldown_active:
     "This action is blocked during the 24-hour recovery cool-down. You can still add a passkey and sign out of this session.",
@@ -193,7 +181,6 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
     try {
       code = (JSON.parse(text) as { error?: { code?: string } }).error?.code ?? null;
     } catch {
-      // non-JSON body (e.g. the CSRF layer); fall back to status-based guidance.
     }
     throw new AuthError(code, res.status, guidanceFor(code, res.status));
   }
@@ -287,31 +274,22 @@ export async function revokeOtherSessions(): Promise<void> {
   await deleteJson("/auth/sessions");
 }
 
-// End the current session server-side; the server also clears the cookie.
 export async function logout(): Promise<void> {
   await postJson<void>("/auth/logout");
 }
 
-// Revoke every session for the user, including this one.
 export async function logoutEverywhere(): Promise<void> {
   await postJson<void>("/auth/logout-all");
 }
 
-// Start a verified email change. Mails a confirmation link to the new address;
-// the account email does not change until `confirmEmailChange` redeems the
-// token. Blocked during the recovery cool-down.
 export async function requestEmailChange(newEmail: string): Promise<void> {
   await postJson<void>("/auth/account/email", { new_email: newEmail });
 }
 
-// Redeem the token from the new address's link. No session required — the
-// single-use token authorises the change. Returns the updated user.
 export async function confirmEmailChange(token: string): Promise<UserDto> {
   return postJson<UserDto>("/auth/account/email/confirm", { token });
 }
 
-// Irreversibly delete the current account and everything tied to it; the
-// server also clears the cookie. Blocked during the recovery cool-down.
 export async function deleteAccount(): Promise<void> {
   await deleteJson("/auth/account");
 }

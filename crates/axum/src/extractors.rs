@@ -1,9 +1,3 @@
-//! Request extractors.
-//!
-//! Authentication extractors read the per-request [`AuthContext`] populated
-//! by [`SessionLayer`](crate::session::SessionLayer). [`RequestContext`] reads
-//! trusted connection metadata and the user-agent header. None access storage.
-
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
@@ -18,15 +12,6 @@ use doorman_core::storage::{Session, User};
 use crate::error::ErrorResponse;
 use crate::session::AuthContext;
 
-/// Extractor that requires an authenticated user; rejects with `401
-/// session_not_found` if none is attached. Use in handler signatures:
-///
-/// ```ignore
-/// async fn me(AuthUser(user): AuthUser) -> Json<UserDto> { ... }
-/// ```
-///
-/// The wrapped [`User`] is an [`Arc`] shared with the session cache, so
-/// extracting it is a refcount bump, not a deep clone.
 #[derive(Debug, Clone)]
 pub struct AuthUser(pub Arc<User>);
 
@@ -41,8 +26,6 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthUser {
     }
 }
 
-/// Extractor that surfaces the user when present and `None` when not.
-/// Never rejects.
 #[derive(Debug, Clone)]
 pub struct OptionalAuthUser(pub Option<Arc<User>>);
 
@@ -59,28 +42,16 @@ impl<S: Send + Sync> FromRequestParts<S> for OptionalAuthUser {
     }
 }
 
-/// Like [`AuthUser`] but also yields the underlying [`Session`] and the
-/// raw bearer token. Useful for endpoints that need to revoke or rotate
-/// the *current* session (e.g. logout).
 #[derive(Clone)]
 pub struct AuthSession {
-    /// The authenticated user.
     pub user: Arc<User>,
-    /// The resolved session row.
     pub session: Arc<Session>,
-    /// The plaintext token the request presented (for self-logout/revoke).
     pub token: String,
-    /// The clock the session layer resolved this request through; the
-    /// recovery-cool-down helper answers through it so a host's custom or
-    /// mock clock is honoured rather than reading wall-clock time directly.
     clock: Arc<dyn Clock>,
 }
 
 impl std::fmt::Debug for AuthSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `Clock` is not `Debug`; omit it rather than require the bound.
-        // `token` is a live bearer credential — redact it so it cannot leak
-        // into logs via an accidental `?session`.
         f.debug_struct("AuthSession")
             .field("user", &self.user)
             .field("session", &self.session)
@@ -90,10 +61,6 @@ impl std::fmt::Debug for AuthSession {
 }
 
 impl AuthSession {
-    /// `true` if the underlying session is still within the post-recovery
-    /// cool-down window, judged by the same clock the session layer resolved
-    /// the request through. Handlers gate destructive actions on this and
-    /// return [`doorman_core::Error::RecoveryCooldownActive`] when it holds.
     pub fn is_in_recovery_cooldown(&self) -> bool {
         self.session.is_in_recovery_cooldown(self.clock.now())
     }
@@ -115,31 +82,9 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthSession {
     }
 }
 
-/// Client IP resolved by trusted host middleware and inserted into request
-/// extensions before routing to doorman. Takes precedence over
-/// [`ConnectInfo<SocketAddr>`], including when no socket metadata is available.
-///
-/// This is a host trust boundary, not a header extractor. Behind proxies, the
-/// host must authenticate the immediate peer, resolve the forwarding chain
-/// according to its deployment's trust policy, and parse the result as an
-/// [`IpAddr`] before inserting this value. Never copy an unchecked client header
-/// into this extension. Doorman does not interpret forwarding headers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientIp(pub IpAddr);
 
-/// Extractor that builds a [`SessionContext`] with a trusted client IP.
-///
-/// Uses [`ClientIp`] from request extensions first, otherwise the socket IP
-/// from [`ConnectInfo<SocketAddr>`]. Serve the router with
-/// [`into_make_service_with_connect_info::<SocketAddr>()`](axum::Router::into_make_service_with_connect_info)
-/// to supply socket metadata. Forwarding headers are always ignored. Addresses
-/// are canonicalized, including converting IPv4-mapped IPv6 addresses to IPv4;
-/// source ports never form part of the identity. `User-Agent` is untrusted metadata.
-///
-/// Rejects with `500 internal_error` if neither extension is present. This is a
-/// server integration error, even when rate-limit policies are disabled: every
-/// route using this extractor requires identity for consistent rate limits,
-/// sessions, and audit events. Core managers accept optional IPs separately.
 #[derive(Debug, Clone)]
 pub struct RequestContext(pub SessionContext);
 
@@ -220,17 +165,11 @@ mod tests {
             clock: clock.clone(),
         };
 
-        // Active while the mock clock is before the deadline...
         assert!(auth.is_in_recovery_cooldown());
-        // ...and the helper tracks the injected clock, not wall time: advance
-        // past the deadline and it reports inactive.
         clock.advance(Duration::hours(24) + Duration::seconds(1));
         assert!(!auth.is_in_recovery_cooldown());
     }
 
-    /// `AuthSession` carries the raw bearer token so self-logout can revoke
-    /// the current session, but its `Debug` must redact it — an accidental
-    /// `?session` in a handler log would otherwise leak a live credential.
     #[test]
     fn auth_session_debug_redacts_token() {
         use chrono::{Duration, TimeZone, Utc};
@@ -274,7 +213,6 @@ mod tests {
             "Debug output leaked the cleartext token: {rendered}"
         );
         assert!(rendered.contains("<redacted>"), "expected redaction marker");
-        // The token is still readable through the public field for revoke.
         assert_eq!(auth.token, "super-secret-bearer-token");
     }
 }

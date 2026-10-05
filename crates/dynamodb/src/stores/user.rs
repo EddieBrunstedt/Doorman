@@ -1,20 +1,3 @@
-//! DynamoDB-backed [`UserStore`].
-//!
-//! A user is the system of record, so this store reproduces the relational
-//! guarantees a SQL backend gives for free. Each user is one item under
-//! `user#<id>`; the secondary lookup and uniqueness constraint on the email
-//! address are carried by a second **guard item** under `email#<email>` (a GSI
-//! could neither enforce uniqueness nor be read strongly-consistently). The two
-//! are written together with [`TransactWriteItems`], each guarded by
-//! `attribute_not_exists`, so a duplicate id *or* a duplicate email aborts the
-//! whole write — matching the reference store's rejection of both.
-//!
-//! Reads go straight to the main table with strongly-consistent `GetItem`, so a
-//! user is visible the instant it is created (the email lookup is a consistent
-//! read of the guard followed by a consistent read of the user).
-//!
-//! [`TransactWriteItems`]: https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TransactWriteItems.html
-
 use async_trait::async_trait;
 use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Update};
 use chrono::{DateTime, Utc};
@@ -25,7 +8,6 @@ use doorman_core::storage::{AccountStatus, User, UserId, UserStore};
 use crate::client::{self, DynamoClient, Item, PK};
 use crate::model;
 
-/// User store backed by a DynamoDB connection.
 pub(crate) struct DynamoUserStore {
     client: DynamoClient,
 }
@@ -35,7 +17,6 @@ impl DynamoUserStore {
         Self { client }
     }
 
-    /// A `Put` of `item` guarded by the absence of its key (a fresh insert).
     fn put_new(&self, item: Item) -> StorageResult<TransactWriteItem> {
         let put = Put::builder()
             .table_name(self.client.table())
@@ -47,7 +28,6 @@ impl DynamoUserStore {
         Ok(TransactWriteItem::builder().put(put).build())
     }
 
-    /// A `Delete` of the item at `pk`.
     fn delete(&self, pk: String) -> StorageResult<TransactWriteItem> {
         let delete = Delete::builder()
             .table_name(self.client.table())
@@ -57,9 +37,6 @@ impl DynamoUserStore {
         Ok(TransactWriteItem::builder().delete(delete).build())
     }
 
-    /// Apply a field-level `UpdateItem` to the existing user `id`. The write
-    /// touches only the attributes `expression` names, so concurrent changes
-    /// to other attributes survive; it fails if the user does not exist.
     async fn update(
         &self,
         id: UserId,
@@ -89,9 +66,6 @@ impl DynamoUserStore {
         Ok(())
     }
 
-    /// Run `items` as one transaction. If it is cancelled by failed
-    /// conditions, `on_conditions` maps the positions of the items whose
-    /// condition failed to the error to report.
     async fn transact(
         &self,
         items: Vec<TransactWriteItem>,
@@ -121,8 +95,6 @@ impl UserStore for DynamoUserStore {
         if let Some(email) = user.email.as_deref() {
             writes.push(self.put_new(model::email_item(email, user.id))?);
         }
-        // Every condition guards a fresh key, so any failure is a taken id
-        // or address.
         self.transact(writes, |_| {
             StorageError::conflict("user id or email already exists")
         })
@@ -183,10 +155,6 @@ impl UserStore for DynamoUserStore {
         email: &str,
         at: DateTime<Utc>,
     ) -> StorageResult<()> {
-        // Moving the address means moving its guard item, so read the current
-        // address first. The user update is conditioned on that address still
-        // being current, so a concurrent email change aborts this transaction
-        // rather than orphaning a guard.
         let Some(current) = self.client.get(&model::user_pk(id)).await? else {
             return Err(StorageError::not_found("user not found"));
         };
@@ -242,8 +210,6 @@ impl UserStore for DynamoUserStore {
             if new_guard.is_some_and(|guard| failed.contains(&guard)) {
                 StorageError::conflict("email already in use")
             } else {
-                // The user row's condition failed: the user was deleted, or
-                // its address changed, since it was read above.
                 StorageError::msg("user changed during the email change")
             }
         })
@@ -264,8 +230,6 @@ impl UserStore for DynamoUserStore {
     }
 
     async fn delete_user(&self, id: UserId) -> StorageResult<()> {
-        // Remove the user and, if present, its email guard. Reading the row
-        // first is what lets us reclaim the guard keyed by the email address.
         let mut keys = vec![model::user_pk(id)];
         if let Some(item) = self.client.get(&model::user_pk(id)).await?
             && let Some(email) = model::user_from_item(&item)?.email

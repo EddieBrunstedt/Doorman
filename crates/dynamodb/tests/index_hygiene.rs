@@ -1,16 +1,3 @@
-//! DynamoDB-specific checks on stale index state that the conformance suite
-//! cannot reach.
-//!
-//! The shared suite pins its fixtures to fixed past timestamps, so no row ever
-//! carries a native TTL and none is evicted behind the store's back, and
-//! DynamoDB Local's GSIs need not lag the way a real table's do. These tests
-//! simulate both: a session row deleted over the raw client while its id stays
-//! in the user's index item, and a `lookup-index` entry that outlives the row
-//! it was projected from.
-//!
-//! Self-contained: each test starts a throwaway DynamoDB Local container via
-//! `testcontainers`, so it needs a running Docker daemon and nothing else.
-
 use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::config::{BehaviorVersion, Credentials, Region};
 use aws_sdk_dynamodb::types::AttributeValue;
@@ -39,7 +26,6 @@ fn session(user_id: UserId, token: &str, now: DateTime<Utc>) -> Session {
     }
 }
 
-/// Delete a session row behind the store's back, as native TTL would.
 async fn evict(client: &Client, id: SessionId) {
     client
         .delete_item()
@@ -50,7 +36,6 @@ async fn evict(client: &Client, id: SessionId) {
         .expect("evict session row");
 }
 
-/// The ids in `user_id`'s session index item, or `None` if the item is gone.
 async fn indexed_ids(client: &Client, user_id: UserId) -> Option<Vec<String>> {
     let item = client
         .get_item()
@@ -69,8 +54,6 @@ async fn indexed_ids(client: &Client, user_id: UserId) -> Option<Vec<String>> {
     Some(ids)
 }
 
-/// Start DynamoDB Local and provision the table. The returned container must
-/// stay alive for the duration of the test.
 async fn start() -> (ContainerAsync<DynamoDb>, Client, DynamoDbStorage) {
     let node = DynamoDb::default()
         .start()
@@ -111,7 +94,6 @@ async fn dangling_session_ids_are_reclaimed() {
             .expect("create session");
     }
 
-    // A listing skips an evicted row and drops its id.
     evict(&client, listed_away.id).await;
     let listed = sessions.list_for_user(user_id, now).await.expect("list");
     let mut listed_ids: Vec<_> = listed.iter().map(|s| s.id).collect();
@@ -127,7 +109,6 @@ async fn dangling_session_ids_are_reclaimed() {
         "the listing dropped the dangling id",
     );
 
-    // The purge reclaims a dangling id nobody listed.
     evict(&client, purged_away.id).await;
     assert!(
         sessions.purge_expired(now).await.expect("purge") >= 1,
@@ -139,7 +120,6 @@ async fn dangling_session_ids_are_reclaimed() {
         "the purge dropped the dangling id and kept the live one",
     );
 
-    // Revoking the last session removes the emptied index item.
     assert_eq!(
         sessions
             .delete_sessions_for_user(user_id, None)
@@ -154,9 +134,6 @@ async fn dangling_session_ids_are_reclaimed() {
     );
 }
 
-/// A revoked session never resolves, even while the `lookup-index` still holds
-/// an entry for its token hash. On a real table the GSI lags the base table, so
-/// right after a revoke the index can still return the deleted row's projection.
 #[tokio::test]
 async fn revoked_session_never_resolves_from_a_stale_lookup_entry() {
     let (_node, client, storage) = start().await;
@@ -169,8 +146,6 @@ async fn revoked_session_never_resolves_from_a_stale_lookup_entry() {
         .await
         .expect("create session");
 
-    // Copy the row under another key so the lookup-index keeps an entry for
-    // its token hash once the row itself is gone, as a lagging GSI would.
     let mut stale = client
         .get_item()
         .table_name(TABLE)

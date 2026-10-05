@@ -1,8 +1,3 @@
-//! Verifies the session layer reports cache hit / miss through the optional
-//! [`MetricSink`] hook wired in via `AuthCoreBuilder::metrics`. The first
-//! authenticated request resolves against a cold cache (a miss + a store
-//! validate); the second is served from the warm cache (a hit).
-
 mod common;
 
 use std::sync::Arc;
@@ -35,8 +30,6 @@ async fn session_layer_records_cache_miss_then_hit() {
 
     let auth = login(&client, &app, "alice@example.com").await;
 
-    // First authenticated request: the cache is cold, so the layer falls
-    // through to the store and records a miss.
     assert_eq!(me(&client, &app, &auth.token).await, StatusCode::OK);
     assert_eq!(
         metrics.count(MetricEvent::CacheMiss),
@@ -45,7 +38,6 @@ async fn session_layer_records_cache_miss_then_hit() {
     );
     assert_eq!(metrics.count(MetricEvent::CacheHit), 0, "no hit yet");
 
-    // Second request with the same token: served from the warm cache.
     assert_eq!(me(&client, &app, &auth.token).await, StatusCode::OK);
     assert_eq!(
         metrics.count(MetricEvent::CacheHit),
@@ -71,8 +63,6 @@ async fn unauthenticated_request_records_no_cache_observation() {
     .await;
     let client = reqwest::Client::new();
 
-    // No bearer token: the layer never looks at the cache, so neither
-    // counter moves.
     assert_eq!(
         client
             .get(app.url("/me"))

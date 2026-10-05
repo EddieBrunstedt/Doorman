@@ -1,20 +1,3 @@
-//! MongoDB-backed [`VerificationTokenStore`].
-//!
-//! One document per token. The document `_id` is `{purpose}#{token_hash_hex}`,
-//! which encodes both the purpose and the hash into the primary key. This
-//! means:
-//!
-//! - **Atomic single-use** — `consume_token` is a `findOneAndDelete` on
-//!   `_id`: MongoDB serializes writes per document, so exactly one concurrent
-//!   caller observes the old image, giving the single-use guarantee.
-//! - **Purpose scoping** — a token of one purpose can never be redeemed under
-//!   another, because the `_id` lookup for the wrong purpose finds nothing.
-//! - **No extra transaction** — the `_id` provides the uniqueness guarantee
-//!   directly; no companion guard item or replica-set transaction is needed.
-//!
-//! A compound `(user_id, purpose)` index backs the per-purpose bulk delete
-//! that `delete_tokens_for_user` performs.
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::StorageResult;
@@ -26,7 +9,6 @@ use mongodb::bson::doc;
 use crate::db::{Coll, err};
 use crate::model::{self, purpose_str, to_bson_dt, vtoken_id};
 
-/// Verification-token store backed by a MongoDB collection.
 pub(crate) struct MongoVerificationTokenStore {
     coll: Coll,
 }

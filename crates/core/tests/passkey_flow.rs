@@ -23,9 +23,6 @@ use common::{
     register_passkey, restricted_session_for, rp_origin, session_count, session_for, ts,
 };
 
-/// A [`PasskeyConfig`] matching the harness relying party but with the
-/// authentication-ceremony rate limits off, so a cap / rate-limit test only
-/// exercises the one knob it sets.
 fn base_passkey_config() -> PasskeyConfig {
     PasskeyConfig {
         rate_limits: PasskeyRateLimits::disabled(),
@@ -122,17 +119,12 @@ async fn register_then_discoverable_authenticate_round_trip() {
 
 #[tokio::test]
 async fn registration_captures_device_metadata_and_surfaces_it_in_summary() {
-    // The metadata a management UI needs (AAGUID, transports, and the
-    // backup-eligibility/state flags) is captured at registration and
-    // surfaced through the metadata-only summary projection without touching
-    // the credential blob.
     let h = Harness::fresh();
     let user = make_user(&h, "metadata@example.com").await;
     let mut wa = authenticator();
 
     let credential = register_passkey(&h, user.id, &mut wa, Some("Alice's Mac")).await;
 
-    // Passkey registration requests no attestation, so no AAGUID is produced.
     assert_eq!(credential.aaguid, None, "passkey flow yields no AAGUID");
 
     let summaries = h
@@ -143,9 +135,6 @@ async fn registration_captures_device_metadata_and_surfaces_it_in_summary() {
     assert_eq!(summaries.len(), 1);
     let summary = &summaries[0];
 
-    // The summary carries the exact metadata captured on the stored credential
-    // — proving it is both captured at registration and surfaced on the
-    // listing path.
     assert_eq!(summary.aaguid, credential.aaguid);
     assert_eq!(summary.transports, credential.transports);
     assert_eq!(summary.backup_eligible, credential.backup_eligible);
@@ -193,10 +182,6 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
 
 #[tokio::test]
 async fn authentication_without_user_handle_is_rejected() {
-    // Discoverable auth must assert a user handle that maps to the
-    // credential owner. An authenticator that omits it leaves the
-    // credential-to-user binding unverified, so the login is refused even
-    // though the credential id resolves.
     let h = Harness::fresh();
     let user = make_user(&h, "fallback@example.com").await;
     let mut wa = authenticator();
@@ -320,10 +305,6 @@ async fn finish_registration_rejects_expired_challenge() {
 
 #[tokio::test]
 async fn finish_registration_against_deleted_user_writes_no_orphan_credential() {
-    // A user deleted after the ceremony began (e.g. a concurrent operator
-    // delete) must not have a credential written against them: redeeming the
-    // challenge re-checks the user still exists, and a challenge whose owner is
-    // gone reads as invalid.
     let h = Harness::fresh();
     let user = make_user(&h, "vanishing@example.com").await;
     let mut wa = authenticator();
@@ -335,7 +316,6 @@ async fn finish_registration_against_deleted_user_writes_no_orphan_credential() 
         .expect("start");
     let response = wa.do_registration(ccr);
 
-    // Delete the user out from under the in-flight ceremony.
     h.users.delete_user(user.id).await.expect("delete user");
 
     let err = h
@@ -434,10 +414,6 @@ async fn finish_authentication_rejects_mismatched_user_handle() {
 
 #[tokio::test]
 async fn finish_authentication_rejects_tampered_signature() {
-    // Flip a byte of the assertion signature after the authenticator produced
-    // it: the user handle still resolves the owner, but webauthn-rs's signature
-    // check fails, so no session is minted and the failure is audited against
-    // the credential owner as a bad assertion.
     let h = Harness::fresh();
     let user = make_user(&h, "tamper@example.com").await;
     let mut wa = authenticator();
@@ -487,9 +463,6 @@ async fn finish_authentication_rejects_tampered_signature() {
 
 #[tokio::test]
 async fn finish_registration_rejects_tampered_attestation() {
-    // Corrupting the attestation response after the authenticator signed it
-    // must abort the ceremony: webauthn-rs rejects the credential and nothing
-    // is written to the store.
     let h = Harness::fresh();
     let user = make_user(&h, "tamper-reg@example.com").await;
     let mut wa = authenticator();
@@ -520,10 +493,6 @@ async fn finish_registration_rejects_tampered_attestation() {
 
 #[tokio::test]
 async fn finish_authentication_rejects_counter_regression_and_audits_it() {
-    // A non-advancing signature counter is webauthn-rs's clone/rollback
-    // signal. We simulate a credential whose recorded counter is already
-    // ahead of what the authenticator will next assert by bumping the stored
-    // blob's counter; the next assertion then presents a lower value.
     let h = Harness::fresh();
     let user = make_user(&h, "cloned@example.com").await;
     let mut wa = authenticator();
@@ -739,7 +708,6 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(rcr, &cred.credential_id);
-    // Consume the challenge once, then replay against the now-empty store.
     h.passkey
         .finish_authentication(auth_id, &assertion, SessionContext::default())
         .await
@@ -752,7 +720,6 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
         .await
         .expect("start auth 2");
     let assertion2 = wa.do_authentication(rcr2, &cred.credential_id);
-    // Drop the second challenge out from under the finish call.
     h.challenges
         .take_authentication(auth_id2)
         .await
@@ -779,9 +746,6 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
 
 #[tokio::test]
 async fn finish_authentication_rejects_a_reauth_challenge() {
-    // Sign-in and re-authentication share one challenge table. A
-    // re-authentication challenge presented to sign-in is refused as an
-    // invalid challenge — not an internal decode error — and mints nothing.
     let h = Harness::fresh();
     let user = make_user(&h, "mixup@example.com").await;
     let mut wa = authenticator();
@@ -971,9 +935,6 @@ async fn remove_passkey_notification_failure_does_not_undo_removal() {
 
 #[tokio::test]
 async fn remove_passkey_refused_during_recovery_cooldown() {
-    // The cool-down gate lives in the manager, so a restricted session is
-    // refused even when driving core directly — a phished recovery session
-    // must not be able to strip the owner's remaining passkeys. (F1)
     let h = Harness::fresh();
     let user = make_user(&h, "locked@example.com").await;
     let mut wa = authenticator();
@@ -1004,7 +965,6 @@ async fn remove_passkey_refused_during_recovery_cooldown() {
         "no removal notification is sent when the gate trips",
     );
 
-    // Once the cool-down lapses, the same session can remove the passkey.
     h.clock.advance(ChronoDuration::hours(25));
     h.passkey
         .remove_passkey(
@@ -1130,9 +1090,6 @@ async fn rename_missing_passkey_fails() {
 
 #[tokio::test]
 async fn rename_passkey_allowed_during_recovery_cooldown() {
-    // Renaming is cosmetic, so unlike removal it is *not* gated by the
-    // post-recovery cool-down: a relabel cannot lock the owner out or strip
-    // access, so there is nothing for the gate to protect against.
     let h = Harness::fresh();
     let user = make_user(&h, "cooldown-rename@example.com").await;
     let mut wa = authenticator();
@@ -1155,9 +1112,6 @@ async fn rename_passkey_allowed_during_recovery_cooldown() {
 
 #[tokio::test]
 async fn start_registration_from_ordinary_session_is_unrestricted() {
-    // An ordinary session carries no cool-down, so the registered passkey is
-    // unrestricted. Propagating an active cool-down, and not propagating an
-    // expired one, is covered through recovery in `recovery_flow`.
     let h = Harness::fresh();
     let user = make_user(&h, "ordinary@example.com").await;
     let mut wa = authenticator();
@@ -1180,7 +1134,6 @@ async fn start_registration_from_ordinary_session_is_unrestricted() {
 
 #[tokio::test]
 async fn start_registration_for_deleted_user_errors() {
-    // A session can outlive its user until the delete's revocation lands.
     let h = Harness::fresh();
     let user = make_user(&h, "deleted@example.com").await;
     h.users.delete_user(user.id).await.expect("delete user");
@@ -1194,9 +1147,6 @@ async fn start_registration_for_deleted_user_errors() {
 
 #[tokio::test]
 async fn start_registration_refuses_disabled_account() {
-    // A pending-registration cap of one makes a leftover ceremony observable:
-    // had the refused start minted a challenge, the start after re-enabling
-    // would hit the cap.
     let h = Harness::builder()
         .passkey_config(PasskeyConfig {
             max_pending_registrations_per_user: NonZeroU32::new(1),
@@ -1258,8 +1208,6 @@ async fn challenge_store_purges_expired_entries() {
 
 #[tokio::test]
 async fn registration_is_rejected_once_credential_cap_is_reached() {
-    // Cap of one credential: the first registration succeeds, the second is
-    // rejected rather than silently dropping the existing passkey.
     let h = Harness::builder()
         .passkey_config(PasskeyConfig {
             max_credentials_per_user: NonZeroU32::new(1),
@@ -1304,8 +1252,6 @@ async fn registration_is_rejected_once_credential_cap_is_reached() {
 
 #[tokio::test]
 async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() {
-    // Cap of two outstanding registration ceremonies: a foothold cannot grow
-    // the challenge table without bound by repeatedly calling start.
     let h = Harness::builder()
         .passkey_config(PasskeyConfig {
             max_pending_registrations_per_user: NonZeroU32::new(2),
@@ -1336,8 +1282,6 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
         }
     ));
 
-    // Finishing one ceremony frees exactly one slot. Had the rejected start
-    // minted a challenge, two would still be pending and this start would fail.
     let response = authenticator().do_registration(first_options);
     h.passkey
         .finish_registration(first_id, &response, None, SessionContext::default())
@@ -1348,7 +1292,6 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
         .await
         .expect("no extra challenge was minted");
 
-    // The cap is per user: a different user is unaffected.
     let other = make_user(&h, "pending-other@example.com").await;
     h.passkey
         .start_registration(&session_for(&h, &other))
@@ -1391,7 +1334,6 @@ async fn authenticate_start_is_rate_limited_per_ip() {
         .expect_err("second attempt from same ip is limited");
     assert!(matches!(err, Error::RateLimited { .. }));
 
-    // A different source IP has its own budget.
     h.passkey
         .start_authentication(from("5.6.7.8"))
         .await
@@ -1400,8 +1342,6 @@ async fn authenticate_start_is_rate_limited_per_ip() {
 
 #[tokio::test]
 async fn authenticate_finish_is_rate_limited_per_credential() {
-    // The per-credential finish limit applies even without a client IP: a
-    // flood pounding one credential is throttled by the credential dimension.
     let limiter = Arc::new(InMemoryRateLimiter::new(
         Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
     )) as Arc<dyn RateLimiter>;
@@ -1422,7 +1362,6 @@ async fn authenticate_finish_is_rate_limited_per_credential() {
     let mut wa = authenticator();
     let credential = register_passkey(&h, user.id, &mut wa, Some("device")).await;
 
-    // First full ceremony: the finish charges the credential once and succeeds.
     let (id, rcr) = h
         .passkey
         .start_authentication(SessionContext::default())
@@ -1434,8 +1373,6 @@ async fn authenticate_finish_is_rate_limited_per_credential() {
         .await
         .expect("first finish within budget");
 
-    // Second ceremony: the per-credential budget is now exhausted, so the
-    // finish is rejected before the single-use challenge is even consumed.
     let (id2, rcr2) = h
         .passkey
         .start_authentication(SessionContext::default())

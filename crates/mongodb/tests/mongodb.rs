@@ -1,22 +1,9 @@
-//! Runs the shared storage-conformance suite against the MongoDB adapter.
-//!
-//! Self-contained: it starts a throwaway MongoDB container via
-//! `testcontainers`, so it needs a running Docker daemon and nothing else.
-//! Every run gets a fresh, empty server removed when the test ends — no
-//! external URI or environment variable is consulted.
-//!
-//! The adapter uses a standalone MongoDB node (no replica set), which is
-//! sufficient because the uniqueness and atomicity guarantees that doorman
-//! relies on are provided by MongoDB's unique indexes and per-document write
-//! serialisation rather than by multi-document transactions.
-
 use doorman_mongodb::MongoDbStorage;
 use testcontainers_modules::mongo::Mongo;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
 #[tokio::test]
 async fn mongodb_storage_conformance() {
-    // `_node` keeps the container alive until the end of the test.
     let node = Mongo::default()
         .start()
         .await

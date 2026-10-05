@@ -1,16 +1,3 @@
-//! DynamoDB-backed [`VerificationTokenStore`].
-//!
-//! A token is one item under `vtoken#<purpose>#<hash>` — purpose is part of the
-//! key, so a leaked token of one purpose can never be redeemed under another —
-//! plus an `owner-index` entry keyed on `(user, purpose)` that backs the
-//! per-purpose bulk delete. Redemption is the atomic delete-and-return `take`
-//! (a `DeleteItem` with `ALL_OLD`, conditional on the item existing): exactly
-//! one concurrent caller observes the value, giving the single-use guarantee.
-//!
-//! `create_token` is a plain `PutItem` upsert; the 256-bit hashes are random, so
-//! a collision is not a real-world case. Native TTL evicts spent rows in
-//! production; `purge_expired` is the authoritative reclamation.
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::StorageResult;
@@ -21,7 +8,6 @@ use doorman_core::storage::{
 use crate::client::DynamoClient;
 use crate::model::{self, ENTITY_VTOKEN};
 
-/// Verification-token store backed by a DynamoDB connection.
 pub(crate) struct DynamoVerificationTokenStore {
     client: DynamoClient,
 }
@@ -49,11 +35,6 @@ impl VerificationTokenStore for DynamoVerificationTokenStore {
         }
     }
 
-    /// Enumerates the user's tokens of this purpose through the eventually-consistent
-    /// `owner-index` GSI, so a token created immediately before this revoke may
-    /// not yet be visible and can survive it; it is reclaimed on a later revoke
-    /// or by `purge_expired` / native TTL. This bulk revoke is best-effort under
-    /// write-after-write.
     async fn delete_tokens_for_user(
         &self,
         user_id: UserId,

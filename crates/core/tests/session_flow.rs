@@ -17,7 +17,6 @@ use doorman_test_support::CapturingEmailSender;
 
 use common::{Harness, ts};
 
-/// A harness whose sessions live for `absolute_lifetime`.
 fn harness_with_lifetime(absolute_lifetime: Duration) -> Harness {
     Harness::builder()
         .session_config(SessionConfig {
@@ -66,9 +65,6 @@ fn session_active_recovery_cooldown_until_filters_expired_deadlines() {
 
 #[test]
 fn stored_passkey_cooldown_predicate_mirrors_session() {
-    // The credential-side predicate must agree with `Session`'s under the
-    // same clock: active before the deadline, inactive on/after it, and
-    // `None` when unset. One shape per type, one answer.
     let now = ts(2026, 1, 1);
     let active_until = now + ChronoDuration::hours(24);
     let credential = StoredPasskey {
@@ -91,8 +87,6 @@ fn stored_passkey_cooldown_predicate_mirrors_session() {
     );
     assert!(credential.is_in_recovery_cooldown(now));
 
-    // Exactly at the deadline the cool-down is over (comparison is `now <
-    // until`).
     assert_eq!(
         credential.active_recovery_cooldown_until(active_until),
         None
@@ -170,9 +164,6 @@ async fn revoke_deletes_session_and_emits_audit() {
 
 #[tokio::test]
 async fn session_cap_evicts_oldest_active_session_for_that_user() {
-    // Cap of two: a third login evicts the user's oldest session so the new
-    // one always succeeds, per-user growth is bounded, and another user is
-    // untouched.
     let h = Harness::builder()
         .session_config(SessionConfig {
             absolute_lifetime: Duration::from_secs(60 * 60),
@@ -205,7 +196,6 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
         .await
         .expect("alice 3 evicts oldest");
 
-    // Alice keeps exactly her two newest sessions; the oldest was evicted.
     let mut alice_ids: Vec<SessionId> = manager
         .list_for_user(alice)
         .await
@@ -218,14 +208,12 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
     expected.sort_by_key(|id| id.0);
     assert_eq!(alice_ids, expected, "cap keeps the two newest sessions");
 
-    // The evicted session's token no longer validates.
     let err = manager
         .validate(&first.token)
         .await
         .expect_err("evicted session is gone");
     assert!(matches!(err, Error::SessionNotFound));
 
-    // The eviction recorded a revocation audit event.
     assert!(
         audit.events().iter().any(
             |e| matches!(e.kind, AuditEventKind::SessionRevoked { session_id, .. }
@@ -234,7 +222,6 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
         "evicting a capped-out session emits SessionRevoked",
     );
 
-    // Bob's session is untouched — the cap is per user.
     assert!(
         sessions
             .find_session_by_id(bob_session.session.id)
@@ -372,9 +359,6 @@ async fn list_for_user_returns_only_active_sessions_for_that_user() {
     expected.sort_by_key(|id| id.0);
     assert_eq!(ids, expected, "list returns only Alice's sessions");
 
-    // Step past both of Alice's sessions' expiry and issue her a fresh one.
-    // The expired rows are still stored (nothing purged them) but are not
-    // listed.
     clock.advance(ChronoDuration::seconds(120));
     let fresh = manager
         .create(alice, SessionContext::default())

@@ -1,26 +1,3 @@
-//! Encode/decode between doorman's domain types and MongoDB BSON documents.
-//!
-//! ## Document layout
-//!
-//! Every collection uses a string `_id` built from the record's natural key:
-//!
-//! | Collection              | `_id` value                     |
-//! | ----------------------- | ------------------------------- |
-//! | `users`                 | UUID string (`user.id`)         |
-//! | `sessions`              | UUID string (`session.id`)      |
-//! | `verification_tokens`   | `{purpose}#{token_hash hex}`    |
-//! | `passkey_credentials`   | credential-id hex               |
-//! | `passkey_registrations` | UUID string (challenge id)      |
-//! | `passkey_authentications` | UUID string (challenge id)    |
-//!
-//! Timestamps are stored as BSON `Date` (millisecond precision). A separate
-//! `ttl` field mirrors `expires_at` but is **only written when `expires_at` is
-//! in the wall-clock future**: this gates the TTL index so that past-dated test
-//! fixtures are not swept by the ~60 s TTL monitor during conformance runs.
-//!
-//! Binary fields (token hashes, credential ids, passkey blobs, ceremony state)
-//! are stored as BSON `BinData` with subtype `Generic`.
-
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{
@@ -32,10 +9,6 @@ use mongodb::bson::spec::BinarySubtype;
 use mongodb::bson::{Binary, Bson, DateTime as BsonDateTime, Document, doc};
 use uuid::Uuid;
 
-// ---------------------------------------------------------------------------
-// Low-level helpers
-// ---------------------------------------------------------------------------
-
 fn missing(key: &str) -> StorageError {
     StorageError::msg(format!("document is missing field `{key}`"))
 }
@@ -44,22 +17,15 @@ fn wrong_type(key: &str, want: &str) -> StorageError {
     StorageError::msg(format!("field `{key}` is not a {want}"))
 }
 
-/// Convert a `chrono::DateTime<Utc>` to a BSON `Date` (millisecond precision).
 pub(crate) fn to_bson_dt(dt: DateTime<Utc>) -> BsonDateTime {
     BsonDateTime::from_millis(dt.timestamp_millis())
 }
 
-/// Convert a BSON `Date` read from field `key` back to
-/// `chrono::DateTime<Utc>`. BSON's range is wider than chrono's, so a date
-/// beyond chrono's is an error.
 fn from_bson_dt(key: &str, dt: BsonDateTime) -> StorageResult<DateTime<Utc>> {
     DateTime::from_timestamp_millis(dt.timestamp_millis())
         .ok_or_else(|| StorageError::msg(format!("field `{key}` is out of chrono's date range")))
 }
 
-/// The TTL field value: `Some(date)` when `expires_at` is in the future,
-/// `None` otherwise. Only future-dated records receive a TTL index entry,
-/// so past-dated conformance fixtures are not swept before the test asserts on them.
 pub(crate) fn ttl_bson(expires_at: DateTime<Utc>) -> Option<BsonDateTime> {
     (expires_at > Utc::now()).then(|| to_bson_dt(expires_at))
 }
@@ -75,10 +41,6 @@ pub(crate) use doorman_core::encoding::{
     account_status_from_parts, account_status_to_str, authentication_purpose_from_str,
     authentication_purpose_to_str, hex, purpose_from_str, purpose_to_str as purpose_str,
 };
-
-// ---------------------------------------------------------------------------
-// Document extractors
-// ---------------------------------------------------------------------------
 
 pub(crate) fn get_str(doc: &Document, key: &str) -> StorageResult<String> {
     match doc.get(key) {
@@ -164,10 +126,6 @@ pub(crate) fn get_bool(doc: &Document, key: &str) -> StorageResult<bool> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Document ID builders
-// ---------------------------------------------------------------------------
-
 pub(crate) fn user_id_str(id: UserId) -> String {
     id.0.to_string()
 }
@@ -176,8 +134,6 @@ pub(crate) fn session_id_str(id: SessionId) -> String {
     id.0.to_string()
 }
 
-/// Compound document id for a verification token, scoped by purpose so a hash
-/// can never be redeemed under the wrong flow.
 pub(crate) fn vtoken_id(purpose: VerificationPurpose, hash: &TokenHash) -> String {
     format!("{}#{}", purpose_str(purpose), hex(&hash.0))
 }
@@ -189,10 +145,6 @@ pub(crate) fn passkey_id(credential_id: &[u8]) -> String {
 pub(crate) fn challenge_id_str(id: PasskeyChallengeId) -> String {
     id.0.to_string()
 }
-
-// ---------------------------------------------------------------------------
-// Document builders
-// ---------------------------------------------------------------------------
 
 pub(crate) fn user_to_doc(user: &User) -> Document {
     let mut doc = doc! {
@@ -328,10 +280,6 @@ pub(crate) fn passkey_to_doc(cred: &StoredPasskey) -> Document {
     doc
 }
 
-/// Read every passkey metadata field — everything except the opaque `passkey`
-/// blob — into a [`PasskeySummary`]. Both decoders share this single field
-/// assembly; the summary path returns it directly and the full decoder adds the
-/// blob, so neither re-lists the metadata fields.
 fn passkey_meta_from_doc(doc: &Document) -> StorageResult<PasskeySummary> {
     Ok(PasskeySummary {
         credential_id: get_bytes(doc, "credential_id")?,
@@ -364,8 +312,6 @@ pub(crate) fn passkey_from_doc(doc: &Document) -> StorageResult<StoredPasskey> {
     })
 }
 
-/// Project a passkey document to its metadata-only summary without reading the
-/// `passkey` blob. The `passkey` field is intentionally not accessed here.
 pub(crate) fn passkey_summary_from_doc(doc: &Document) -> StorageResult<PasskeySummary> {
     passkey_meta_from_doc(doc)
 }
@@ -430,8 +376,6 @@ mod tests {
 
     #[test]
     fn date_outside_chronos_range_is_an_error() {
-        // BSON dates span ±292M years, chrono only ±262k: a stored date
-        // beyond chrono's range must fail the read, not panic.
         let doc = doc! { "at": BsonDateTime::MAX };
         assert!(get_dt(&doc, "at").is_err());
         assert!(get_opt_dt(&doc, "at").is_err());

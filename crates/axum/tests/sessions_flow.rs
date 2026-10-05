@@ -1,5 +1,3 @@
-//! HTTP tests for the `/auth/sessions` management endpoints.
-
 mod common;
 
 use axum::Router;
@@ -56,7 +54,6 @@ async fn delete_session_revokes_target_and_leaves_caller_authenticated() {
     let caller = login(&client, &app, "dan@example.com").await;
     let other = login(&client, &app, "dan@example.com").await;
 
-    // Caller revokes the other session.
     let mail_before = app.email.sent().len();
     let resp = client
         .delete(app.url(&format!("/auth/sessions/{}", other.session.id)))
@@ -75,7 +72,6 @@ async fn delete_session_revokes_target_and_leaves_caller_authenticated() {
     );
     assert_eq!(new_mail[0].to, "dan@example.com");
 
-    // Caller's session still works.
     let mine = client
         .get(app.url("/auth/sessions"))
         .bearer_auth(&caller.token)
@@ -87,7 +83,6 @@ async fn delete_session_revokes_target_and_leaves_caller_authenticated() {
     assert_eq!(after.len(), 1);
     assert_eq!(after[0].id, caller.session.id);
 
-    // Other session is no longer authenticated.
     let stale = client
         .get(app.url("/me"))
         .bearer_auth(&other.token)
@@ -230,7 +225,6 @@ async fn logout_revokes_current_session_and_clears_cookie() {
         .expect("logout");
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-    // The response clears the session cookie.
     let set_cookie = resp
         .headers()
         .get(axum::http::header::SET_COOKIE)
@@ -245,7 +239,6 @@ async fn logout_revokes_current_session_and_clears_cookie() {
         "self-logout sends no security notification"
     );
 
-    // The revoked token no longer authenticates.
     let stale = client
         .get(app.url("/me"))
         .bearer_auth(&caller.token)
@@ -282,7 +275,6 @@ async fn delete_session_owned_by_another_user_returns_session_not_found() {
     let alice = login(&client, &app, "alice@example.com").await;
     let bob = login(&client, &app, "bob@example.com").await;
 
-    // Alice tries to delete Bob's session by id.
     let resp = client
         .delete(app.url(&format!("/auth/sessions/{}", bob.session.id)))
         .bearer_auth(&alice.token)
@@ -293,7 +285,6 @@ async fn delete_session_owned_by_another_user_returns_session_not_found() {
     let body: serde_json::Value = resp.json().await.expect("body");
     assert_eq!(body["error"]["code"], "session_not_found");
 
-    // Bob's session is intact.
     let bobs = client
         .get(app.url("/me"))
         .bearer_auth(&bob.token)

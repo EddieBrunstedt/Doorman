@@ -1,14 +1,3 @@
-//! Value-formatting primitives shared by every storage adapter.
-//!
-//! These functions encode a domain value into the byte-identical string form an
-//! adapter writes to a column or key, and decode it back. They are pure format
-//! concerns, not storage concerns, and must stay identical across adapters so
-//! data written by one version round-trips on the next. Keeping a single source
-//! of truth here removes the lockstep-edit hazard of per-adapter copies.
-//!
-//! Key-layout strings (table prefixes, separators) stay in each adapter; only
-//! the value primitives live here.
-
 use std::fmt::Write as _;
 
 use chrono::{DateTime, Utc};
@@ -17,9 +6,6 @@ use uuid::Uuid;
 use crate::error::{StorageError, StorageResult};
 use crate::storage::{AccountStatus, AuthenticationPurpose, VerificationPurpose};
 
-/// Stable lowercase string for a verification purpose, matching the
-/// `snake_case` serde rename on [`VerificationPurpose`] so a stored value is
-/// the same whichever side builds it.
 pub fn purpose_to_str(purpose: VerificationPurpose) -> &'static str {
     match purpose {
         VerificationPurpose::Signup => "signup",
@@ -28,9 +14,6 @@ pub fn purpose_to_str(purpose: VerificationPurpose) -> &'static str {
     }
 }
 
-/// Parse a stored purpose string back into a [`VerificationPurpose`], the
-/// inverse of [`purpose_to_str`]. An unknown value is a corrupt or
-/// forward-incompatible record and surfaces as a [`StorageError`].
 pub fn purpose_from_str(raw: &str) -> StorageResult<VerificationPurpose> {
     match raw {
         "signup" => Ok(VerificationPurpose::Signup),
@@ -42,8 +25,6 @@ pub fn purpose_from_str(raw: &str) -> StorageResult<VerificationPurpose> {
     }
 }
 
-/// Stable lowercase string for an authentication-challenge purpose, matching
-/// the `snake_case` serde rename on [`AuthenticationPurpose`].
 pub fn authentication_purpose_to_str(purpose: AuthenticationPurpose) -> &'static str {
     match purpose {
         AuthenticationPurpose::Login => "login",
@@ -51,9 +32,6 @@ pub fn authentication_purpose_to_str(purpose: AuthenticationPurpose) -> &'static
     }
 }
 
-/// Parse a stored authentication-challenge purpose, the inverse of
-/// [`authentication_purpose_to_str`]. An unknown value is a corrupt or
-/// forward-incompatible record and surfaces as a [`StorageError`].
 pub fn authentication_purpose_from_str(raw: &str) -> StorageResult<AuthenticationPurpose> {
     match raw {
         "login" => Ok(AuthenticationPurpose::Login),
@@ -64,10 +42,6 @@ pub fn authentication_purpose_from_str(raw: &str) -> StorageResult<Authenticatio
     }
 }
 
-/// Stable lowercase discriminant for an account status. Adapters store this
-/// alongside a nullable `disabled_at` timestamp column ([`AccountStatus`]'s
-/// `Disabled { at }` payload, obtained via [`AccountStatus::disabled_at`]) and
-/// rebuild the enum with [`account_status_from_parts`].
 pub fn account_status_to_str(status: &AccountStatus) -> &'static str {
     match status {
         AccountStatus::Active => "active",
@@ -75,11 +49,6 @@ pub fn account_status_to_str(status: &AccountStatus) -> &'static str {
     }
 }
 
-/// Rebuild an [`AccountStatus`] from its stored discriminant and nullable
-/// `disabled_at` timestamp, the inverse of [`account_status_to_str`] paired
-/// with [`AccountStatus::disabled_at`]. A `disabled` discriminant with no
-/// timestamp, or an unknown discriminant, is a corrupt or forward-incompatible
-/// record and surfaces as a [`StorageError`] rather than silently defaulting.
 pub fn account_status_from_parts(
     discriminant: &str,
     disabled_at: Option<DateTime<Utc>>,
@@ -100,26 +69,18 @@ pub fn account_status_from_parts(
     }
 }
 
-/// Lowercase hex rendering of opaque bytes (`{:02x}` per byte), used for keys
-/// and column values that carry token hashes or credential ids.
 pub fn hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        // Writing to a String is infallible.
         let _ = write!(out, "{byte:02x}");
     }
     out
 }
 
-/// Flatten passkey transport hints into a single comma-separated value.
-/// Transport tokens (`usb`, `nfc`, `ble`, `internal`, `hybrid`) never contain
-/// commas, so the join is unambiguous; an empty slice yields `""`.
 pub fn transports_to_str(transports: &[String]) -> String {
     transports.join(",")
 }
 
-/// Split a comma-separated transports value back into the list. Empty segments
-/// are dropped so a stored `""` round-trips to an empty `Vec`.
 pub fn transports_from_str(s: &str) -> Vec<String> {
     s.split(',')
         .filter(|seg| !seg.is_empty())
@@ -127,12 +88,10 @@ pub fn transports_from_str(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Render an optional AAGUID for a (nullable) string column.
 pub fn aaguid_to_str(aaguid: Option<Uuid>) -> Option<String> {
     aaguid.map(|u| u.to_string())
 }
 
-/// Parse a nullable AAGUID string column back into a [`Uuid`].
 pub fn aaguid_from_str(s: Option<String>) -> StorageResult<Option<Uuid>> {
     s.map(|raw| Uuid::parse_str(&raw).map_err(|e| StorageError::msg(e.to_string())))
         .transpose()
@@ -169,9 +128,6 @@ mod tests {
         assert!(purpose_from_str("nope").is_err());
     }
 
-    /// Locks [`purpose_to_str`] to the serde `snake_case` rename of
-    /// [`VerificationPurpose`]: if the enum's serde form ever drifts from the
-    /// hand-written match, this fails loudly.
     #[test]
     fn purpose_str_matches_serde_rename() {
         for p in [
@@ -187,8 +143,6 @@ mod tests {
         }
     }
 
-    /// Locks the authentication-purpose codec to the serde `snake_case`
-    /// rename and checks it round-trips.
     #[test]
     fn authentication_purpose_round_trips_and_matches_serde() {
         for p in [AuthenticationPurpose::Login, AuthenticationPurpose::Reauth] {
@@ -217,9 +171,7 @@ mod tests {
 
     #[test]
     fn account_status_from_parts_rejects_bad_input() {
-        // Unknown discriminant.
         assert!(account_status_from_parts("banned", None).is_err());
-        // Disabled with no timestamp is corrupt, not silently active.
         assert!(account_status_from_parts("disabled", None).is_err());
     }
 

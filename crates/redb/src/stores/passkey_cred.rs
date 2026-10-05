@@ -1,17 +1,3 @@
-//! redb-backed [`PasskeyCredentialStore`].
-//!
-//! Credentials are system-of-record: each is stored under its hex-encoded
-//! credential id in `passkey_creds`, with a per-user index entry in
-//! `user_creds_idx` (key `"{user_id}\x00{cred_id_hex}"`).
-//!
-//! `add_passkey` rejects a duplicate credential id; the field-level writes
-//! (`record_passkey_use`, `set_passkey_name`) reject an absent one. Each is
-//! checked and applied inside a single serialized write transaction.
-//!
-//! `list_passkey_summaries_for_user` projects each record to a
-//! [`PasskeySummary`](doorman_core::storage::PasskeySummary) without reading
-//! the opaque credential blob into the `StoredPasskey` domain type.
-
 use async_trait::async_trait;
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{
@@ -31,11 +17,6 @@ impl RedbPasskeyCredentialStore {
         Self { handle }
     }
 
-    /// Apply `change` to the existing credential `credential_id` inside one
-    /// write transaction, so the read and the write see the same row and a
-    /// concurrent change to another field is not overwritten. Fails if the
-    /// credential does not exist. `change` never touches `user_id`, so the
-    /// `user_creds_idx` entry stays valid.
     async fn modify(
         &self,
         credential_id: &[u8],
@@ -127,7 +108,6 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                         .map_err(db::err)?
                         .map(|r| {
                             r.map_err(db::err).and_then(|(k, _)| {
-                                // Extract cred_id_hex after the separator.
                                 k.value()
                                     .split_once('\x00')
                                     .map(|x| x.1.to_owned())
@@ -193,8 +173,6 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
     async fn count_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
         self.handle
             .read(move |rtxn| {
-                // The index entry and the credential row are written and removed
-                // in the same transaction, so counting the index is exact.
                 let prefix = db::user_creds_prefix(user_id);
                 let end = db::prefix_end(&prefix);
 
@@ -250,8 +228,6 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                 let mut creds = wtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
 
-                // Each index key is `"{user_id}\x00{cred_id_hex}"`, and the
-                // cred_id_hex segment is the primary key in `passkey_creds`.
                 let entries: Vec<(String, String)> = user_idx
                     .range(prefix.as_str()..end.as_str())
                     .map_err(db::err)?

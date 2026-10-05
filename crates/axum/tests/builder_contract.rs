@@ -1,11 +1,3 @@
-//! Build-time contract for `AuthService::builder(core).build()`: the HTTP
-//! settings layered over an assembled `AuthCore`.
-//!
-//! The portable assembly is pinned by core's `assembly_contract` tests; these
-//! pin what this crate adds — the CSRF decision, the cookie-prefix rules, and
-//! the cookie `Max-Age` bound — plus that the built service drives the very
-//! managers the core assembled.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,7 +19,6 @@ use doorman_core::signup::SignupConfig;
 use doorman_core::storage::UserId;
 use doorman_test_support::CapturingEmailSender;
 
-/// A core builder with every required input wired correctly.
 fn core_builder(email: Arc<dyn EmailSender>) -> AuthCoreBuilder {
     AuthCore::builder(InMemoryStorage::new().all_stores())
         .email(email)
@@ -59,13 +50,9 @@ fn core() -> AuthCore {
         .expect("core")
 }
 
-/// An HTTP builder over a valid core with the CSRF decision made, so
-/// `build()` succeeds. Tests that probe a single HTTP setting override it.
 fn valid_builder() -> AuthServiceBuilder {
     AuthService::builder(core()).csrf(CsrfConfig::disabled())
 }
-
-// --- A fully-wired builder succeeds and drives the core's managers ---
 
 #[test]
 fn fully_wired_builder_builds() {
@@ -74,9 +61,6 @@ fn fully_wired_builder_builds() {
 
 #[tokio::test]
 async fn service_drives_the_managers_the_core_assembled() {
-    // Core options reach the service unchanged: the operator manager the
-    // routes drive carries the notification policy set on the core builder,
-    // and signup sends through the core's email transport.
     let email = Arc::new(CapturingEmailSender::new());
     let policy = NotificationPolicy {
         sessions_revoked: OperatorNotice::Send,
@@ -113,8 +97,6 @@ async fn service_drives_the_managers_the_core_assembled() {
     assert!(summaries.is_empty());
 }
 
-// --- CSRF decision is required ---
-
 #[test]
 fn csrf_decision_required_when_neither_origin_nor_config_set() {
     let err = AuthService::builder(core()).build().err();
@@ -144,8 +126,6 @@ fn explicit_csrf_disabled_satisfies_the_csrf_decision() {
         "explicit CsrfConfig::disabled() should satisfy the CSRF decision, got: {err:?}"
     );
 }
-
-// --- Cookie settings fail closed on misconfiguration ---
 
 #[test]
 fn host_prefixed_cookie_without_secure_is_rejected() {

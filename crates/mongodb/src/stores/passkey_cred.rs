@@ -1,19 +1,3 @@
-//! MongoDB-backed [`PasskeyCredentialStore`].
-//!
-//! One document per credential, keyed by the hex-encoded credential id as
-//! `_id`. The raw credential id bytes are also stored in a `credential_id`
-//! field so they round-trip exactly without re-parsing the hex. A `user_id`
-//! index backs the per-user listing paths.
-//!
-//! - `add_passkey` → `insert_one` with unique `_id`: a duplicate credential
-//!   id is rejected by the default `_id` uniqueness constraint.
-//! - `record_passkey_use` / `set_passkey_name` → `update_one` matched by
-//!   `_id`, setting only their own fields: `matched_count == 0` surfaces
-//!   "not found".
-//! - `list_passkey_summaries_for_user` projects to [`PasskeySummary`] values
-//!   without reading the `passkey` blob, satisfying the "no blob deserialisation
-//!   on the listing path" contract.
-
 use async_trait::async_trait;
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{
@@ -25,7 +9,6 @@ use mongodb::bson::{Binary, Document, doc};
 use crate::db::{Coll, err};
 use crate::model::{self, passkey_id};
 
-/// Passkey-credential store backed by a MongoDB collection.
 pub(crate) struct MongoPasskeyCredentialStore {
     coll: Coll,
 }
@@ -35,10 +18,6 @@ impl MongoPasskeyCredentialStore {
         Self { coll }
     }
 
-    /// Apply a field-level `update` to the existing credential
-    /// `credential_id`. It touches only the fields `update` names, so
-    /// concurrent changes to other fields survive; it fails if the credential
-    /// does not exist.
     async fn update(&self, credential_id: &[u8], update: Document) -> StorageResult<()> {
         let filter = doc! { "_id": passkey_id(credential_id) };
         let result = self.coll.update_one(filter, update).await.map_err(err)?;
@@ -80,8 +59,6 @@ impl PasskeyCredentialStore for MongoPasskeyCredentialStore {
         credential_id: &[u8],
         name: Option<&str>,
     ) -> StorageResult<()> {
-        // A cleared name drops the field, mirroring `passkey_to_doc`, which
-        // omits it when there is no name.
         let update = match name {
             Some(name) => doc! { "$set": { "name": name } },
             None => doc! { "$unset": { "name": "" } },

@@ -1,23 +1,7 @@
--- Reference schema for the doorman SQLx + MySQL/MariaDB adapter.
---
--- UUIDs are stored as BINARY(16) and 32-byte token hashes as BINARY(32), to
--- match the raw bytes the shared adapter code binds; opaque credential ids and
--- ceremony blobs are VARBINARY/BLOB. Text columns are VARCHAR/TEXT (utf8mb4)
--- so they decode as `String`; a binary collation would not.
---
--- Timestamps use DATETIME(6), not TIMESTAMP: DATETIME keeps microsecond TTL
--- precision and spans years outside TIMESTAMP's 1970-2038 epoch range. sqlx
--- pins the session time_zone to +00:00, so `DateTime<Utc>` round-trips as UTC.
---
--- InnoDB is required for the foreign keys and for the `SELECT ... FOR UPDATE`
--- row locking the ephemeral stores' atomic take relies on.
-
 CREATE TABLE users (
     id BINARY(16) PRIMARY KEY,
     email VARCHAR(255) UNIQUE,
     email_verified_at DATETIME(6),
-    -- The `AccountStatus` enum projected onto a discriminant (`active` /
-    -- `disabled`) plus a nullable timestamp carrying `Disabled { at }`.
     status VARCHAR(32) NOT NULL DEFAULT 'active',
     disabled_at DATETIME(6),
     created_at DATETIME(6) NOT NULL,
@@ -29,8 +13,6 @@ CREATE TABLE sessions (
     user_id BINARY(16) NOT NULL,
     token_hash BINARY(32) NOT NULL UNIQUE,
     created_at DATETIME(6) NOT NULL,
-    -- Three-bound session model: `expires_at` is the effective, already-min'd
-    -- deadline; `last_used_at` records when the session last slid it forward.
     last_used_at DATETIME(6) NOT NULL,
     expires_at DATETIME(6) NOT NULL,
     ip VARCHAR(45),
@@ -45,7 +27,6 @@ CREATE TABLE verification_tokens (
     token_hash BINARY(32) NOT NULL,
     purpose VARCHAR(32) NOT NULL,
     user_id BINARY(16) NOT NULL,
-    -- Target address for an email-change token; NULL for signup/recovery.
     new_email VARCHAR(255),
     created_at DATETIME(6) NOT NULL,
     expires_at DATETIME(6) NOT NULL,
@@ -62,7 +43,6 @@ CREATE TABLE passkey_credentials (
     name VARCHAR(255),
     created_at DATETIME(6) NOT NULL,
     last_used_at DATETIME(6),
-    -- Device metadata captured at registration.
     aaguid VARCHAR(36),
     transports VARCHAR(255) NOT NULL DEFAULT '',
     backup_eligible BOOLEAN NOT NULL DEFAULT FALSE,

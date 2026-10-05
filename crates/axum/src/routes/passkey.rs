@@ -1,7 +1,3 @@
-//! Passkey (WebAuthn) HTTP routes.
-//!
-//! Mounted under `/auth/passkey` by [`crate::routes::router`].
-
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
@@ -40,9 +36,6 @@ async fn register_start(
     State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ErrorResponse> {
-    // Core derives the active post-recovery cool-down from the session and
-    // stamps it onto the ceremony, so a passkey enrolled during the lock-down
-    // inherits the deadline rather than the route having to thread it through.
     let (id, options) = manager(&state).start_registration(&auth.session).await?;
     Ok(Json(PasskeyChallenge {
         challenge_id: id.0.to_string(),
@@ -108,9 +101,6 @@ async fn remove(
     let bytes = URL_SAFE_NO_PAD
         .decode(credential_id.as_bytes())
         .map_err(|_| ErrorResponse(doorman_core::Error::PasskeyNotFound))?;
-    // The body is optional: the proof-less first attempt sends none. The
-    // post-recovery cool-down and re-auth gates live in the manager, so they
-    // hold for every host driving core — not just this route.
     let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     manager(&state)
         .remove_passkey(&auth.session, &bytes, proof, context)
@@ -128,8 +118,6 @@ async fn rename(
     let bytes = URL_SAFE_NO_PAD
         .decode(credential_id.as_bytes())
         .map_err(|_| ErrorResponse(doorman_core::Error::PasskeyNotFound))?;
-    // Relabelling is cosmetic, so the manager applies the ownership check but
-    // no cool-down gate — see `PasskeyManager::rename_passkey`.
     let updated = manager(&state)
         .rename_passkey(&auth.session, &bytes, body.name, context)
         .await?;

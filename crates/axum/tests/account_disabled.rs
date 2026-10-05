@@ -1,9 +1,3 @@
-//! Verifies the disable gates over HTTP: a user whose account status is
-//! `Disabled` can neither complete a passkey login nor authenticate a request
-//! with an existing session (403 with a stable code, not a silent 401), while
-//! an active user is unaffected. The gate itself — including that a refused
-//! session is never cached — is covered in core (`resolve_flow.rs`).
-
 mod common;
 
 use axum::Router;
@@ -91,8 +85,6 @@ async fn active_user_is_unaffected() {
         "an active user still authenticates"
     );
 
-    // Explicitly setting the status back to Active is a no-op for an
-    // already-active user and must not change the outcome.
     app.set_user_status(auth.user.id, AccountStatus::Active)
         .await;
     assert_eq!(me(&client, &app, &auth.token).await, StatusCode::OK);
@@ -102,9 +94,6 @@ async fn active_user_is_unaffected() {
 
 #[tokio::test]
 async fn operator_disable_locks_out_live_session_then_enable_restores() {
-    // End-to-end through the real operator flow: `disable` flips the status
-    // and revokes the live session, so the very next authenticated request is
-    // refused even after a warm one, and `enable` lifts the freeze.
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
@@ -121,16 +110,12 @@ async fn operator_disable_locks_out_live_session_then_enable_restores() {
         .await
         .expect("operator disable");
 
-    // The disable revoked the live session, so the token no longer
-    // authenticates.
     assert_eq!(
         me(&client, &app, &auth.token).await,
         StatusCode::UNAUTHORIZED,
         "the revoked session no longer resolves after disable",
     );
 
-    // Re-enable: the account is active again. The old token stays revoked, but
-    // a fresh login authenticates, proving the gate was lifted.
     app.operator
         .enable(auth.user.id, operator())
         .await

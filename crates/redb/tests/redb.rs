@@ -1,8 +1,3 @@
-//! Runs the shared storage-conformance suite against the redb adapter.
-//!
-//! Self-contained: a temporary file is created by `tempfile` and removed when
-//! the test process exits. No Docker daemon and no external server are needed.
-
 use doorman_redb::RedbStorage;
 
 #[tokio::test]

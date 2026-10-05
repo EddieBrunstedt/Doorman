@@ -1,6 +1,3 @@
-//! Integration tests for re-authentication: the `start` ceremony and the
-//! `ensure` gate that fronts the destructive self-service actions.
-
 mod common;
 
 use doorman_core::Error;
@@ -15,8 +12,6 @@ use common::{
     session_count, session_for,
 };
 
-/// Every [`ReauthAction`]. The match is exhaustive on purpose: a new variant
-/// fails to compile here until the matrix below covers it.
 fn all_actions() -> [ReauthAction; 5] {
     let listed = |action: ReauthAction| match action {
         ReauthAction::DeleteAccount
@@ -35,7 +30,6 @@ fn all_actions() -> [ReauthAction; 5] {
     .map(listed)
 }
 
-/// Build a harness that gates every destructive action behind re-auth.
 fn gated_harness() -> Harness {
     Harness::builder()
         .reauth_policy(ReauthPolicy::required_for(all_actions()))
@@ -44,9 +38,6 @@ fn gated_harness() -> Harness {
 
 #[tokio::test]
 async fn ensure_matrix_cooldown_blocks_every_action_before_policy() {
-    // Each action x {in cool-down, out of it} x {policy off, policy on},
-    // without a proof. The cool-down refuses every action whatever the
-    // policy; outside it, the policy alone decides.
     let cases = [(Harness::fresh(), "disabled"), (gated_harness(), "gated")];
     for (h, policy) in &cases {
         let user = make_user(h, "owner@example.com").await;
@@ -81,8 +72,6 @@ async fn ensure_matrix_cooldown_blocks_every_action_before_policy() {
     }
 }
 
-/// Run the full ceremony and hand back a usable proof: register a passkey,
-/// `start`, drive the authenticator, and assemble the `ReauthProof`.
 async fn fresh_proof(
     h: &Harness,
     user: doorman_core::storage::UserId,
@@ -98,7 +87,6 @@ async fn fresh_proof(
 
 #[tokio::test]
 async fn disabled_policy_lets_destructive_action_through_without_proof() {
-    // The default harness policy is disabled, so a proof-less delete succeeds.
     let h = Harness::fresh();
     let user = make_user(&h, "owner@example.com").await;
     let mut wa = authenticator();
@@ -141,8 +129,6 @@ async fn gated_action_without_proof_is_reauth_required() {
             .is_some(),
         "the account is untouched"
     );
-    // A missing proof is the ordinary handshake, not a failed attempt — no
-    // ReauthFailed row.
     assert!(
         !kinds(&h.audit.events())
             .iter()
@@ -189,9 +175,6 @@ async fn challenge_is_single_use() {
     let session = session_for(&h, &user);
 
     let proof = fresh_proof(&h, user.id, &mut wa).await;
-    // Remove one of two passkeys so the account survives the first success and
-    // we can attempt a replay. Register a second so removal does not strip the
-    // last credential mid-test.
     register_passkey(&h, user.id, &mut wa, Some("second")).await;
     let creds = h.passkey.list_passkeys(user.id).await.expect("list");
     let target = creds[0].credential_id.clone();
@@ -206,7 +189,6 @@ async fn challenge_is_single_use() {
         .await
         .expect("first use succeeds");
 
-    // Replaying the same proof must fail: the challenge was consumed.
     let other = creds[1].credential_id.clone();
     let err = h
         .passkey
@@ -218,9 +200,6 @@ async fn challenge_is_single_use() {
 
 #[tokio::test]
 async fn login_challenge_is_not_a_reauth_proof() {
-    // A sign-in challenge shares the table re-authentication uses, but it was
-    // minted for another ceremony: presenting it as a proof is refused like
-    // any other unusable challenge, and the gated action does not run.
     let h = gated_harness();
     let user = make_user(&h, "owner@example.com").await;
     let mut wa = authenticator();
@@ -275,7 +254,6 @@ async fn expired_challenge_is_rejected() {
 
     let (challenge_id, options) = h.reauth.start(user.id).await.expect("reauth start");
     let assertion = wa.do_scoped_authentication(options);
-    // Step past the default 5-minute challenge lifetime before finishing.
     h.clock.advance(chrono::Duration::minutes(6));
 
     let err = h
@@ -306,9 +284,6 @@ async fn expired_challenge_is_rejected() {
 
 #[tokio::test]
 async fn assertion_from_another_users_credential_is_rejected() {
-    // The ceremony is scoped to the owner's credentials, so an assertion from a
-    // different user's authenticator cannot verify against the owner-scoped
-    // challenge state. The account is left untouched and a failure is recorded.
     let h = gated_harness();
     let owner = make_user(&h, "owner@example.com").await;
     let attacker = make_user(&h, "attacker@example.com").await;
@@ -318,8 +293,6 @@ async fn assertion_from_another_users_credential_is_rejected() {
     register_passkey(&h, attacker.id, &mut attacker_wa, Some("attacker device")).await;
     let owner_session = session_for(&h, &owner);
 
-    // Mint an owner-scoped challenge, then answer it with the attacker's
-    // authenticator over an allow-list re-pointed at the attacker credential.
     let attacker_cred = h.passkey.list_passkeys(attacker.id).await.expect("list")[0]
         .credential_id
         .clone();
@@ -360,8 +333,6 @@ async fn assertion_from_another_users_credential_is_rejected() {
 
 #[tokio::test]
 async fn cooldown_beats_reauth() {
-    // Precedence: even a valid proof cannot satisfy the post-recovery
-    // cool-down, which is checked first.
     let h = gated_harness();
     let user = make_user(&h, "owner@example.com").await;
     let mut wa = authenticator();
@@ -378,8 +349,6 @@ async fn cooldown_beats_reauth() {
     assert!(matches!(err, Error::RecoveryCooldownActive), "got: {err:?}");
 }
 
-/// Re-point an allow-list-scoped challenge at `credential_id` so the
-/// `SoftPasskey` answers with that specific resident credential.
 fn scoped_to(
     mut options: webauthn_rs::prelude::RequestChallengeResponse,
     credential_id: &[u8],
@@ -469,7 +438,6 @@ async fn revoke_session_requires_proof_only_for_another_session() {
         .await
         .expect("revoke another session with a fresh proof");
 
-    // Signing out the acting session never needs a proof.
     h.account
         .revoke_session(&user, &current, current.id, None, SessionContext::default())
         .await

@@ -1,5 +1,3 @@
-//! End-to-end HTTP test for the passkey authentication-start route.
-
 mod common;
 
 use axum::Router;
@@ -66,7 +64,6 @@ async fn rename_passkey_updates_name_over_http() {
     assert_eq!(updated.credential_id, credential_id);
     assert_eq!(updated.name.as_deref(), Some("My Laptop"));
 
-    // The new name is reflected on a subsequent listing.
     let list: Vec<PasskeyDto> = client
         .get(app.url("/auth/passkey"))
         .bearer_auth(&bearer)

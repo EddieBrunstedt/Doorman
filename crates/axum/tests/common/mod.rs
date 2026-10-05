@@ -1,14 +1,7 @@
-//! Shared test scaffolding.
-//!
-//! [`TestApp`] spins up an axum app backed by in-memory storage and a real
-//! `doorman-axum` router, exposes a base URL for `reqwest`, and tears the
-//! server down on drop. [`login`] mints a session directly via the
-//! in-process `SessionManager` so the session-management tests can grab a
-//! bearer token without driving the full passkey ceremony — tests that
-//! specifically cover the signup flow drive it end-to-end themselves via
-//! [`SignupClient`].
-
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test binary compiles this module, and not every binary uses every helper"
+)]
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -68,13 +61,7 @@ pub struct TestApp {
     pub email: Arc<CapturingEmailSender>,
     pub rp_origin: ServerUrl,
     pub passkey_credentials: Arc<InMemoryPasskeyCredentialStore>,
-    /// The live, invalidation-hooked `SessionManager` the app runs on
-    /// (cloned out of the built `AuthService`). `login` mints sessions
-    /// through it, and revoking through it evicts the resolver's cache.
     pub session_manager: SessionManager,
-    /// The live operator manager the app runs on, so operator-flow tests can
-    /// drive a host-side operation (e.g. deleting a user) and observe its
-    /// effect on the running app (cache eviction, subsequent 401s).
     pub operator: OperatorManager,
     user_store: Arc<InMemoryUserStore>,
     handle: JoinHandle<()>,
@@ -82,20 +69,10 @@ pub struct TestApp {
 }
 
 impl TestApp {
-    /// Start an app wired through [`AuthCore::builder`] and
-    /// [`AuthService::builder`] with the in-memory stores and the passkey +
-    /// signup configs needed for full HTTP coverage.
     pub async fn start(host_routes: Router, secure_cookies: bool) -> Self {
         Self::start_with(host_routes, secure_cookies, |b| b).await
     }
 
-    /// Start an app whose session manager and rate limiter both read time
-    /// through the supplied `clock`, so a test can drive token/session/window
-    /// expiry by advancing a [`MockClock`] rather than sleeping. The
-    /// resolution cache is disabled (zero TTL), so every request resolves
-    /// from storage and sees a clock advance or store change immediately.
-    ///
-    /// [`MockClock`]: doorman_test_support::MockClock
     pub async fn start_with_clock(
         host_routes: Router,
         secure_cookies: bool,
@@ -112,8 +89,6 @@ impl TestApp {
         .await
     }
 
-    /// Start an app, letting the caller tweak the [`AuthCoreBuilder`] (e.g.
-    /// to swap the clock or a flow config).
     pub async fn start_with<F>(host_routes: Router, secure_cookies: bool, customise: F) -> Self
     where
         F: FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
@@ -121,9 +96,6 @@ impl TestApp {
         Self::start_configured(host_routes, secure_cookies, customise, |b| b).await
     }
 
-    /// Start an app, letting the caller tweak both the [`AuthCoreBuilder`]
-    /// and the HTTP-only [`AuthServiceBuilder`] (e.g. to set an
-    /// `external_origin` for CSRF coverage).
     pub async fn start_configured<C, H>(
         host_routes: Router,
         secure_cookies: bool,
@@ -176,18 +148,12 @@ impl TestApp {
                 url_template: ACCOUNT_URL.to_string(),
                 ..AccountConfig::default()
             })
-            // Default off so the existing suites need no proof; the reauth
-            // suite overrides this in its `customise` closure (last setter
-            // wins) to gate the destructive actions it exercises.
             .reauthentication(ReauthPolicy::disabled());
         let core = customise_core(core_builder)
             .build()
             .expect("auth core built");
 
         let builder = AuthService::builder(core)
-            // Tests that exercise CSRF opt in via `customise_http`; the
-            // default app is a non-browser test client, so opt out
-            // deliberately.
             .csrf(CsrfConfig::disabled())
             .cookie(CookieConfig {
                 secure: secure_cookies,
@@ -195,9 +161,6 @@ impl TestApp {
             });
         let auth = customise_http(builder).build().expect("auth built");
 
-        // `login` mints sessions directly through the same live,
-        // invalidation-hooked `SessionManager` the app runs on, so a
-        // revoke routed through it evicts the cache the layer reads.
         let session_manager = auth.state().session_manager().clone();
         let operator = auth.state().operator().clone();
 
@@ -244,9 +207,6 @@ impl TestApp {
         format!("http://{}{}", self.addr, path)
     }
 
-    /// Flip a user's account status directly through the store, bypassing the
-    /// operator surface. The enforcement tests use this to prove the read-time
-    /// gate holds independently of how the status came to be set.
     pub async fn set_user_status(&self, user_id: UserId, status: AccountStatus) {
         self.user_store
             .set_user_status(user_id, status, chrono::Utc::now())
@@ -260,9 +220,6 @@ impl TestApp {
     }
 }
 
-/// Provision a user and mint a session directly via the in-process
-/// `SessionManager`. Useful for tests that exercise the session-management
-/// surface and don't need to cover the signup ceremony itself.
 pub async fn login(_client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
     let email_normalized = normalize_email(email);
 
@@ -298,10 +255,6 @@ pub async fn login(_client: &reqwest::Client, app: &TestApp, email: &str) -> Aut
     AuthResponse::from_issued(user, issued, 0)
 }
 
-/// Helper that drives the three-step signup flow over real HTTP, using a
-/// `SoftPasskey` to satisfy the WebAuthn ceremony. Returns the response
-/// JSON from `/auth/signup/finish` (cookies are picked up by the supplied
-/// `reqwest::Client` automatically when its cookie store is enabled).
 pub struct SignupClient {
     inner: WebauthnAuthenticator<SoftPasskey>,
     rp_origin: AuthUrl,
@@ -315,8 +268,6 @@ impl SignupClient {
         }
     }
 
-    /// Drive request → consume → finish, returning the parsed
-    /// [`AuthResponse`] from `/auth/signup/finish`.
     pub async fn signup(
         &mut self,
         client: &reqwest::Client,
@@ -347,8 +298,6 @@ impl SignupClient {
         let challenge: PasskeyChallenge<CreationChallengeResponse> =
             consume.json().await.expect("consume body");
 
-        // Relax the resident-key flags so SoftPasskey accepts the ceremony;
-        // it rejects a required resident key during registration.
         let mut options = challenge.options;
         let selection = options
             .public_key
@@ -377,11 +326,6 @@ impl SignupClient {
         finish.json().await.expect("finish body")
     }
 
-    /// Register an additional passkey for the authenticated session. The
-    /// caller is expected to use a fresh [`SignupClient`] (a separate
-    /// `SoftPasskey`) so the new credential is distinct from any existing
-    /// one. The returned [`PasskeyDto::credential_id`] is the URL-safe
-    /// base64 id usable with `DELETE /auth/passkey/{id}`.
     pub async fn register_additional_passkey(
         &mut self,
         client: &reqwest::Client,
@@ -427,10 +371,6 @@ impl SignupClient {
         finish.json().await.expect("register finish body")
     }
 
-    /// Drive the re-authentication `start` ceremony for the authenticated
-    /// session and produce the [`Reauthentication`] proof a destructive request
-    /// carries. The `start` challenge is allow-list scoped, so the
-    /// `SoftPasskey` answers it directly — no resident-key shim needed.
     pub async fn reauth(
         &mut self,
         client: &reqwest::Client,
@@ -457,20 +397,12 @@ impl SignupClient {
     }
 }
 
-/// A discoverable credential the [`ResidentHttpAuthenticator`] has "stored",
-/// so a later usernameless authentication can assert the right user handle.
 #[derive(Clone)]
 struct ResidentCredential {
     credential_id: Vec<u8>,
     user_handle: Vec<u8>,
 }
 
-/// WebAuthn test client for the HTTP suites that drive a full
-/// register-then-login round trip. `SoftPasskey` cannot mint resident keys,
-/// so on registration it relaxes the local resident-key input while recording
-/// the user handle, then replays it on authentication — modelling a
-/// discoverable credential end to end. Shared by the recovery and
-/// quickstart suites so they drive the ceremony the same way.
 pub struct ResidentHttpAuthenticator {
     inner: WebauthnAuthenticator<SoftPasskey>,
     rp_origin: AuthUrl,
@@ -478,8 +410,6 @@ pub struct ResidentHttpAuthenticator {
 }
 
 impl ResidentHttpAuthenticator {
-    /// Build an authenticator that signs against `rp_origin` (the public
-    /// origin the relying party was configured with, not the bound address).
     pub fn new(rp_origin: &ServerUrl) -> Self {
         Self {
             inner: WebauthnAuthenticator::new(SoftPasskey::new(true)),
@@ -525,8 +455,6 @@ impl ResidentHttpAuthenticator {
             .cloned()
             .expect("credential is resident on test authenticator");
 
-        // SoftPasskey needs an allow-list to pick a key; the server-issued
-        // challenge stays discoverable. This is a test-shim only.
         let mut compatible = challenge;
         compatible.public_key.allow_credentials = vec![AllowCredentials {
             type_: "public-key".to_string(),
@@ -542,16 +470,10 @@ impl ResidentHttpAuthenticator {
     }
 }
 
-/// Locate the raw signup token in an email body whose URL was rendered
-/// from [`SIGNUP_URL`].
 pub fn token_from_email(body: &str) -> String {
     token_from_email_with(body, SIGNUP_URL)
 }
 
-/// Locate the raw token in an email body whose URL was rendered from the
-/// given template (signup or recovery). Thin wrapper over the shared
-/// [`doorman_test_support::token_from_email`] so the two suites extract tokens
-/// the same way.
 pub fn token_from_email_with(body: &str, template: &str) -> String {
     doorman_test_support::token_from_email(body, template)
 }

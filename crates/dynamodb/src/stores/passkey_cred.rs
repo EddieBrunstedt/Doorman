@@ -1,20 +1,3 @@
-//! DynamoDB-backed [`PasskeyCredentialStore`].
-//!
-//! A credential is the system of record, so each is one item under
-//! `passkey#<credential id>` with an `owner-index` entry on its user for the
-//! "your passkeys" listing. The credential id and the opaque `webauthn-rs` blob
-//! are stored verbatim as binary attributes and returned unchanged — the store
-//! never interprets them.
-//!
-//! Writes use conditions to reproduce the relational guarantees: `add_passkey`
-//! is guarded by `attribute_not_exists` so a duplicate credential id is
-//! rejected, and the field-level writes (`record_passkey_use`,
-//! `set_passkey_name`) are `UpdateItem`s guarded by `attribute_exists` so
-//! updating a missing credential reports it missing. The metadata-only summary listing
-//! projects each row to a
-//! [`PasskeySummary`](doorman_core::storage::PasskeySummary) without ever
-//! reading the credential blob.
-
 use async_trait::async_trait;
 use aws_sdk_dynamodb::types::AttributeValue;
 use doorman_core::error::{StorageError, StorageResult};
@@ -25,7 +8,6 @@ use doorman_core::storage::{
 use crate::client::{self, DynamoClient, PK};
 use crate::model;
 
-/// Passkey-credential store backed by a DynamoDB connection.
 pub(crate) struct DynamoPasskeyCredentialStore {
     client: DynamoClient,
 }
@@ -35,10 +17,6 @@ impl DynamoPasskeyCredentialStore {
         Self { client }
     }
 
-    /// Apply a field-level `UpdateItem` to the existing credential
-    /// `credential_id`. The write touches only the attributes `expression`
-    /// names, so concurrent changes to other attributes survive; it fails if
-    /// the credential does not exist.
     async fn update(
         &self,
         credential_id: &[u8],
@@ -120,8 +98,6 @@ impl PasskeyCredentialStore for DynamoPasskeyCredentialStore {
         credential_id: &[u8],
         name: Option<&str>,
     ) -> StorageResult<()> {
-        // A cleared name drops the attribute, mirroring `passkey_item`, which
-        // omits it when there is no name.
         match name {
             Some(name) => {
                 self.update(

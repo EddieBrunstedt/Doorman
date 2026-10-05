@@ -1,20 +1,3 @@
-//! Redis-backed [`SessionStore`].
-//!
-//! A session is stored as three keys: the JSON row under `session:{id}`,
-//! a `session:hash:{hash}` index resolving the hashed bearer token to the id
-//! (the hot per-request lookup), and membership in the per-user
-//! `user:{uid}:sessions` SET that backs the listing and bulk-delete paths. The
-//! row and hash index carry a `PEXPIREAT` TTL when the expiry is in the
-//! wall-clock future; the user SET cannot (its members expire at different
-//! instants and Redis SETs have no per-member TTL), so its hygiene is kept by
-//! read-time cleanup and the [`purge_expired`](RedisSessionStore::purge_expired)
-//! backstop.
-//!
-//! `create_session` writes with a plain `SET`, so it is an upsert: a repeated
-//! id or token hash overwrites rather than erroring, which the trait permits for
-//! key-value adapters. The ids and 256-bit hashes are random, so a collision is
-//! not a real-world case.
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
@@ -23,13 +6,11 @@ use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId}
 use crate::client::{self, RedisClient};
 use crate::stores;
 
-/// Session store backed by a Redis/Valkey connection.
 pub(crate) struct RedisSessionStore {
     client: RedisClient,
 }
 
 impl RedisSessionStore {
-    /// Build a session store over `client`.
     pub(crate) fn new(client: RedisClient) -> Self {
         Self { client }
     }
@@ -46,8 +27,6 @@ impl SessionStore for RedisSessionStore {
         let json = client::to_json(&session)?;
         let mut conn = self.client.conn();
 
-        // One MULTI/EXEC so the row, its hash index, and the user-set membership
-        // all land together (or not at all).
         let mut pipe = redis::pipe();
         pipe.atomic();
         pipe.cmd("SET").arg(&session_key).arg(&json).ignore();
@@ -74,12 +53,6 @@ impl SessionStore for RedisSessionStore {
         let session_key = keys.session(id);
         let mut conn = self.client.conn();
 
-        // Read the current row, bump its two timestamps, and write back. A
-        // `SET ... XX` only writes when the key still exists, so a session
-        // deleted between this GET and SET makes the write a no-op rather than
-        // resurrecting a revoked session. No other field of a session ever
-        // changes after creation, so writing back the rest of the row as read
-        // cannot undo a concurrent change.
         let Some(mut current) = client::get_json::<Session>(&mut conn, &session_key).await? else {
             return Ok(());
         };
@@ -88,10 +61,6 @@ impl SessionStore for RedisSessionStore {
         let hash_key = keys.session_hash_index(&current.token_hash);
         let json = client::to_json(&current)?;
 
-        // TTL coupling: rewrite the eviction timer on both the row and its hash
-        // index to the new `expires_at`, so the backend does not evict the row
-        // at the stale deadline mid-session. `PEXPIREAT` on a missing key is a
-        // no-op, keeping the whole touch conditional on the row's existence.
         let mut pipe = redis::pipe();
         pipe.atomic();
         if let Some(ms) = client::ttl_at_ms(current.expires_at) {
@@ -104,9 +73,6 @@ impl SessionStore for RedisSessionStore {
                 .ignore();
             pipe.cmd("PEXPIREAT").arg(&hash_key).arg(ms).ignore();
         } else {
-            // No future-dated TTL to layer on (the conformance suite's fixed
-            // instants sit in the real past); still write the slid row under
-            // `XX` so the field reflects the new deadline.
             pipe.cmd("SET")
                 .arg(&session_key)
                 .arg(&json)
@@ -132,8 +98,6 @@ impl SessionStore for RedisSessionStore {
         match client::get_json::<Session>(&mut conn, &session_key).await? {
             Some(session) => Ok(Some(session)),
             None => {
-                // The index outlived the row it pointed at (an evicted session).
-                // Drop the dangling index so the next lookup is a single GET.
                 let _ = client::del(&mut conn, &[hash_key]).await;
                 Ok(None)
             }
@@ -166,15 +130,11 @@ impl SessionStore for RedisSessionStore {
         let mut dangling = Vec::new();
         for (member, row) in members.iter().zip(rows) {
             match row {
-                // Push the expiry predicate into the store like the SQL
-                // adapters: an expired-but-present row stays (purge reclaims it)
-                // but never leaves via this listing.
                 Some(session) if session.expires_at > now => out.push(session),
                 Some(_) => {}
                 None => dangling.push(member.clone()),
             }
         }
-        // Opportunistic read-time hygiene: drop members whose row is gone.
         let _ = client::srem(&mut conn, &user_key, &dangling).await;
         Ok(out)
     }
@@ -184,8 +144,6 @@ impl SessionStore for RedisSessionStore {
         let session_key = keys.session(id);
         let mut conn = self.client.conn();
 
-        // Read the row first to learn its token hash and owner so the hash index
-        // and user-set membership can be removed alongside it.
         let Some(session) = client::get_json::<Session>(&mut conn, &session_key).await? else {
             return Ok(());
         };
@@ -225,8 +183,6 @@ impl SessionStore for RedisSessionStore {
         let mut del_keys = Vec::new();
         let mut removed = 0u64;
         for (session_key, row) in session_keys.into_iter().zip(rows) {
-            // Every member read is SREMed below, dangling ones included, but
-            // only the sessions that actually existed count as removed.
             if let Some(session) = row {
                 del_keys.push(session_key);
                 del_keys.push(keys.session_hash_index(&session.token_hash));
@@ -234,9 +190,6 @@ impl SessionStore for RedisSessionStore {
             }
         }
 
-        // SREM exactly the members read, never the whole SET: a session created
-        // after the SMEMBERS keeps its membership, so it stays listed and the
-        // next revoke reaches it. Rows and memberships go in one MULTI/EXEC.
         let mut pipe = redis::pipe();
         pipe.atomic();
         if !del_keys.is_empty() {
@@ -254,9 +207,6 @@ impl SessionStore for RedisSessionStore {
         let keys = self.client.keys();
         let mut conn = self.client.conn();
 
-        // Every session is reachable through exactly one user SET, so sweeping
-        // the SETs reaches every row and is also where dangling members are
-        // reclaimed.
         stores::purge_index_sets::<Session>(
             &mut conn,
             keys,

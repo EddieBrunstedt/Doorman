@@ -1,10 +1,3 @@
-//! End-to-end HTTP tests for the recovery routes.
-//!
-//! Exercises the high-level builder wiring path so the test covers manager
-//! construction, route mounting, email delivery (link + notification),
-//! the passkey ceremony at consume / finish time, session cookie
-//! issuance, and the session layer loading the newly issued session.
-
 mod common;
 
 use axum::Router;
@@ -38,15 +31,12 @@ async fn full_recovery_round_trip() {
         .build()
         .expect("client");
 
-    // Provision a real user via the signup flow so recovery has someone
-    // to recover.
     let signed_up: AuthResponse = SignupClient::new(&app)
         .signup(&cookie_client, &app, "alice@example.com")
         .await;
 
     let mail_before = app.email.sent().len();
 
-    // Recovery request.
     let req = cookie_client
         .post(app.url("/auth/recovery/request"))
         .json(&RecoveryRequest {
@@ -71,7 +61,6 @@ async fn full_recovery_round_trip() {
     );
     let token = token_from_email_with(&link_email.body_text, RECOVERY_URL);
 
-    // Recovery consume → returns a passkey-registration challenge.
     let consume = cookie_client
         .post(app.url("/auth/recovery/consume"))
         .json(&RecoveryConsumeRequest {
@@ -84,7 +73,6 @@ async fn full_recovery_round_trip() {
     let challenge: PasskeyChallenge<CreationChallengeResponse> =
         consume.json().await.expect("consume body");
 
-    // Drive the WebAuthn ceremony to enrol a new passkey.
     let mut sp = WebauthnAuthenticator::new(SoftPasskey::new(true));
     let auth_origin = AuthUrl::parse(app.rp_origin.as_str()).expect("rp origin");
     let mut options = challenge.options;
@@ -116,7 +104,6 @@ async fn full_recovery_round_trip() {
     assert_eq!(body.user.id, signed_up.user.id);
     assert!(!body.token.is_empty());
 
-    // Success notification emails.
     let sent = app.email.sent();
     let after_finish = &sent[mail_before_finish..];
     assert_eq!(
@@ -134,8 +121,6 @@ async fn full_recovery_round_trip() {
         "completed notification queued ({subjects:?})",
     );
 
-    // The Set-Cookie from /recovery/finish should let the cookie client
-    // hit a protected route.
     let me = cookie_client
         .get(app.url("/me"))
         .send()
@@ -180,7 +165,6 @@ async fn recovery_request_for_registered_email_sends_link_and_notification() {
         .build()
         .expect("client");
 
-    // Register a user first.
     let _ = SignupClient::new(&app)
         .signup(&cookie_client, &app, "alice@example.com")
         .await;
@@ -298,9 +282,6 @@ async fn recovery_request_rejects_invalid_email_with_code() {
     app.shutdown().await;
 }
 
-/// Drive a full signup + recovery round trip and return the auth response
-/// from `/auth/recovery/finish`. The returned session is restricted by the
-/// post-recovery cool-down.
 async fn provision_recovery_session(
     app: &TestApp,
     cookie_client: &reqwest::Client,
@@ -439,7 +420,6 @@ async fn delete_passkey_during_cooldown_returns_409() {
 
     let auth = provision_recovery_session(&app, &cookie_client, "alice@example.com").await;
 
-    // List passkeys to find one to attempt deleting.
     let list = cookie_client
         .get(app.url("/auth/passkey"))
         .bearer_auth(&auth.token)
@@ -484,10 +464,7 @@ async fn delete_other_session_during_cooldown_returns_409() {
         .build()
         .expect("client");
 
-    // Sign up + recover (puts the cookie client into a restricted session).
     let recovery_auth = provision_recovery_session(&app, &cookie_client, "alice@example.com").await;
-    // Mint a second session for the same user via the in-process manager so
-    // there's something to try to revoke.
     let other = common::login(&cookie_client, &app, "alice@example.com").await;
 
     let mail_before_revoke = app.email.sent().len();
@@ -541,9 +518,6 @@ async fn revoke_others_during_cooldown_returns_409() {
 
 #[tokio::test]
 async fn change_email_during_cooldown_returns_409() {
-    // A phished recovery session must not repoint the account's email: the
-    // route threads the acting session into the gated manager call, so the
-    // cool-down rejection surfaces as a 409 and no confirmation link is sent.
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -585,10 +559,6 @@ async fn change_email_during_cooldown_returns_409() {
 
 #[tokio::test]
 async fn delete_account_during_cooldown_returns_409() {
-    // A phished recovery session must not delete the account before the owner
-    // reacts: the route threads the acting session into the gated manager
-    // call, so the cool-down rejection surfaces as a 409 and the account
-    // survives — it still authenticates afterward.
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -613,7 +583,6 @@ async fn delete_account_during_cooldown_returns_409() {
         "cooldown-blocked account deletion sent no mail"
     );
 
-    // The account is untouched: the recovery session still authenticates.
     let still_alive = cookie_client
         .get(app.url("/auth/passkey"))
         .bearer_auth(&auth.token)
@@ -699,7 +668,6 @@ async fn register_start_during_cooldown_is_allowed() {
 
     let auth = provision_recovery_session(&app, &cookie_client, "alice@example.com").await;
 
-    // Adding another passkey is explicitly *not* blocked during cool-down.
     let resp = cookie_client
         .post(app.url("/auth/passkey/register/start"))
         .bearer_auth(&auth.token)
@@ -765,8 +733,6 @@ async fn passkey_added_during_cooldown_inherits_cooldown() {
         .await
         .expect("find backup passkey after auth")
         .expect("backup passkey stored after auth");
-    // The store has no write for a credential's cool-down (it is fixed at
-    // registration), so expire it by re-adding the row with an elapsed one.
     stored_after_auth.recovery_cooldown_until =
         Some(chrono::Utc::now() - ChronoDuration::seconds(1));
     app.passkey_credentials
@@ -805,8 +771,6 @@ async fn deleting_own_recovery_session_is_allowed_during_cooldown() {
 
     let auth = provision_recovery_session(&app, &cookie_client, "alice@example.com").await;
 
-    // Signing out of the recovery session itself is the one
-    // self-revoke that the cool-down does not block.
     let resp = cookie_client
         .delete(app.url(&format!("/auth/sessions/{}", auth.session.id)))
         .bearer_auth(&auth.token)
@@ -823,9 +787,6 @@ async fn signup_token_is_not_accepted_at_recovery_consume() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
-    // Drive a signup request without consuming it, then try to redeem
-    // the token via recovery — the manager must reject because the
-    // verification purposes are distinct.
     let resp = client
         .post(app.url("/auth/signup/request"))
         .json(&SignupRequest {

@@ -15,7 +15,6 @@ description = "SQLx-backed storage adapter for the doorman authentication librar
 default = []
 sqlite = ["sqlx/sqlite"]
 postgres = ["sqlx/postgres"]
-# Covers both MySQL and MariaDB: they share the one sqlx MySql driver.
 mysql = ["sqlx/mysql"]
 
 [lints]

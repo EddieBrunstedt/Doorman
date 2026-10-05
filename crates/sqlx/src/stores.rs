@@ -1,39 +1,3 @@
-//! The single source of truth for the SQLx store logic.
-//!
-//! [`sqlx_stores`] expands into the five `*Store` implementations, their row
-//! mappers, and the store-accessor methods on a dialect's storage wrapper.
-//! Each dialect adapter (`sqlite.rs`, `postgres.rs`, `mysql.rs`) keeps only
-//! its genuinely dialect-specific surface — connection setup, the pool/row
-//! types, the migration path, and the placeholder syntax — and invokes this
-//! macro to generate everything else, so the ~600-line body exists once.
-//!
-//! Placeholders are written once as `?`; the `$placeholders` rewriter passed
-//! by each dialect turns them into the syntax that dialect wants (`?` stays
-//! for SQLite and MySQL, `$1`/`$2`/… for Postgres). The shared conformance
-//! suite runs the same assertions against every expansion.
-//!
-//! The one place the dialects genuinely diverge is the atomic delete-and-return
-//! used by `consume_token` / `take_registration` / `take_authentication`.
-//! Postgres and SQLite express it as a single `DELETE … RETURNING`; MySQL has
-//! no `RETURNING`, so it runs `SELECT … FOR UPDATE` then `DELETE` inside a
-//! transaction. Each dialect selects its strategy via the `take` parameter,
-//! which dispatches to [`sqlx_take`]; everything else is shared.
-
-/// Generate the per-concern store implementations and accessors for a SQLx
-/// dialect.
-///
-/// Parameters:
-/// - `storage`: the dialect's public storage wrapper type (e.g. `SqliteStorage`).
-/// - `pool`: the dialect's pool type (`SqlitePool` / `PgPool` / `MySqlPool`).
-/// - `row`: the dialect's row type (`SqliteRow` / `PgRow` / `MySqlRow`).
-/// - `placeholders`: a `fn(&str) -> Cow<str>` rewriting `?` placeholders.
-/// - `timestamp`: a `fn` every timestamp bind is routed through before binding.
-///   Identity (`common::ts_passthrough`) for SQLite and Postgres, which store
-///   `DateTime<Utc>` directly; `common::ts_mysql` for MySQL/MariaDB, which must
-///   bind the naive UTC datetime so the parameter is typed `DATETIME` rather
-///   than the 2038-capped `TIMESTAMP`. See those helpers for the full rationale.
-/// - `take`: the atomic delete-and-return strategy, `returning` (Postgres,
-///   SQLite) or `txn` (MySQL). See [`sqlx_take`].
 macro_rules! sqlx_stores {
     (
         storage: $storage:ident,
@@ -44,12 +8,6 @@ macro_rules! sqlx_stores {
         take: $take:tt $(,)?
     ) => {
         impl $storage {
-            /// Build a [`Storage`](doorman_core::storage::Storage) populated with
-            /// every per-concern store backed by this pool.
-            ///
-            /// The single-backend shortcut: when every store uses this pool,
-            /// this is the struct literal of the five per-store accessors. Mix
-            /// backends by writing the `Storage` literal directly instead.
             pub fn all_stores(&self) -> $crate::stores::__reexport::Storage {
                 $crate::stores::__reexport::Storage {
                     users: self.user_store(),
@@ -60,7 +18,6 @@ macro_rules! sqlx_stores {
                 }
             }
 
-            /// The user store backed by this pool.
             pub fn user_store(
                 &self,
             ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::UserStore> {
@@ -69,7 +26,6 @@ macro_rules! sqlx_stores {
                 })
             }
 
-            /// The session store backed by this pool.
             pub fn session_store(
                 &self,
             ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::SessionStore> {
@@ -78,7 +34,6 @@ macro_rules! sqlx_stores {
                 })
             }
 
-            /// The verification-token store backed by this pool.
             pub fn verification_token_store(
                 &self,
             ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::VerificationTokenStore> {
@@ -87,7 +42,6 @@ macro_rules! sqlx_stores {
                 })
             }
 
-            /// The passkey-credential store backed by this pool.
             pub fn passkey_credential_store(
                 &self,
             ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::PasskeyCredentialStore> {
@@ -96,7 +50,6 @@ macro_rules! sqlx_stores {
                 })
             }
 
-            /// The passkey-challenge store backed by this pool.
             pub fn passkey_challenge_store(
                 &self,
             ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::PasskeyChallengeStore> {
@@ -105,10 +58,6 @@ macro_rules! sqlx_stores {
                 })
             }
         }
-
-        // ---------------------------------------------------------------------
-        // users
-        // ---------------------------------------------------------------------
 
         struct UserStoreImpl {
             pool: $pool,
@@ -277,10 +226,6 @@ macro_rules! sqlx_stores {
             })
         }
 
-        // ---------------------------------------------------------------------
-        // sessions
-        // ---------------------------------------------------------------------
-
         struct SessionStoreImpl {
             pool: $pool,
         }
@@ -317,11 +262,6 @@ macro_rules! sqlx_stores {
                 last_used_at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
                 expires_at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
             ) -> $crate::stores::__reexport::StorageResult<()> {
-                // A plain `UPDATE ... WHERE id = ?` is inherently safe against
-                // the resurrection hazard: a session deleted between resolution
-                // and touch matches no row, so the update affects zero rows
-                // rather than recreating it. SQL backends have no native
-                // eviction, so only the two slid timestamps are written.
                 let sql = $ph(
                     "UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE id = ?",
                 );
@@ -409,8 +349,6 @@ macro_rules! sqlx_stores {
                 user_id: $crate::stores::__reexport::UserId,
                 except: Option<$crate::stores::__reexport::SessionId>,
             ) -> $crate::stores::__reexport::StorageResult<u64> {
-                // One DELETE statement: a concurrently inserted row is either
-                // matched by it or left untouched, never half-removed.
                 let user = $crate::common::uuid_to_bytes(user_id.0);
                 let result = match except {
                     None => {
@@ -472,10 +410,6 @@ macro_rules! sqlx_stores {
                     .map_err($crate::common::storage_err)?,
             })
         }
-
-        // ---------------------------------------------------------------------
-        // verification tokens
-        // ---------------------------------------------------------------------
 
         struct VerificationTokenStoreImpl {
             pool: $pool,
@@ -576,10 +510,6 @@ macro_rules! sqlx_stores {
                 expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,
             })
         }
-
-        // ---------------------------------------------------------------------
-        // passkey credentials
-        // ---------------------------------------------------------------------
 
         struct PasskeyCredentialStoreImpl {
             pool: $pool,
@@ -687,8 +617,6 @@ macro_rules! sqlx_stores {
             ) -> $crate::stores::__reexport::StorageResult<
                 Vec<$crate::stores::__reexport::PasskeySummary>,
             > {
-                // Deliberately omits the `passkey` blob column: the listing path
-                // never deserialises it.
                 let sql = $ph(
                     "SELECT credential_id, user_id, name, created_at, last_used_at,
                             aaguid, transports, backup_eligible, backup_state, recovery_cooldown_until
@@ -761,10 +689,6 @@ macro_rules! sqlx_stores {
             }
         }
 
-        // Read every passkey metadata column — everything except the `passkey`
-        // blob — into a `PasskeySummary`. Both decoders share this single field
-        // assembly: the summary path returns it directly and the full decoder
-        // adds the blob, so neither re-lists the metadata columns.
         fn row_to_passkey_summary(
             row: $row,
         ) -> $crate::stores::__reexport::StorageResult<
@@ -816,10 +740,6 @@ macro_rules! sqlx_stores {
                 recovery_cooldown_until: meta.recovery_cooldown_until,
             })
         }
-
-        // ---------------------------------------------------------------------
-        // passkey challenges (registrations + authentications)
-        // ---------------------------------------------------------------------
 
         struct PasskeyChallengeStoreImpl {
             pool: $pool,
@@ -1002,24 +922,6 @@ macro_rules! sqlx_stores {
 
 pub(crate) use sqlx_stores;
 
-/// The atomic delete-and-return behind `consume_token`, `take_registration`,
-/// and `take_authentication`, in the two shapes the dialects need.
-///
-/// Both arms take the same named inputs and evaluate to
-/// `StorageResult<Option<T>>`, so a store method body is just the macro call:
-/// - `pool`: an expression for the dialect pool (`self.pool`).
-/// - `ph`: the dialect placeholder rewriter.
-/// - `table`/`cols`/`filter`: the table, the projected columns, and the `WHERE`
-///   predicate (with `?` placeholders).
-/// - `binds`: the values bound to the predicate, in order. The `txn` arm binds
-///   them twice (the `SELECT` and the `DELETE`), so each must be a cheap,
-///   side-effect-free expression.
-/// - `map`: the `fn($row) -> StorageResult<T>` row mapper.
-///
-/// `returning` (Postgres, SQLite) issues a single `DELETE … RETURNING`. `txn`
-/// (MySQL, which has no `RETURNING`) opens a transaction, locks the row with
-/// `SELECT … FOR UPDATE`, deletes it, and commits — so two racing takers
-/// serialize on the lock and exactly one observes the row.
 macro_rules! sqlx_take {
     (
         returning,
@@ -1078,8 +980,6 @@ macro_rules! sqlx_take {
 
 pub(crate) use sqlx_take;
 
-/// Items the generated store bodies reference, re-exported under one path so
-/// the macro can name them without each dialect module importing them.
 pub(crate) mod __reexport {
     pub use chrono::{DateTime, Utc};
     pub use doorman_core::encoding::{account_status_from_parts, account_status_to_str};

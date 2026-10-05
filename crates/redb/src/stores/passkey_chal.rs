@@ -1,15 +1,3 @@
-//! redb-backed [`PasskeyChallengeStore`].
-//!
-//! Registration ceremonies occupy `pkregs` (primary) and `user_pkregs_idx`
-//! (per-user index, key `"{user_id}\x00{challenge_id}"`), supporting the
-//! per-user count and bulk-delete the recovery flow relies on. Authentication
-//! ceremonies are a bare `pkauths` row — they carry no user scope, so no
-//! secondary index is needed.
-//!
-//! Both `take_registration` and `take_authentication` are atomic
-//! delete-and-return operations executed in a single write transaction: redb
-//! serializes writers, so exactly one concurrent caller can observe the value.
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
@@ -162,8 +150,6 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
                 let mut user_idx = wtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
                 let mut pkauths = wtxn.open_table(db::PKAUTHS).map_err(db::err)?;
 
-                // Scan inside the write transaction so the expiry check and the
-                // removal see the same row (redb serializes writers).
                 let expired_regs: Vec<(String, StoredPasskeyRegistration)> = pkregs
                     .iter()
                     .map_err(db::err)?

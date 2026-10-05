@@ -1,74 +1,45 @@
-//! Key-schema helpers.
-//!
-//! Every key the adapter touches is namespaced under a configurable prefix
-//! (default `doorman:`) so a host can run several logical doorman instances
-//! against one server, or share a server with unrelated data, without
-//! collisions. The full schema:
-//!
-//! | Concern                | Primary key               | Secondary indexes                                              |
-//! | ---------------------- | ------------------------- | ------------------------------------------------------------- |
-//! | Session                | `session:{id}`            | `session:hash:{hash}` -> id; `user:{uid}:sessions` (SET)      |
-//! | Verification token     | `vtoken:{purpose}:{hash}` | `user:{uid}:vtokens:{purpose}` (SET of hashes)                |
-//! | Passkey registration   | `pkreg:{id}`              | `user:{uid}:pkregs` (SET of ids)                              |
-//! | Passkey authentication | `pkauth:{id}`             | none                                                          |
-
 use doorman_core::storage::{
     PasskeyChallengeId, SessionId, TokenHash, UserId, VerificationPurpose,
 };
 
-/// Builds namespaced Redis keys from a shared prefix.
 #[derive(Clone, Debug)]
 pub(crate) struct KeySchema {
     prefix: String,
 }
 
 impl KeySchema {
-    /// Build a schema whose keys are all prefixed with `prefix`.
     pub(crate) fn new(prefix: String) -> Self {
         Self { prefix }
     }
 
-    /// The configured namespace prefix.
     pub(crate) fn prefix(&self) -> &str {
         &self.prefix
     }
 
-    /// Primary key for a session row.
     pub(crate) fn session(&self, id: SessionId) -> String {
         self.session_key_for(&id.0.to_string())
     }
 
-    /// Primary key for a session row from its id rendered as a string. Lets a
-    /// caller rebuild the key from a user-set member without re-parsing the
-    /// UUID, while guaranteeing the same shape as [`session`](Self::session).
     pub(crate) fn session_key_for(&self, id: &str) -> String {
         format!("{}session:{}", self.prefix, id)
     }
 
-    /// Token-hash index mapping a session's hashed bearer token to its id.
     pub(crate) fn session_hash_index(&self, hash: &TokenHash) -> String {
         format!("{}session:hash:{}", self.prefix, token_hash_hex(hash))
     }
 
-    /// Per-user SET of session ids.
     pub(crate) fn user_sessions(&self, user_id: UserId) -> String {
         format!("{}user:{}:sessions", self.prefix, user_id.0)
     }
 
-    /// `SCAN` pattern matching every per-user session SET, for the purge pass.
     pub(crate) fn user_sessions_pattern(&self) -> String {
         format!("{}user:*:sessions", self.prefix)
     }
 
-    /// Primary key for a verification token, scoped by purpose so a hash can
-    /// never be redeemed under the wrong flow.
     pub(crate) fn vtoken(&self, purpose: VerificationPurpose, hash: &TokenHash) -> String {
         self.vtoken_key_for(purpose, &token_hash_hex(hash))
     }
 
-    /// Primary key for a verification token from its purpose and the hex hash
-    /// stored as a user-set member; the member-driven counterpart of
-    /// [`vtoken`](Self::vtoken).
     pub(crate) fn vtoken_key_for(&self, purpose: VerificationPurpose, hex_hash: &str) -> String {
         format!(
             "{}vtoken:{}:{}",
@@ -78,7 +49,6 @@ impl KeySchema {
         )
     }
 
-    /// Per-user, per-purpose SET of verification-token hashes.
     pub(crate) fn user_vtokens(&self, user_id: UserId, purpose: VerificationPurpose) -> String {
         format!(
             "{}user:{}:vtokens:{}",
@@ -88,72 +58,47 @@ impl KeySchema {
         )
     }
 
-    /// `SCAN` pattern matching every per-user verification-token SET of a given
-    /// purpose. The purpose is fixed in the pattern (rather than parsed back
-    /// out of each matched key) so the purge can rebuild value keys precisely.
     pub(crate) fn user_vtokens_pattern(&self, purpose: VerificationPurpose) -> String {
         format!("{}user:*:vtokens:{}", self.prefix, purpose_str(purpose))
     }
 
-    /// Primary key for an in-progress passkey registration ceremony.
     pub(crate) fn pkreg(&self, id: PasskeyChallengeId) -> String {
         self.pkreg_key_for(&id.0.to_string())
     }
 
-    /// Primary key for a registration ceremony from its id rendered as a
-    /// string; the member-driven counterpart of [`pkreg`](Self::pkreg).
     pub(crate) fn pkreg_key_for(&self, id: &str) -> String {
         format!("{}pkreg:{}", self.prefix, id)
     }
 
-    /// Per-user SET of pending registration-ceremony ids.
     pub(crate) fn user_pkregs(&self, user_id: UserId) -> String {
         format!("{}user:{}:pkregs", self.prefix, user_id.0)
     }
 
-    /// `SCAN` pattern matching every per-user registration-ceremony SET.
     pub(crate) fn user_pkregs_pattern(&self) -> String {
         format!("{}user:*:pkregs", self.prefix)
     }
 
-    /// Primary key for an in-progress passkey authentication ceremony.
     pub(crate) fn pkauth(&self, id: PasskeyChallengeId) -> String {
         format!("{}pkauth:{}", self.prefix, id.0)
     }
 
-    /// `SCAN` pattern matching every authentication-ceremony key.
-    /// Authentication ceremonies are not user-scoped and carry no secondary
-    /// index, so the purge scans the value keys directly.
     pub(crate) fn pkauth_pattern(&self) -> String {
         format!("{}pkauth:*", self.prefix)
     }
 
-    /// Key for a rate-limit bucket: a sorted set of recent attempt timestamps.
-    ///
-    /// Scoped by `window_ms` as well as the canonical key so the same operation
-    /// under two different window policies never shares a bucket, matching the
-    /// in-memory limiter's `(key, window)` bucketing.
     pub(crate) fn rate_limit(&self, canonical: &str, window_ms: u128) -> String {
         format!("{}ratelimit:{}:{}", self.prefix, window_ms, canonical)
     }
 }
 
-/// The verification purposes, enumerated so a prefix-scoped purge can iterate
-/// every per-purpose index. The compiler keeps this in step with
-/// [`VerificationPurpose`] through the exhaustive match in [`purpose_str`].
 pub(crate) const ALL_PURPOSES: [VerificationPurpose; 3] = [
     VerificationPurpose::Signup,
     VerificationPurpose::Recovery,
     VerificationPurpose::EmailChange,
 ];
 
-/// Stable lowercase string for a verification purpose, used in key names.
-/// Matches the `snake_case` serde rename on [`VerificationPurpose`] so a key
-/// is the same whichever side builds it.
 pub(crate) use doorman_core::encoding::purpose_to_str as purpose_str;
 
-/// Lowercase hex rendering of a token hash, used both as a key component and as
-/// the member stored in the per-user token SETs (so the two always agree).
 pub(crate) fn token_hash_hex(hash: &TokenHash) -> String {
     doorman_core::encoding::hex(&hash.0)
 }
@@ -175,7 +120,6 @@ mod tests {
         );
         assert_eq!(keys.prefix(), "doorman:");
 
-        // The same hash under different purposes yields distinct keys.
         let signup = keys.vtoken(VerificationPurpose::Signup, &hash);
         let recovery = keys.vtoken(VerificationPurpose::Recovery, &hash);
         assert_ne!(signup, recovery);

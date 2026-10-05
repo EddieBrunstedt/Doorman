@@ -1,13 +1,3 @@
-//! The three ephemeral storage traits, each in its own module, plus the
-//! expiry sweep their per-user index SETs share.
-//!
-//! `doorman-redis` implements only the TTL-bearing, ephemeral stores
-//! ([`SessionStore`](doorman_core::storage::SessionStore),
-//! [`VerificationTokenStore`](doorman_core::storage::VerificationTokenStore),
-//! [`PasskeyChallengeStore`](doorman_core::storage::PasskeyChallengeStore)).
-//! The system-of-record stores (`UserStore`, `PasskeyCredentialStore`) stay in
-//! a SQL backend; see the crate docs for the rationale.
-
 pub(crate) mod passkey_chal;
 pub(crate) mod session;
 pub(crate) mod verification;
@@ -21,12 +11,9 @@ use serde::de::DeserializeOwned;
 use crate::client;
 use crate::keys::KeySchema;
 
-/// A row reachable through a per-user index SET.
 pub(crate) trait IndexedRow: DeserializeOwned {
-    /// The instant the row expires; `purge_expired` reclaims it at or after.
     fn expires_at(&self) -> DateTime<Utc>;
 
-    /// A secondary key that lives and dies with the row, if any.
     fn companion_key(&self, _keys: &KeySchema) -> Option<String> {
         None
     }
@@ -54,14 +41,6 @@ impl IndexedRow for StoredPasskeyRegistration {
     }
 }
 
-/// Purge expired rows through every index SET matching `pattern`.
-///
-/// Each SET member names one row, at the key `row_key` builds from it. A row
-/// that expired at or before `now` is deleted together with its companion key
-/// and unlinked from its SET. A member whose row is already gone (evicted by
-/// its TTL) is unlinked as well. Returns the number of members unlinked, which
-/// is the count the key-value `purge_expired` contract reports: expired rows
-/// plus reclaimed dangling members.
 pub(crate) async fn purge_index_sets<T: IndexedRow>(
     conn: &mut ConnectionManager,
     keys: &KeySchema,

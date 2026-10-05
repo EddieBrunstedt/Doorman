@@ -1,5 +1,3 @@
-//! Client identity must come from server metadata, across limits and records.
-
 mod common;
 
 use std::net::SocketAddr;
@@ -184,7 +182,6 @@ async fn socket_buckets_ignore_ports_and_normalize_mapped_ipv4() {
 async fn trusted_extension_overrides_socket_and_canonicalizes_ipv6_buckets() {
     let (app, _, _) = router(PasskeyRateLimits::default());
     for n in 0..60 {
-        // Equivalent textual forms must share one bucket, regardless of socket.
         let ip = if n % 2 == 0 {
             "2001:db8::1"
         } else {
