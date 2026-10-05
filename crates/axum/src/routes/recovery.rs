@@ -30,7 +30,7 @@ pub(crate) fn routes() -> Router<AuthState> {
 }
 
 fn manager(state: &AuthState) -> &RecoveryManager {
-    &state.recovery
+    &state.core.recovery
 }
 
 async fn request(

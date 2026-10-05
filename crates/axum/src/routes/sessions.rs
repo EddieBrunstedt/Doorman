@@ -43,7 +43,7 @@ async fn logout(
     State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Response, ErrorResponse> {
-    state.session_manager.revoke(&auth.token).await?;
+    state.core.session_manager.revoke(&auth.token).await?;
     no_content_clearing_session_cookie(&state.cookie_config)
 }
 
@@ -60,6 +60,7 @@ async fn logout_all(
     auth: AuthSession,
 ) -> Result<Response, ErrorResponse> {
     state
+        .core
         .session_manager
         .revoke_all_for_user(auth.user.id)
         .await?;
@@ -71,7 +72,11 @@ async fn list(
     auth: AuthSession,
 ) -> Result<Json<Vec<SessionDto>>, ErrorResponse> {
     let current_id = auth.session.id;
-    let sessions = state.session_manager.list_for_user(auth.user.id).await?;
+    let sessions = state
+        .core
+        .session_manager
+        .list_for_user(auth.user.id)
+        .await?;
     let dtos = sessions
         .into_iter()
         .map(|s| {
@@ -100,6 +105,7 @@ async fn remove(
     // session, so the user can always sign it out.
     let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     state
+        .core
         .account
         .revoke_session(&auth.user, &auth.session, id, proof, context)
         .await?;
@@ -118,6 +124,7 @@ async fn remove_others(
 ) -> Result<StatusCode, ErrorResponse> {
     let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     state
+        .core
         .account
         .revoke_other_sessions(&auth.user, &auth.session, proof, context)
         .await?;

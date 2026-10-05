@@ -185,30 +185,20 @@ impl AuthServiceBuilder {
         }
         .enabled_config();
 
-        let cache = core.resolver.cache().clone();
         let layer_state = Arc::new(SessionLayerState {
-            resolver: core.resolver,
+            resolver: core.resolver.clone(),
             cookie: cookie_config.clone(),
             csrf: csrf_config,
         });
 
         let state = AuthState {
-            session_manager: core.session_manager,
-            user_store: core.storage.users.clone(),
+            core: Arc::new(core),
             cookie_config: Arc::new(cookie_config),
-            passkey: core.passkey,
-            signup: core.signup,
-            recovery: core.recovery,
-            account: core.account,
-            reauth: core.reauth,
-            operator: core.operator,
         };
 
         Ok(AuthService {
             state,
             session_layer: SessionLayer::new(layer_state),
-            cache,
-            storage: core.storage,
         })
     }
 }

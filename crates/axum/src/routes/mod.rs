@@ -98,7 +98,7 @@ pub(crate) async fn enrollment_success(
     state: &AuthState,
     outcome: EnrollmentOutcome,
 ) -> Result<Response, ErrorResponse> {
-    let passkey_count = state.passkey.count_passkeys(outcome.user.id).await?;
+    let passkey_count = state.core.passkey.count_passkeys(outcome.user.id).await?;
     auth_success(
         StatusCode::OK,
         state.cookie_config(),

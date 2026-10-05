@@ -33,7 +33,7 @@ pub(crate) fn routes() -> Router<AuthState> {
 }
 
 fn manager(state: &AuthState) -> &PasskeyManager {
-    &state.passkey
+    &state.core.passkey
 }
 
 async fn register_start(

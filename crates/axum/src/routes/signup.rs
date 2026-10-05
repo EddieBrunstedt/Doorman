@@ -30,7 +30,7 @@ pub(crate) fn routes() -> Router<AuthState> {
 }
 
 fn manager(state: &AuthState) -> &SignupManager {
-    &state.signup
+    &state.core.signup
 }
 
 async fn request(

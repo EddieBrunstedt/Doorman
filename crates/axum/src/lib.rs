@@ -92,7 +92,6 @@ use chrono::{DateTime, Utc};
 use doorman_core::assembly::AuthCore;
 use doorman_core::error::StorageResult;
 use doorman_core::purge::PurgeSummary;
-use doorman_core::storage::Storage;
 
 /// Wired-up authentication HTTP layer. Construct via
 /// [`AuthService::builder`] from an assembled [`AuthCore`], then mount the
@@ -102,11 +101,6 @@ use doorman_core::storage::Storage;
 pub struct AuthService {
     state: AuthState,
     session_layer: SessionLayer,
-    cache: SessionCache,
-    /// The composite storage the core was built over, kept so an in-process
-    /// job or test can sweep expired rows through
-    /// [`purge_expired`](AuthService::purge_expired).
-    storage: Storage,
 }
 
 impl AuthService {
@@ -144,15 +138,17 @@ impl AuthService {
     /// tests and observability — application code should not need to
     /// reach into the cache directly.
     pub fn cache(&self) -> &SessionCache {
-        &self.cache
+        self.state.core.resolver.cache()
     }
 
     /// Sweep every store of rows whose expiry is at or before `now`, returning
     /// the per-store [`PurgeSummary`]. A thin delegate to
     /// [`Storage::purge_all_expired`] that makes the sweep reachable from the
-    /// built service — handy for an in-process job or a test that already holds
-    /// the `AuthService` rather than the raw `Storage`.
+    /// built service — handy for an in-process job or a test that already
+    /// holds the `AuthService` rather than the raw `Storage`.
+    ///
+    /// [`Storage::purge_all_expired`]: doorman_core::storage::Storage::purge_all_expired
     pub async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<PurgeSummary> {
-        self.storage.purge_all_expired(now).await
+        self.state.core.storage.purge_all_expired(now).await
     }
 }

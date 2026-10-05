@@ -40,6 +40,7 @@ async fn request_email_change(
     // guarantees hold for every host driving core, not just this route.
     let proof = reauth_proof(body.reauthentication)?;
     state
+        .core
         .account
         .request_email_change(&auth.user, &auth.session, &body.new_email, proof, context)
         .await?;
@@ -55,10 +56,11 @@ async fn confirm_email_change(
     Json(body): Json<EmailChangeConfirmRequest>,
 ) -> Result<Json<UserDto>, ErrorResponse> {
     let user = state
+        .core
         .account
         .confirm_email_change(&body.token, context)
         .await?;
-    let passkey_count = state.passkey.count_passkeys(user.id).await?;
+    let passkey_count = state.core.passkey.count_passkeys(user.id).await?;
     Ok(Json(UserDto::from_user(&user, passkey_count)))
 }
 
@@ -76,6 +78,7 @@ async fn delete_account(
     // core, not just this route.
     let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     state
+        .core
         .account
         .delete_account(&auth.session, proof, context)
         .await?;

@@ -1,40 +1,30 @@
 //! Cloneable router state.
 //!
 //! Axum requires the state passed to `Router::with_state` to be cheaply
-//! cloneable (it is handed to each handler on every request). All the
-//! managers in [`doorman_core`] hold their dependencies behind `Arc`, so
-//! cloning [`AuthState`] is the cost of cloning a handful of `Arc`s.
+//! cloneable (it is handed to each handler on every request). [`AuthState`]
+//! holds the core and the cookie config behind `Arc`s, so cloning it costs
+//! two refcount bumps.
 
 use std::sync::Arc;
 
-use doorman_core::session::SessionManager;
-use doorman_core::storage::UserStore;
-
 use doorman_core::account::AccountManager;
+use doorman_core::assembly::AuthCore;
 use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::PasskeyManager;
 use doorman_core::reauth::ReauthManager;
 use doorman_core::recovery::RecoveryManager;
+use doorman_core::session::SessionManager;
 use doorman_core::signup::SignupManager;
+use doorman_core::storage::UserStore;
 
 use crate::config::CookieConfig;
 
-/// Shared Axum router state holding configured auth managers and settings.
-///
-/// Session-revocation security notices originate inside [`SessionManager`]
-/// (which holds the configured notifier), so the state carries no separate
-/// notifier handle — the routes drive the manager and the notice follows.
+/// Shared Axum router state: the assembled [`AuthCore`] plus the session
+/// cookie settings.
 #[derive(Clone)]
 pub struct AuthState {
-    pub(crate) session_manager: SessionManager,
-    pub(crate) user_store: Arc<dyn UserStore>,
+    pub(crate) core: Arc<AuthCore>,
     pub(crate) cookie_config: Arc<CookieConfig>,
-    pub(crate) passkey: PasskeyManager,
-    pub(crate) signup: SignupManager,
-    pub(crate) recovery: RecoveryManager,
-    pub(crate) account: AccountManager,
-    pub(crate) reauth: ReauthManager,
-    pub(crate) operator: OperatorManager,
 }
 
 impl AuthState {
@@ -45,12 +35,12 @@ impl AuthState {
 
     /// The session manager the routes mint and resolve sessions through.
     pub fn session_manager(&self) -> &SessionManager {
-        &self.session_manager
+        &self.core.session_manager
     }
 
     /// The user store backing the routes.
     pub fn user_store(&self) -> &Arc<dyn UserStore> {
-        &self.user_store
+        &self.core.storage.users
     }
 
     /// Borrow the passkey manager the bundled routes drive, so host code
@@ -58,29 +48,29 @@ impl AuthState {
     /// (e.g. a custom `/api/me` that lists credentials) against the
     /// managers the router already uses.
     pub fn passkey(&self) -> &PasskeyManager {
-        &self.passkey
+        &self.core.passkey
     }
 
     /// Borrow the signup manager the bundled signup routes drive.
     pub fn signup(&self) -> &SignupManager {
-        &self.signup
+        &self.core.signup
     }
 
     /// Borrow the recovery manager the bundled recovery routes drive.
     pub fn recovery(&self) -> &RecoveryManager {
-        &self.recovery
+        &self.core.recovery
     }
 
     /// Borrow the account manager the bundled account routes drive (verified
     /// email change and account deletion).
     pub fn account(&self) -> &AccountManager {
-        &self.account
+        &self.core.account
     }
 
     /// Borrow the re-authentication manager backing the bundled
     /// `reauth/start` route and the destructive-action gate.
     pub fn reauth(&self) -> &ReauthManager {
-        &self.reauth
+        &self.core.reauth
     }
 
     /// Borrow the operator manager for host-driven flows that act on a user
@@ -91,6 +81,6 @@ impl AuthState {
     /// operator flow. Doorman performs **no authorization** here: the host must
     /// put its own authorization check in front of every call.
     pub fn operator(&self) -> &OperatorManager {
-        &self.operator
+        &self.core.operator
     }
 }
