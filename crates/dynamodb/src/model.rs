@@ -22,8 +22,8 @@
 
 use chrono::{DateTime, Utc};
 use doorman_core::encoding::{
-    account_status_from_parts, account_status_to_str, hex, purpose_from_str,
-    purpose_to_str as purpose_str,
+    account_status_from_parts, account_status_to_str, authentication_purpose_from_str,
+    authentication_purpose_to_str, hex, purpose_from_str, purpose_to_str as purpose_str,
 };
 use doorman_core::error::StorageResult;
 use doorman_core::storage::{
@@ -407,6 +407,10 @@ pub(crate) fn pkreg_from_item(item: &Item) -> StorageResult<StoredPasskeyRegistr
 pub(crate) fn pkauth_item(value: &StoredPasskeyAuthentication) -> Item {
     let mut item = base(ENTITY_PKAUTH, pkauth_pk(value.id));
     item.insert("id".to_string(), client::s(value.id.0.to_string()));
+    item.insert(
+        "purpose".to_string(),
+        client::s(authentication_purpose_to_str(value.purpose)),
+    );
     item.insert("state".to_string(), client::b(value.state.clone()));
     put_ts(&mut item, "created_at", value.created_at);
     put_ts(&mut item, client::EXPIRES_AT, value.expires_at);
@@ -417,6 +421,7 @@ pub(crate) fn pkauth_item(value: &StoredPasskeyAuthentication) -> Item {
 pub(crate) fn pkauth_from_item(item: &Item) -> StorageResult<StoredPasskeyAuthentication> {
     Ok(StoredPasskeyAuthentication {
         id: PasskeyChallengeId(client::get_uuid(item, "id")?),
+        purpose: authentication_purpose_from_str(&client::get_s(item, "purpose")?)?,
         state: client::get_b(item, "state")?,
         created_at: client::get_ts(item, "created_at")?,
         expires_at: client::get_ts(item, client::EXPIRES_AT)?,

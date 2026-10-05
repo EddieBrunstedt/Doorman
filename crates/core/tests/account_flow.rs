@@ -4,7 +4,7 @@
 mod common;
 
 use doorman_core::Error;
-use doorman_core::audit::AuditEventKind;
+use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{AccountStatus, UserStore};
@@ -309,6 +309,14 @@ async fn confirm_rejects_expired_token() {
         .await
         .expect_err("an expired token must be rejected");
     assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RedemptionFailed {
+            user_id: Some(id),
+            secret: SecretKind::EmailChangeLink,
+            reason: RedemptionFailureReason::Expired,
+        } if *id == user.id
+    )));
 
     let stored = h
         .users
@@ -386,6 +394,14 @@ async fn confirm_rejects_unknown_token() {
         .await
         .expect_err("an unknown token must be rejected");
     assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RedemptionFailed {
+            user_id: None,
+            secret: SecretKind::EmailChangeLink,
+            reason: RedemptionFailureReason::Unknown,
+        }
+    )));
 }
 
 #[tokio::test]

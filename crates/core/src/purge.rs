@@ -95,7 +95,7 @@ mod tests {
     use super::*;
     use crate::memory::InMemoryStorage;
     use crate::storage::{
-        PasskeyChallengeId, Session, SessionId, StoredPasskeyAuthentication,
+        AuthenticationPurpose, PasskeyChallengeId, Session, SessionId, StoredPasskeyAuthentication,
         StoredPasskeyRegistration, TokenHash, UserId, VerificationPurpose, VerificationToken,
     };
 
@@ -172,6 +172,7 @@ mod tests {
 
         let expired_auth = StoredPasskeyAuthentication {
             id: PasskeyChallengeId::new(),
+            purpose: AuthenticationPurpose::Login,
             state: vec![4, 5, 6],
             created_at: now - chrono::Duration::hours(2),
             expires_at: expired,

@@ -35,10 +35,12 @@ use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
 use crate::rate_limit::{RateLimitPolicy, RateLimiter};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
+use crate::redeem::{RedeemedRegistration, Redeemer};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
-    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,
-    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
+    AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
+    PasskeySummary, Session, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
+    User, UserId,
 };
 use crate::user::UserRecords;
 use crate::verification::enforce_rate_limit;
@@ -208,6 +210,7 @@ pub struct PasskeyManager {
     records: UserRecords,
     credentials: Arc<dyn PasskeyCredentialStore>,
     challenges: Arc<dyn PasskeyChallengeStore>,
+    redeemer: Redeemer,
     sessions: SessionManager,
     reauth: ReauthManager,
     clock: Arc<dyn Clock>,
@@ -237,6 +240,7 @@ impl PasskeyManager {
             records: UserRecords::new(deps),
             credentials: deps.passkey_credentials.clone(),
             challenges: deps.passkey_challenges.clone(),
+            redeemer: Redeemer::from_deps(deps),
             sessions: deps.sessions.clone(),
             reauth: deps.reauth.clone(),
             clock: deps.clock.clone(),
@@ -458,17 +462,21 @@ impl PasskeyManager {
         recovery_cooldown_override: Option<DateTime<Utc>>,
         bypass_credential_cap: bool,
     ) -> Result<StoredPasskey> {
+        // Redeeming re-checks that the user the ceremony was started for still
+        // exists and is active. A concurrent delete or operator disable may
+        // have landed after the challenge was issued; enrolling now would
+        // orphan a credential or re-credential a disabled account. This is the
+        // hard backstop that keeps recovery from re-credentialing its way back
+        // in even when the link was consumed before the disable landed, and it
+        // gates every registration path. What remains is the window between
+        // this check and `add_passkey`.
+        let RedeemedRegistration {
+            user,
+            state: reg_state,
+            recovery_cooldown_until: challenge_recovery_cooldown_until,
+        } = self.redeemer.registration(challenge_id, &context).await?;
+        let user_id = user.id;
         let now = self.clock.now();
-        let Some(stored) = self.challenges.take_registration(challenge_id).await? else {
-            tracing::warn!(outcome = "invalid_challenge", "passkey registration failed");
-            return Err(Error::InvalidPasskeyChallenge);
-        };
-        if stored.expires_at <= now {
-            tracing::warn!(outcome = "expired_challenge", "passkey registration failed");
-            return Err(Error::InvalidPasskeyChallenge);
-        }
-        let user_id = stored.user_id;
-        let challenge_recovery_cooldown_until = stored.recovery_cooldown_until;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
         // Reject (never evict) once the per-user credential cap is reached:
@@ -491,7 +499,6 @@ impl PasskeyManager {
             }
         }
 
-        let reg_state = decode_registration_state(&stored.state)?;
         let passkey = self
             .webauthn
             .finish_passkey_registration(response, &reg_state)
@@ -516,21 +523,6 @@ impl PasskeyManager {
             recovery_cooldown_until: recovery_cooldown_override
                 .or(challenge_recovery_cooldown_until),
         };
-        // Re-check the user still exists and is active before persisting the
-        // credential. A concurrent operator delete (or self-service close) may
-        // have removed the user, and a concurrent operator disable may have
-        // frozen the account, after the challenge was issued; writing now would
-        // either orphan a credential against a vanished user or enrol one onto a
-        // disabled account. Refusing a disabled account here is the hard
-        // backstop that keeps recovery from re-credentialing its way back in
-        // even when the link was consumed before the disable landed — and it
-        // gates every registration path through the single pre-write check. This
-        // narrows the window to a true check-then-`add_passkey` TOCTOU.
-        if let Err(error) = self.records.find_active(user_id).await {
-            tracing::warn!(%user_id, %error, "passkey registration failed");
-            return Err(error);
-        }
-
         self.credentials.add_passkey(credential.clone()).await?;
 
         self.audit
@@ -636,6 +628,7 @@ impl PasskeyManager {
         let id = PasskeyChallengeId::new();
         let stored = StoredPasskeyAuthentication {
             id,
+            purpose: AuthenticationPurpose::Login,
             state: encode_authentication_state(&auth_state)?,
             created_at: now,
             expires_at: now + challenge_lifetime(self.config.challenge_lifetime),
@@ -692,17 +685,8 @@ impl PasskeyManager {
         )
         .await?;
 
+        let auth_state = self.redeemer.login(challenge_id, &context).await?;
         let now = self.clock.now();
-        let Some(stored) = self.challenges.take_authentication(challenge_id).await? else {
-            self.emit_auth_failure(now, &context, None, AuthFailureReason::InvalidChallenge)
-                .await;
-            return Err(Error::InvalidPasskeyChallenge);
-        };
-        if stored.expires_at <= now {
-            self.emit_auth_failure(now, &context, None, AuthFailureReason::ExpiredChallenge)
-                .await;
-            return Err(Error::InvalidPasskeyChallenge);
-        }
 
         let cred_id_bytes: &[u8] = response.raw_id.as_ref();
         let Some(mut credential) = self
@@ -739,7 +723,6 @@ impl PasskeyManager {
 
         let mut passkey = decode_credential(&credential.passkey)?;
         let discoverable = [DiscoverableKey::from(&passkey)];
-        let auth_state = decode_authentication_state(&stored.state)?;
         let auth_result = match self.webauthn.finish_discoverable_authentication(
             response,
             auth_state,
@@ -1208,7 +1191,7 @@ fn encode_registration_state(state: &PasskeyRegistration) -> Result<Vec<u8>> {
         .map_err(|e| Error::Internal(format!("serialise registration state: {e}")))
 }
 
-fn decode_registration_state(bytes: &[u8]) -> Result<PasskeyRegistration> {
+pub(crate) fn decode_registration_state(bytes: &[u8]) -> Result<PasskeyRegistration> {
     serde_json::from_slice(bytes)
         .map_err(|e| Error::Internal(format!("deserialise registration state: {e}")))
 }
@@ -1218,16 +1201,15 @@ fn encode_authentication_state(state: &DiscoverableAuthentication) -> Result<Vec
         .map_err(|e| Error::Internal(format!("serialise authentication state: {e}")))
 }
 
-fn decode_authentication_state(bytes: &[u8]) -> Result<DiscoverableAuthentication> {
+pub(crate) fn decode_authentication_state(bytes: &[u8]) -> Result<DiscoverableAuthentication> {
     serde_json::from_slice(bytes)
         .map_err(|e| Error::Internal(format!("deserialise authentication state: {e}")))
 }
 
 /// Encode the allow-list-scoped [`PasskeyAuthentication`] ceremony state used
 /// by re-authentication. It rides the same opaque `state` blob and
-/// [`PasskeyChallengeStore`] as the discoverable login state above; the two
-/// kinds are naturally segregated because feeding one blob to the other's
-/// `finish` call fails to decode.
+/// [`PasskeyChallengeStore`] as the discoverable login state above; the
+/// challenge's [`AuthenticationPurpose`] keeps the two apart.
 pub(crate) fn encode_passkey_authentication_state(
     state: &PasskeyAuthentication,
 ) -> Result<Vec<u8>> {

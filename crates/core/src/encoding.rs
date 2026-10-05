@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::error::{StorageError, StorageResult};
-use crate::storage::{AccountStatus, VerificationPurpose};
+use crate::storage::{AccountStatus, AuthenticationPurpose, VerificationPurpose};
 
 /// Stable lowercase string for a verification purpose, matching the
 /// `snake_case` serde rename on [`VerificationPurpose`] so a stored value is
@@ -38,6 +38,28 @@ pub fn purpose_from_str(raw: &str) -> StorageResult<VerificationPurpose> {
         "email_change" => Ok(VerificationPurpose::EmailChange),
         other => Err(StorageError::msg(format!(
             "unknown verification purpose `{other}` in storage"
+        ))),
+    }
+}
+
+/// Stable lowercase string for an authentication-challenge purpose, matching
+/// the `snake_case` serde rename on [`AuthenticationPurpose`].
+pub fn authentication_purpose_to_str(purpose: AuthenticationPurpose) -> &'static str {
+    match purpose {
+        AuthenticationPurpose::Login => "login",
+        AuthenticationPurpose::Reauth => "reauth",
+    }
+}
+
+/// Parse a stored authentication-challenge purpose, the inverse of
+/// [`authentication_purpose_to_str`]. An unknown value is a corrupt or
+/// forward-incompatible record and surfaces as a [`StorageError`].
+pub fn authentication_purpose_from_str(raw: &str) -> StorageResult<AuthenticationPurpose> {
+    match raw {
+        "login" => Ok(AuthenticationPurpose::Login),
+        "reauth" => Ok(AuthenticationPurpose::Reauth),
+        other => Err(StorageError::msg(format!(
+            "unknown authentication purpose `{other}` in storage"
         ))),
     }
 }
@@ -163,6 +185,21 @@ mod tests {
                 serde_json::Value::String(purpose_to_str(p).to_string())
             );
         }
+    }
+
+    /// Locks the authentication-purpose codec to the serde `snake_case`
+    /// rename and checks it round-trips.
+    #[test]
+    fn authentication_purpose_round_trips_and_matches_serde() {
+        for p in [AuthenticationPurpose::Login, AuthenticationPurpose::Reauth] {
+            let raw = authentication_purpose_to_str(p);
+            assert_eq!(authentication_purpose_from_str(raw).unwrap(), p);
+            assert_eq!(
+                serde_json::to_value(p).unwrap(),
+                serde_json::Value::String(raw.to_string())
+            );
+        }
+        assert!(authentication_purpose_from_str("nope").is_err());
     }
 
     #[test]

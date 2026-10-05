@@ -79,8 +79,7 @@ fn signup_manager() -> SignupManager {
     );
     let reauth = ReauthManager::new(
         &passkey_config,
-        credentials.clone(),
-        challenges.clone(),
+        &storage,
         clock.clone(),
         audit.clone(),
         ReauthPolicy::disabled(),

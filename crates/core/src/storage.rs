@@ -581,14 +581,30 @@ pub struct StoredPasskeyRegistration {
     pub recovery_cooldown_until: Option<DateTime<Utc>>,
 }
 
-/// In-progress discoverable passkey authentication ceremony state. The
-/// `state` field is the serialised `webauthn-rs` ceremony state as opaque
-/// bytes, preserved verbatim between start and finish; only `doorman-core`
-/// parses it.
+/// Which ceremony an authentication challenge was started for. Login and
+/// re-authentication share one challenge table, so each challenge carries its
+/// purpose and is redeemed only by the ceremony it was minted for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthenticationPurpose {
+    /// A discoverable sign-in ceremony, finished by
+    /// [`PasskeyManager::finish_authentication`](crate::passkey::PasskeyManager::finish_authentication).
+    Login,
+    /// A re-authentication ceremony scoped to one user's credentials, redeemed
+    /// by [`ReauthManager::ensure`](crate::reauth::ReauthManager::ensure).
+    Reauth,
+}
+
+/// In-progress passkey authentication ceremony state. The `state` field is
+/// the serialised `webauthn-rs` ceremony state as opaque bytes, preserved
+/// verbatim between start and finish; only `doorman-core` parses it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredPasskeyAuthentication {
     /// Ceremony identifier returned to the client for the `finish` step.
     pub id: PasskeyChallengeId,
+    /// Which ceremony the challenge belongs to. Persist and return it
+    /// verbatim.
+    pub purpose: AuthenticationPurpose,
     /// Opaque serialised ceremony state. Persist and return it verbatim.
     pub state: Vec<u8>,
     /// When the ceremony started.
@@ -669,7 +685,9 @@ pub trait PasskeyChallengeStore: Send + Sync {
     /// Persist a new authentication ceremony's state.
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()>;
 
-    /// Atomically look up and remove an authentication challenge.
+    /// Atomically look up and remove an authentication challenge of either
+    /// purpose. MUST delete before returning so the same challenge cannot be
+    /// replayed; the caller checks the purpose.
     async fn take_authentication(
         &self,
         id: PasskeyChallengeId,
@@ -828,6 +846,7 @@ mod tests {
     fn stored_passkey_authentication_json_round_trips() {
         let auth = StoredPasskeyAuthentication {
             id: PasskeyChallengeId::new(),
+            purpose: AuthenticationPurpose::Reauth,
             state: vec![0xde, 0xad, 0xbe, 0xef],
             created_at: ts(1_000),
             expires_at: ts(2_000),
@@ -836,6 +855,7 @@ mod tests {
         let back: StoredPasskeyAuthentication =
             serde_json::from_str(&json).expect("deserialize authentication");
         assert_eq!(auth.id, back.id);
+        assert_eq!(auth.purpose, back.purpose);
         assert_eq!(auth.state, back.state);
         assert_eq!(auth.created_at, back.created_at);
         assert_eq!(auth.expires_at, back.expires_at);

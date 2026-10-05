@@ -73,6 +73,7 @@ CREATE INDEX idx_passkey_registrations_expires_at ON passkey_registrations(expir
 
 CREATE TABLE passkey_authentications (
     id BYTEA PRIMARY KEY,
+    purpose TEXT NOT NULL,
     state BYTEA NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL

@@ -52,8 +52,9 @@ pub(crate) fn ensure_active(user: &User) -> Result<()> {
 ///
 /// Returns [`Error::UserNotFound`] for a missing user and
 /// [`Error::AccountDisabled`] for a disabled one. A free function over the
-/// bare store so [`SessionResolver`](crate::resolve::SessionResolver), which
-/// holds no [`UserRecords`], applies the same gate.
+/// bare store so [`SessionResolver`](crate::resolve::SessionResolver) and the
+/// single-use-secret redeemer, which hold no [`UserRecords`], apply the same
+/// gate.
 pub(crate) async fn find_active_user(users: &dyn UserStore, user_id: UserId) -> Result<User> {
     let user = users
         .find_user_by_id(user_id)

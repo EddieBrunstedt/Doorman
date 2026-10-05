@@ -22,9 +22,9 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
-    AccountStatus, PasskeyChallengeId, PasskeySummary, Session, SessionId, Storage, StoredPasskey,
-    StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, VerificationPurpose,
-    VerificationToken,
+    AccountStatus, AuthenticationPurpose, PasskeyChallengeId, PasskeySummary, Session, SessionId,
+    Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
+    VerificationPurpose, VerificationToken,
 };
 
 fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
@@ -1304,47 +1304,54 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
     assert_eq!(dropped_again, 0);
 }
 
-/// An authentication ceremony round-trips its opaque state through
-/// `put`/`take` and is single-use: `take_authentication` removes the challenge
-/// before returning it, so a second take observes nothing. Authentications are
-/// not user-scoped, so unlike registrations they carry no secondary index.
+/// An authentication ceremony round-trips its purpose and opaque state
+/// through `put`/`take` and is single-use: `take_authentication` removes the
+/// challenge before returning it, so a second take observes nothing. Both
+/// purposes share the one table, so each must come back as it was stored —
+/// core relies on the purpose to keep login and re-authentication apart.
+/// Authentications are not user-scoped, so unlike registrations they carry no
+/// secondary index.
 async fn passkey_authentication_single_use(storage: &Storage) {
     let now = ts(2026, 1, 1);
-    let challenge_id = PasskeyChallengeId::new();
-    let state_blob = b"opaque-serialised-authentication-state".to_vec();
-    storage
-        .passkey_challenges
-        .put_authentication(StoredPasskeyAuthentication {
-            id: challenge_id,
-            state: state_blob.clone(),
-            created_at: now,
-            expires_at: now + Duration::minutes(5),
-        })
-        .await
-        .expect("put authentication");
-
-    let taken = storage
-        .passkey_challenges
-        .take_authentication(challenge_id)
-        .await
-        .expect("take authentication")
-        .expect("authentication present");
-    assert_eq!(taken.id, challenge_id);
-    assert_eq!(taken.created_at, now);
-    assert_eq!(taken.expires_at, now + Duration::minutes(5));
-    assert_eq!(
-        taken.state, state_blob,
-        "ceremony blob round-trips verbatim"
-    );
-    assert!(
+    for purpose in [AuthenticationPurpose::Login, AuthenticationPurpose::Reauth] {
+        let challenge_id = PasskeyChallengeId::new();
+        let state_blob = b"opaque-serialised-authentication-state".to_vec();
         storage
+            .passkey_challenges
+            .put_authentication(StoredPasskeyAuthentication {
+                id: challenge_id,
+                purpose,
+                state: state_blob.clone(),
+                created_at: now,
+                expires_at: now + Duration::minutes(5),
+            })
+            .await
+            .expect("put authentication");
+
+        let taken = storage
             .passkey_challenges
             .take_authentication(challenge_id)
             .await
-            .expect("second take")
-            .is_none(),
-        "authentication challenges are single-use",
-    );
+            .expect("take authentication")
+            .expect("authentication present");
+        assert_eq!(taken.id, challenge_id);
+        assert_eq!(taken.purpose, purpose, "purpose round-trips verbatim");
+        assert_eq!(taken.created_at, now);
+        assert_eq!(taken.expires_at, now + Duration::minutes(5));
+        assert_eq!(
+            taken.state, state_blob,
+            "ceremony blob round-trips verbatim"
+        );
+        assert!(
+            storage
+                .passkey_challenges
+                .take_authentication(challenge_id)
+                .await
+                .expect("second take")
+                .is_none(),
+            "authentication challenges are single-use",
+        );
+    }
 }
 
 /// `PasskeyChallengeStore::purge_expired` drops expired ceremonies and spares
@@ -1376,6 +1383,7 @@ async fn passkey_challenge_purge_expired(storage: &Storage) {
     challenges
         .put_authentication(StoredPasskeyAuthentication {
             id: expired_authentication,
+            purpose: AuthenticationPurpose::Login,
             state: b"expired-authentication".to_vec(),
             created_at: ts(2020, 1, 1),
             expires_at: ts(2020, 1, 2),

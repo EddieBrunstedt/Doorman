@@ -70,8 +70,8 @@ fn to_binary(bytes: Vec<u8>) -> Binary {
 }
 
 pub(crate) use doorman_core::encoding::{
-    account_status_from_parts, account_status_to_str, hex, purpose_from_str,
-    purpose_to_str as purpose_str,
+    account_status_from_parts, account_status_to_str, authentication_purpose_from_str,
+    authentication_purpose_to_str, hex, purpose_from_str, purpose_to_str as purpose_str,
 };
 
 // ---------------------------------------------------------------------------
@@ -401,6 +401,7 @@ pub(crate) fn pkauth_to_doc(value: &StoredPasskeyAuthentication) -> Document {
     let state_bin = to_binary(value.state.clone());
     let mut doc = doc! {
         "_id": challenge_id_str(value.id),
+        "purpose": authentication_purpose_to_str(value.purpose),
         "state": state_bin,
         "created_at": to_bson_dt(value.created_at),
         "expires_at": to_bson_dt(value.expires_at),
@@ -414,6 +415,7 @@ pub(crate) fn pkauth_to_doc(value: &StoredPasskeyAuthentication) -> Document {
 pub(crate) fn pkauth_from_doc(doc: &Document) -> StorageResult<StoredPasskeyAuthentication> {
     Ok(StoredPasskeyAuthentication {
         id: PasskeyChallengeId(get_uuid(doc, "_id")?),
+        purpose: authentication_purpose_from_str(&get_str(doc, "purpose")?)?,
         state: get_bytes(doc, "state")?,
         created_at: get_dt(doc, "created_at")?,
         expires_at: get_dt(doc, "expires_at")?,

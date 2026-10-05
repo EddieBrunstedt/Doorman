@@ -30,9 +30,9 @@ use crate::context::CoreDeps;
 use crate::email::{Email, EmailSender, EmailTemplates};
 use crate::error::{Error, Result};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
+use crate::redeem::Redeemer;
 use crate::session::{SessionContext, SessionManager};
 use crate::storage::{Session, User, VerificationPurpose, VerificationTokenStore};
-use crate::token::hash_token;
 use crate::user::UserRecords;
 use crate::verification::{self, TOKEN_PLACEHOLDER};
 
@@ -71,6 +71,7 @@ impl Default for AccountConfig {
 #[derive(Clone)]
 pub struct AccountManager {
     records: UserRecords,
+    redeemer: Redeemer,
     tokens: Arc<dyn VerificationTokenStore>,
     sessions: SessionManager,
     reauth: ReauthManager,
@@ -89,6 +90,7 @@ impl AccountManager {
     pub fn new(deps: &CoreDeps, config: AccountConfig) -> Self {
         Self {
             records: UserRecords::new(deps),
+            redeemer: Redeemer::from_deps(deps),
             tokens: deps.verification_tokens.clone(),
             sessions: deps.sessions.clone(),
             reauth: deps.reauth.clone(),
@@ -214,41 +216,18 @@ impl AccountManager {
     /// Redeem an email-change confirmation token, moving the account's email to
     /// the address the token was issued for. Returns the updated [`User`].
     ///
-    /// The token is consumed even when the change is refused. A disabled
+    /// The token is consumed even when the change is refused. A refused link
+    /// is [`Error::InvalidVerificationToken`] and is audited as
+    /// [`RedemptionFailed`](AuditEventKind::RedemptionFailed). A disabled
     /// account is refused with [`Error::AccountDisabled`], so a link requested
     /// before an operator disable cannot repoint the frozen account's address;
     /// an address another account claimed since the request is refused with
     /// [`Error::EmailAlreadyInUse`].
     #[tracing::instrument(skip(self, token, context), fields(user_id = tracing::field::Empty))]
     pub async fn confirm_email_change(&self, token: &str, context: SessionContext) -> Result<User> {
-        let hash = hash_token(token);
-        let now = self.now();
-        let Some(record) = self
-            .tokens
-            .consume_token(&hash, VerificationPurpose::EmailChange)
-            .await?
-        else {
-            tracing::warn!(outcome = "invalid_token", "email change confirm failed");
-            return Err(Error::InvalidVerificationToken);
-        };
-        // Defense in depth: a store that ignores the purpose filter must not
-        // let another flow's token redeem here.
-        if record.purpose != VerificationPurpose::EmailChange || record.expires_at <= now {
-            tracing::warn!(outcome = "invalid_token", "email change confirm failed");
-            return Err(Error::InvalidVerificationToken);
-        }
-        let Some(new_email) = record.new_email else {
-            // An email-change token must carry its target address.
-            tracing::warn!(outcome = "missing_new_email", "email change confirm failed");
-            return Err(Error::InvalidVerificationToken);
-        };
-
-        let user_id = record.user_id;
+        let (user, new_email) = self.redeemer.email_change_link(token, &context).await?;
+        let user_id = user.id;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
-        if let Err(error) = self.records.find_active(user_id).await {
-            tracing::warn!(%error, "email change confirm failed");
-            return Err(error);
-        }
 
         // Clicking a link sent to the new address proves ownership of it. The
         // address is re-checked: another account may have claimed it between

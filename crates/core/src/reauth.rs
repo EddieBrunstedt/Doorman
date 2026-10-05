@@ -64,12 +64,13 @@ use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::passkey::{
     PasskeyConfig, build_webauthn, challenge_lifetime, decode_credential,
-    decode_passkey_authentication_state, encode_passkey_authentication_state,
+    encode_passkey_authentication_state,
 };
+use crate::redeem::Redeemer;
 use crate::session::SessionContext;
 use crate::storage::{
-    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, Session,
-    StoredPasskeyAuthentication, UserId,
+    AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
+    Session, Storage, StoredPasskeyAuthentication, UserId,
 };
 
 /// A destructive self-service action that may be gated behind re-authentication.
@@ -164,6 +165,7 @@ pub struct ReauthManager {
     webauthn: Arc<Webauthn>,
     credentials: Arc<dyn PasskeyCredentialStore>,
     challenges: Arc<dyn PasskeyChallengeStore>,
+    redeemer: Redeemer,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     challenge_lifetime: std::time::Duration,
@@ -176,23 +178,25 @@ impl ReauthManager {
     /// The relying-party [`PasskeyConfig`] is used only to construct the
     /// `webauthn-rs` handle (and to read the challenge lifetime); supply the
     /// same config the [`PasskeyManager`](crate::passkey::PasskeyManager) is
-    /// built with. The [`ReauthPolicy`] is a **required** argument — there is
-    /// no default, so a low-level host that wires managers by hand cannot
-    /// silently skip the decision.
+    /// built with. Challenges and credentials are read from `storage`. The
+    /// [`ReauthPolicy`] is a **required** argument — there is no default, so a
+    /// low-level host that wires managers by hand cannot silently skip the
+    /// decision.
     pub fn new(
         config: &PasskeyConfig,
-        credentials: Arc<dyn PasskeyCredentialStore>,
-        challenges: Arc<dyn PasskeyChallengeStore>,
+        storage: &Storage,
         clock: Arc<dyn Clock>,
         audit: Arc<dyn AuditSink>,
         policy: ReauthPolicy,
     ) -> Result<Self> {
+        let audit = AuditDispatch::new(audit);
         Ok(Self {
             webauthn: Arc::new(build_webauthn(config)?),
-            credentials,
-            challenges,
+            credentials: storage.passkey_credentials.clone(),
+            challenges: storage.passkey_challenges.clone(),
+            redeemer: Redeemer::new(storage, clock.clone(), audit.clone()),
             clock,
-            audit: AuditDispatch::new(audit),
+            audit,
             challenge_lifetime: config.challenge_lifetime,
             policy,
         })
@@ -242,6 +246,7 @@ impl ReauthManager {
         self.challenges
             .put_authentication(StoredPasskeyAuthentication {
                 id,
+                purpose: AuthenticationPurpose::Reauth,
                 state: encode_passkey_authentication_state(&auth_state)?,
                 created_at: now,
                 expires_at: now + challenge_lifetime(self.challenge_lifetime),
@@ -257,8 +262,9 @@ impl ReauthManager {
     /// - Otherwise a [`ReauthProof`] is mandatory: a missing one is
     ///   [`Error::ReauthRequired`] (the caller should run [`start`](Self::start)
     ///   and retry).
-    /// - With a proof, the challenge is consumed single-use, the assertion is
-    ///   verified, user verification is required, and the asserted credential
+    /// - With a proof, the challenge is consumed single-use; one that is
+    ///   unknown, expired, or was minted for sign-in is refused with
+    ///   [`Error::ReauthRequired`]. The assertion is then verified, user verification is required, and the asserted credential
     ///   must belong to `session.user_id` (defense in depth — the challenge is
     ///   already user-scoped). A counter regression maps to
     ///   [`Error::PasskeyPossibleCompromise`].
@@ -286,23 +292,11 @@ impl ReauthManager {
             return Err(Error::ReauthRequired);
         };
 
+        let auth_state = self
+            .redeemer
+            .reauth(proof.challenge_id, user_id, context)
+            .await?;
         let now = self.clock.now();
-        let Some(stored) = self
-            .challenges
-            .take_authentication(proof.challenge_id)
-            .await?
-        else {
-            self.emit_failed(now, context, user_id, ReauthFailureReason::InvalidChallenge)
-                .await;
-            return Err(Error::ReauthRequired);
-        };
-        if stored.expires_at <= now {
-            self.emit_failed(now, context, user_id, ReauthFailureReason::InvalidChallenge)
-                .await;
-            return Err(Error::ReauthRequired);
-        }
-
-        let auth_state = decode_passkey_authentication_state(&stored.state)?;
         let result = match self
             .webauthn
             .finish_passkey_authentication(&proof.assertion, &auth_state)

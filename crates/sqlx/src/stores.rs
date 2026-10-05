@@ -869,11 +869,12 @@ macro_rules! sqlx_stores {
                 value: $crate::stores::__reexport::StoredPasskeyAuthentication,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "INSERT INTO passkey_authentications (id, state, created_at, expires_at)
-                     VALUES (?, ?, ?, ?)",
+                    "INSERT INTO passkey_authentications (id, purpose, state, created_at, expires_at)
+                     VALUES (?, ?, ?, ?, ?)",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(value.id.0))
+                    .bind($crate::common::authentication_purpose_to_str(value.purpose))
                     .bind(&value.state)
                     .bind($ts(value.created_at))
                     .bind($ts(value.expires_at))
@@ -894,7 +895,7 @@ macro_rules! sqlx_stores {
                     pool: self.pool,
                     ph: $ph,
                     table: "passkey_authentications",
-                    cols: "id, state, created_at, expires_at",
+                    cols: "id, purpose, state, created_at, expires_at",
                     filter: "id = ?",
                     binds: [$crate::common::uuid_to_bytes(id.0)],
                     map: row_to_authentication,
@@ -955,11 +956,13 @@ macro_rules! sqlx_stores {
         > {
             use ::sqlx::Row as _;
             let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage_err)?;
+            let purpose: String = row.try_get("purpose").map_err($crate::common::storage_err)?;
             let state: Vec<u8> = row.try_get("state").map_err($crate::common::storage_err)?;
             Ok($crate::stores::__reexport::StoredPasskeyAuthentication {
                 id: $crate::stores::__reexport::PasskeyChallengeId(
                     $crate::common::uuid_from_row(id_bytes)?,
                 ),
+                purpose: $crate::common::authentication_purpose_from_str(&purpose)?,
                 state,
                 created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
                 expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,

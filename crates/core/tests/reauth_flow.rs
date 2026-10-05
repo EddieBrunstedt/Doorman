@@ -4,7 +4,7 @@
 mod common;
 
 use doorman_core::Error;
-use doorman_core::audit::{AuditEventKind, ReauthFailureReason};
+use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
 use doorman_core::session::SessionContext;
@@ -161,6 +161,55 @@ async fn challenge_is_single_use() {
 }
 
 #[tokio::test]
+async fn login_challenge_is_not_a_reauth_proof() {
+    // A sign-in challenge shares the table re-authentication uses, but it was
+    // minted for another ceremony: presenting it as a proof is refused like
+    // any other unusable challenge, and the gated action does not run.
+    let h = gated_harness();
+    let user = make_user(&h, "owner@example.com").await;
+    let mut wa = authenticator();
+    let credential = register_passkey(&h, user.id, &mut wa, Some("device")).await;
+    let session = session_for(&h, &user);
+
+    let (challenge_id, options) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start sign-in");
+    let assertion = wa.do_authentication(options, &credential.credential_id);
+
+    let err = h
+        .account
+        .delete_account(
+            &session,
+            Some(ReauthProof {
+                challenge_id,
+                assertion,
+            }),
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("a sign-in challenge cannot re-authenticate");
+    assert!(matches!(err, Error::ReauthRequired), "got: {err:?}");
+    assert!(
+        h.users
+            .find_user_by_id(user.id)
+            .await
+            .expect("lookup")
+            .is_some(),
+        "the account survives"
+    );
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RedemptionFailed {
+            user_id: Some(id),
+            secret: SecretKind::ReauthChallenge,
+            reason: RedemptionFailureReason::WrongPurpose,
+        } if *id == user.id
+    )));
+}
+
+#[tokio::test]
 async fn expired_challenge_is_rejected() {
     let h = gated_harness();
     let user = make_user(&h, "owner@example.com").await;
@@ -189,12 +238,13 @@ async fn expired_challenge_is_rejected() {
     assert!(
         kinds(&h.audit.events()).iter().any(|k| matches!(
             k,
-            AuditEventKind::ReauthFailed {
-                reason: ReauthFailureReason::InvalidChallenge,
-                ..
-            }
+            AuditEventKind::RedemptionFailed {
+                user_id: Some(id),
+                secret: SecretKind::ReauthChallenge,
+                reason: RedemptionFailureReason::Expired,
+            } if *id == user.id
         )),
-        "an InvalidChallenge ReauthFailed row is emitted"
+        "an expired-challenge RedemptionFailed row is emitted"
     );
 }
 

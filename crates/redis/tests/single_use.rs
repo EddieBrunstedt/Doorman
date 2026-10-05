@@ -13,8 +13,8 @@ use chrono::{Duration, Utc};
 use common::Backend;
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
-    PasskeyChallengeId, StoredPasskeyAuthentication, StoredPasskeyRegistration, UserId,
-    VerificationPurpose, VerificationToken,
+    AuthenticationPurpose, PasskeyChallengeId, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, UserId, VerificationPurpose, VerificationToken,
 };
 
 /// Number of concurrent redeemers racing for one challenge.
@@ -104,6 +104,7 @@ async fn authentication_is_taken_exactly_once() {
     challenges
         .put_authentication(StoredPasskeyAuthentication {
             id,
+            purpose: AuthenticationPurpose::Login,
             state: b"race-authentication-state".to_vec(),
             created_at: Utc::now(),
             expires_at: Utc::now() + Duration::hours(1),

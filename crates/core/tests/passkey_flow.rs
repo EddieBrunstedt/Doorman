@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Duration as ChronoDuration;
-use doorman_core::audit::{AuditEventKind, AuthFailureReason};
+use doorman_core::audit::{AuditEventKind, AuthFailureReason, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::error::Error;
 use doorman_core::memory::InMemoryRateLimiter;
@@ -362,13 +362,22 @@ async fn finish_registration_rejects_expired_challenge() {
         .await
         .expect_err("expired");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RedemptionFailed {
+            user_id: Some(id),
+            secret: SecretKind::RegistrationChallenge,
+            reason: RedemptionFailureReason::Expired,
+        } if *id == user.id
+    )));
 }
 
 #[tokio::test]
 async fn finish_registration_against_deleted_user_writes_no_orphan_credential() {
     // A user deleted after the ceremony began (e.g. a concurrent operator
-    // delete) must not have a credential written against them: finishing the
-    // registration re-checks the user still exists before `add_passkey`. (D9.1)
+    // delete) must not have a credential written against them: redeeming the
+    // challenge re-checks the user still exists, and a challenge whose owner is
+    // gone reads as invalid.
     let h = Harness::fresh();
     let user = make_user(&h, "vanishing@example.com").await;
     let mut wa = authenticator();
@@ -384,11 +393,22 @@ async fn finish_registration_against_deleted_user_writes_no_orphan_credential() 
         .finish_registration(challenge_id, &response, None, SessionContext::default())
         .await
         .expect_err("finishing against a deleted user must be rejected");
-    assert!(matches!(err, Error::UserNotFound));
+    assert!(
+        matches!(err, Error::InvalidPasskeyChallenge),
+        "got: {err:?}"
+    );
     assert!(
         h.credentials.is_empty(),
         "no credential written against the deleted user"
     );
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RedemptionFailed {
+            user_id: Some(id),
+            secret: SecretKind::RegistrationChallenge,
+            reason: RedemptionFailureReason::UserNotFound,
+        } if *id == user.id
+    )));
 }
 
 #[tokio::test]
@@ -715,9 +735,10 @@ async fn finish_authentication_audits_expired_challenge_failure() {
     let events = kinds(&h.audit.events());
     assert!(events.iter().any(|k| matches!(
         k,
-        AuditEventKind::AuthenticationFailed {
+        AuditEventKind::RedemptionFailed {
             user_id: None,
-            reason: AuthFailureReason::ExpiredChallenge,
+            secret: SecretKind::LoginChallenge,
+            reason: RedemptionFailureReason::Expired,
         }
     )));
 }
@@ -765,11 +786,52 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
     let events = kinds(&h.audit.events()[audit_before..]);
     assert!(events.iter().any(|k| matches!(
         k,
-        AuditEventKind::AuthenticationFailed {
+        AuditEventKind::RedemptionFailed {
             user_id: None,
-            reason: AuthFailureReason::InvalidChallenge,
+            secret: SecretKind::LoginChallenge,
+            reason: RedemptionFailureReason::Unknown,
         }
     )));
+}
+
+#[tokio::test]
+async fn finish_authentication_rejects_a_reauth_challenge() {
+    // Sign-in and re-authentication share one challenge table. A
+    // re-authentication challenge presented to sign-in is refused as an
+    // invalid challenge — not an internal decode error — and mints nothing.
+    let h = Harness::fresh();
+    let user = make_user(&h, "mixup@example.com").await;
+    let mut wa = authenticator();
+    register_passkey(&h, user.id, &mut wa, None).await;
+
+    let (reauth_id, options) = h.reauth.start(user.id).await.expect("reauth start");
+    let assertion = wa.do_scoped_authentication(options);
+
+    let err = h
+        .passkey
+        .finish_authentication(reauth_id, &assertion, SessionContext::default())
+        .await
+        .expect_err("a re-authentication challenge cannot sign in");
+    assert!(
+        matches!(err, Error::InvalidPasskeyChallenge),
+        "got: {err:?}"
+    );
+    assert_eq!(h.sessions.len(), 0, "no session minted");
+
+    let events = kinds(&h.audit.events());
+    assert!(events.iter().any(|k| matches!(
+        k,
+        AuditEventKind::RedemptionFailed {
+            user_id: None,
+            secret: SecretKind::LoginChallenge,
+            reason: RedemptionFailureReason::WrongPurpose,
+        }
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. })),
+    );
 }
 
 #[tokio::test]

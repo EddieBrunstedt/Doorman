@@ -1,15 +1,17 @@
 mod common;
 
+use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Duration as ChronoDuration;
-use doorman_core::audit::AuditEventKind;
+use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::email::{Email, EmailTemplates};
 use doorman_core::error::{Error, Result, StorageError};
 use doorman_core::memory::InMemoryRateLimiter;
+use doorman_core::passkey::{PasskeyConfig, PasskeyRateLimits};
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
 use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy, SignupRateLimits};
@@ -17,8 +19,8 @@ use doorman_core::storage::{User, UserStore};
 use doorman_test_support::MockClock;
 
 use common::{
-    Harness, RECOVERY_URL, SIGNUP_URL, authenticator, kinds, provision_user, signup_config,
-    token_from_email, ts,
+    Harness, RECOVERY_URL, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds, provision_user,
+    rp_origin, signup_config, token_from_email, ts,
 };
 
 #[tokio::test]
@@ -286,6 +288,86 @@ async fn consume_rejects_replayed_token() {
         .await
         .expect_err("second consume");
     assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RedemptionFailed {
+            user_id: None,
+            secret: SecretKind::SignupLink,
+            reason: RedemptionFailureReason::Unknown,
+        }
+    )));
+}
+
+#[tokio::test]
+async fn consume_replaces_unfinished_ceremonies_rather_than_hitting_the_pending_cap() {
+    // The link is consumed before its ceremony starts, so the
+    // pending-registration cap must not refuse that start — the link would be
+    // burned with nothing to show for it. Consuming drops the user's
+    // unfinished ceremonies first, and the new one replaces them.
+    let h = Harness::builder()
+        .passkey_config(PasskeyConfig {
+            rate_limits: PasskeyRateLimits::disabled(),
+            max_pending_registrations_per_user: NonZeroU32::new(1),
+            ..PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
+        })
+        .build();
+    h.signup
+        .request_signup("capped@example.com", None, SessionContext::default())
+        .await
+        .expect("request");
+    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
+    let user = h
+        .users
+        .find_user_by_email("capped@example.com")
+        .await
+        .expect("find user")
+        .expect("user present");
+
+    let (stale_id, stale_options) = h
+        .passkey
+        .start_registration(user.id)
+        .await
+        .expect("fill the cap");
+    let err = h
+        .passkey
+        .start_registration(user.id)
+        .await
+        .expect_err("the cap is full");
+    assert!(
+        matches!(err, Error::ResourceLimitExceeded { .. }),
+        "got: {err:?}"
+    );
+
+    let outcome = h
+        .signup
+        .consume_signup(&token, SessionContext::default())
+        .await
+        .expect("consume starts a ceremony despite the full cap");
+
+    let err = h
+        .passkey
+        .finish_registration(
+            stale_id,
+            &authenticator().do_registration(stale_options),
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("the unfinished ceremony was replaced");
+    assert!(
+        matches!(err, Error::InvalidPasskeyChallenge),
+        "got: {err:?}"
+    );
+
+    h.signup
+        .finish_signup(
+            outcome.challenge_id,
+            &authenticator().do_registration(outcome.options),
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("the link's ceremony finishes");
 }
 
 #[tokio::test]

@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use chrono::Duration as ChronoDuration;
 use doorman_core::assembly::AssemblyError;
-use doorman_core::audit::{AuditEventKind, RecoveryFailureReason};
+use doorman_core::audit::{
+    AuditEventKind, RecoveryFailureReason, RedemptionFailureReason, SecretKind,
+};
 use doorman_core::clock::Clock;
 use doorman_core::email::{Email, EmailTemplates};
 use doorman_core::error::Error;
@@ -178,9 +180,10 @@ async fn consume_refused_for_disabled_user() {
     assert!(matches!(err, Error::AccountDisabled));
     assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
         k,
-        AuditEventKind::RecoveryFailed {
-            reason: RecoveryFailureReason::AccountDisabled,
+        AuditEventKind::RedemptionFailed {
             user_id: Some(id),
+            secret: SecretKind::RecoveryLink,
+            reason: RedemptionFailureReason::AccountDisabled,
         } if *id == user.id,
     )));
 }
@@ -353,9 +356,10 @@ async fn consume_rejects_replayed_token() {
     assert!(matches!(err, Error::InvalidVerificationToken));
     assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
         k,
-        AuditEventKind::RecoveryFailed {
-            reason: RecoveryFailureReason::InvalidToken,
-            ..
+        AuditEventKind::RedemptionFailed {
+            user_id: None,
+            secret: SecretKind::RecoveryLink,
+            reason: RedemptionFailureReason::Unknown,
         }
     )));
 }
@@ -399,9 +403,10 @@ async fn consume_rejects_expired_token_without_notification() {
     );
     assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
         k,
-        AuditEventKind::RecoveryFailed {
-            reason: RecoveryFailureReason::ExpiredToken,
-            ..
+        AuditEventKind::RedemptionFailed {
+            user_id: Some(_),
+            secret: SecretKind::RecoveryLink,
+            reason: RedemptionFailureReason::Expired,
         }
     )));
 }
@@ -541,9 +546,10 @@ async fn consume_with_unknown_token_audits_invalid_token() {
     assert!(matches!(err, Error::InvalidVerificationToken));
     assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
         k,
-        AuditEventKind::RecoveryFailed {
-            reason: RecoveryFailureReason::InvalidToken,
-            ..
+        AuditEventKind::RedemptionFailed {
+            user_id: None,
+            secret: SecretKind::RecoveryLink,
+            reason: RedemptionFailureReason::Unknown,
         }
     )));
 }

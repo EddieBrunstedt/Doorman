@@ -519,8 +519,7 @@ impl AuthCoreBuilder {
         // field.
         let reauth = ReauthManager::new(
             &passkey_config,
-            self.storage.passkey_credentials.clone(),
-            self.storage.passkey_challenges.clone(),
+            &self.storage,
             clock.clone(),
             audit.clone(),
             reauth_policy,

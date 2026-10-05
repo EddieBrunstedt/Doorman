@@ -28,12 +28,13 @@ use crate::email::{Email, EmailSender, EmailTemplates};
 use crate::error::{Error, Result};
 use crate::passkey::PasskeyManager;
 use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
+use crate::redeem::Redeemer;
 use crate::session::{IssuedSession, SessionContext};
 use crate::storage::{
     PasskeyChallengeId, PasskeyCredentialStore, StoredPasskey, User, UserId, VerificationPurpose,
     VerificationToken, VerificationTokenStore,
 };
-use crate::token::{generate_token, hash_token};
+use crate::token::generate_token;
 use crate::user::UserRecords;
 
 /// Placeholder substituted with the generated token in URL templates. The
@@ -220,12 +221,6 @@ impl FlowKind {
     fn marks_email_verified(self) -> bool {
         matches!(self, FlowKind::Signup)
     }
-
-    /// Whether a consume failure is recorded in the audit log. Only recovery
-    /// emits `RecoveryFailed`; signup warn-logs and moves on.
-    fn audits_consume_failures(self) -> bool {
-        matches!(self, FlowKind::Recovery)
-    }
 }
 
 /// Recovery-only extras for [`EnrollmentFlow::finish`]. The two always
@@ -250,6 +245,7 @@ pub(crate) struct RecoveryFinish<'a> {
 pub struct EnrollmentFlow {
     passkey: PasskeyManager,
     records: UserRecords,
+    redeemer: Redeemer,
     tokens: Arc<dyn VerificationTokenStore>,
     email: Arc<dyn EmailSender>,
     emails: Arc<dyn EmailTemplates>,
@@ -268,6 +264,7 @@ impl EnrollmentFlow {
         Self {
             passkey,
             records: UserRecords::new(deps),
+            redeemer: Redeemer::from_deps(deps),
             tokens: deps.verification_tokens.clone(),
             email: deps.email.clone(),
             emails: deps.emails.clone(),
@@ -332,8 +329,7 @@ impl EnrollmentFlow {
             .await;
     }
 
-    /// Record a recovery failure. No-op for signup, which does not audit
-    /// failures.
+    /// Record a refused recovery request.
     pub(crate) async fn audit_recovery_failed(
         &self,
         user_id: Option<UserId>,
@@ -344,83 +340,26 @@ impl EnrollmentFlow {
             .await;
     }
 
-    /// Redeem a verification token and start a passkey registration ceremony.
+    /// Redeem a verification link and start a passkey registration ceremony.
     /// The token is consumed atomically (so a link cannot be replayed); on
-    /// signup the click also marks the email verified. Failure paths warn-log
-    /// for both flows and additionally emit `RecoveryFailed` for recovery.
+    /// signup the click also marks the email verified. A refused link is
+    /// audited as [`RedemptionFailed`](AuditEventKind::RedemptionFailed).
+    ///
+    /// The link is consumed before the ceremony starts, so starting it must
+    /// not fail on the per-user pending-registration cap: the user's
+    /// unfinished registration ceremonies are dropped first, and the new one
+    /// replaces them. A fresh link already supersedes older links of the same
+    /// purpose, and its ceremony supersedes theirs the same way.
     pub(crate) async fn consume(
         &self,
         kind: FlowKind,
         token: &str,
         context: SessionContext,
     ) -> Result<VerificationConsumeOutcome> {
-        let hash = hash_token(token);
-        let now = self.passkey.clock().now();
-        let Some(record) = self.tokens.consume_token(&hash, kind.purpose()).await? else {
-            if kind.audits_consume_failures() {
-                self.audit_recovery_failed(None, RecoveryFailureReason::InvalidToken, &context)
-                    .await;
-            }
-            tracing::warn!(outcome = "invalid_token", "{} consume failed", kind.label());
-            return Err(Error::InvalidVerificationToken);
-        };
-        // Defense in depth: the store is asked for a token scoped to this
-        // flow's purpose, but re-check the returned record so a store whose
-        // `consume_token` ignores the purpose filter can never let a signup
-        // link finish a recovery (or vice-versa). The purpose binding must
-        // hold at consumption, not just at mint time.
-        if record.purpose != kind.purpose() {
-            if kind.audits_consume_failures() {
-                self.audit_recovery_failed(
-                    Some(record.user_id),
-                    RecoveryFailureReason::InvalidToken,
-                    &context,
-                )
-                .await;
-            }
-            tracing::warn!(
-                outcome = "purpose_mismatch",
-                "{} consume failed",
-                kind.label()
-            );
-            return Err(Error::InvalidVerificationToken);
-        }
-        if record.expires_at <= now {
-            // Expired tokens are audited (recovery only) but the user is not
-            // notified: an expired link grants nothing, and emailing on every
-            // stale click would train users to ignore the real alerts.
-            if kind.audits_consume_failures() {
-                self.audit_recovery_failed(
-                    Some(record.user_id),
-                    RecoveryFailureReason::ExpiredToken,
-                    &context,
-                )
-                .await;
-            }
-            tracing::warn!(outcome = "expired_token", "{} consume failed", kind.label());
-            return Err(Error::InvalidVerificationToken);
-        }
-        // A user that vanished between request and consume is reported like
-        // an invalid token. A disabled account (disabled after the link was
-        // sent) must not recover its way back in, so no ceremony starts.
-        let user = match self.records.find_active(record.user_id).await {
-            Ok(user) => user,
-            Err(error) => {
-                let (outcome, reason) = match error {
-                    Error::UserNotFound => ("user_not_found", RecoveryFailureReason::InvalidToken),
-                    Error::AccountDisabled => {
-                        ("account_disabled", RecoveryFailureReason::AccountDisabled)
-                    }
-                    _ => return Err(error),
-                };
-                if kind.audits_consume_failures() {
-                    self.audit_recovery_failed(Some(record.user_id), reason, &context)
-                        .await;
-                }
-                tracing::warn!(outcome, "{} consume failed", kind.label());
-                return Err(error);
-            }
-        };
+        let user = self
+            .redeemer
+            .enrollment_link(token, kind.purpose(), &context)
+            .await?;
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
         if kind.marks_email_verified() {
@@ -428,6 +367,9 @@ impl EnrollmentFlow {
             self.records.mark_email_verified(&user).await?;
         }
 
+        self.passkey
+            .invalidate_pending_registrations(user.id)
+            .await?;
         let (challenge_id, options) = self.passkey.start_registration(user.id).await?;
 
         self.emit(&context, kind.consumed_event(user.id)).await;

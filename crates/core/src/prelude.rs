@@ -13,7 +13,7 @@ pub use crate::account::{AccountConfig, AccountManager};
 pub use crate::assembly::{AssemblyError, AuthCore, AuthCoreBuilder};
 pub use crate::audit::{
     Actor, AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, OperatorActor,
-    ReauthFailureReason, RecoveryFailureReason,
+    ReauthFailureReason, RecoveryFailureReason, RedemptionFailureReason, SecretKind,
 };
 pub use crate::clock::{Clock, SystemClock};
 #[cfg(feature = "file-email")]
@@ -40,9 +40,9 @@ pub use crate::signup::{
     OpenSignupPolicy, SignupConfig, SignupDecision, SignupManager, SignupPolicy, SignupRateLimits,
 };
 pub use crate::storage::{
-    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionId,
-    SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
-    TokenHash, User, UserId, UserStore, VerificationPurpose, VerificationToken,
-    VerificationTokenStore,
+    AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
+    Session, SessionId, SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, TokenHash, User, UserId, UserStore, VerificationPurpose,
+    VerificationToken, VerificationTokenStore,
 };
 pub use crate::verification::{EnrollmentOutcome, TOKEN_PLACEHOLDER, VerificationConsumeOutcome};

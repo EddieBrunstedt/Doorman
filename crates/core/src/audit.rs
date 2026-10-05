@@ -150,17 +150,18 @@ pub enum AuditEventKind {
         /// The user that logged in.
         user_id: UserId,
     },
-    /// Emitted on any passkey authentication failure — unknown or expired
-    /// challenge, unknown credential, an unverifiable user-handle binding, a
-    /// signature-counter regression (possible cloned authenticator), or a bad
-    /// assertion. `user_id` is `Some` once the credential has been resolved
-    /// and `None` for the pre-resolution failures (bad/expired challenge).
-    /// The [`AuthFailureReason`] lets a host alert on the security-significant
-    /// modes (counter regression, user-handle mismatch) without leaking which
-    /// credential or secret was involved.
+    /// Emitted on any passkey authentication failure after the challenge is
+    /// redeemed — unknown credential, an unverifiable user-handle binding, a
+    /// signature-counter regression (possible cloned authenticator), a bad
+    /// assertion, or a disabled account. A refused challenge is recorded as
+    /// [`RedemptionFailed`](Self::RedemptionFailed) instead. `user_id` is
+    /// `Some` once the credential has been resolved. The [`AuthFailureReason`]
+    /// lets a host alert on the security-significant modes (counter
+    /// regression, user-handle mismatch) without leaking which credential was
+    /// involved.
     AuthenticationFailed {
-        /// The user, once the credential resolves; `None` for pre-resolution
-        /// failures (bad/expired challenge).
+        /// The user, once the credential resolves; `None` when the asserted
+        /// credential is unknown.
         user_id: Option<UserId>,
         /// Why the attempt failed.
         reason: AuthFailureReason,
@@ -214,8 +215,9 @@ pub enum AuditEventKind {
         /// The user whose recovery token was consumed.
         user_id: UserId,
     },
-    /// Emitted on any recovery failure path — unknown email, rate-limit
-    /// rejection, invalid token, expired token. Pairs with the
+    /// Emitted when a recovery request is refused — unknown email, rate-limit
+    /// rejection, or a disabled account. A refused recovery link is recorded
+    /// as [`RedemptionFailed`](Self::RedemptionFailed) instead. Pairs with the
     /// [`RecoveryFailureReason`] for after-the-fact triage.
     RecoveryFailed {
         /// The matched user, when one was resolved before the failure.
@@ -251,11 +253,12 @@ pub enum AuditEventKind {
         user_id: UserId,
     },
     /// A passkey re-authentication attempt failed. Emitted only when a proof
-    /// was supplied and rejected (bad/expired challenge, bad assertion,
-    /// missing user verification, a credential not owned by the session user,
-    /// or a signature-counter regression). A *missing* proof is the normal
-    /// `reauth_required` handshake and is not recorded here. Pairs with the
-    /// [`ReauthFailureReason`] for after-the-fact triage.
+    /// was supplied and its assertion rejected (bad assertion, missing user
+    /// verification, a credential not owned by the session user, or a
+    /// signature-counter regression). A refused challenge is recorded as
+    /// [`RedemptionFailed`](Self::RedemptionFailed) instead, and a *missing*
+    /// proof is the normal `reauth_required` handshake and is not recorded at
+    /// all. Pairs with the [`ReauthFailureReason`] for after-the-fact triage.
     ReauthFailed {
         /// The session user the re-authentication was attempted for.
         user_id: UserId,
@@ -317,6 +320,21 @@ pub enum AuditEventKind {
         /// The user whose sessions were listed.
         user_id: UserId,
     },
+    /// A single-use secret — a passkey ceremony challenge or an emailed
+    /// link token — was presented and refused. Every redemption site records
+    /// its refusals through this one kind, so a host alerts on replayed,
+    /// stale, or misdirected secrets in one place whichever flow they hit.
+    /// The secret was consumed unless the store did not recognise it.
+    RedemptionFailed {
+        /// The user the secret was bound to, when the store returned it;
+        /// `None` for an unknown secret and for login challenges, which are
+        /// not bound to a user.
+        user_id: Option<UserId>,
+        /// Which kind of secret was presented.
+        secret: SecretKind,
+        /// Why it was refused.
+        reason: RedemptionFailureReason,
+    },
 }
 
 /// Relative severity of an [`AuditEventKind`], used by [`AuditDispatch`] to
@@ -360,7 +378,8 @@ impl AuditEventKind {
             | Self::OperatorListedSessions { user_id } => Some(*user_id),
             Self::AuthenticationFailed { user_id, .. }
             | Self::RecoveryRequested { user_id }
-            | Self::RecoveryFailed { user_id, .. } => *user_id,
+            | Self::RecoveryFailed { user_id, .. }
+            | Self::RedemptionFailed { user_id, .. } => *user_id,
             Self::SignupDenied => None,
         }
     }
@@ -371,6 +390,7 @@ impl AuditEventKind {
             Self::AuthenticationFailed { .. }
             | Self::RecoveryFailed { .. }
             | Self::ReauthFailed { .. }
+            | Self::RedemptionFailed { .. }
             | Self::SessionExpired { .. }
             | Self::SignupDenied => AuditSeverity::Warn,
             _ => AuditSeverity::Info,
@@ -388,11 +408,6 @@ impl AuditEventKind {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AuthFailureReason {
-    /// The presented challenge id did not resolve to an outstanding
-    /// authentication ceremony (unknown or already consumed).
-    InvalidChallenge,
-    /// The authentication ceremony had expired before it was finished.
-    ExpiredChallenge,
     /// The asserted credential id is not registered, or its owner was deleted
     /// while the ceremony was in flight.
     UnknownCredential,
@@ -429,9 +444,6 @@ pub enum AuthFailureReason {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ReauthFailureReason {
-    /// The presented challenge id did not resolve to an outstanding
-    /// re-authentication ceremony, or it had already expired.
-    InvalidChallenge,
     /// The assertion verified but the authenticator did not set the
     /// user-verification flag. Re-authentication always requires a deliberate
     /// user-verified gesture, so the attempt is rejected.
@@ -460,15 +472,58 @@ pub enum RecoveryFailureReason {
     UnknownEmail,
     /// A rate-limit policy rejected the request before any user lookup.
     RateLimited,
-    /// A `recovery/consume` call presented a token the store did not
-    /// recognise.
-    InvalidToken,
-    /// A `recovery/consume` call presented a token whose `expires_at` has
-    /// already passed.
-    ExpiredToken,
-    /// The target account is disabled. Recovery refuses a disabled account at
-    /// both the request seam (no link issued) and the consume seam (no token
-    /// redeemed), so a disabled account cannot recover its way back in.
+    /// The target account is disabled, so no link is issued. Consuming a link
+    /// for an account disabled after it was sent is refused too, and recorded
+    /// as [`AuditEventKind::RedemptionFailed`] with
+    /// [`RedemptionFailureReason::AccountDisabled`].
+    AccountDisabled,
+}
+
+/// A kind of single-use secret, named by [`AuditEventKind::RedemptionFailed`].
+///
+/// `#[non_exhaustive]` so new secret kinds can be added without breaking host
+/// matches — include a trailing `_ => {}` arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SecretKind {
+    /// A passkey registration challenge.
+    RegistrationChallenge,
+    /// A discoverable sign-in challenge.
+    LoginChallenge,
+    /// A re-authentication challenge.
+    ReauthChallenge,
+    /// An emailed signup link.
+    SignupLink,
+    /// An emailed recovery link.
+    RecoveryLink,
+    /// An emailed email-change confirmation link.
+    EmailChangeLink,
+}
+
+/// Why a single-use secret was refused. Pairs with
+/// [`AuditEventKind::RedemptionFailed`].
+///
+/// `#[non_exhaustive]` so new rejection reasons can be added without breaking
+/// host matches — include a trailing `_ => {}` arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RedemptionFailureReason {
+    /// The store did not recognise the secret: it never existed, was already
+    /// redeemed, or was purged.
+    Unknown,
+    /// The secret was issued for a different ceremony or flow — for example a
+    /// re-authentication challenge presented to sign-in.
+    WrongPurpose,
+    /// The secret's lifetime had passed.
+    Expired,
+    /// The secret's stored payload could not be read (a corrupt record, or
+    /// ceremony state written by an incompatible version).
+    Malformed,
+    /// The user the secret was bound to no longer exists.
+    UserNotFound,
+    /// The user the secret was bound to is disabled.
     AccountDisabled,
 }
 
