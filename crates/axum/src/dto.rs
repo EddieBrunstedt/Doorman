@@ -343,6 +343,17 @@ pub struct RemovePasskeyRequest {
     pub reauthentication: Option<Reauthentication>,
 }
 
+/// Request body for `DELETE /auth/sessions` and `DELETE /auth/sessions/{id}`.
+/// Optional, like [`DeleteAccountRequest`]: it carries only the
+/// re-authentication proof. Revoking the current session never needs one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RevokeSessionRequest {
+    /// Optional re-authentication proof, required when the host gates
+    /// revoking other sessions behind re-auth.
+    #[serde(default)]
+    pub reauthentication: Option<Reauthentication>,
+}
+
 /// Request body for `/auth/account/email/confirm`. The token comes from the
 /// confirmation link sent to the new address.
 #[derive(Debug, Clone, Serialize, Deserialize)]

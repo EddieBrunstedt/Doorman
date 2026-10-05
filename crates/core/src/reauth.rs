@@ -1,9 +1,9 @@
 //! Re-authentication: prove session recency before a destructive action.
 //!
 //! Re-authentication requires a **fresh, user-verified passkey assertion**
-//! immediately before an irreversible self-service action (delete account,
-//! email-change request, passkey removal). It is the WebAuthn equivalent of
-//! "confirm your password" before something dangerous.
+//! immediately before a destructive self-service action (delete account,
+//! email-change request, passkey removal, revoking other sessions). It is the
+//! WebAuthn equivalent of "confirm your password" before something dangerous.
 //!
 //! # What it is, and is not
 //!
@@ -24,8 +24,9 @@
 //!   from the user. That is out of scope.
 //! - **Complements, never replaces, the recovery cool-down.** The cool-down
 //!   distrusts a *freshly-recovered* session; re-auth distrusts an *old* one.
-//!   Both gate the same actions, and the cool-down is checked first — it is a
-//!   hard block you cannot re-auth your way out of.
+//!   [`ReauthManager::ensure`] is the one gate for both: every
+//!   [`ReauthAction`] is blocked during the cool-down, which is checked first —
+//!   a hard block you cannot re-auth your way out of.
 //!
 //! # Shape
 //!
@@ -73,13 +74,13 @@ use crate::storage::{
     Session, Storage, StoredPasskeyAuthentication, UserId,
 };
 
-/// A destructive self-service action that may be gated behind re-authentication.
+/// A destructive self-service action, gated by [`ReauthManager::ensure`].
 ///
-/// The set is also the recovery-cool-down protected set:
-/// [`ReauthManager::ensure`] refuses a session inside its cool-down before it
-/// looks at the policy, so the same irreversible actions a phished recovery
-/// session is held back from are the ones a stale session is asked to prove
-/// recency for.
+/// The set is exactly what the post-recovery cool-down protects: `ensure`
+/// refuses every action while the acting session is inside its cool-down,
+/// before it looks at the policy. Outside the cool-down, an action needs a
+/// re-auth proof only when the host's [`ReauthPolicy`] lists it. A new
+/// protected action becomes a variant here and calls `ensure`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReauthAction {
     /// [`AccountManager::delete_account`](crate::account::AccountManager::delete_account).
@@ -90,6 +91,13 @@ pub enum ReauthAction {
     RequestEmailChange,
     /// [`PasskeyManager::remove_passkey`](crate::passkey::PasskeyManager::remove_passkey).
     RemovePasskey,
+    /// [`AccountManager::revoke_other_sessions`](crate::account::AccountManager::revoke_other_sessions)
+    /// — "sign out everywhere else".
+    RevokeOtherSessions,
+    /// [`AccountManager::revoke_session`](crate::account::AccountManager::revoke_session)
+    /// on another of the user's sessions. Revoking the acting session itself
+    /// is never gated, so the owner can always sign it out.
+    RevokeSession,
 }
 
 /// Which destructive actions require a fresh re-authentication.
@@ -103,6 +111,8 @@ pub struct ReauthPolicy {
     delete_account: bool,
     request_email_change: bool,
     remove_passkey: bool,
+    revoke_other_sessions: bool,
+    revoke_session: bool,
 }
 
 impl ReauthPolicy {
@@ -115,6 +125,8 @@ impl ReauthPolicy {
                 ReauthAction::DeleteAccount => policy.delete_account = true,
                 ReauthAction::RequestEmailChange => policy.request_email_change = true,
                 ReauthAction::RemovePasskey => policy.remove_passkey = true,
+                ReauthAction::RevokeOtherSessions => policy.revoke_other_sessions = true,
+                ReauthAction::RevokeSession => policy.revoke_session = true,
             }
         }
         policy
@@ -127,6 +139,8 @@ impl ReauthPolicy {
             delete_account: false,
             request_email_change: false,
             remove_passkey: false,
+            revoke_other_sessions: false,
+            revoke_session: false,
         }
     }
 
@@ -136,6 +150,8 @@ impl ReauthPolicy {
             ReauthAction::DeleteAccount => self.delete_account,
             ReauthAction::RequestEmailChange => self.request_email_change,
             ReauthAction::RemovePasskey => self.remove_passkey,
+            ReauthAction::RevokeOtherSessions => self.revoke_other_sessions,
+            ReauthAction::RevokeSession => self.revoke_session,
         }
     }
 }
@@ -258,7 +274,9 @@ impl ReauthManager {
         Ok((id, rcr))
     }
 
-    /// Gate `action` for the acting `session`.
+    /// Gate `action` for the acting `session`. The one place the recovery
+    /// cool-down and the re-auth policy are enforced; every destructive
+    /// self-service manager method calls it before acting.
     ///
     /// - A `session` inside its post-recovery cool-down window is refused with
     ///   [`Error::RecoveryCooldownActive`] first, whatever the policy and

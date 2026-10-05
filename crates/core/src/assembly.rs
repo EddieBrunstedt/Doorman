@@ -230,7 +230,8 @@ pub struct AuthCore {
     pub signup: SignupManager,
     /// Recovery manager (lost-all-passkeys re-enrolment).
     pub recovery: RecoveryManager,
-    /// Account manager (verified email change, account deletion).
+    /// Account manager (verified email change, account deletion, revoking
+    /// other sessions).
     pub account: AccountManager,
     /// Re-authentication manager backing the `reauth/start` ceremony and the
     /// destructive-action gate.
@@ -446,17 +447,15 @@ impl AuthCoreBuilder {
 
         let notifier = SecurityEmailNotifier::new(email.clone(), emails.clone());
 
-        // The security notifier is installed before the manager is cloned into
-        // `CoreDeps`, so every clone carries it. The resolver installs its
-        // cache invalidator in the hook cell every clone shares, so
-        // revocations routed through any manager evict the cache.
+        // The resolver installs its cache invalidator in the hook cell every
+        // clone of the session manager shares, so revocations routed through
+        // any manager evict the cache.
         let session_manager = SessionManager::new(
             self.storage.sessions.clone(),
             clock.clone(),
             audit.clone(),
             session_config,
-        )
-        .with_security_notifier(notifier.clone());
+        );
         let resolver = SessionResolver::new(
             session_manager.clone(),
             self.storage.users.clone(),

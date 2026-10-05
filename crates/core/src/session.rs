@@ -14,9 +14,8 @@ use chrono::{DateTime, Utc};
 
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, AuditSink};
 use crate::clock::Clock;
-use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
-use crate::storage::{Session, SessionId, SessionStore, SessionSummary, TokenHash, User, UserId};
+use crate::storage::{Session, SessionId, SessionStore, SessionSummary, TokenHash, UserId};
 use crate::sync;
 use crate::token::generate_token;
 pub use crate::token::hash_token;
@@ -136,20 +135,14 @@ pub struct SessionManager {
     /// every other clone regardless of when it was taken — install order
     /// cannot leave a manager wired to a stale observer.
     invalidation_hook: Arc<RwLock<Arc<dyn SessionInvalidationHook>>>,
-    /// Best-effort notifier for session-revocation security notices. Wired
-    /// at the composition root via [`SessionManager::with_security_notifier`];
-    /// when absent the revoke paths still run, they just send no email. Held
-    /// so the notices originate in core — every host driving the manager gets
-    /// them, not only the bundled axum routes.
-    notifier: Option<SecurityEmailNotifier>,
     config: SessionConfig,
 }
 
 impl SessionManager {
     /// Build a session manager from the session store, clock, audit sink, and
-    /// config. No notifier or invalidation hook is wired yet; add them with
-    /// [`with_security_notifier`](Self::with_security_notifier) and the
-    /// invalidation-hook setter before cloning the manager into dependents.
+    /// config. No invalidation hook is wired yet; install one with
+    /// [`with_invalidation_hook`](Self::with_invalidation_hook) or
+    /// [`set_invalidation_hook`](Self::set_invalidation_hook).
     pub fn new(
         sessions: Arc<dyn SessionStore>,
         clock: Arc<dyn Clock>,
@@ -161,7 +154,6 @@ impl SessionManager {
             clock,
             audit: AuditDispatch::new(audit),
             invalidation_hook: Arc::new(RwLock::new(Arc::new(NoopSessionInvalidationHook))),
-            notifier: None,
             config,
         }
     }
@@ -179,15 +171,6 @@ impl SessionManager {
         self.config
             .idle_timeout
             .unwrap_or(self.config.absolute_lifetime)
-    }
-
-    /// Install the best-effort security [`SecurityEmailNotifier`] used for
-    /// session-revocation notices and return `self`. Set this at the
-    /// composition root *before* the manager is cloned into the other
-    /// managers so every clone carries it.
-    pub fn with_security_notifier(mut self, notifier: SecurityEmailNotifier) -> Self {
-        self.notifier = Some(notifier);
-        self
     }
 
     /// Install `hook` as the invalidation observer and return `self`.
@@ -233,14 +216,15 @@ impl SessionManager {
 
     /// Issue a session restricted by a post-recovery cool-down. The
     /// resulting session reports `is_in_recovery_cooldown(now)` until
-    /// `cooldown_until`; routes that gate on the cool-down (delete
-    /// passkey, revoke other sessions, etc.) refuse to proceed while that
-    /// is true.
+    /// `cooldown_until`, and [`ReauthManager::ensure`](crate::reauth::ReauthManager::ensure)
+    /// refuses every [`ReauthAction`](crate::reauth::ReauthAction) for it
+    /// until then. Only recovery and sign-in with a cool-down-bound passkey
+    /// mint one.
     #[tracing::instrument(
         skip(self, context),
         fields(user_id = %user_id, cooldown_until = %cooldown_until),
     )]
-    pub async fn create_restricted(
+    pub(crate) async fn create_restricted(
         &self,
         user_id: UserId,
         context: SessionContext,
@@ -476,8 +460,8 @@ impl SessionManager {
             .delete_sessions_for_user(user_id, None)
             .await?;
         // Only notify the invalidation hook when something was actually
-        // revoked, matching `revoke_others_for_user`'s guarded shape — a
-        // zero-count sweep evicts nothing, so there is nothing to invalidate.
+        // revoked, matching `revoke_others`'s guarded shape — a zero-count
+        // sweep evicts nothing, so there is nothing to invalidate.
         if count > 0 {
             self.invalidation_hook()
                 .on_user_sessions_invalidated(user_id)
@@ -485,47 +469,6 @@ impl SessionManager {
         }
         tracing::info!(count, outcome = "revoked_all", "user sessions revoked");
         Ok(count)
-    }
-
-    /// Return `session`'s active post-recovery cool-down deadline using
-    /// this manager's clock. Expired cool-downs are treated as inactive.
-    pub fn active_recovery_cooldown_until(&self, session: &Session) -> Option<DateTime<Utc>> {
-        session.active_recovery_cooldown_until(self.clock.now())
-    }
-
-    /// Report whether `session` is currently inside its post-recovery
-    /// cool-down window, using this manager's clock. Most callers want
-    /// [`ensure_not_in_recovery_cooldown`](Self::ensure_not_in_recovery_cooldown),
-    /// which turns the answer straight into the standard rejection; this
-    /// predicate is for the rare case that needs the boolean itself.
-    pub fn is_in_recovery_cooldown(&self, session: &Session) -> bool {
-        self.active_recovery_cooldown_until(session).is_some()
-    }
-
-    /// Reject the action with [`Error::RecoveryCooldownActive`] when `session`
-    /// is inside its post-recovery cool-down window; otherwise return `Ok(())`.
-    ///
-    /// This gates the session-revocation surfaces that could strand a
-    /// legitimate owner: "sign out everywhere else" and revoking another
-    /// device's session. The other cool-down-protected actions (passkey
-    /// removal, account deletion, and email change) are refused by
-    /// [`ReauthManager::ensure`](crate::reauth::ReauthManager::ensure), which
-    /// checks the cool-down before re-authentication. Keeping the gate in core
-    /// means the guarantee holds for every host driving `doorman-core`, not
-    /// only the bundled `doorman-axum` routes. Judged against this manager's
-    /// clock, so an injected or mock clock is honoured.
-    ///
-    /// Pass a `session` resolved from storage for the current request, as the
-    /// bundled `doorman-axum` layer does. The gate trusts the supplied snapshot:
-    /// it reads the cool-down deadline (and, by extension, the session's
-    /// liveness) straight off the passed value rather than re-reading the row,
-    /// so a custom transport that hands in a cached or hand-built `Session` is
-    /// gated against that stale snapshot, not the current stored state.
-    pub fn ensure_not_in_recovery_cooldown(&self, session: &Session) -> Result<()> {
-        if self.is_in_recovery_cooldown(session) {
-            return Err(Error::RecoveryCooldownActive);
-        }
-        Ok(())
     }
 
     /// Return every still-valid session belonging to `user_id`. Sessions
@@ -554,37 +497,20 @@ impl SessionManager {
         Ok(sessions.iter().map(SessionSummary::from).collect())
     }
 
-    /// Revoke every session belonging to `user` *except* the caller's
-    /// `current_session`. The retained session is the caller's own device on
-    /// the typical "sign out everywhere else" path. Notifies the invalidation
-    /// hook so any framework-side cache evicts the removed sessions, and — when
-    /// anything was revoked — sends the best-effort "other sessions revoked"
-    /// security notice so the notice originates here rather than in each
-    /// host's HTTP layer.
-    ///
-    /// Refused with [`Error::RecoveryCooldownActive`] while `current_session`
-    /// is inside its post-recovery cool-down window: a phished recovery
-    /// session must not be able to kick the legitimate owner off their devices.
-    /// Pass a `current_session` resolved from storage for this request; the
-    /// cool-down (and revocation) check trusts the supplied snapshot.
-    #[tracing::instrument(skip(self, user, current_session), fields(user_id = %user.id, session_id = %current_session.id))]
-    pub async fn revoke_others_for_user(
-        &self,
-        user: &User,
-        current_session: &Session,
-    ) -> Result<u64> {
-        self.ensure_not_in_recovery_cooldown(current_session)?;
+    /// Revoke every session belonging to `user_id` except `keep`, firing the
+    /// user-sessions-invalidated hook when any were removed. Returns the count.
+    /// The ungated core of
+    /// [`AccountManager::revoke_other_sessions`](crate::account::AccountManager::revoke_other_sessions),
+    /// which owns the cool-down and re-auth gate and the security notice.
+    pub(crate) async fn revoke_others(&self, user_id: UserId, keep: SessionId) -> Result<u64> {
         let count = self
             .sessions
-            .delete_sessions_for_user(user.id, Some(current_session.id))
+            .delete_sessions_for_user(user_id, Some(keep))
             .await?;
         if count > 0 {
             self.invalidation_hook()
-                .on_user_sessions_invalidated(user.id)
+                .on_user_sessions_invalidated(user_id)
                 .await;
-            if let Some(notifier) = &self.notifier {
-                notifier.other_sessions_revoked(user).await;
-            }
         }
         tracing::info!(
             count,
@@ -594,59 +520,13 @@ impl SessionManager {
         Ok(count)
     }
 
-    /// Revoke a single session the caller owns, identified by `session_id`.
-    ///
-    /// Reads the target once, rejects a missing session or one owned by a
-    /// different user with [`Error::SessionNotFound`] (so a probe cannot
-    /// learn whether another user's session id exists), then revokes it.
-    /// When the revoked session is not the caller's `current_session` the
-    /// best-effort "session revoked" security notice is sent —
-    /// self-revocation stays silent. Keeping this in the manager means the
-    /// notice originates in core for every host.
-    ///
-    /// While `current_session` is inside its post-recovery cool-down window,
-    /// revoking *another* session is refused with
-    /// [`Error::RecoveryCooldownActive`] (a phished recovery session must not
-    /// be able to strand the owner's other devices); revoking the cool-down
-    /// session *itself* stays allowed so the owner can always sign that
-    /// session out. Pass a `current_session` resolved from storage for this
-    /// request; the cool-down (and revocation) check trusts the supplied
-    /// snapshot.
-    #[tracing::instrument(
-        skip(self, user, current_session),
-        fields(user_id = %user.id, session_id = %session_id),
-    )]
-    pub async fn revoke_owned_session(
-        &self,
-        user: &User,
-        session_id: SessionId,
-        current_session: &Session,
-    ) -> Result<()> {
-        let is_current = session_id == current_session.id;
-        if !is_current {
-            self.ensure_not_in_recovery_cooldown(current_session)?;
-        }
-        self.revoke_session_for_target(
-            user.id,
-            session_id,
-            Actor::Subject {
-                ip: current_session.ip.clone(),
-                user_agent: current_session.user_agent.clone(),
-            },
-        )
-        .await?;
-        if !is_current && let Some(notifier) = &self.notifier {
-            notifier.other_session_revoked(user).await;
-        }
-        Ok(())
-    }
-
     /// Revoke `session_id` after asserting it belongs to `target_user_id`,
     /// attributing the audit event to `actor` and firing the invalidation hook
     /// through [`revoke_session`](Self::revoke_session). The id-keyed core both
-    /// self-service [`revoke_owned_session`](Self::revoke_owned_session) and
-    /// the operator single-session-revoke flow drive; the two diverge only on
-    /// the recorded `actor` ([`Actor::Subject`] versus [`Actor::Operator`]).
+    /// self-service
+    /// [`AccountManager::revoke_session`](crate::account::AccountManager::revoke_session)
+    /// and the operator single-session-revoke flow drive; the two diverge only
+    /// on the recorded `actor` ([`Actor::Subject`] versus [`Actor::Operator`]).
     ///
     /// Reads the target once and rejects a missing session — or one owned by a
     /// different user — with [`Error::SessionNotFound`], so the ownership
@@ -848,8 +728,8 @@ mod tests {
     }
 
     /// `revoke_all_for_user` must only notify the invalidation hook when it
-    /// actually revoked something — matching `revoke_others_for_user`'s
-    /// guarded shape. A zero-count sweep evicts nothing.
+    /// actually revoked something — matching `revoke_others`'s guarded
+    /// shape. A zero-count sweep evicts nothing.
     #[tokio::test]
     async fn revoke_all_does_not_notify_hook_on_zero_count() {
         let hook = Arc::new(CountingHook::default());
@@ -886,6 +766,60 @@ mod tests {
             hook.user_invalidations.load(Ordering::SeqCst),
             1,
             "revoking sessions notifies the hook exactly once",
+        );
+    }
+
+    /// `revoke_others` removes only the user's other sessions and notifies
+    /// the invalidation hook once when it removed any.
+    #[tokio::test]
+    async fn revoke_others_keeps_the_exception_and_notifies_hook() {
+        let hook = Arc::new(CountingHook::default());
+        let manager = manager_with_hook(hook.clone());
+        let user_id = UserId::new();
+        let keep = manager
+            .create(user_id, SessionContext::default())
+            .await
+            .expect("keep");
+        manager
+            .create(user_id, SessionContext::default())
+            .await
+            .expect("other");
+
+        let count = manager
+            .revoke_others(user_id, keep.session.id)
+            .await
+            .expect("revoke others");
+        assert_eq!(count, 1);
+        let remaining: Vec<SessionId> = manager
+            .list_for_user(user_id)
+            .await
+            .expect("list")
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(remaining, vec![keep.session.id]);
+        assert_eq!(hook.user_invalidations.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn revoke_others_does_not_notify_hook_on_zero_count() {
+        let hook = Arc::new(CountingHook::default());
+        let manager = manager_with_hook(hook.clone());
+        let user_id = UserId::new();
+        let only = manager
+            .create(user_id, SessionContext::default())
+            .await
+            .expect("only");
+
+        let count = manager
+            .revoke_others(user_id, only.session.id)
+            .await
+            .expect("revoke others");
+        assert_eq!(count, 0);
+        assert_eq!(
+            hook.user_invalidations.load(Ordering::SeqCst),
+            0,
+            "a no-op revoke must not spam the cache invalidator",
         );
     }
 }

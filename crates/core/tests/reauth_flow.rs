@@ -11,18 +11,74 @@ use doorman_core::session::SessionContext;
 use doorman_core::storage::UserStore;
 
 use common::{
-    Harness, authenticator, kinds, make_user, register_passkey, restricted_session_for, session_for,
+    Harness, authenticator, kinds, make_user, register_passkey, restricted_session_for,
+    session_count, session_for,
 };
+
+/// Every [`ReauthAction`]. The match is exhaustive on purpose: a new variant
+/// fails to compile here until the matrix below covers it.
+fn all_actions() -> [ReauthAction; 5] {
+    let listed = |action: ReauthAction| match action {
+        ReauthAction::DeleteAccount
+        | ReauthAction::RequestEmailChange
+        | ReauthAction::RemovePasskey
+        | ReauthAction::RevokeOtherSessions
+        | ReauthAction::RevokeSession => action,
+    };
+    [
+        ReauthAction::DeleteAccount,
+        ReauthAction::RequestEmailChange,
+        ReauthAction::RemovePasskey,
+        ReauthAction::RevokeOtherSessions,
+        ReauthAction::RevokeSession,
+    ]
+    .map(listed)
+}
 
 /// Build a harness that gates every destructive action behind re-auth.
 fn gated_harness() -> Harness {
     Harness::builder()
-        .reauth_policy(ReauthPolicy::required_for([
-            ReauthAction::DeleteAccount,
-            ReauthAction::RequestEmailChange,
-            ReauthAction::RemovePasskey,
-        ]))
+        .reauth_policy(ReauthPolicy::required_for(all_actions()))
         .build()
+}
+
+#[tokio::test]
+async fn ensure_matrix_cooldown_blocks_every_action_before_policy() {
+    // Each action x {in cool-down, out of it} x {policy off, policy on},
+    // without a proof. The cool-down refuses every action whatever the
+    // policy; outside it, the policy alone decides.
+    let cases = [(Harness::fresh(), "disabled"), (gated_harness(), "gated")];
+    for (h, policy) in &cases {
+        let user = make_user(h, "owner@example.com").await;
+        let cooldown_until = h.clock.now() + chrono::Duration::hours(24);
+        let restricted = restricted_session_for(h, &user, cooldown_until);
+        let plain = session_for(h, &user);
+        for action in all_actions() {
+            let blocked = h
+                .reauth
+                .ensure(action, &restricted, None, &SessionContext::default())
+                .await;
+            assert!(
+                matches!(blocked, Err(Error::RecoveryCooldownActive)),
+                "{action:?} in cool-down under {policy} policy: got {blocked:?}",
+            );
+
+            let outside = h
+                .reauth
+                .ensure(action, &plain, None, &SessionContext::default())
+                .await;
+            match *policy {
+                "disabled" => assert!(
+                    outside.is_ok(),
+                    "{action:?} outside cool-down under disabled policy: got {outside:?}",
+                ),
+                _ => assert!(
+                    matches!(outside, Err(Error::ReauthRequired)),
+                    "{action:?} outside cool-down under gated policy: got {outside:?}",
+                ),
+            }
+        }
+    }
 }
 
 /// Run the full ceremony and hand back a usable proof: register a passkey,
@@ -335,4 +391,87 @@ fn scoped_to(
         transports: None,
     }];
     options
+}
+
+#[tokio::test]
+async fn revoke_other_sessions_requires_proof_when_gated() {
+    let h = gated_harness();
+    let user = make_user(&h, "owner@example.com").await;
+    let mut wa = authenticator();
+    register_passkey(&h, user.id, &mut wa, Some("device")).await;
+    let current = h
+        .session_manager
+        .create(user.id, SessionContext::default())
+        .await
+        .expect("current")
+        .session;
+    h.session_manager
+        .create(user.id, SessionContext::default())
+        .await
+        .expect("other");
+
+    let err = h
+        .account
+        .revoke_other_sessions(&user, &current, None, SessionContext::default())
+        .await
+        .expect_err("missing proof must be rejected");
+    assert!(matches!(err, Error::ReauthRequired), "got: {err:?}");
+    assert_eq!(
+        session_count(&h, user.id).await,
+        2,
+        "nothing is revoked without a proof"
+    );
+
+    let proof = fresh_proof(&h, user.id, &mut wa).await;
+    let removed = h
+        .account
+        .revoke_other_sessions(&user, &current, Some(proof), SessionContext::default())
+        .await
+        .expect("revoke with a fresh proof");
+    assert_eq!(removed, 1);
+}
+
+#[tokio::test]
+async fn revoke_session_requires_proof_only_for_another_session() {
+    let h = gated_harness();
+    let user = make_user(&h, "owner@example.com").await;
+    let mut wa = authenticator();
+    register_passkey(&h, user.id, &mut wa, Some("device")).await;
+    let current = h
+        .session_manager
+        .create(user.id, SessionContext::default())
+        .await
+        .expect("current")
+        .session;
+    let other = h
+        .session_manager
+        .create(user.id, SessionContext::default())
+        .await
+        .expect("other")
+        .session;
+
+    let err = h
+        .account
+        .revoke_session(&user, &current, other.id, None, SessionContext::default())
+        .await
+        .expect_err("another session needs a proof");
+    assert!(matches!(err, Error::ReauthRequired), "got: {err:?}");
+
+    let proof = fresh_proof(&h, user.id, &mut wa).await;
+    h.account
+        .revoke_session(
+            &user,
+            &current,
+            other.id,
+            Some(proof),
+            SessionContext::default(),
+        )
+        .await
+        .expect("revoke another session with a fresh proof");
+
+    // Signing out the acting session never needs a proof.
+    h.account
+        .revoke_session(&user, &current, current.id, None, SessionContext::default())
+        .await
+        .expect("self-revocation is never gated");
 }

@@ -2,7 +2,12 @@
 //!
 //! Mounted under `/auth/sessions`. Always available since every flow that
 //! issues a session (passkey login, signup finish, and recovery finish)
-//! produces a session managed by the same [`SessionManager`].
+//! produces a session managed by the same [`SessionManager`]. Revoking
+//! *other* sessions goes through the [`AccountManager`], which applies the
+//! post-recovery cool-down and re-auth gate.
+//!
+//! [`SessionManager`]: doorman_core::session::SessionManager
+//! [`AccountManager`]: doorman_core::account::AccountManager
 
 use axum::Json;
 use axum::Router;
@@ -13,10 +18,10 @@ use axum::routing::{delete, get, post};
 use doorman_core::storage::SessionId;
 use uuid::Uuid;
 
-use crate::dto::SessionDto;
+use crate::dto::{RevokeSessionRequest, SessionDto};
 use crate::error::ErrorResponse;
-use crate::extractors::AuthSession;
-use crate::routes::no_content_clearing_session_cookie;
+use crate::extractors::{AuthSession, RequestContext};
+use crate::routes::{no_content_clearing_session_cookie, reauth_proof};
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
@@ -80,39 +85,41 @@ async fn list(
 async fn remove(
     State(state): State<AuthState>,
     auth: AuthSession,
+    RequestContext(context): RequestContext,
     Path(raw_id): Path<String>,
+    body: Option<Json<RevokeSessionRequest>>,
 ) -> Result<StatusCode, ErrorResponse> {
     let id = Uuid::parse_str(&raw_id)
         .map(SessionId)
         .map_err(|_| ErrorResponse(doorman_core::Error::SessionNotFound))?;
 
-    // Ownership, the post-recovery cool-down gate, revocation, and the
-    // best-effort "other session revoked" notice all live in the manager: it
-    // reads the target once, refuses revoking *another* session while the
-    // current one is locked down (the cool-down session itself stays
-    // revocable so the user can sign it out), treats a missing or not-owned
-    // session as "not yours" (rather than leaking the existence of someone
-    // else's id), and notifies only when the revoked session is not the
-    // caller's own.
+    // The body is optional: the proof-less first attempt sends none. Ownership,
+    // the cool-down and re-auth gate, revocation, and the "other session
+    // revoked" notice all live in the manager. It treats a missing or
+    // not-owned session as "not yours", and never gates revoking the current
+    // session, so the user can always sign it out.
+    let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     state
-        .session_manager
-        .revoke_owned_session(&auth.user, id, &auth.session)
+        .account
+        .revoke_session(&auth.user, &auth.session, id, proof, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// Revoke every session belonging to the caller *except* the current one.
-/// Powers the "sign out everywhere else" surface. The manager refuses this
-/// while the current session is within the post-recovery cool-down window and
-/// fires the "other sessions revoked" notice itself when it revokes anything,
-/// so the route only drives it.
+/// Powers the "sign out everywhere else" surface. The manager applies the
+/// post-recovery cool-down and re-auth gate and fires the "other sessions
+/// revoked" notice itself, so the route only drives it.
 async fn remove_others(
     State(state): State<AuthState>,
     auth: AuthSession,
+    RequestContext(context): RequestContext,
+    body: Option<Json<RevokeSessionRequest>>,
 ) -> Result<StatusCode, ErrorResponse> {
+    let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     state
-        .session_manager
-        .revoke_others_for_user(&auth.user, &auth.session)
+        .account
+        .revoke_other_sessions(&auth.user, &auth.session, proof, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -1,13 +1,14 @@
-//! Integration tests for the account-lifecycle flows: verified email change
-//! and account deletion.
+//! Integration tests for the account self-service flows: verified email
+//! change, account deletion, and revoking the user's other sessions.
 
 mod common;
 
+use chrono::Duration as ChronoDuration;
 use doorman_core::Error;
 use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::session::SessionContext;
-use doorman_core::storage::{AccountStatus, UserStore};
+use doorman_core::storage::{AccountStatus, Session, SessionId, SessionStore, User, UserStore};
 
 use common::{
     ACCOUNT_URL, Harness, SIGNUP_URL, assert_last_redemption_unknown, authenticator, kinds,
@@ -633,4 +634,193 @@ async fn delete_account_cascades_all_stores() {
         .expect_err("the pending ceremony is gone");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
     assert_last_redemption_unknown(&h, SecretKind::RegistrationChallenge);
+}
+
+/// Issue a stored session for `user`. With `cooldown_until`, the returned
+/// snapshot carries that post-recovery deadline the way a recovery session
+/// does; the gate reads the deadline off the snapshot it is handed.
+async fn stored_session(
+    h: &Harness,
+    user: &User,
+    cooldown_until: Option<ChronoDuration>,
+) -> Session {
+    let mut session = h
+        .session_manager
+        .create(user.id, SessionContext::default())
+        .await
+        .expect("create session")
+        .session;
+    session.recovery_cooldown_until = cooldown_until.map(|span| h.clock.now() + span);
+    session
+}
+
+async fn session_exists(h: &Harness, id: SessionId) -> bool {
+    h.sessions
+        .find_session_by_id(id)
+        .await
+        .expect("find session")
+        .is_some()
+}
+
+#[tokio::test]
+async fn revoke_other_sessions_keeps_only_the_acting_session_and_notifies() {
+    let h = Harness::fresh();
+    let alice = make_user(&h, "alice@example.com").await;
+    let bob = make_user(&h, "bob@example.com").await;
+    let current = stored_session(&h, &alice, None).await;
+    let other_1 = stored_session(&h, &alice, None).await;
+    let other_2 = stored_session(&h, &alice, None).await;
+    let bobs = stored_session(&h, &bob, None).await;
+    let mail_before = h.email.sent().len();
+
+    let removed = h
+        .account
+        .revoke_other_sessions(&alice, &current, None, SessionContext::default())
+        .await
+        .expect("revoke other sessions");
+
+    assert_eq!(removed, 2);
+    assert!(
+        session_exists(&h, current.id).await,
+        "the acting session stays"
+    );
+    assert!(!session_exists(&h, other_1.id).await);
+    assert!(!session_exists(&h, other_2.id).await);
+    assert!(
+        session_exists(&h, bobs.id).await,
+        "another user is untouched"
+    );
+    // The notice originates in core, so a host driving the manager directly
+    // gets it too.
+    let sent = &h.email.sent()[mail_before..];
+    assert_eq!(sent.len(), 1, "one bulk-revocation notice");
+    assert_eq!(sent[0].subject, "Security notice: other sessions revoked");
+    assert_eq!(sent[0].to, "alice@example.com");
+}
+
+#[tokio::test]
+async fn revoke_session_notifies_only_for_other_sessions() {
+    let h = Harness::fresh();
+    let alice = make_user(&h, "alice@example.com").await;
+    let current = stored_session(&h, &alice, None).await;
+    let other = stored_session(&h, &alice, None).await;
+    let mail_before = h.email.sent().len();
+
+    h.account
+        .revoke_session(&alice, &current, other.id, None, SessionContext::default())
+        .await
+        .expect("revoke other");
+    assert!(!session_exists(&h, other.id).await);
+    assert_eq!(
+        h.email.sent().len(),
+        mail_before + 1,
+        "revoking another session notifies"
+    );
+
+    h.account
+        .revoke_session(
+            &alice,
+            &current,
+            current.id,
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("revoke self");
+    assert!(!session_exists(&h, current.id).await);
+    assert_eq!(
+        h.email.sent().len(),
+        mail_before + 1,
+        "self-revocation sends no notice"
+    );
+}
+
+#[tokio::test]
+async fn revoke_session_hides_another_users_session() {
+    let h = Harness::fresh();
+    let alice = make_user(&h, "alice@example.com").await;
+    let bob = make_user(&h, "bob@example.com").await;
+    let current = stored_session(&h, &alice, None).await;
+    let bobs = stored_session(&h, &bob, None).await;
+
+    let err = h
+        .account
+        .revoke_session(&alice, &current, bobs.id, None, SessionContext::default())
+        .await
+        .expect_err("alice cannot revoke bob's session");
+    assert!(matches!(err, Error::SessionNotFound), "got: {err:?}");
+    assert!(session_exists(&h, bobs.id).await);
+}
+
+#[tokio::test]
+async fn revoke_other_sessions_refused_during_recovery_cooldown() {
+    // A phished recovery session must not kick the legitimate owner off their
+    // devices, whichever transport drives core.
+    let h = Harness::fresh();
+    let alice = make_user(&h, "alice@example.com").await;
+    let current = stored_session(&h, &alice, Some(ChronoDuration::minutes(10))).await;
+    let other = stored_session(&h, &alice, None).await;
+    let mail_before = h.email.sent().len();
+
+    let err = h
+        .account
+        .revoke_other_sessions(&alice, &current, None, SessionContext::default())
+        .await
+        .expect_err("refused during the cool-down");
+    assert!(matches!(err, Error::RecoveryCooldownActive), "got: {err:?}");
+    assert!(session_exists(&h, other.id).await, "nothing is revoked");
+    assert_eq!(h.email.sent().len(), mail_before, "no notice");
+
+    // The cool-down releases: once it lapses the same session may sign out
+    // the other devices.
+    h.clock.advance(ChronoDuration::minutes(11));
+    let removed = h
+        .account
+        .revoke_other_sessions(&alice, &current, None, SessionContext::default())
+        .await
+        .expect("allowed once the cool-down lapses");
+    assert_eq!(removed, 1);
+    assert!(!session_exists(&h, other.id).await);
+}
+
+#[tokio::test]
+async fn revoke_session_cooldown_blocks_others_but_allows_self() {
+    // During the cool-down, revoking another device is refused, but the owner
+    // can always sign out the cool-down session itself.
+    let h = Harness::fresh();
+    let alice = make_user(&h, "alice@example.com").await;
+    let current = stored_session(&h, &alice, Some(ChronoDuration::minutes(10))).await;
+    let other = stored_session(&h, &alice, None).await;
+
+    let err = h
+        .account
+        .revoke_session(&alice, &current, other.id, None, SessionContext::default())
+        .await
+        .expect_err("revoking another device is refused during the cool-down");
+    assert!(matches!(err, Error::RecoveryCooldownActive), "got: {err:?}");
+    assert!(
+        session_exists(&h, other.id).await,
+        "the other device is untouched"
+    );
+
+    // Once the cool-down lapses, revoking another device is allowed again.
+    h.clock.advance(ChronoDuration::minutes(11));
+    h.account
+        .revoke_session(&alice, &current, other.id, None, SessionContext::default())
+        .await
+        .expect("allowed once the cool-down lapses");
+    assert!(!session_exists(&h, other.id).await);
+
+    let restricted = stored_session(&h, &alice, Some(ChronoDuration::minutes(10))).await;
+    h.account
+        .revoke_session(
+            &alice,
+            &restricted,
+            restricted.id,
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("revoking the cool-down session itself stays allowed");
+    assert!(!session_exists(&h, restricted.id).await);
 }

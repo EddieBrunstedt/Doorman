@@ -1,7 +1,8 @@
-//! Account-lifecycle operations: verified email change and account deletion.
+//! Account self-service: verified email change, account deletion, and
+//! signing out the user's other sessions.
 //!
-//! [`AccountManager`] owns the two account-management flows that sit outside
-//! the signup / recovery / passkey ceremonies:
+//! [`AccountManager`] owns the account-management flows that sit outside the
+//! signup / recovery / passkey ceremonies:
 //!
 //! - [`request_email_change`](AccountManager::request_email_change) /
 //!   [`confirm_email_change`](AccountManager::confirm_email_change) — a
@@ -14,6 +15,13 @@
 //!   the user and every row that hangs off it (sessions, credentials,
 //!   verification tokens, pending registration ceremonies), evicting any
 //!   framework-side session cache as it revokes.
+//! - [`revoke_other_sessions`](AccountManager::revoke_other_sessions) /
+//!   [`revoke_session`](AccountManager::revoke_session) — "sign out everywhere
+//!   else" and revoking one of the user's sessions by id.
+//!
+//! Every session-authenticated method here passes through
+//! [`ReauthManager::ensure`] first, so the post-recovery cool-down and the
+//! host's re-auth policy are enforced for any transport driving core.
 //!
 //! The email-change link is an emailed link like the signup and recovery
 //! ones (single-use, hashed at rest, purpose-bound), carrying the normalized
@@ -33,8 +41,8 @@ use crate::error::{Error, Result};
 use crate::link::{EmailChange, EmailedLink};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::redeem::Redeemer;
-use crate::session::SessionContext;
-use crate::storage::{Session, User};
+use crate::session::{SessionContext, SessionManager};
+use crate::storage::{Session, SessionId, User};
 use crate::user::UserRecords;
 use crate::verification::{self, TOKEN_PLACEHOLDER};
 
@@ -69,10 +77,12 @@ impl Default for AccountConfig {
     }
 }
 
-/// Manager for verified email change and account deletion.
+/// Manager for verified email change, account deletion, and revoking the
+/// user's other sessions.
 #[derive(Clone)]
 pub struct AccountManager {
     records: UserRecords,
+    sessions: SessionManager,
     link: EmailedLink<EmailChange>,
     reauth: ReauthManager,
     clock: Arc<dyn Clock>,
@@ -84,8 +94,9 @@ pub struct AccountManager {
 
 impl AccountManager {
     /// Build an `AccountManager` from the shared [`CoreDeps`] context and the
-    /// [`AccountConfig`]. The collaborators (stores, clock, audit, email
-    /// transport, re-auth manager) are read from `deps` so they are named once
+    /// [`AccountConfig`]. The collaborators (stores, session manager, clock,
+    /// audit, email transport, re-auth manager) are read from `deps` so they
+    /// are named once
     /// at the composition root.
     ///
     /// Returns [`AssemblyError::InvalidUrlTemplate`] or
@@ -103,6 +114,7 @@ impl AccountManager {
         )?;
         Ok(Self {
             records: UserRecords::new(deps),
+            sessions: deps.sessions.clone(),
             link,
             reauth: deps.reauth.clone(),
             clock: deps.clock.clone(),
@@ -235,8 +247,7 @@ impl AccountManager {
 
     /// Irreversibly delete the account behind the acting `session` and
     /// everything that hangs off it. Revokes every session first (evicting any
-    /// framework-side session cache through the
-    /// [`SessionManager`](crate::session::SessionManager)'s
+    /// framework-side session cache through the [`SessionManager`]'s
     /// invalidation hook), then removes the user's passkey credentials,
     /// verification tokens, pending registration ceremonies, and finally the
     /// user row itself, leaving no orphaned rows.
@@ -275,5 +286,97 @@ impl AccountManager {
                 },
             )
             .await
+    }
+
+    /// Revoke every session belonging to `user` except the acting `session`:
+    /// "sign out everywhere else". Returns the number revoked. When anything
+    /// was revoked, evicts any framework-side session cache through the
+    /// [`SessionManager`]'s invalidation hook and sends the best-effort "other
+    /// sessions revoked" security notice.
+    ///
+    /// Refused with [`Error::RecoveryCooldownActive`] while `session` is
+    /// inside its post-recovery cool-down window: a phished recovery session
+    /// must not be able to kick the legitimate owner off their devices. Pass a
+    /// `session` resolved from storage for this request; the check trusts the
+    /// supplied snapshot.
+    ///
+    /// When the host's [`ReauthPolicy`](crate::reauth::ReauthPolicy) gates
+    /// [`RevokeOtherSessions`](ReauthAction::RevokeOtherSessions), `reauth`
+    /// must carry a fresh [`ReauthProof`]; an absent one is rejected with
+    /// [`Error::ReauthRequired`]. The cool-down is checked **first**.
+    #[tracing::instrument(skip(self, user, session, reauth, context), fields(user_id = %user.id, session_id = %session.id))]
+    pub async fn revoke_other_sessions(
+        &self,
+        user: &User,
+        session: &Session,
+        reauth: Option<ReauthProof>,
+        context: SessionContext,
+    ) -> Result<u64> {
+        self.reauth
+            .ensure(
+                ReauthAction::RevokeOtherSessions,
+                session,
+                reauth.as_ref(),
+                &context,
+            )
+            .await?;
+        let count = self.sessions.revoke_others(user.id, session.id).await?;
+        if count > 0 {
+            self.notifier.other_sessions_revoked(user).await;
+        }
+        Ok(count)
+    }
+
+    /// Revoke one of `user`'s sessions, identified by `target`.
+    ///
+    /// Reads the target once and rejects a missing session, or one owned by a
+    /// different user, with [`Error::SessionNotFound`], so a probe cannot
+    /// learn whether another user's session id exists. When `target` is not
+    /// the acting `session`, the best-effort "session revoked" security notice
+    /// is sent; self-revocation stays silent.
+    ///
+    /// Revoking the acting `session` itself is never gated, so the owner can
+    /// always sign it out. Revoking *another* session goes through
+    /// [`ReauthManager::ensure`] as
+    /// [`RevokeSession`](ReauthAction::RevokeSession): refused with
+    /// [`Error::RecoveryCooldownActive`] while `session` is inside its
+    /// post-recovery cool-down (a phished recovery session must not strand the
+    /// owner's other devices), and requiring a fresh [`ReauthProof`] when the
+    /// host's policy lists the action. Pass a `session` resolved from storage
+    /// for this request; the check trusts the supplied snapshot.
+    #[tracing::instrument(skip(self, user, session, reauth, context), fields(user_id = %user.id, session_id = %target))]
+    pub async fn revoke_session(
+        &self,
+        user: &User,
+        session: &Session,
+        target: SessionId,
+        reauth: Option<ReauthProof>,
+        context: SessionContext,
+    ) -> Result<()> {
+        let is_current = target == session.id;
+        if !is_current {
+            self.reauth
+                .ensure(
+                    ReauthAction::RevokeSession,
+                    session,
+                    reauth.as_ref(),
+                    &context,
+                )
+                .await?;
+        }
+        self.sessions
+            .revoke_session_for_target(
+                user.id,
+                target,
+                Actor::Subject {
+                    ip: session.ip.clone(),
+                    user_agent: session.user_agent.clone(),
+                },
+            )
+            .await?;
+        if !is_current {
+            self.notifier.other_session_revoked(user).await;
+        }
+        Ok(())
     }
 }

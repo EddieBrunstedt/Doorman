@@ -7,17 +7,19 @@ mod common;
 use axum::Router;
 use axum::http::StatusCode;
 use common::{SignupClient, TestApp};
-use doorman_axum::dto::{DeleteAccountRequest, RemovePasskeyRequest};
+use doorman_axum::dto::{DeleteAccountRequest, RemovePasskeyRequest, RevokeSessionRequest};
 use doorman_core::reauth::{ReauthAction, ReauthPolicy};
 use serde_json::Value;
 
-/// Start an app that gates the three destructive actions behind re-auth.
+/// Start an app that gates every destructive action behind re-auth.
 async fn gated_app() -> TestApp {
     TestApp::start_with(Router::new(), false, |b| {
         b.reauthentication(ReauthPolicy::required_for([
             ReauthAction::DeleteAccount,
             ReauthAction::RequestEmailChange,
             ReauthAction::RemovePasskey,
+            ReauthAction::RevokeOtherSessions,
+            ReauthAction::RevokeSession,
         ]))
     })
     .await
@@ -110,6 +112,57 @@ async fn remove_passkey_runs_the_full_reauth_dance() {
         .send()
         .await
         .expect("remove with proof");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn revoke_other_sessions_runs_the_full_reauth_dance() {
+    let app = gated_app().await;
+    let client = reqwest::Client::new();
+    let mut signup = SignupClient::new(&app);
+    let auth = signup.signup(&client, &app, "owner@example.com").await;
+    let other = common::login(&client, &app, "owner@example.com").await;
+
+    // Proof-less "sign out everywhere else" is refused.
+    let resp = client
+        .delete(app.url("/auth/sessions"))
+        .bearer_auth(&auth.token)
+        .send()
+        .await
+        .expect("revoke others without proof");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let body: Value = resp.json().await.expect("error body");
+    assert_eq!(body["error"]["code"], "reauth_required");
+
+    // With a fresh proof it succeeds, and the other session stops resolving.
+    let proof = signup.reauth(&client, &app, &auth.token).await;
+    let resp = client
+        .delete(app.url("/auth/sessions"))
+        .bearer_auth(&auth.token)
+        .json(&RevokeSessionRequest {
+            reauthentication: Some(proof),
+        })
+        .send()
+        .await
+        .expect("revoke others with proof");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let gone = client
+        .get(app.url("/me"))
+        .bearer_auth(&other.token)
+        .send()
+        .await
+        .expect("me with revoked session");
+    assert_eq!(gone.status(), StatusCode::UNAUTHORIZED);
+
+    // Revoking the current session by id never needs a proof.
+    let resp = client
+        .delete(app.url(&format!("/auth/sessions/{}", auth.session.id)))
+        .bearer_auth(&auth.token)
+        .send()
+        .await
+        .expect("revoke current session");
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     app.shutdown().await;

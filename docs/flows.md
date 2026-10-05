@@ -120,7 +120,7 @@ Email change reuses the verification-token machinery: a single-use confirmation 
 
 ## Re-authentication for destructive actions
 
-A host can require a **fresh passkey assertion immediately before** the destructive actions — delete account, request email change, remove passkey — to prove the session is still operated by its owner (see [security.md](security.md#re-authentication-for-destructive-actions) for the threat model). The decision is **required**: wire `.reauthentication(ReauthPolicy::required_for([...]))` to gate actions, or `.reauthentication(ReauthPolicy::disabled())` to opt out. The build fails closed otherwise.
+A host can require a **fresh passkey assertion immediately before** the destructive actions — delete account, request email change, remove passkey, revoke another session, sign out everywhere else — to prove the session is still operated by its owner (see [security.md](security.md#re-authentication-for-destructive-actions) for the threat model). The decision is **required**: wire `.reauthentication(ReauthPolicy::required_for([...]))` to gate actions, or `.reauthentication(ReauthPolicy::disabled())` to opt out. The build fails closed otherwise.
 
 When an action is gated, the client follows one recipe for every protected route:
 
@@ -129,11 +129,13 @@ When an action is gated, the client follows one recipe for every protected route
 3. `POST /auth/reauth/start` → `{ "challenge_id", "options" }`; run `navigator.credentials.get(options)` (the same call the sign-in page makes).
 4. Re-call the destructive endpoint, now including `"reauthentication": { "challenge_id", "assertion" }` in the JSON body.
 
-| Endpoint                               | Body field carrying the proof |
-| -------------------------------------- | ----------------------------- |
-| `DELETE /auth/account`                 | `reauthentication`            |
-| `POST /auth/account/email`             | `reauthentication`            |
-| `DELETE /auth/passkey/{credential_id}` | `reauthentication`            |
+| Endpoint                                       | Body field carrying the proof |
+| ---------------------------------------------- | ----------------------------- |
+| `DELETE /auth/account`                         | `reauthentication`            |
+| `POST /auth/account/email`                     | `reauthentication`            |
+| `DELETE /auth/passkey/{credential_id}`         | `reauthentication`            |
+| `DELETE /auth/sessions`                        | `reauthentication`            |
+| `DELETE /auth/sessions/{id}` (another session) | `reauthentication`            |
 
 The challenge is single-use, scoped to the session user's own credentials, and always requires user verification. `POST /auth/reauth/start` is authenticated and inherits the CSRF origin check like every mutation; it is **not** rate-limited (it is authenticated, sends no email, and guards an unforgeable signature). Non-interactive bearer clients cannot satisfy a re-auth gate — programmatic deletion is the operator surface's job.
 
