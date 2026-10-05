@@ -9,15 +9,18 @@
 //!
 //! - `create_user` → `insert_one`: the unique `_id` and the partial unique
 //!   `email` index jointly reject a duplicate id or a duplicate email.
-//! - `update_user` → `replace_one` (matched by `_id`): the index rejects a
-//!   conflicting email change, and `matched_count == 0` surfaces "not found".
+//! - The field-level setters → `update_one` with `$set` (and `$unset` for a
+//!   cleared `disabled_at`), matched by `_id`: only the named fields are
+//!   written, the index rejects a conflicting email change, and
+//!   `matched_count == 0` surfaces "not found".
 //! - Reads use `find_one` with a strongly-consistent primary read (the default
 //!   for a standalone node).
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{User, UserId, UserStore};
-use mongodb::bson::doc;
+use doorman_core::storage::{AccountStatus, User, UserId, UserStore};
+use mongodb::bson::{Document, doc};
 
 use crate::db::{Coll, err};
 use crate::model;
@@ -30,6 +33,18 @@ pub(crate) struct MongoUserStore {
 impl MongoUserStore {
     pub(crate) fn new(coll: Coll) -> Self {
         Self { coll }
+    }
+
+    /// Apply a field-level `update` to the user matched by `id`. The write
+    /// touches only the fields `update` names, so concurrent changes to
+    /// other fields survive.
+    async fn update(&self, id: UserId, update: Document) -> StorageResult<()> {
+        let filter = doc! { "_id": model::user_id_str(id) };
+        let result = self.coll.update_one(filter, update).await.map_err(err)?;
+        if result.matched_count == 0 {
+            return Err(StorageError::msg("user not found"));
+        }
+        Ok(())
     }
 }
 
@@ -59,18 +74,50 @@ impl UserStore for MongoUserStore {
         }
     }
 
-    async fn update_user(&self, user: User) -> StorageResult<()> {
-        let filter = doc! { "_id": model::user_id_str(user.id) };
-        let replacement = model::user_to_doc(&user);
-        let result = self
-            .coll
-            .replace_one(filter, replacement)
-            .await
-            .map_err(err)?;
-        if result.matched_count == 0 {
-            return Err(StorageError::msg("user not found"));
-        }
-        Ok(())
+    async fn set_user_status(
+        &self,
+        id: UserId,
+        status: AccountStatus,
+        at: DateTime<Utc>,
+    ) -> StorageResult<()> {
+        let mut set = doc! {
+            "status": model::account_status_to_str(&status),
+            "updated_at": model::to_bson_dt(at),
+        };
+        let update = match status.disabled_at() {
+            Some(disabled_at) => {
+                set.insert("disabled_at", model::to_bson_dt(disabled_at));
+                doc! { "$set": set }
+            }
+            None => doc! { "$set": set, "$unset": { "disabled_at": "" } },
+        };
+        self.update(id, update).await
+    }
+
+    async fn set_user_email(
+        &self,
+        id: UserId,
+        email: &str,
+        at: DateTime<Utc>,
+    ) -> StorageResult<()> {
+        let update = doc! {
+            "$set": {
+                "email": email,
+                "email_verified_at": model::to_bson_dt(at),
+                "updated_at": model::to_bson_dt(at),
+            }
+        };
+        self.update(id, update).await
+    }
+
+    async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
+        let update = doc! {
+            "$set": {
+                "email_verified_at": model::to_bson_dt(at),
+                "updated_at": model::to_bson_dt(at),
+            }
+        };
+        self.update(id, update).await
     }
 
     async fn delete_user(&self, id: UserId) -> StorageResult<()> {

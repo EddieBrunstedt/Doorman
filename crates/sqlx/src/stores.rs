@@ -174,22 +174,62 @@ macro_rules! sqlx_stores {
                 row.map(row_to_user).transpose()
             }
 
-            async fn update_user(
+            async fn set_user_status(
                 &self,
-                user: $crate::stores::__reexport::User,
+                id: $crate::stores::__reexport::UserId,
+                status: $crate::stores::__reexport::AccountStatus,
+                at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "UPDATE users
-                     SET email = ?, email_verified_at = ?, status = ?, disabled_at = ?, updated_at = ?
-                     WHERE id = ?",
+                    "UPDATE users SET status = ?, disabled_at = ?, updated_at = ? WHERE id = ?",
                 );
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind(&user.email)
-                    .bind($ts(user.email_verified_at))
-                    .bind($crate::stores::__reexport::account_status_to_str(&user.status))
-                    .bind($ts(user.status.disabled_at()))
-                    .bind($ts(user.updated_at))
-                    .bind($crate::common::uuid_to_bytes(user.id.0))
+                    .bind($crate::stores::__reexport::account_status_to_str(&status))
+                    .bind($ts(status.disabled_at()))
+                    .bind($ts(at))
+                    .bind($crate::common::uuid_to_bytes(id.0))
+                    .execute(&self.pool)
+                    .await
+                    .map_err($crate::common::storage_err)?;
+                if result.rows_affected() == 0 {
+                    return Err($crate::stores::__reexport::StorageError::msg("user not found"));
+                }
+                Ok(())
+            }
+
+            async fn set_user_email(
+                &self,
+                id: $crate::stores::__reexport::UserId,
+                email: &str,
+                at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
+            ) -> $crate::stores::__reexport::StorageResult<()> {
+                let sql = $ph(
+                    "UPDATE users SET email = ?, email_verified_at = ?, updated_at = ? WHERE id = ?",
+                );
+                let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+                    .bind(email)
+                    .bind($ts(at))
+                    .bind($ts(at))
+                    .bind($crate::common::uuid_to_bytes(id.0))
+                    .execute(&self.pool)
+                    .await
+                    .map_err($crate::common::storage_err)?;
+                if result.rows_affected() == 0 {
+                    return Err($crate::stores::__reexport::StorageError::msg("user not found"));
+                }
+                Ok(())
+            }
+
+            async fn mark_email_verified(
+                &self,
+                id: $crate::stores::__reexport::UserId,
+                at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
+            ) -> $crate::stores::__reexport::StorageResult<()> {
+                let sql = $ph("UPDATE users SET email_verified_at = ?, updated_at = ? WHERE id = ?");
+                let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+                    .bind($ts(at))
+                    .bind($ts(at))
+                    .bind($crate::common::uuid_to_bytes(id.0))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage_err)?;
@@ -1013,9 +1053,9 @@ pub(crate) mod __reexport {
     pub use doorman_core::encoding::{account_status_from_parts, account_status_to_str};
     pub use doorman_core::error::{StorageError, StorageResult};
     pub use doorman_core::storage::{
-        PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,
-        SessionId, SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication,
-        StoredPasskeyRegistration, TokenHash, User, UserId, UserStore, VerificationPurpose,
-        VerificationToken, VerificationTokenStore,
+        AccountStatus, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
+        PasskeySummary, Session, SessionId, SessionStore, Storage, StoredPasskey,
+        StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
+        VerificationPurpose, VerificationToken, VerificationTokenStore,
     };
 }

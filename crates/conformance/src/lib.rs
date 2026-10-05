@@ -47,6 +47,9 @@ fn user(id: UserId, email: &str) -> User {
 /// Run the full backend-agnostic suite against `storage`.
 pub async fn run(storage: &Storage) {
     users_round_trip(storage).await;
+    users_email_change(storage).await;
+    users_field_changes_compose(storage).await;
+    users_setters_refuse_missing_user(storage).await;
     verification_token_single_use(storage).await;
     verification_token_email_change_payload(storage).await;
     verification_token_purge_and_delete(storage).await;
@@ -146,13 +149,16 @@ async fn users_round_trip(storage: &Storage) {
         .await
         .expect_err("duplicate email should error");
 
-    // Update is observable.
+    // Marking the email verified is observable.
+    users
+        .mark_email_verified(id, ts(2026, 2, 1))
+        .await
+        .expect("mark verified");
     let verified = User {
         email_verified_at: Some(ts(2026, 2, 1)),
         updated_at: ts(2026, 2, 1),
         ..record
     };
-    users.update_user(verified.clone()).await.expect("update");
     assert_eq!(
         users.find_user_by_id(id).await.expect("find updated"),
         Some(verified.clone()),
@@ -162,33 +168,26 @@ async fn users_round_trip(storage: &Storage) {
     // survive a write/read cycle, variant and timestamp intact. This is what
     // proves every adapter actually persists the new state.
     let disabled_at = ts(2026, 2, 15);
+    users
+        .set_user_status(id, AccountStatus::Disabled { at: disabled_at }, disabled_at)
+        .await
+        .expect("disable");
     let disabled = User {
         status: AccountStatus::Disabled { at: disabled_at },
         updated_at: disabled_at,
         ..verified
     };
-    users.update_user(disabled.clone()).await.expect("disable");
     let reread = users
         .find_user_by_id(id)
         .await
         .expect("find disabled")
         .expect("disabled user present");
     assert_eq!(reread, disabled, "disabled status round-trips");
-    assert_eq!(
-        reread.status,
-        AccountStatus::Disabled { at: disabled_at },
-        "disabled variant and timestamp survive persistence",
-    );
     assert!(!reread.status.is_active(), "disabled account is not active");
 
     // And back to active.
-    let reactivated = User {
-        status: AccountStatus::Active,
-        updated_at: ts(2026, 2, 20),
-        ..disabled
-    };
     users
-        .update_user(reactivated.clone())
+        .set_user_status(id, AccountStatus::Active, ts(2026, 2, 20))
         .await
         .expect("reactivate");
     let reread = users
@@ -196,8 +195,15 @@ async fn users_round_trip(storage: &Storage) {
         .await
         .expect("find reactivated")
         .expect("reactivated user present");
-    assert_eq!(reread.status, AccountStatus::Active);
-    assert!(reread.status.is_active());
+    assert_eq!(
+        reread,
+        User {
+            status: AccountStatus::Active,
+            updated_at: ts(2026, 2, 20),
+            ..disabled
+        },
+        "reactivation clears the disabled timestamp",
+    );
 
     // Delete removes both lookups.
     users.delete_user(id).await.expect("delete");
@@ -214,6 +220,173 @@ async fn users_round_trip(storage: &Storage) {
             .await
             .expect("find email after delete")
             .is_none()
+    );
+}
+
+/// `set_user_email` moves the address: the new one resolves to the user, the
+/// old one is released for reuse, and an address another user holds is
+/// refused without changing either user.
+async fn users_email_change(storage: &Storage) {
+    let users = &storage.users;
+    let id = UserId::new();
+    users
+        .create_user(user(id, "before-change@example.com"))
+        .await
+        .expect("create");
+    let other = UserId::new();
+    users
+        .create_user(user(other, "taken@example.com"))
+        .await
+        .expect("create other");
+
+    let at = ts(2026, 3, 1);
+    users
+        .set_user_email(id, "after-change@example.com", at)
+        .await
+        .expect("change email");
+    let changed = users
+        .find_user_by_email("after-change@example.com")
+        .await
+        .expect("find new address")
+        .expect("new address resolves");
+    assert_eq!(changed.id, id);
+    assert_eq!(changed.email.as_deref(), Some("after-change@example.com"));
+    assert_eq!(changed.email_verified_at, Some(at));
+    assert_eq!(changed.updated_at, at);
+    assert!(
+        users
+            .find_user_by_email("before-change@example.com")
+            .await
+            .expect("find old address")
+            .is_none(),
+        "old address no longer resolves",
+    );
+    users
+        .create_user(user(UserId::new(), "before-change@example.com"))
+        .await
+        .expect("old address is free for reuse");
+
+    users
+        .set_user_email(id, "taken@example.com", ts(2026, 3, 2))
+        .await
+        .expect_err("an address another user holds is refused");
+    assert_eq!(
+        users
+            .find_user_by_id(id)
+            .await
+            .expect("find after refusal")
+            .expect("user present"),
+        changed,
+        "a refused change leaves the user untouched",
+    );
+    assert_eq!(
+        users
+            .find_user_by_email("taken@example.com")
+            .await
+            .expect("find taken address")
+            .map(|u| u.id),
+        Some(other),
+        "a refused change leaves the holder untouched",
+    );
+
+    // Setting the address the user already has is allowed.
+    users
+        .set_user_email(id, "after-change@example.com", ts(2026, 3, 3))
+        .await
+        .expect("re-set own address");
+}
+
+/// Field-level changes never overwrite each other: a status change and an
+/// email change to the same user both survive, in either order. Each setter is
+/// a single atomic write that touches only its own fields, so any concurrent
+/// interleaving of the two is equivalent to one of these orders.
+async fn users_field_changes_compose(storage: &Storage) {
+    let users = &storage.users;
+    let disabled = AccountStatus::Disabled { at: ts(2026, 4, 1) };
+
+    let status_first = UserId::new();
+    users
+        .create_user(user(status_first, "status-first@example.com"))
+        .await
+        .expect("create");
+    users
+        .set_user_status(status_first, disabled.clone(), ts(2026, 4, 1))
+        .await
+        .expect("disable");
+    users
+        .set_user_email(status_first, "status-first-new@example.com", ts(2026, 4, 2))
+        .await
+        .expect("change email");
+    let reread = users
+        .find_user_by_id(status_first)
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(reread.status, disabled, "email change kept the disable");
+    assert_eq!(
+        reread.email.as_deref(),
+        Some("status-first-new@example.com")
+    );
+
+    let email_first = UserId::new();
+    users
+        .create_user(user(email_first, "email-first@example.com"))
+        .await
+        .expect("create");
+    users
+        .set_user_email(email_first, "email-first-new@example.com", ts(2026, 4, 1))
+        .await
+        .expect("change email");
+    users
+        .set_user_status(email_first, disabled.clone(), ts(2026, 4, 2))
+        .await
+        .expect("disable");
+    let reread = users
+        .find_user_by_id(email_first)
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(reread.status, disabled);
+    assert_eq!(
+        reread.email.as_deref(),
+        Some("email-first-new@example.com"),
+        "disable kept the email change",
+    );
+    assert_eq!(reread.email_verified_at, Some(ts(2026, 4, 1)));
+}
+
+/// Every field-level setter refuses a user that does not exist rather than
+/// creating one.
+async fn users_setters_refuse_missing_user(storage: &Storage) {
+    let users = &storage.users;
+    let missing = UserId::new();
+    users
+        .set_user_status(missing, AccountStatus::Active, ts(2026, 5, 1))
+        .await
+        .expect_err("status of a missing user");
+    users
+        .set_user_email(missing, "ghost@example.com", ts(2026, 5, 1))
+        .await
+        .expect_err("email of a missing user");
+    users
+        .mark_email_verified(missing, ts(2026, 5, 1))
+        .await
+        .expect_err("verify a missing user");
+    assert!(
+        users
+            .find_user_by_id(missing)
+            .await
+            .expect("find missing")
+            .is_none(),
+        "no setter creates the user",
+    );
+    assert!(
+        users
+            .find_user_by_email("ghost@example.com")
+            .await
+            .expect("find ghost address")
+            .is_none(),
+        "a refused email change claims no address",
     );
 }
 

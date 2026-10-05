@@ -292,6 +292,12 @@ pub struct SessionSummary {
 }
 
 /// Persistence contract for local user records.
+///
+/// Changes to an existing user are field-level: each setter writes only the
+/// fields it names (plus `updated_at`), so two flows changing different
+/// fields of the same user concurrently both take effect. There is
+/// deliberately no whole-row update — writing back a row read earlier would
+/// silently undo any change that landed in between.
 #[async_trait]
 pub trait UserStore: Send + Sync {
     /// Insert a new user row.
@@ -304,8 +310,27 @@ pub trait UserStore: Send + Sync {
     /// normalized address the managers store.
     async fn find_user_by_email(&self, email: &str) -> StorageResult<Option<User>>;
 
-    /// Overwrite an existing user row (matched by id).
-    async fn update_user(&self, user: User) -> StorageResult<()>;
+    /// Set the account status of an existing user and stamp `updated_at`
+    /// with `at`. No other field is written. Errors if the user does not
+    /// exist.
+    async fn set_user_status(
+        &self,
+        id: UserId,
+        status: AccountStatus,
+        at: DateTime<Utc>,
+    ) -> StorageResult<()>;
+
+    /// Change an existing user's email address to `email`, recording it as
+    /// verified at `at` and stamping `updated_at` with `at`. No other field is
+    /// written. The old address is released for lookup and reuse. Errors if
+    /// the user does not exist or another user holds `email`.
+    async fn set_user_email(&self, id: UserId, email: &str, at: DateTime<Utc>)
+    -> StorageResult<()>;
+
+    /// Record an existing user's current email address as verified at `at`
+    /// and stamp `updated_at` with `at`. No other field is written. Errors if
+    /// the user does not exist.
+    async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()>;
 
     /// Remove a user row. Callers cascade related rows first; this only
     /// removes the user record.

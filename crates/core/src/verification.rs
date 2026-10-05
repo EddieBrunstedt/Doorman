@@ -398,7 +398,7 @@ impl EnrollmentFlow {
             tracing::warn!(outcome = "expired_token", "{} consume failed", kind.label());
             return Err(Error::InvalidVerificationToken);
         }
-        let Some(mut user) = self.users().find_user_by_id(record.user_id).await? else {
+        let Some(user) = self.users().find_user_by_id(record.user_id).await? else {
             // The user vanished between request and consume. Treat the token
             // as invalid to keep the response consistent with the "no such
             // user" path.
@@ -443,9 +443,7 @@ impl EnrollmentFlow {
 
         if kind.marks_email_verified() && user.email_verified_at.is_none() {
             // Clicking a link sent to the address proves ownership.
-            user.email_verified_at = Some(now);
-            user.updated_at = now;
-            self.users().update_user(user.clone()).await?;
+            self.users().mark_email_verified(user.id, now).await?;
         }
 
         let (challenge_id, options) = self.passkey.start_registration(user.id).await?;

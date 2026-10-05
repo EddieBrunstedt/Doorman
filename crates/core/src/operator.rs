@@ -251,12 +251,12 @@ impl OperatorManager {
     pub async fn disable(&self, target_user_id: UserId, actor: OperatorActor) -> Result<()> {
         // Resolve the subject before mutating anything (D7); keep the row for
         // the opt-in notice.
-        let mut user = self.resolve_subject(target_user_id).await?;
+        let user = self.resolve_subject(target_user_id).await?;
 
         let now = self.clock.now();
-        user.status = AccountStatus::Disabled { at: now };
-        user.updated_at = now;
-        self.users.update_user(user.clone()).await?;
+        self.users
+            .set_user_status(target_user_id, AccountStatus::Disabled { at: now }, now)
+            .await?;
 
         // Drop every live session so the lockout is immediate: this fires the
         // invalidation hook, flushing any warm framework-side session cache.
@@ -307,12 +307,12 @@ impl OperatorManager {
     #[tracing::instrument(skip(self, actor), fields(target_user_id = %target_user_id))]
     pub async fn enable(&self, target_user_id: UserId, actor: OperatorActor) -> Result<()> {
         // Resolve the subject before mutating anything (D7).
-        let mut user = self.resolve_subject(target_user_id).await?;
+        self.resolve_subject(target_user_id).await?;
 
         let now = self.clock.now();
-        user.status = AccountStatus::Active;
-        user.updated_at = now;
-        self.users.update_user(user).await?;
+        self.users
+            .set_user_status(target_user_id, AccountStatus::Active, now)
+            .await?;
 
         self.emit_operator(
             actor,

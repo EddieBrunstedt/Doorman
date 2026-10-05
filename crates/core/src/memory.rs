@@ -18,10 +18,10 @@ use crate::clock::Clock;
 use crate::error::{StorageError, StorageResult};
 use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::storage::{
-    PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,
-    SessionId, SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication,
-    StoredPasskeyRegistration, TokenHash, User, UserId, UserStore, VerificationPurpose,
-    VerificationToken, VerificationTokenStore,
+    AccountStatus, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
+    PasskeySummary, Session, SessionId, SessionStore, Storage, StoredPasskey,
+    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
+    VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
 
 /// A backend handle owning one shared instance of each in-memory store.
@@ -166,25 +166,54 @@ impl UserStore for InMemoryUserStore {
             .and_then(|id| state.by_id.get(id).cloned()))
     }
 
-    async fn update_user(&self, user: User) -> StorageResult<()> {
+    async fn set_user_status(
+        &self,
+        id: UserId,
+        status: AccountStatus,
+        at: DateTime<Utc>,
+    ) -> StorageResult<()> {
         let mut state = self.write();
-        let Some(existing) = state.by_id.get(&user.id).cloned() else {
+        let Some(user) = state.by_id.get_mut(&id) else {
             return Err(StorageError::msg("user not found"));
         };
-        if existing.email != user.email {
-            if let Some(old) = existing.email.as_deref() {
-                state.email_to_id.remove(old);
-            }
-            if let Some(new) = user.email.as_deref() {
-                if let Some(other) = state.email_to_id.get(new)
-                    && *other != user.id
-                {
-                    return Err(StorageError::msg("another user already uses that email"));
-                }
-                state.email_to_id.insert(new.to_owned(), user.id);
-            }
+        user.status = status;
+        user.updated_at = at;
+        Ok(())
+    }
+
+    async fn set_user_email(
+        &self,
+        id: UserId,
+        email: &str,
+        at: DateTime<Utc>,
+    ) -> StorageResult<()> {
+        let mut state = self.write();
+        let UserStoreState { by_id, email_to_id } = &mut *state;
+        let Some(user) = by_id.get_mut(&id) else {
+            return Err(StorageError::msg("user not found"));
+        };
+        if let Some(other) = email_to_id.get(email)
+            && *other != id
+        {
+            return Err(StorageError::msg("another user already uses that email"));
         }
-        state.by_id.insert(user.id, user);
+        if let Some(old) = user.email.as_deref() {
+            email_to_id.remove(old);
+        }
+        email_to_id.insert(email.to_owned(), id);
+        user.email = Some(email.to_owned());
+        user.email_verified_at = Some(at);
+        user.updated_at = at;
+        Ok(())
+    }
+
+    async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
+        let mut state = self.write();
+        let Some(user) = state.by_id.get_mut(&id) else {
+            return Err(StorageError::msg("user not found"));
+        };
+        user.email_verified_at = Some(at);
+        user.updated_at = at;
         Ok(())
     }
 

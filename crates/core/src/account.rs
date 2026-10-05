@@ -252,7 +252,7 @@ impl AccountManager {
             return Err(Error::InvalidVerificationToken);
         };
 
-        let Some(mut user) = self.users.find_user_by_id(record.user_id).await? else {
+        let Some(user) = self.users.find_user_by_id(record.user_id).await? else {
             tracing::warn!(outcome = "user_not_found", "email change confirm failed");
             return Err(Error::UserNotFound);
         };
@@ -268,17 +268,19 @@ impl AccountManager {
         }
 
         // Clicking a link sent to the new address proves ownership of it.
-        user.email = Some(new_email);
-        user.email_verified_at = Some(now);
-        user.updated_at = now;
-        self.users.update_user(user.clone()).await?;
+        self.users.set_user_email(user.id, &new_email, now).await?;
 
         self.emit(
             &context,
             AuditEventKind::EmailChangeCompleted { user_id: user.id },
         )
         .await;
-        Ok(user)
+        // Re-read rather than patch the earlier copy, so the returned user
+        // reflects any change another flow made in between.
+        self.users
+            .find_user_by_id(user.id)
+            .await?
+            .ok_or(Error::UserNotFound)
     }
 
     /// Irreversibly delete the account behind the acting `session` and

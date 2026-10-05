@@ -599,9 +599,11 @@ async fn finish_authentication_refuses_disabled_account() {
     let mut wa = authenticator();
     let cred = register_passkey(&h, user.id, &mut wa, None).await;
 
-    let mut disabled = user.clone();
-    disabled.status = AccountStatus::Disabled { at: h.clock.now() };
-    h.users.update_user(disabled).await.expect("disable user");
+    let now = h.clock.now();
+    h.users
+        .set_user_status(user.id, AccountStatus::Disabled { at: now }, now)
+        .await
+        .expect("disable user");
 
     let (auth_id, rcr) = h
         .passkey

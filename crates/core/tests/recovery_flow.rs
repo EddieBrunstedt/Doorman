@@ -102,18 +102,14 @@ async fn request_for_unknown_email_sends_nothing_but_audits() {
     )));
 }
 
-/// Flip `user` to [`AccountStatus::Disabled`] directly through the store, the
-/// way the operator disable flow will. Step 3 proves the recovery gate holds by
-/// disabling through the store; the audited operator-facing setter lands in
-/// Step 4.
+/// Flip `user` to [`AccountStatus::Disabled`] directly through the store,
+/// bypassing the audited operator flow.
 async fn disable_user(h: &Harness, user: &User) {
     let now = h.clock.now();
-    let disabled = User {
-        status: AccountStatus::Disabled { at: now },
-        updated_at: now,
-        ..user.clone()
-    };
-    h.users.update_user(disabled).await.expect("disable user");
+    h.users
+        .set_user_status(user.id, AccountStatus::Disabled { at: now }, now)
+        .await
+        .expect("disable user");
 }
 
 #[tokio::test]
