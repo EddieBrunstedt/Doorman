@@ -35,7 +35,7 @@ use crate::audit::AuditEventKind;
 use crate::error::{Error, Result};
 use crate::rate_limit::RateLimitPolicy;
 use crate::session::SessionContext;
-use crate::storage::{AccountStatus, PasskeyChallengeId, User, UserId, VerificationPurpose};
+use crate::storage::{PasskeyChallengeId, VerificationPurpose};
 use crate::verification::{
     self, EnrollmentFlow, EnrollmentOutcome, FlowKind, TOKEN_PLACEHOLDER,
     VerificationConsumeOutcome,
@@ -72,7 +72,7 @@ pub enum SignupDecision {
 /// The gate runs **after** rate limiting and **before** any user is
 /// provisioned: a denied attempt still spends rate-limit budget (so a host
 /// invite-store lookup cannot be hammered unthrottled) but never creates a
-/// [`User`] row.
+/// [`User`](crate::storage::User) row.
 #[async_trait]
 pub trait SignupPolicy: Send + Sync {
     /// Decide whether the signup attempt described by `email` / `invite_token`
@@ -287,12 +287,7 @@ impl SignupManager {
         }
 
         let now = self.flow.now();
-        if let Some(existing) = self
-            .flow
-            .users()
-            .find_user_by_email(&email_normalized)
-            .await?
-        {
+        if let Some(existing) = self.flow.records().find_by_email(&email_normalized).await? {
             tracing::Span::current().record("user_id", tracing::field::display(existing.id));
 
             // A user row with zero credentials never finished its first
@@ -357,15 +352,11 @@ impl SignupManager {
             return Ok(());
         }
 
-        let user = User {
-            id: UserId::new(),
-            email: Some(email_normalized.clone()),
-            email_verified_at: None,
-            status: AccountStatus::Active,
-            created_at: now,
-            updated_at: now,
-        };
-        self.flow.users().create_user(user.clone()).await?;
+        let user = self
+            .flow
+            .records()
+            .create_unverified(&email_normalized)
+            .await?;
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
         // Invalidate any prior signup tokens for the user, store a fresh

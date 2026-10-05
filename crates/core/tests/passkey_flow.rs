@@ -1166,6 +1166,25 @@ async fn start_registration_for_unknown_user_errors() {
 }
 
 #[tokio::test]
+async fn start_registration_refuses_disabled_account() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "frozen@example.com").await;
+    let now = h.clock.now();
+    h.users
+        .set_user_status(user.id, AccountStatus::Disabled { at: now }, now)
+        .await
+        .expect("disable user");
+
+    let err = h
+        .passkey
+        .start_registration(user.id)
+        .await
+        .expect_err("disabled account must be refused");
+    assert!(matches!(err, Error::AccountDisabled));
+    assert_eq!(h.challenges.len(), 0, "no ceremony started");
+}
+
+#[tokio::test]
 async fn challenge_store_purges_expired_entries() {
     let h = Harness::fresh();
     let user = make_user(&h, "exp@example.com").await;

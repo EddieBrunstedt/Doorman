@@ -38,6 +38,7 @@ pub mod session;
 pub mod signup;
 pub mod storage;
 pub mod token;
+mod user;
 pub mod verification;
 
 pub use error::*;

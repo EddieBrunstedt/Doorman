@@ -31,21 +31,10 @@ use crate::email::{Email, EmailSender, EmailTemplates};
 use crate::error::{Error, Result};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::session::{SessionContext, SessionManager};
-use crate::storage::{
-    PasskeyChallengeStore, PasskeyCredentialStore, Session, User, UserId, UserStore,
-    VerificationPurpose, VerificationTokenStore,
-};
+use crate::storage::{Session, User, VerificationPurpose, VerificationTokenStore};
 use crate::token::hash_token;
+use crate::user::UserRecords;
 use crate::verification::{self, TOKEN_PLACEHOLDER};
-
-/// Every verification-token purpose, so account deletion can sweep tokens of
-/// all kinds for a user. Kept here (rather than iterating an open match) so a
-/// new purpose forces a compile error pointing back at the deletion cascade.
-const ALL_TOKEN_PURPOSES: [VerificationPurpose; 3] = [
-    VerificationPurpose::Signup,
-    VerificationPurpose::Recovery,
-    VerificationPurpose::EmailChange,
-];
 
 /// Configuration for the verified email-change flow.
 #[derive(Clone)]
@@ -81,10 +70,8 @@ impl Default for AccountConfig {
 /// Manager for verified email change and account deletion.
 #[derive(Clone)]
 pub struct AccountManager {
-    users: Arc<dyn UserStore>,
+    records: UserRecords,
     tokens: Arc<dyn VerificationTokenStore>,
-    credentials: Arc<dyn PasskeyCredentialStore>,
-    challenges: Arc<dyn PasskeyChallengeStore>,
     sessions: SessionManager,
     reauth: ReauthManager,
     clock: Arc<dyn Clock>,
@@ -101,10 +88,8 @@ impl AccountManager {
     /// at the composition root.
     pub fn new(deps: &CoreDeps, config: AccountConfig) -> Self {
         Self {
-            users: deps.users.clone(),
+            records: UserRecords::new(deps),
             tokens: deps.verification_tokens.clone(),
-            credentials: deps.passkey_credentials.clone(),
-            challenges: deps.passkey_challenges.clone(),
             sessions: deps.sessions.clone(),
             reauth: deps.reauth.clone(),
             clock: deps.clock.clone(),
@@ -187,7 +172,7 @@ impl AccountManager {
         // current address (nothing to change). Email-change is authenticated,
         // so surfacing "already in use" is acceptable; it is not the
         // enumeration surface the signup / recovery endpoints guard.
-        if self.users.find_user_by_email(&normalized).await?.is_some() {
+        if self.records.find_by_email(&normalized).await?.is_some() {
             tracing::warn!(outcome = "email_in_use", "email change rejected");
             return Err(Error::EmailAlreadyInUse);
         }
@@ -228,6 +213,12 @@ impl AccountManager {
 
     /// Redeem an email-change confirmation token, moving the account's email to
     /// the address the token was issued for. Returns the updated [`User`].
+    ///
+    /// The token is consumed even when the change is refused. A disabled
+    /// account is refused with [`Error::AccountDisabled`], so a link requested
+    /// before an operator disable cannot repoint the frozen account's address;
+    /// an address another account claimed since the request is refused with
+    /// [`Error::EmailAlreadyInUse`].
     #[tracing::instrument(skip(self, token, context), fields(user_id = tracing::field::Empty))]
     pub async fn confirm_email_change(&self, token: &str, context: SessionContext) -> Result<User> {
         let hash = hash_token(token);
@@ -252,35 +243,27 @@ impl AccountManager {
             return Err(Error::InvalidVerificationToken);
         };
 
-        let Some(user) = self.users.find_user_by_id(record.user_id).await? else {
-            tracing::warn!(outcome = "user_not_found", "email change confirm failed");
-            return Err(Error::UserNotFound);
-        };
-        tracing::Span::current().record("user_id", tracing::field::display(user.id));
-
-        // Re-check the address is still free: another account may have claimed
-        // it between request and confirm.
-        if let Some(existing) = self.users.find_user_by_email(&new_email).await?
-            && existing.id != user.id
-        {
-            tracing::warn!(outcome = "email_in_use", "email change confirm failed");
-            return Err(Error::EmailAlreadyInUse);
+        let user_id = record.user_id;
+        tracing::Span::current().record("user_id", tracing::field::display(user_id));
+        if let Err(error) = self.records.find_active(user_id).await {
+            tracing::warn!(%error, "email change confirm failed");
+            return Err(error);
         }
 
-        // Clicking a link sent to the new address proves ownership of it.
-        self.users.set_user_email(user.id, &new_email, now).await?;
+        // Clicking a link sent to the new address proves ownership of it. The
+        // address is re-checked: another account may have claimed it between
+        // request and confirm.
+        let user = match self.records.change_email(user_id, &new_email).await {
+            Ok(user) => user,
+            Err(error) => {
+                tracing::warn!(%error, "email change confirm failed");
+                return Err(error);
+            }
+        };
 
-        self.emit(
-            &context,
-            AuditEventKind::EmailChangeCompleted { user_id: user.id },
-        )
-        .await;
-        // Re-read rather than patch the earlier copy, so the returned user
-        // reflects any change another flow made in between.
-        self.users
-            .find_user_by_id(user.id)
-            .await?
-            .ok_or(Error::UserNotFound)
+        self.emit(&context, AuditEventKind::EmailChangeCompleted { user_id })
+            .await;
+        Ok(user)
     }
 
     /// Irreversibly delete the account behind the acting `session` and
@@ -316,55 +299,14 @@ impl AccountManager {
                 &context,
             )
             .await?;
-        let user_id = session.user_id;
-        self.delete_account_for(
-            user_id,
-            Actor::Subject {
-                ip: context.ip,
-                user_agent: context.user_agent,
-            },
-        )
-        .await
-    }
-
-    /// Run the full account-deletion cascade for `user_id`, attributing the
-    /// audit event to `actor`. The id-keyed core both self-service
-    /// [`delete_account`](Self::delete_account) and the operator delete flow
-    /// drive, so the cache-invalidation + audit cascade is shared rather than
-    /// re-issued from raw store primitives.
-    ///
-    /// The cascade ordering is load-bearing: revoke every session first
-    /// (through the [`SessionManager`] so its invalidation hook fires and the
-    /// cache is evicted while the rest of the rows still exist), then
-    /// credentials, then verification tokens of every purpose, then pending
-    /// registration ceremonies, and finally the user row — leaving no orphaned
-    /// rows and never orphaning the parent on a mid-cascade failure.
-    pub(crate) async fn delete_account_for(&self, user_id: UserId, actor: Actor) -> Result<()> {
-        // Revoke through the session manager so the cache invalidation hook
-        // fires (a raw `delete_sessions_for_user` would leave the cache warm).
-        self.sessions.revoke_all_for_user(user_id).await?;
-
-        // Remove every credential in one set-based delete.
-        self.credentials.delete_passkeys_for_user(user_id).await?;
-
-        // Drop tokens of every purpose and any pending registration ceremony.
-        for purpose in ALL_TOKEN_PURPOSES {
-            self.tokens.delete_tokens_for_user(user_id, purpose).await?;
-        }
-        self.challenges
-            .delete_registrations_for_user(user_id)
-            .await?;
-
-        // The user row last, so a failure midway never orphans the parent.
-        self.users.delete_user(user_id).await?;
-
-        self.audit
-            .emit(AuditEvent {
-                timestamp: self.now(),
-                actor,
-                kind: AuditEventKind::AccountDeleted { user_id },
-            })
-            .await;
-        Ok(())
+        self.records
+            .delete(
+                session.user_id,
+                Actor::Subject {
+                    ip: context.ip,
+                    user_agent: context.user_agent,
+                },
+            )
+            .await
     }
 }

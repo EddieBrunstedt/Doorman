@@ -33,10 +33,11 @@ use std::sync::Arc;
 use crate::assembly::AssemblyError;
 use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::clock::Clock;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::metrics::{MetricEvent, MetricSink, NoopMetricSink};
 use crate::session::{SessionManager, hash_token};
-use crate::storage::{Session, User, UserId, UserStore};
+use crate::storage::{Session, User, UserStore};
+use crate::user::find_active_user;
 
 /// A request's resolved authentication state.
 ///
@@ -127,6 +128,12 @@ impl SessionResolver {
     /// - [`Error::Storage`] — a store failed.
     ///
     /// A refused session is never cached.
+    ///
+    /// [`Error::SessionNotFound`]: crate::error::Error::SessionNotFound
+    /// [`Error::SessionExpired`]: crate::error::Error::SessionExpired
+    /// [`Error::UserNotFound`]: crate::error::Error::UserNotFound
+    /// [`Error::AccountDisabled`]: crate::error::Error::AccountDisabled
+    /// [`Error::Storage`]: crate::error::Error::Storage
     #[tracing::instrument(
         skip_all,
         fields(session_id = tracing::field::Empty, user_id = tracing::field::Empty),
@@ -180,22 +187,4 @@ impl SessionResolver {
     pub fn cache(&self) -> &SessionCache {
         &self.cache
     }
-}
-
-/// Load `user_id` and require its account to be active: the account-status
-/// gate shared by login
-/// ([`PasskeyManager::finish_authentication`](crate::passkey::PasskeyManager::finish_authentication))
-/// and [`SessionResolver::resolve`].
-///
-/// Returns [`Error::UserNotFound`] for a missing user and
-/// [`Error::AccountDisabled`] for one that is not
-/// [`active`](crate::storage::AccountStatus::is_active).
-pub(crate) async fn find_active_user(users: &dyn UserStore, user_id: UserId) -> Result<User> {
-    let Some(user) = users.find_user_by_id(user_id).await? else {
-        return Err(Error::UserNotFound);
-    };
-    if !user.status.is_active() {
-        return Err(Error::AccountDisabled);
-    }
-    Ok(user)
 }

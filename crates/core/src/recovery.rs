@@ -35,6 +35,7 @@ use crate::error::Result;
 use crate::rate_limit::RateLimitPolicy;
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, VerificationPurpose};
+use crate::user;
 use crate::verification::{
     self, EnrollmentFlow, EnrollmentOutcome, FlowKind, RecoveryFinish, TOKEN_PLACEHOLDER,
     VerificationConsumeOutcome,
@@ -292,12 +293,7 @@ impl RecoveryManager {
         .await?;
 
         let now = self.flow.now();
-        let Some(user) = self
-            .flow
-            .users()
-            .find_user_by_email(&email_normalized)
-            .await?
-        else {
+        let Some(user) = self.flow.records().find_by_email(&email_normalized).await? else {
             // Unknown email: audit the attempt and silently no-op so the
             // endpoint cannot tell the caller whether or not the address
             // is on file. No notification email is sent — doing so would
@@ -315,7 +311,7 @@ impl RecoveryManager {
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
-        if !user.status.is_active() {
+        if user::ensure_active(&user).is_err() {
             // The account is disabled. Refuse to issue a recovery link — a
             // disabled account must not be able to recover its way back in. The
             // external response is kept identical to the unknown-email and
@@ -323,7 +319,7 @@ impl RecoveryManager {
             // signal) so disable never becomes an account-state oracle: we
             // simply issue no token and send no email, auditing the refusal
             // internally. This mirrors the silent-on-unknown-email posture
-            // above. The shared predicate is the same one auth gates on.
+            // above. The rule is the same one login and consume gate on.
             self.flow
                 .audit_recovery_failed(
                     Some(user.id),

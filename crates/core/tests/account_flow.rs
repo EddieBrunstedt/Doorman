@@ -7,7 +7,7 @@ use doorman_core::Error;
 use doorman_core::audit::AuditEventKind;
 use doorman_core::clock::Clock;
 use doorman_core::session::SessionContext;
-use doorman_core::storage::UserStore;
+use doorman_core::storage::{AccountStatus, UserStore};
 
 use common::{
     ACCOUNT_URL, Harness, kinds, make_user, provision_user, restricted_session_for, session_for,
@@ -320,6 +320,60 @@ async fn confirm_rejects_expired_token() {
         stored.email.as_deref(),
         Some("old@example.com"),
         "the address is unchanged when the link has expired",
+    );
+}
+
+#[tokio::test]
+async fn confirm_refused_for_disabled_account() {
+    // A link requested while active must not repoint the address of an
+    // account an operator has since disabled.
+    let h = Harness::fresh();
+    let user = provision_user(&h, "old@example.com").await;
+    let session = session_for(&h, &user);
+    h.account
+        .request_email_change(
+            &user,
+            &session,
+            "new@example.com",
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("request email change");
+    let confirmation = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Confirm your new email address")
+        .expect("confirmation email queued");
+    let token = token_from_email(&confirmation.body_text, ACCOUNT_URL);
+
+    let now = h.clock.now();
+    h.users
+        .set_user_status(user.id, AccountStatus::Disabled { at: now }, now)
+        .await
+        .expect("disable user");
+
+    let err = h
+        .account
+        .confirm_email_change(&token, SessionContext::default())
+        .await
+        .expect_err("disabled account must be refused");
+    assert!(matches!(err, Error::AccountDisabled));
+
+    let stored = h
+        .users
+        .find_user_by_id(user.id)
+        .await
+        .expect("find user")
+        .expect("user present");
+    assert_eq!(stored.email.as_deref(), Some("old@example.com"));
+    assert!(
+        !kinds(&h.audit.events())
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::EmailChangeCompleted { .. })),
+        "no completion is audited",
     );
 }
 

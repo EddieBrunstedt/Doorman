@@ -35,12 +35,12 @@ use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
 use crate::rate_limit::{RateLimitPolicy, RateLimiter};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
-use crate::resolve::find_active_user;
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore, PasskeySummary, Session,
-    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, UserStore,
+    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
 };
+use crate::user::UserRecords;
 use crate::verification::enforce_rate_limit;
 
 /// Rate-limit policies for the passkey authentication ceremony endpoints.
@@ -205,7 +205,7 @@ impl PasskeyConfig {
 /// Manager for passkey registration, authentication, listing, and removal.
 #[derive(Clone)]
 pub struct PasskeyManager {
-    users: Arc<dyn UserStore>,
+    records: UserRecords,
     credentials: Arc<dyn PasskeyCredentialStore>,
     challenges: Arc<dyn PasskeyChallengeStore>,
     sessions: SessionManager,
@@ -234,7 +234,7 @@ impl PasskeyManager {
         let webauthn = build_webauthn(&config)?;
 
         Ok(Self {
-            users: deps.users.clone(),
+            records: UserRecords::new(deps),
             credentials: deps.passkey_credentials.clone(),
             challenges: deps.passkey_challenges.clone(),
             sessions: deps.sessions.clone(),
@@ -247,14 +247,6 @@ impl PasskeyManager {
             webauthn: Arc::new(webauthn),
             config,
         })
-    }
-
-    /// Borrow the user store this manager was built with. Lets the
-    /// [`EnrollmentFlow`](crate::verification::EnrollmentFlow) reach the same
-    /// store the passkey manager already holds rather than re-holding its
-    /// own copy.
-    pub(crate) fn users(&self) -> &Arc<dyn UserStore> {
-        &self.users
     }
 
     /// Borrow the credential store, so the enrollment flow can inspect a
@@ -286,6 +278,10 @@ impl PasskeyManager {
     /// `navigator.credentials.create` on the client; the
     /// [`PasskeyChallengeId`] is what the client must echo back to
     /// [`PasskeyManager::finish_registration`].
+    ///
+    /// Every `start_registration*` entry point refuses a missing user with
+    /// [`Error::UserNotFound`] and a disabled account with
+    /// [`Error::AccountDisabled`].
     #[tracing::instrument(skip(self), fields(method = "passkey", user_id = %user_id))]
     pub async fn start_registration(
         &self,
@@ -344,11 +340,9 @@ impl PasskeyManager {
         user_id: UserId,
         recovery_cooldown_until: Option<DateTime<Utc>>,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
-        let user = self
-            .users
-            .find_user_by_id(user_id)
-            .await?
-            .ok_or(Error::UserNotFound)?;
+        // A disabled account cannot start a ceremony; finish re-checks before
+        // anything is persisted.
+        let user = self.records.find_active(user_id).await?;
 
         // Bound how much challenge state one user can accumulate: an
         // authenticated foothold could otherwise call `start` repeatedly and
@@ -532,16 +526,9 @@ impl PasskeyManager {
         // even when the link was consumed before the disable landed — and it
         // gates every registration path through the single pre-write check. This
         // narrows the window to a true check-then-`add_passkey` TOCTOU.
-        match self.users.find_user_by_id(user_id).await? {
-            None => {
-                tracing::warn!(%user_id, outcome = "user_vanished", "passkey registration failed");
-                return Err(Error::UserNotFound);
-            }
-            Some(user) if !user.status.is_active() => {
-                tracing::warn!(%user_id, outcome = "account_disabled", "passkey registration failed");
-                return Err(Error::AccountDisabled);
-            }
-            Some(_) => {}
+        if let Err(error) = self.records.find_active(user_id).await {
+            tracing::warn!(%user_id, %error, "passkey registration failed");
+            return Err(error);
         }
 
         self.credentials.add_passkey(credential.clone()).await?;
@@ -571,9 +558,9 @@ impl PasskeyManager {
     /// to. A missing user or a lookup failure skips the notice with a warning
     /// rather than failing the operation that already succeeded.
     async fn user_for_notification(&self, user_id: UserId, what: &'static str) -> Option<User> {
-        match self.users.find_user_by_id(user_id).await {
-            Ok(Some(user)) => Some(user),
-            Ok(None) => {
+        match self.records.find(user_id).await {
+            Ok(user) => Some(user),
+            Err(Error::UserNotFound) => {
                 tracing::warn!(
                     %user_id,
                     "{what} notification skipped because user was not found"
@@ -802,7 +789,7 @@ impl PasskeyManager {
         // the assertion verifies so only the credential holder learns the
         // account is disabled; the single-use challenge stays consumed.
         // The gate is the one session resolution applies on every request.
-        if let Err(error) = find_active_user(self.users.as_ref(), user_id).await {
+        if let Err(error) = self.records.find_active(user_id).await {
             let reason = match error {
                 Error::UserNotFound => AuthFailureReason::UnknownCredential,
                 Error::AccountDisabled => AuthFailureReason::AccountDisabled,

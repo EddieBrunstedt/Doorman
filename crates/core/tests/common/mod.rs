@@ -341,12 +341,8 @@ impl HarnessBuilder {
                 ..AccountConfig::default()
             },
         );
-        let operator = OperatorManager::new(
-            &signup_deps,
-            account.clone(),
-            passkey.clone(),
-            self.notification_policy,
-        );
+        let operator =
+            OperatorManager::new(&signup_deps, passkey.clone(), self.notification_policy);
 
         Harness {
             passkey,

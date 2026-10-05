@@ -33,7 +33,6 @@
 
 use std::sync::Arc;
 
-use crate::account::AccountManager;
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, OperatorActor};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
@@ -41,10 +40,8 @@ use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
 use crate::passkey::{PasskeyManager, PasskeyRemovalNotice};
 use crate::session::SessionManager;
-use crate::storage::{
-    AccountStatus, PasskeyChallengeStore, PasskeySummary, SessionId, SessionSummary, User, UserId,
-    UserStore,
-};
+use crate::storage::{PasskeySummary, SessionId, SessionSummary, User, UserId};
+use crate::user::UserRecords;
 
 /// Whether an operator-initiated action notifies the subject.
 ///
@@ -113,11 +110,9 @@ impl Default for NotificationPolicy {
 /// Cheap to clone — every field is `Arc`-backed.
 #[derive(Clone)]
 pub struct OperatorManager {
-    users: Arc<dyn UserStore>,
-    challenges: Arc<dyn PasskeyChallengeStore>,
+    records: UserRecords,
     sessions: SessionManager,
     passkey: PasskeyManager,
-    account: AccountManager,
     notifier: SecurityEmailNotifier,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
@@ -126,25 +121,23 @@ pub struct OperatorManager {
 
 impl OperatorManager {
     /// Build an `OperatorManager` from the shared [`CoreDeps`] context, the
-    /// already-constructed [`PasskeyManager`] and [`AccountManager`] (whose
-    /// removal and deletion cascades the operator flows reuse), and the
-    /// [`NotificationPolicy`] chosen at the composition root.
+    /// already-constructed [`PasskeyManager`] (whose removal cascade the
+    /// operator flows reuse), and the [`NotificationPolicy`] chosen at the
+    /// composition root.
     ///
-    /// The session manager and the best-effort security notifier are read from
-    /// `deps`, so the operator flows share the one invalidation hook and the
-    /// one configured email renderer with every other manager.
+    /// The stores, the session manager, and the best-effort security notifier
+    /// are read from `deps`, so the operator flows share the one invalidation
+    /// hook, the one account-deletion cascade, and the one configured email
+    /// renderer with every other manager.
     pub fn new(
         deps: &CoreDeps,
-        account: AccountManager,
         passkey: PasskeyManager,
         notifications: NotificationPolicy,
     ) -> Self {
         Self {
-            users: deps.users.clone(),
-            challenges: deps.passkey_challenges.clone(),
+            records: UserRecords::new(deps),
             sessions: deps.sessions.clone(),
             passkey,
-            account,
             notifier: deps.notifier.clone(),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
@@ -189,30 +182,18 @@ impl OperatorManager {
     ///
     /// After the user row is removed the cascade re-runs the pending-ceremony
     /// sweep, reclaiming any registration a concurrent finish slipped in during
-    /// the cascade.
+    /// the cascade. Self-service deletion runs the same cascade.
     ///
     /// [`SessionManager`]: crate::session::SessionManager
     #[tracing::instrument(skip(self, actor), fields(target_user_id = %target_user_id))]
     pub async fn delete_account(&self, target_user_id: UserId, actor: OperatorActor) -> Result<()> {
-        // Resolve the subject before mutating anything (D7): a stale or typo'd
-        // id fails loudly rather than reporting success for an empty cascade.
-        if self.users.find_user_by_id(target_user_id).await?.is_none() {
-            tracing::warn!(outcome = "user_not_found", "operator delete failed");
-            return Err(Error::UserNotFound);
-        }
-
-        self.account
-            .delete_account_for(target_user_id, Actor::Operator(actor))
-            .await?;
-
-        // Re-sweep pending registration ceremonies after the user row is gone,
-        // reclaiming any ceremony a concurrent finish slipped in during the
-        // cascade (D9.2).
-        self.challenges
-            .delete_registrations_for_user(target_user_id)
-            .await?;
-
-        Ok(())
+        // The cascade resolves the subject before mutating anything (D7), so a
+        // stale or typo'd id fails loudly rather than reporting success for an
+        // empty cascade.
+        self.records
+            .delete(target_user_id, Actor::Operator(actor))
+            .await
+            .inspect_err(|error| tracing::warn!(%error, "operator delete failed"))
     }
 
     /// Disable (freeze) the account identified by `target_user_id` on an
@@ -247,23 +228,20 @@ impl OperatorManager {
     /// the deliberate "quiet hold".
     ///
     /// [`SessionManager::revoke_all_for_user`]: crate::session::SessionManager::revoke_all_for_user
+    /// [`AccountStatus`]: crate::storage::AccountStatus
+    /// [`AccountStatus::Disabled`]: crate::storage::AccountStatus::Disabled
     #[tracing::instrument(skip(self, actor), fields(target_user_id = %target_user_id))]
     pub async fn disable(&self, target_user_id: UserId, actor: OperatorActor) -> Result<()> {
         // Resolve the subject before mutating anything (D7); keep the row for
         // the opt-in notice.
         let user = self.resolve_subject(target_user_id).await?;
 
-        let now = self.clock.now();
-        self.users
-            .set_user_status(target_user_id, AccountStatus::Disabled { at: now }, now)
-            .await?;
-
-        // Drop every live session so the lockout is immediate: this fires the
-        // invalidation hook, flushing any warm framework-side session cache.
-        // The underlying revoke-all primitive is silent, so the bulk-revoke
-        // accountability row is emitted here, exactly as `revoke_all_sessions`
-        // does for the standalone flow.
-        let revoked_count = self.sessions.revoke_all_for_user(target_user_id).await?;
+        // Disabling drops every live session so the lockout is immediate,
+        // flushing any warm framework-side session cache. The underlying
+        // revoke-all primitive is silent, so the bulk-revoke accountability row
+        // is emitted here, exactly as `revoke_all_sessions` does for the
+        // standalone flow.
+        let revoked_count = self.records.disable(target_user_id).await?;
         self.emit_operator(
             actor.clone(),
             AuditEventKind::OperatorRevokedAllSessions {
@@ -304,15 +282,14 @@ impl OperatorManager {
     /// fresh. Enabling an **already-active** account is **idempotent**: the
     /// status is re-written and the audit row still emitted; it never errors.
     /// No subject notice is sent for enable.
+    ///
+    /// [`AccountStatus::Active`]: crate::storage::AccountStatus::Active
     #[tracing::instrument(skip(self, actor), fields(target_user_id = %target_user_id))]
     pub async fn enable(&self, target_user_id: UserId, actor: OperatorActor) -> Result<()> {
         // Resolve the subject before mutating anything (D7).
         self.resolve_subject(target_user_id).await?;
 
-        let now = self.clock.now();
-        self.users
-            .set_user_status(target_user_id, AccountStatus::Active, now)
-            .await?;
+        self.records.enable(target_user_id).await?;
 
         self.emit_operator(
             actor,
@@ -330,14 +307,18 @@ impl OperatorManager {
     /// resolves the subject up front (D7) so a stale or typo'd id fails loudly
     /// before any store is mutated, and so the resolved row is on hand for the
     /// best-effort subject notice.
+    ///
+    /// The subject is looked up whatever its account status: operators act on
+    /// disabled accounts too.
     async fn resolve_subject(&self, target_user_id: UserId) -> Result<User> {
-        match self.users.find_user_by_id(target_user_id).await? {
-            Some(user) => Ok(user),
-            None => {
-                tracing::warn!(outcome = "user_not_found", "operator flow failed");
-                Err(Error::UserNotFound)
-            }
-        }
+        self.records
+            .find(target_user_id)
+            .await
+            .inspect_err(|error| {
+                if matches!(error, Error::UserNotFound) {
+                    tracing::warn!(outcome = "user_not_found", "operator flow failed");
+                }
+            })
     }
 
     /// Remove the passkey identified by `credential_id` from

@@ -30,10 +30,11 @@ use crate::passkey::PasskeyManager;
 use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::session::{IssuedSession, SessionContext};
 use crate::storage::{
-    PasskeyChallengeId, PasskeyCredentialStore, StoredPasskey, User, UserId, UserStore,
-    VerificationPurpose, VerificationToken, VerificationTokenStore,
+    PasskeyChallengeId, PasskeyCredentialStore, StoredPasskey, User, UserId, VerificationPurpose,
+    VerificationToken, VerificationTokenStore,
 };
 use crate::token::{generate_token, hash_token};
+use crate::user::UserRecords;
 
 /// Placeholder substituted with the generated token in URL templates. The
 /// literal substring `{token}` is replaced with the generated token at
@@ -248,6 +249,7 @@ pub(crate) struct RecoveryFinish<'a> {
 #[derive(Clone)]
 pub struct EnrollmentFlow {
     passkey: PasskeyManager,
+    records: UserRecords,
     tokens: Arc<dyn VerificationTokenStore>,
     email: Arc<dyn EmailSender>,
     emails: Arc<dyn EmailTemplates>,
@@ -257,15 +259,15 @@ pub struct EnrollmentFlow {
 impl EnrollmentFlow {
     /// Build the shared enrollment flow from the [`CoreDeps`] context and
     /// the [`PasskeyManager`] the signup / recovery flows enrol credentials
-    /// through. The user store, session manager, clock, and audit sink are
-    /// not held directly — the flow reaches them through its owned
-    /// `PasskeyManager`, which already carries the same collaborators, so
-    /// they live in one place. Only the verification-token store, email
-    /// transport, email renderer, and rate limiter (the parts the passkey
-    /// manager does not hold) are taken from `deps`.
+    /// through. The session manager, clock, and audit sink are not held
+    /// directly — the flow reaches them through its owned `PasskeyManager`,
+    /// which already carries the same collaborators, so they live in one
+    /// place. The user records, verification-token store, email transport,
+    /// email renderer, and rate limiter are taken from `deps`.
     pub fn new(deps: &CoreDeps, passkey: PasskeyManager) -> Self {
         Self {
             passkey,
+            records: UserRecords::new(deps),
             tokens: deps.verification_tokens.clone(),
             email: deps.email.clone(),
             emails: deps.emails.clone(),
@@ -279,8 +281,8 @@ impl EnrollmentFlow {
         &self.emails
     }
 
-    pub(crate) fn users(&self) -> &Arc<dyn UserStore> {
-        self.passkey.users()
+    pub(crate) fn records(&self) -> &UserRecords {
+        &self.records
     }
 
     pub(crate) fn credentials(&self) -> &Arc<dyn PasskeyCredentialStore> {
@@ -398,52 +400,32 @@ impl EnrollmentFlow {
             tracing::warn!(outcome = "expired_token", "{} consume failed", kind.label());
             return Err(Error::InvalidVerificationToken);
         }
-        let Some(user) = self.users().find_user_by_id(record.user_id).await? else {
-            // The user vanished between request and consume. Treat the token
-            // as invalid to keep the response consistent with the "no such
-            // user" path.
-            if kind.audits_consume_failures() {
-                self.audit_recovery_failed(
-                    Some(record.user_id),
-                    RecoveryFailureReason::InvalidToken,
-                    &context,
-                )
-                .await;
+        // A user that vanished between request and consume is reported like
+        // an invalid token. A disabled account (disabled after the link was
+        // sent) must not recover its way back in, so no ceremony starts.
+        let user = match self.records.find_active(record.user_id).await {
+            Ok(user) => user,
+            Err(error) => {
+                let (outcome, reason) = match error {
+                    Error::UserNotFound => ("user_not_found", RecoveryFailureReason::InvalidToken),
+                    Error::AccountDisabled => {
+                        ("account_disabled", RecoveryFailureReason::AccountDisabled)
+                    }
+                    _ => return Err(error),
+                };
+                if kind.audits_consume_failures() {
+                    self.audit_recovery_failed(Some(record.user_id), reason, &context)
+                        .await;
+                }
+                tracing::warn!(outcome, "{} consume failed", kind.label());
+                return Err(error);
             }
-            tracing::warn!(
-                outcome = "user_not_found",
-                "{} consume failed",
-                kind.label()
-            );
-            return Err(Error::UserNotFound);
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
-        if !user.status.is_active() {
-            // The account was disabled between requesting recovery and clicking
-            // the link. Refuse to redeem the token or start a registration
-            // ceremony for a disabled account — a disabled user must not recover
-            // its way back in. Recovery audits the refusal; signup users are
-            // always active so this never fires for signup.
-            if kind.audits_consume_failures() {
-                self.audit_recovery_failed(
-                    Some(user.id),
-                    RecoveryFailureReason::AccountDisabled,
-                    &context,
-                )
-                .await;
-            }
-            tracing::warn!(
-                outcome = "account_disabled",
-                "{} consume failed",
-                kind.label()
-            );
-            return Err(Error::AccountDisabled);
-        }
-
-        if kind.marks_email_verified() && user.email_verified_at.is_none() {
+        if kind.marks_email_verified() {
             // Clicking a link sent to the address proves ownership.
-            self.users().mark_email_verified(user.id, now).await?;
+            self.records.mark_email_verified(&user).await?;
         }
 
         let (challenge_id, options) = self.passkey.start_registration(user.id).await?;
@@ -503,9 +485,7 @@ impl EnrollmentFlow {
                 bypass_credential_cap,
             )
             .await?;
-        let Some(user) = self.users().find_user_by_id(passkey.user_id).await? else {
-            return Err(Error::UserNotFound);
-        };
+        let user = self.records.find(passkey.user_id).await?;
 
         if kind == FlowKind::Recovery {
             // Close the pre-recovery-challenge bypass: any registration
