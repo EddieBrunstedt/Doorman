@@ -7,16 +7,20 @@
 //!
 //! - `add_passkey` → `insert_one` with unique `_id`: a duplicate credential
 //!   id is rejected by the default `_id` uniqueness constraint.
-//! - `update_passkey` → `replace_one` matched by `_id`: `matched_count == 0`
-//!   surfaces "not found".
+//! - `record_passkey_use` / `set_passkey_name` → `update_one` matched by
+//!   `_id`, setting only their own fields: `matched_count == 0` surfaces
+//!   "not found".
 //! - `list_passkey_summaries_for_user` projects to [`PasskeySummary`] values
 //!   without reading the `passkey` blob, satisfying the "no blob deserialisation
 //!   on the listing path" contract.
 
 use async_trait::async_trait;
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{PasskeyCredentialStore, PasskeySummary, StoredPasskey, UserId};
-use mongodb::bson::doc;
+use doorman_core::storage::{
+    PasskeyCredentialStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId,
+};
+use mongodb::bson::spec::BinarySubtype;
+use mongodb::bson::{Binary, Document, doc};
 
 use crate::db::{Coll, err};
 use crate::model::{self, passkey_id};
@@ -30,6 +34,19 @@ impl MongoPasskeyCredentialStore {
     pub(crate) fn new(coll: Coll) -> Self {
         Self { coll }
     }
+
+    /// Apply a field-level `update` to the existing credential
+    /// `credential_id`. It touches only the fields `update` names, so
+    /// concurrent changes to other fields survive; it fails if the credential
+    /// does not exist.
+    async fn update(&self, credential_id: &[u8], update: Document) -> StorageResult<()> {
+        let filter = doc! { "_id": passkey_id(credential_id) };
+        let result = self.coll.update_one(filter, update).await.map_err(err)?;
+        if result.matched_count == 0 {
+            return Err(StorageError::msg("passkey credential not found"));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -42,18 +59,34 @@ impl PasskeyCredentialStore for MongoPasskeyCredentialStore {
         Ok(())
     }
 
-    async fn update_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
-        let filter = doc! { "_id": passkey_id(&credential.credential_id) };
-        let replacement = model::passkey_to_doc(&credential);
-        let result = self
-            .coll
-            .replace_one(filter, replacement)
-            .await
-            .map_err(err)?;
-        if result.matched_count == 0 {
-            return Err(StorageError::msg("passkey credential not found"));
-        }
-        Ok(())
+    async fn record_passkey_use(
+        &self,
+        credential_id: &[u8],
+        used: PasskeyUse,
+    ) -> StorageResult<()> {
+        let update = doc! {
+            "$set": {
+                "passkey": Binary { subtype: BinarySubtype::Generic, bytes: used.passkey },
+                "backup_eligible": used.backup_eligible,
+                "backup_state": used.backup_state,
+                "last_used_at": model::to_bson_dt(used.used_at),
+            }
+        };
+        self.update(credential_id, update).await
+    }
+
+    async fn set_passkey_name(
+        &self,
+        credential_id: &[u8],
+        name: Option<&str>,
+    ) -> StorageResult<()> {
+        // A cleared name drops the field, mirroring `passkey_to_doc`, which
+        // omits it when there is no name.
+        let update = match name {
+            Some(name) => doc! { "$set": { "name": name } },
+            None => doc! { "$unset": { "name": "" } },
+        };
+        self.update(credential_id, update).await
     }
 
     async fn list_passkeys_for_user(&self, user_id: UserId) -> StorageResult<Vec<StoredPasskey>> {

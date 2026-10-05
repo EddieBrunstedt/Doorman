@@ -13,7 +13,7 @@ use doorman_core::passkey::{PasskeyConfig, PasskeyRateLimits};
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{
-    AccountStatus, PasskeyChallengeStore, PasskeyCredentialStore, UserId, UserStore,
+    AccountStatus, PasskeyChallengeStore, PasskeyCredentialStore, PasskeyUse, UserId, UserStore,
 };
 use doorman_test_support::MockClock;
 
@@ -602,7 +602,7 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
     let mut wa = authenticator();
     let cred = register_passkey(&h, user.id, &mut wa, None).await;
 
-    let mut stored = h
+    let stored = h
         .credentials
         .find_passkey_by_credential_id(&cred.credential_id)
         .await
@@ -611,9 +611,16 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
     let mut blob: serde_json::Value =
         serde_json::from_slice(&stored.passkey).expect("blob is json");
     blob["cred"]["counter"] = serde_json::json!(1_000_000u32);
-    stored.passkey = serde_json::to_vec(&blob).expect("reserialise blob");
     h.credentials
-        .update_passkey(stored)
+        .record_passkey_use(
+            &cred.credential_id,
+            PasskeyUse {
+                passkey: serde_json::to_vec(&blob).expect("reserialise blob"),
+                backup_eligible: stored.backup_eligible,
+                backup_state: stored.backup_state,
+                used_at: h.clock.now(),
+            },
+        )
         .await
         .expect("persist bumped counter");
 

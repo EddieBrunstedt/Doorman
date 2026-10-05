@@ -614,15 +614,53 @@ pub struct StoredPasskeyAuthentication {
     pub expires_at: DateTime<Utc>,
 }
 
+/// The fields a successful authentication refreshes on a stored credential,
+/// written by [`PasskeyCredentialStore::record_passkey_use`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasskeyUse {
+    /// The re-serialised credential blob, carrying the advanced WebAuthn
+    /// signature counter. Persist it verbatim.
+    pub passkey: Vec<u8>,
+    /// The refreshed backup-eligibility flag.
+    pub backup_eligible: bool,
+    /// The refreshed backup-state flag.
+    pub backup_state: bool,
+    /// When the credential was used; becomes
+    /// [`StoredPasskey::last_used_at`].
+    pub used_at: DateTime<Utc>,
+}
+
 /// Persistence contract for registered passkey credentials.
+///
+/// Changes to an existing credential are field-level: each write names the
+/// fields it sets, so a sign-in and a rename landing on the same credential
+/// concurrently both take effect. There is deliberately no whole-row update —
+/// writing back a row read earlier would silently undo any change that landed
+/// in between (rolling back the signature counter, or reverting a name). A
+/// credential's owner (`user_id`) and `created_at` are fixed by
+/// [`add_passkey`](Self::add_passkey) and nothing in this trait changes them.
 #[async_trait]
 pub trait PasskeyCredentialStore: Send + Sync {
     /// Persist a newly-registered credential.
     async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()>;
 
-    /// Update an existing passkey, typically to advance its signature
-    /// counter or backup-state flags after a successful authentication.
-    async fn update_passkey(&self, credential: StoredPasskey) -> StorageResult<()>;
+    /// Record a successful authentication with an existing credential: set
+    /// its credential blob, its backup flags, and `last_used_at` (from
+    /// [`PasskeyUse::used_at`]). No other field is written. Errors if the
+    /// credential does not exist.
+    ///
+    /// This is a plain write, not a compare-and-set on the signature counter:
+    /// if two sign-ins with the same credential finish concurrently, the last
+    /// write wins and the stored counter may be the lower of the two. The next
+    /// assertion still has to exceed whichever value was stored.
+    async fn record_passkey_use(&self, credential_id: &[u8], used: PasskeyUse)
+    -> StorageResult<()>;
+
+    /// Set an existing credential's friendly name (`None` clears it). No
+    /// other field is written. Errors if the credential does not exist.
+    /// Callers verify ownership before calling.
+    async fn set_passkey_name(&self, credential_id: &[u8], name: Option<&str>)
+    -> StorageResult<()>;
 
     /// List the user's credentials, including the credential blob. Prefer
     /// [`list_passkey_summaries_for_user`](Self::list_passkey_summaries_for_user)

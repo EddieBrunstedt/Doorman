@@ -8,14 +8,19 @@
 //!
 //! Writes use conditions to reproduce the relational guarantees: `add_passkey`
 //! is guarded by `attribute_not_exists` so a duplicate credential id is
-//! rejected, and `update_passkey` by `attribute_exists` so updating a missing
-//! credential errors. The metadata-only summary listing projects each row to a
-//! [`PasskeySummary`](doorman_core::storage::PasskeySummary) without ever reading
-//! the credential blob.
+//! rejected, and the field-level writes (`record_passkey_use`,
+//! `set_passkey_name`) are `UpdateItem`s guarded by `attribute_exists` so
+//! updating a missing credential errors. The metadata-only summary listing
+//! projects each row to a
+//! [`PasskeySummary`](doorman_core::storage::PasskeySummary) without ever
+//! reading the credential blob.
 
 use async_trait::async_trait;
+use aws_sdk_dynamodb::types::AttributeValue;
 use doorman_core::error::StorageResult;
-use doorman_core::storage::{PasskeyCredentialStore, PasskeySummary, StoredPasskey, UserId};
+use doorman_core::storage::{
+    PasskeyCredentialStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId,
+};
 
 use crate::client::{self, DynamoClient, PK};
 use crate::model;
@@ -28,6 +33,36 @@ pub(crate) struct DynamoPasskeyCredentialStore {
 impl DynamoPasskeyCredentialStore {
     pub(crate) fn new(client: DynamoClient) -> Self {
         Self { client }
+    }
+
+    /// Apply a field-level `UpdateItem` to the existing credential
+    /// `credential_id`. The write touches only the attributes `expression`
+    /// names, so concurrent changes to other attributes survive; it fails if
+    /// the credential does not exist.
+    async fn update(
+        &self,
+        credential_id: &[u8],
+        expression: &str,
+        names: &[(&str, &str)],
+        values: Vec<(&str, AttributeValue)>,
+    ) -> StorageResult<()> {
+        let mut request = self
+            .client
+            .inner()
+            .update_item()
+            .table_name(self.client.table())
+            .key(PK, client::s(model::passkey_pk(credential_id)))
+            .update_expression(expression)
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", PK);
+        for (name, attribute) in names {
+            request = request.expression_attribute_names(*name, *attribute);
+        }
+        for (name, value) in values {
+            request = request.expression_attribute_values(name, value);
+        }
+        request.send().await.map_err(client::err)?;
+        Ok(())
     }
 }
 
@@ -47,21 +82,53 @@ impl PasskeyCredentialStore for DynamoPasskeyCredentialStore {
         Ok(())
     }
 
-    async fn update_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
-        // `attribute_exists` makes the put a true update: a missing credential
-        // fails the condition and surfaces as an error, matching the reference
-        // store's "not found" rejection.
-        self.client
-            .inner()
-            .put_item()
-            .table_name(self.client.table())
-            .set_item(Some(model::passkey_item(&credential)))
-            .condition_expression("attribute_exists(#pk)")
-            .expression_attribute_names("#pk", PK)
-            .send()
-            .await
-            .map_err(client::err)?;
-        Ok(())
+    async fn record_passkey_use(
+        &self,
+        credential_id: &[u8],
+        used: PasskeyUse,
+    ) -> StorageResult<()> {
+        self.update(
+            credential_id,
+            "SET #passkey = :passkey, #backup_eligible = :backup_eligible, \
+             #backup_state = :backup_state, #last_used_at = :last_used_at",
+            &[
+                ("#passkey", "passkey"),
+                ("#backup_eligible", "backup_eligible"),
+                ("#backup_state", "backup_state"),
+                ("#last_used_at", "last_used_at"),
+            ],
+            vec![
+                (":passkey", client::b(used.passkey)),
+                (":backup_eligible", client::boolean(used.backup_eligible)),
+                (":backup_state", client::boolean(used.backup_state)),
+                (":last_used_at", client::s(client::fmt_ts(used.used_at))),
+            ],
+        )
+        .await
+    }
+
+    async fn set_passkey_name(
+        &self,
+        credential_id: &[u8],
+        name: Option<&str>,
+    ) -> StorageResult<()> {
+        // A cleared name drops the attribute, mirroring `passkey_item`, which
+        // omits it when there is no name.
+        match name {
+            Some(name) => {
+                self.update(
+                    credential_id,
+                    "SET #name = :name",
+                    &[("#name", "name")],
+                    vec![(":name", client::s(name))],
+                )
+                .await
+            }
+            None => {
+                self.update(credential_id, "REMOVE #name", &[("#name", "name")], vec![])
+                    .await
+            }
+        }
     }
 
     async fn list_passkeys_for_user(&self, user_id: UserId) -> StorageResult<Vec<StoredPasskey>> {

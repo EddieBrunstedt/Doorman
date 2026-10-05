@@ -39,8 +39,8 @@ use crate::redeem::{RedeemedRegistration, Redeemer};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
     AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
-    PasskeySummary, Session, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
-    User, UserId,
+    PasskeySummary, PasskeyUse, Session, StoredPasskey, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, User, UserId,
 };
 use crate::user::UserRecords;
 use crate::verification::EnrollmentOutcome;
@@ -783,7 +783,7 @@ impl PasskeyManager {
         let now = self.clock.now();
 
         let cred_id_bytes: &[u8] = response.raw_id.as_ref();
-        let Some(mut credential) = self
+        let Some(credential) = self
             .credentials
             .find_passkey_by_credential_id(cred_id_bytes)
             .await?
@@ -883,19 +883,24 @@ impl PasskeyManager {
         let active_recovery_cooldown_until = credential.active_recovery_cooldown_until(now);
 
         // Counter / backup-state updates are advisory per webauthn-rs;
-        // last_used_at always advances, so we persist on every success. The
-        // mutated passkey is re-serialised into the opaque blob; `credential`
-        // is then moved into the store rather than cloned — nothing below
-        // reads it, only the `user_id` captured above. The backup flags are
-        // refreshed from the (possibly updated) credential so the surfaced
-        // metadata tracks a passkey that became backed up after registration.
+        // last_used_at always advances, so we record the use on every success.
+        // The mutated passkey is re-serialised into the opaque blob, and the
+        // backup flags are refreshed from it so the surfaced metadata tracks a
+        // passkey that became backed up after registration. Only these fields
+        // are written, so a concurrent rename survives.
         passkey.update_credential(&auth_result);
         let refreshed = PasskeyMetadata::from_passkey(&passkey);
-        credential.passkey = encode_credential(&passkey)?;
-        credential.last_used_at = Some(now);
-        credential.backup_eligible = refreshed.backup_eligible;
-        credential.backup_state = refreshed.backup_state;
-        self.credentials.update_passkey(credential).await?;
+        self.credentials
+            .record_passkey_use(
+                &credential.credential_id,
+                PasskeyUse {
+                    passkey: encode_credential(&passkey)?,
+                    backup_eligible: refreshed.backup_eligible,
+                    backup_state: refreshed.backup_state,
+                    used_at: now,
+                },
+            )
+            .await?;
 
         self.metrics.record(MetricEvent::LoginSucceeded);
         self.audit
@@ -1012,7 +1017,8 @@ impl PasskeyManager {
     /// is enforced server-side so a session for user A cannot rename user B's
     /// credential by guessing a credential id: a missing credential is
     /// [`Error::PasskeyNotFound`] and one owned by a different user is
-    /// [`Error::PasskeyOwnershipMismatch`]. Returns the updated credential.
+    /// [`Error::PasskeyOwnershipMismatch`]. Writes only the name, and returns
+    /// the credential as read with the new name applied.
     ///
     /// Unlike [`remove_passkey`](Self::remove_passkey) this is purely cosmetic
     /// — it neither adds nor removes an authenticator and cannot lock the
@@ -1045,8 +1051,10 @@ impl PasskeyManager {
             tracing::warn!(outcome = "ownership_mismatch", "passkey rename failed");
             return Err(Error::PasskeyOwnershipMismatch);
         }
+        self.credentials
+            .set_passkey_name(credential_id, name.as_deref())
+            .await?;
         credential.name = name;
-        self.credentials.update_passkey(credential.clone()).await?;
         self.audit
             .emit(AuditEvent {
                 timestamp: self.clock.now(),

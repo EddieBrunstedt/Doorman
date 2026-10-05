@@ -28,9 +28,9 @@ use std::future::Future;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
-    AccountStatus, AuthenticationPurpose, PasskeyChallengeId, PasskeySummary, Session, SessionId,
-    Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
-    VerificationPurpose, VerificationToken,
+    AccountStatus, AuthenticationPurpose, PasskeyChallengeId, PasskeySummary, PasskeyUse, Session,
+    SessionId, Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
+    User, UserId, VerificationPurpose, VerificationToken,
 };
 
 fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
@@ -69,6 +69,8 @@ pub async fn run(storage: &Storage) {
     session_touch_slides_deadline(storage).await;
     session_touch_does_not_resurrect(storage).await;
     passkey_credentials_cooldown_round_trip(storage).await;
+    passkey_field_changes_compose(storage).await;
+    passkey_writes_refuse_missing_credential(storage).await;
     passkey_credentials_bulk_delete_for_user(storage).await;
     passkey_registration_cooldown_round_trip(storage).await;
     passkey_registration_delete_for_user(storage).await;
@@ -976,24 +978,36 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
     assert!(!by_id.backup_state);
     assert_eq!(by_id.recovery_cooldown_until, Some(cooldown_until));
 
-    let updated_cooldown_until = now + Duration::hours(48);
+    // A recorded use writes the blob, the backup flags and the last-used time;
+    // a rename writes only the name. Every other field keeps the value it was
+    // registered with.
     let updated_blob = b"opaque-serialised-passkey-blob-v2".to_vec();
+    let used_at = now + Duration::minutes(5);
+    credentials
+        .record_passkey_use(
+            &credential_id,
+            PasskeyUse {
+                passkey: updated_blob.clone(),
+                // The credential became backed up after registration.
+                backup_eligible: true,
+                backup_state: true,
+                used_at,
+            },
+        )
+        .await
+        .expect("record use");
+    credentials
+        .set_passkey_name(&credential_id, Some("renamed security key"))
+        .await
+        .expect("rename passkey");
     let updated = StoredPasskey {
         passkey: updated_blob.clone(),
         name: Some("renamed security key".into()),
-        last_used_at: Some(now + Duration::minutes(5)),
-        // The credential became backed up after registration: the update
-        // must persist the refreshed flags and the (now single) transport.
-        transports: vec!["internal".into()],
+        last_used_at: Some(used_at),
         backup_eligible: true,
         backup_state: true,
-        recovery_cooldown_until: Some(updated_cooldown_until),
         ..by_id
     };
-    credentials
-        .update_passkey(updated.clone())
-        .await
-        .expect("update passkey");
 
     let listed = credentials
         .list_passkeys_for_user(user_id)
@@ -1005,15 +1019,17 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
     assert_eq!(listed[0].name.as_deref(), Some("renamed security key"));
     assert_eq!(listed[0].last_used_at, updated.last_used_at);
     assert_eq!(listed[0].aaguid, Some(aaguid), "aaguid preserved on update");
-    assert_eq!(listed[0].transports, vec!["internal".to_string()]);
-    assert!(
-        listed[0].backup_eligible,
-        "backup flags refreshed on update"
+    assert_eq!(
+        listed[0].transports,
+        vec!["usb".to_string(), "nfc".to_string()],
+        "transports preserved on update",
     );
+    assert!(listed[0].backup_eligible, "backup flags refreshed on use");
     assert!(listed[0].backup_state);
     assert_eq!(
         listed[0].recovery_cooldown_until,
-        Some(updated_cooldown_until),
+        Some(cooldown_until),
+        "cool-down preserved on update",
     );
 
     // The metadata-only projection carries the same fields as the full
@@ -1030,13 +1046,13 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
     assert_eq!(summary.created_at, updated.created_at);
     assert_eq!(summary.last_used_at, updated.last_used_at);
     assert_eq!(summary.aaguid, Some(aaguid));
-    assert_eq!(summary.transports, vec!["internal".to_string()]);
+    assert_eq!(
+        summary.transports,
+        vec!["usb".to_string(), "nfc".to_string()]
+    );
     assert!(summary.backup_eligible);
     assert!(summary.backup_state);
-    assert_eq!(
-        summary.recovery_cooldown_until,
-        Some(updated_cooldown_until)
-    );
+    assert_eq!(summary.recovery_cooldown_until, Some(cooldown_until));
     // The same record viewed as a summary is byte-for-byte the projection.
     assert_eq!(*summary, PasskeySummary::from(listed[0].clone()));
 
@@ -1076,6 +1092,138 @@ async fn passkey_credentials_cooldown_round_trip(storage: &Storage) {
     assert_eq!(
         still_owned.user_id, user_id,
         "the original owner is preserved after a duplicate-id attempt",
+    );
+}
+
+/// A credential with the given id, owned by `user_id`, registered at
+/// `created_at` with no name, no use and no backup.
+fn passkey(user_id: UserId, credential_id: &[u8], created_at: DateTime<Utc>) -> StoredPasskey {
+    StoredPasskey {
+        credential_id: credential_id.to_vec(),
+        user_id,
+        passkey: b"opaque-serialised-passkey-blob".to_vec(),
+        name: None,
+        created_at,
+        last_used_at: None,
+        aaguid: None,
+        transports: vec!["usb".into()],
+        backup_eligible: false,
+        backup_state: false,
+        recovery_cooldown_until: None,
+    }
+}
+
+/// Field-level credential writes never overwrite each other: a recorded use
+/// and a rename of the same credential both survive, in either order, and
+/// neither moves the owner or the registration time. Each write is a single
+/// atomic change to its own fields, so any concurrent interleaving of the two
+/// (a sign-in and a rename racing from the same read of the row) is
+/// equivalent to one of these orders.
+async fn passkey_field_changes_compose(storage: &Storage) {
+    let created_at = ts(2026, 6, 1);
+    let used_at = ts(2026, 6, 2);
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "passkey-compose@example.com"))
+        .await
+        .expect("user");
+    let credentials = &storage.passkey_credentials;
+    let used = || PasskeyUse {
+        passkey: b"opaque-serialised-passkey-blob-advanced".to_vec(),
+        backup_eligible: true,
+        backup_state: true,
+        used_at,
+    };
+
+    for (credential_id, use_first) in [
+        (&b"compose-use-first"[..], true),
+        (&b"compose-rename-first"[..], false),
+    ] {
+        credentials
+            .add_passkey(passkey(user_id, credential_id, created_at))
+            .await
+            .expect("add passkey");
+        if use_first {
+            credentials
+                .record_passkey_use(credential_id, used())
+                .await
+                .expect("record use");
+        }
+        credentials
+            .set_passkey_name(credential_id, Some("laptop"))
+            .await
+            .expect("rename");
+        if !use_first {
+            credentials
+                .record_passkey_use(credential_id, used())
+                .await
+                .expect("record use");
+        }
+
+        let reread = credentials
+            .find_passkey_by_credential_id(credential_id)
+            .await
+            .expect("find")
+            .expect("present");
+        assert_eq!(
+            reread.passkey,
+            used().passkey,
+            "the rename kept the recorded blob (use first: {use_first})",
+        );
+        assert_eq!(reread.last_used_at, Some(used_at));
+        assert!(reread.backup_eligible && reread.backup_state);
+        assert_eq!(
+            reread.name.as_deref(),
+            Some("laptop"),
+            "the recorded use kept the rename (use first: {use_first})",
+        );
+        assert_eq!(reread.user_id, user_id, "the owner never moves");
+        assert_eq!(reread.created_at, created_at, "registration time is fixed");
+    }
+
+    // Clearing the name removes it and leaves the recorded use in place.
+    credentials
+        .set_passkey_name(b"compose-use-first", None)
+        .await
+        .expect("clear name");
+    let cleared = credentials
+        .find_passkey_by_credential_id(b"compose-use-first")
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(cleared.name, None, "a cleared name reads back as none");
+    assert_eq!(cleared.last_used_at, Some(used_at));
+}
+
+/// Every field-level credential write refuses a credential that does not
+/// exist rather than creating one.
+async fn passkey_writes_refuse_missing_credential(storage: &Storage) {
+    let credentials = &storage.passkey_credentials;
+    let missing = b"conformance-missing-credential";
+    credentials
+        .record_passkey_use(
+            missing,
+            PasskeyUse {
+                passkey: b"ghost-blob".to_vec(),
+                backup_eligible: false,
+                backup_state: false,
+                used_at: ts(2026, 6, 1),
+            },
+        )
+        .await
+        .expect_err("use of a missing credential");
+    credentials
+        .set_passkey_name(missing, Some("ghost"))
+        .await
+        .expect_err("rename of a missing credential");
+    assert!(
+        credentials
+            .find_passkey_by_credential_id(missing)
+            .await
+            .expect("find missing")
+            .is_none(),
+        "no write creates the credential",
     );
 }
 

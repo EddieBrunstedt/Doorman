@@ -612,29 +612,42 @@ macro_rules! sqlx_stores {
                 Ok(())
             }
 
-            async fn update_passkey(
+            async fn record_passkey_use(
                 &self,
-                credential: $crate::stores::__reexport::StoredPasskey,
+                credential_id: &[u8],
+                used: $crate::stores::__reexport::PasskeyUse,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
                     "UPDATE passkey_credentials
-                     SET user_id = ?, passkey = ?, name = ?, created_at = ?, last_used_at = ?,
-                         aaguid = ?, transports = ?, backup_eligible = ?, backup_state = ?,
-                         recovery_cooldown_until = ?
+                     SET passkey = ?, backup_eligible = ?, backup_state = ?, last_used_at = ?
                      WHERE credential_id = ?",
                 );
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind($crate::common::uuid_to_bytes(credential.user_id.0))
-                    .bind(&credential.passkey)
-                    .bind(&credential.name)
-                    .bind($ts(credential.created_at))
-                    .bind($ts(credential.last_used_at))
-                    .bind($crate::common::aaguid_to_str(credential.aaguid))
-                    .bind($crate::common::transports_to_str(&credential.transports))
-                    .bind(credential.backup_eligible)
-                    .bind(credential.backup_state)
-                    .bind($ts(credential.recovery_cooldown_until))
-                    .bind(&credential.credential_id)
+                    .bind(used.passkey)
+                    .bind(used.backup_eligible)
+                    .bind(used.backup_state)
+                    .bind($ts(used.used_at))
+                    .bind(credential_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err($crate::common::storage_err)?;
+                if result.rows_affected() == 0 {
+                    return Err($crate::stores::__reexport::StorageError::msg(
+                        "passkey credential not found",
+                    ));
+                }
+                Ok(())
+            }
+
+            async fn set_passkey_name(
+                &self,
+                credential_id: &[u8],
+                name: Option<&str>,
+            ) -> $crate::stores::__reexport::StorageResult<()> {
+                let sql = $ph("UPDATE passkey_credentials SET name = ? WHERE credential_id = ?");
+                let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+                    .bind(name)
+                    .bind(credential_id)
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage_err)?;
@@ -1070,7 +1083,7 @@ pub(crate) mod __reexport {
     pub use doorman_core::error::{StorageError, StorageResult};
     pub use doorman_core::storage::{
         AccountStatus, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
-        PasskeySummary, Session, SessionId, SessionStore, Storage, StoredPasskey,
+        PasskeySummary, PasskeyUse, Session, SessionId, SessionStore, Storage, StoredPasskey,
         StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
         VerificationPurpose, VerificationToken, VerificationTokenStore,
     };

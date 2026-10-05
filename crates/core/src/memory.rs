@@ -19,7 +19,7 @@ use crate::error::{StorageError, StorageResult};
 use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::storage::{
     AccountStatus, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
-    PasskeySummary, Session, SessionId, SessionStore, Storage, StoredPasskey,
+    PasskeySummary, PasskeyUse, Session, SessionId, SessionStore, Storage, StoredPasskey,
     StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
     VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
@@ -491,15 +491,32 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
         Ok(())
     }
 
-    async fn update_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
+    async fn record_passkey_use(
+        &self,
+        credential_id: &[u8],
+        used: PasskeyUse,
+    ) -> StorageResult<()> {
         let mut state = self.lock();
-        let Some(slot) = state
-            .iter_mut()
-            .find(|c| c.credential_id == credential.credential_id)
-        else {
+        let Some(credential) = state.iter_mut().find(|c| c.credential_id == credential_id) else {
             return Err(StorageError::msg("passkey credential not found"));
         };
-        *slot = credential;
+        credential.passkey = used.passkey;
+        credential.backup_eligible = used.backup_eligible;
+        credential.backup_state = used.backup_state;
+        credential.last_used_at = Some(used.used_at);
+        Ok(())
+    }
+
+    async fn set_passkey_name(
+        &self,
+        credential_id: &[u8],
+        name: Option<&str>,
+    ) -> StorageResult<()> {
+        let mut state = self.lock();
+        let Some(credential) = state.iter_mut().find(|c| c.credential_id == credential_id) else {
+            return Err(StorageError::msg("passkey credential not found"));
+        };
+        credential.name = name.map(str::to_owned);
         Ok(())
     }
 

@@ -765,10 +765,16 @@ async fn passkey_added_during_cooldown_inherits_cooldown() {
         .await
         .expect("find backup passkey after auth")
         .expect("backup passkey stored after auth");
+    // The store has no write for a credential's cool-down (it is fixed at
+    // registration), so expire it by re-adding the row with an elapsed one.
     stored_after_auth.recovery_cooldown_until =
         Some(chrono::Utc::now() - ChronoDuration::seconds(1));
     app.passkey_credentials
-        .update_passkey(stored_after_auth)
+        .delete_passkey(&backup_credential_id)
+        .await
+        .expect("remove backup passkey");
+    app.passkey_credentials
+        .add_passkey(stored_after_auth)
         .await
         .expect("expire backup passkey cooldown");
 
