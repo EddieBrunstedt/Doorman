@@ -18,14 +18,14 @@ use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::recovery::{
     MAX_COOLDOWN, MIN_COOLDOWN, RecoveryConfig, RecoveryConfigError, RecoveryRateLimits,
 };
-use doorman_core::session::SessionContext;
+use doorman_core::session::{SessionConfig, SessionContext};
 use doorman_core::storage::{AccountStatus, PasskeyCredentialStore, User, UserStore};
 use doorman_test_support::MockClock;
 
 use common::{
     Harness, RECOVERY_URL, RP_ID, RP_NAME, ResidentTestAuthenticator, authenticator, kinds,
     make_user, passkey_count, provision_user, recovery_config, register_passkey, rp_origin,
-    session_count, token_from_email,
+    session_count, session_for, token_from_email,
 };
 
 #[tokio::test]
@@ -1014,6 +1014,76 @@ async fn recovery_cooldown_expires_after_window() {
 }
 
 #[tokio::test]
+async fn passkey_registered_during_cooldown_inherits_its_deadline() {
+    // A passkey added from the recovery session must not escape the
+    // cool-down, so it carries the same deadline as the session.
+    let h = Harness::fresh();
+    let _ = provision_user(&h, "alice@example.com").await;
+    let outcome = drive_recovery_finish(&h, "alice@example.com").await;
+    h.clock.advance(ChronoDuration::minutes(10));
+    let resolved = h
+        .resolver
+        .resolve(&outcome.session.token)
+        .await
+        .expect("the recovery session is live");
+
+    let mut wa = authenticator();
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration(&resolved.session)
+        .await
+        .expect("start_registration");
+    let response = wa.do_registration(ccr);
+    let passkey = h
+        .passkey
+        .finish_registration(challenge_id, &response, None, SessionContext::default())
+        .await
+        .expect("finish_registration");
+
+    assert!(outcome.session.session.recovery_cooldown_until.is_some());
+    assert_eq!(
+        passkey.recovery_cooldown_until,
+        outcome.session.session.recovery_cooldown_until,
+    );
+}
+
+#[tokio::test]
+async fn passkey_registered_after_cooldown_is_unrestricted() {
+    // Once the deadline has passed, the same session registers an ordinary
+    // passkey: only an active cool-down is carried onto the ceremony. The
+    // default lifetime keeps the session alive past the 24-hour cool-down.
+    let h = Harness::builder()
+        .session_config(SessionConfig::default())
+        .build();
+    let _ = provision_user(&h, "alice@example.com").await;
+    let outcome = drive_recovery_finish(&h, "alice@example.com").await;
+    h.clock
+        .advance(ChronoDuration::hours(24) + ChronoDuration::seconds(1));
+    let resolved = h
+        .resolver
+        .resolve(&outcome.session.token)
+        .await
+        .expect("the recovery session outlives its cool-down");
+    assert!(resolved.session.recovery_cooldown_until.is_some());
+    assert!(!resolved.session.is_in_recovery_cooldown(h.clock.now()));
+
+    let mut wa = authenticator();
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration(&resolved.session)
+        .await
+        .expect("start_registration");
+    let response = wa.do_registration(ccr);
+    let passkey = h
+        .passkey
+        .finish_registration(challenge_id, &response, None, SessionContext::default())
+        .await
+        .expect("finish_registration");
+
+    assert_eq!(passkey.recovery_cooldown_until, None);
+}
+
+#[tokio::test]
 async fn pre_recovery_registration_challenge_cannot_finish_after_recovery() {
     // A registration ceremony begun before recovery completes is minted
     // without the cool-down stamp. Finishing it after recovery would attach a
@@ -1024,7 +1094,7 @@ async fn pre_recovery_registration_challenge_cannot_finish_after_recovery() {
     // Pre-recovery: start (but do not finish) a registration ceremony.
     let (pre_challenge_id, pre_ccr) = h
         .passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("start pre-recovery registration");
     let mut pre_wa = authenticator();
@@ -1109,7 +1179,7 @@ async fn pre_recovery_challenge_is_invalidated_before_recovery_session() {
     // Pre-recovery: start (but do not finish) a registration ceremony.
     let (pre_challenge_id, pre_ccr) = h
         .passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("start pre-recovery registration");
     let mut pre_wa = authenticator();
@@ -1181,7 +1251,7 @@ async fn signup_does_not_invalidate_other_pending_registrations() {
     // pending.
     let (pending_id, pending_ccr) = h
         .passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("start pending registration");
     let mut wa = authenticator();
@@ -1493,7 +1563,7 @@ async fn ordinary_registration_still_rejected_at_cap() {
 
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("start allowed at the cap");
     let response = filler.do_registration(ccr);

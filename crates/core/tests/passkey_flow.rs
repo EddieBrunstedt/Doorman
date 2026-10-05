@@ -13,7 +13,7 @@ use doorman_core::passkey::{PasskeyConfig, PasskeyRateLimits};
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{
-    AccountStatus, PasskeyChallengeStore, PasskeyCredentialStore, PasskeyUse, UserId, UserStore,
+    AccountStatus, PasskeyChallengeStore, PasskeyCredentialStore, PasskeyUse, UserStore,
 };
 use doorman_test_support::MockClock;
 
@@ -41,7 +41,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
 
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);
@@ -153,95 +153,6 @@ async fn registration_captures_device_metadata_and_surfaces_it_in_summary() {
 }
 
 #[tokio::test]
-async fn registration_with_none_recovery_cooldown_stores_unrestricted_passkey() {
-    let h = Harness::fresh();
-    let user = make_user(&h, "none-cooldown@example.com").await;
-    let mut wa = authenticator();
-
-    let (challenge_id, ccr) = h
-        .passkey
-        .start_registration_with_recovery_cooldown(user.id, None)
-        .await
-        .expect("start_registration_with_recovery_cooldown");
-    let response = wa.do_registration(ccr);
-    let credential = h
-        .passkey
-        .finish_registration(challenge_id, &response, None, SessionContext::default())
-        .await
-        .expect("finish_registration");
-
-    assert_eq!(credential.recovery_cooldown_until, None);
-    let stored = h
-        .credentials
-        .find_passkey_by_credential_id(&credential.credential_id)
-        .await
-        .expect("find credential")
-        .expect("credential persisted");
-    assert_eq!(stored.recovery_cooldown_until, None);
-}
-
-#[tokio::test]
-async fn registration_with_recovery_cooldown_stores_timestamp_on_passkey() {
-    let h = Harness::fresh();
-    let user = make_user(&h, "cooldown@example.com").await;
-    let mut wa = authenticator();
-    let cooldown_until = h.clock.now() + ChronoDuration::hours(24);
-
-    let (challenge_id, ccr) = h
-        .passkey
-        .start_registration_with_recovery_cooldown(user.id, Some(cooldown_until))
-        .await
-        .expect("start_registration_with_recovery_cooldown");
-    let response = wa.do_registration(ccr);
-    let credential = h
-        .passkey
-        .finish_registration(challenge_id, &response, None, SessionContext::default())
-        .await
-        .expect("finish_registration");
-
-    assert_eq!(credential.recovery_cooldown_until, Some(cooldown_until));
-    let stored = h
-        .credentials
-        .find_passkey_by_credential_id(&credential.credential_id)
-        .await
-        .expect("find credential")
-        .expect("credential persisted");
-    assert_eq!(stored.recovery_cooldown_until, Some(cooldown_until));
-}
-
-#[tokio::test]
-async fn finish_registration_recovery_cooldown_override_takes_precedence() {
-    let h = Harness::fresh();
-    let user = make_user(&h, "override-cooldown@example.com").await;
-    let mut wa = authenticator();
-    let challenge_cooldown_until = h.clock.now() + ChronoDuration::hours(1);
-    let override_cooldown_until = h.clock.now() + ChronoDuration::hours(2);
-
-    let (challenge_id, ccr) = h
-        .passkey
-        .start_registration_with_recovery_cooldown(user.id, Some(challenge_cooldown_until))
-        .await
-        .expect("start_registration_with_recovery_cooldown");
-    let response = wa.do_registration(ccr);
-    let credential = h
-        .passkey
-        .finish_registration_with_recovery_cooldown(
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-            override_cooldown_until,
-        )
-        .await
-        .expect("finish_registration_with_recovery_cooldown");
-
-    assert_eq!(
-        credential.recovery_cooldown_until,
-        Some(override_cooldown_until)
-    );
-}
-
-#[tokio::test]
 async fn discoverable_authentication_identifies_two_users_from_response() {
     let h = Harness::fresh();
     let alice = make_user(&h, "alice@example.com").await;
@@ -343,7 +254,7 @@ async fn second_registration_excludes_existing_credentials() {
 
     let (_id2, ccr2) = h
         .passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("start second registration");
     assert_resident_registration_options(&ccr2);
@@ -359,7 +270,11 @@ async fn finish_registration_rejects_unknown_challenge() {
     let h = Harness::fresh();
     let user = make_user(&h, "ghost@example.com").await;
     let mut wa = authenticator();
-    let (challenge_id, ccr) = h.passkey.start_registration(user.id).await.expect("start");
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration(&session_for(&h, &user))
+        .await
+        .expect("start");
     let response = wa.do_registration(ccr);
     h.passkey
         .finish_registration(challenge_id, &response, None, SessionContext::default())
@@ -379,7 +294,11 @@ async fn finish_registration_rejects_expired_challenge() {
     let h = Harness::fresh();
     let user = make_user(&h, "slow@example.com").await;
     let mut wa = authenticator();
-    let (challenge_id, ccr) = h.passkey.start_registration(user.id).await.expect("start");
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration(&session_for(&h, &user))
+        .await
+        .expect("start");
     let response = wa.do_registration(ccr);
     h.clock.advance(ChronoDuration::seconds(301));
 
@@ -409,7 +328,11 @@ async fn finish_registration_against_deleted_user_writes_no_orphan_credential() 
     let user = make_user(&h, "vanishing@example.com").await;
     let mut wa = authenticator();
 
-    let (challenge_id, ccr) = h.passkey.start_registration(user.id).await.expect("start");
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration(&session_for(&h, &user))
+        .await
+        .expect("start");
     let response = wa.do_registration(ccr);
 
     // Delete the user out from under the in-flight ceremony.
@@ -571,7 +494,11 @@ async fn finish_registration_rejects_tampered_attestation() {
     let user = make_user(&h, "tamper-reg@example.com").await;
     let mut wa = authenticator();
 
-    let (challenge_id, ccr) = h.passkey.start_registration(user.id).await.expect("start");
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration(&session_for(&h, &user))
+        .await
+        .expect("start");
     let mut response = wa.do_registration(ccr);
 
     let mut attestation = response.response.attestation_object.as_ref().to_vec();
@@ -1227,39 +1154,10 @@ async fn rename_passkey_allowed_during_recovery_cooldown() {
 }
 
 #[tokio::test]
-async fn start_registration_for_session_propagates_active_cooldown() {
-    // A passkey enrolled while the acting session is locked down must inherit
-    // the same deadline, so it cannot be used to escape the cool-down. Deriving
-    // this in core (not the transport) is the point of `for_session`. (F1)
-    let h = Harness::fresh();
-    let user = make_user(&h, "reenroll@example.com").await;
-    let mut wa = authenticator();
-    let cooldown_until = h.clock.now() + ChronoDuration::hours(24);
-    let restricted = restricted_session_for(&h, &user, cooldown_until);
-
-    let (challenge_id, ccr) = h
-        .passkey
-        .start_registration_for_session(&restricted)
-        .await
-        .expect("start_registration_for_session");
-    let response = wa.do_registration(ccr);
-    let credential = h
-        .passkey
-        .finish_registration(challenge_id, &response, None, SessionContext::default())
-        .await
-        .expect("finish_registration");
-
-    assert_eq!(
-        credential.recovery_cooldown_until,
-        Some(cooldown_until),
-        "the new passkey inherits the session's active cool-down",
-    );
-}
-
-#[tokio::test]
-async fn start_registration_for_session_without_cooldown_is_unrestricted() {
+async fn start_registration_from_ordinary_session_is_unrestricted() {
     // An ordinary session carries no cool-down, so the registered passkey is
-    // unrestricted — and an *expired* cool-down is likewise not propagated.
+    // unrestricted. Propagating an active cool-down, and not propagating an
+    // expired one, is covered through recovery in `recovery_flow`.
     let h = Harness::fresh();
     let user = make_user(&h, "ordinary@example.com").await;
     let mut wa = authenticator();
@@ -1267,9 +1165,9 @@ async fn start_registration_for_session_without_cooldown_is_unrestricted() {
 
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration_for_session(&session)
+        .start_registration(&session)
         .await
-        .expect("start_registration_for_session");
+        .expect("start_registration");
     let response = wa.do_registration(ccr);
     let credential = h
         .passkey
@@ -1281,11 +1179,14 @@ async fn start_registration_for_session_without_cooldown_is_unrestricted() {
 }
 
 #[tokio::test]
-async fn start_registration_for_unknown_user_errors() {
+async fn start_registration_for_deleted_user_errors() {
+    // A session can outlive its user until the delete's revocation lands.
     let h = Harness::fresh();
+    let user = make_user(&h, "deleted@example.com").await;
+    h.users.delete_user(user.id).await.expect("delete user");
     let err = h
         .passkey
-        .start_registration(UserId::new())
+        .start_registration(&session_for(&h, &user))
         .await
         .expect_err("unknown user");
     assert!(matches!(err, Error::UserNotFound));
@@ -1311,7 +1212,7 @@ async fn start_registration_refuses_disabled_account() {
 
     let err = h
         .passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect_err("disabled account must be refused");
     assert!(matches!(err, Error::AccountDisabled));
@@ -1322,7 +1223,7 @@ async fn start_registration_refuses_disabled_account() {
         .await
         .expect("re-enable user");
     h.passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("no ceremony started: the pending budget is untouched");
 }
@@ -1332,7 +1233,7 @@ async fn challenge_store_purges_expired_entries() {
     let h = Harness::fresh();
     let user = make_user(&h, "exp@example.com").await;
     h.passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("start registration");
     h.passkey
@@ -1373,7 +1274,7 @@ async fn registration_is_rejected_once_credential_cap_is_reached() {
 
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("second start allowed");
     let response = wa.do_registration(ccr);
@@ -1415,16 +1316,16 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
 
     let (first_id, first_options) = h
         .passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("first pending allowed");
     h.passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("second pending allowed");
     let err = h
         .passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect_err("third start rejected at the cap");
     assert!(matches!(
@@ -1443,14 +1344,14 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
         .await
         .expect("finish the first ceremony");
     h.passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("no extra challenge was minted");
 
     // The cap is per user: a different user is unaffected.
     let other = make_user(&h, "pending-other@example.com").await;
     h.passkey
-        .start_registration(other.id)
+        .start_registration(&session_for(&h, &other))
         .await
         .expect("a different user has its own budget");
 }

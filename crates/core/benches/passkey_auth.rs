@@ -39,7 +39,9 @@ use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::reauth::{ReauthManager, ReauthPolicy};
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
-use doorman_core::storage::{AccountStatus, SessionStore, Storage, User, UserId, UserStore};
+use doorman_core::storage::{
+    AccountStatus, Session, SessionStore, Storage, User, UserId, UserStore,
+};
 use doorman_test_support::CapturingEmailSender;
 use tokio::runtime::Runtime;
 use url::Url;
@@ -55,7 +57,7 @@ fn auth_origin() -> AuthUrl {
 
 struct Scaffold {
     manager: PasskeyManager,
-    user_id: UserId,
+    session: Session,
 }
 
 async fn build_scaffold() -> Scaffold {
@@ -114,6 +116,11 @@ async fn build_scaffold() -> Scaffold {
         ReauthPolicy::disabled(),
     )
     .expect("build reauth manager");
+    let session = session_manager
+        .create(user_id, SessionContext::default())
+        .await
+        .expect("create session")
+        .session;
     let deps = CoreDeps::new(
         clock,
         audit,
@@ -127,7 +134,7 @@ async fn build_scaffold() -> Scaffold {
     );
     let manager = PasskeyManager::new(&deps, passkey_config).expect("build passkey manager");
 
-    Scaffold { manager, user_id }
+    Scaffold { manager, session }
 }
 
 /// Register a single credential and return its `(credential_id, user_handle)`.
@@ -137,7 +144,7 @@ async fn register(
 ) -> (Vec<u8>, Vec<u8>) {
     let (challenge_id, ccr) = scaffold
         .manager
-        .start_registration(scaffold.user_id)
+        .start_registration(&scaffold.session)
         .await
         .expect("start registration");
     let user_handle = ccr.public_key.user.id.as_ref().to_vec();

@@ -43,9 +43,7 @@ async fn register_start(
     // Core derives the active post-recovery cool-down from the session and
     // stamps it onto the ceremony, so a passkey enrolled during the lock-down
     // inherits the deadline rather than the route having to thread it through.
-    let (id, options) = manager(&state)
-        .start_registration_for_session(&auth.session)
-        .await?;
+    let (id, options) = manager(&state).start_registration(&auth.session).await?;
     Ok(Json(PasskeyChallenge {
         challenge_id: id.0.to_string(),
         options,

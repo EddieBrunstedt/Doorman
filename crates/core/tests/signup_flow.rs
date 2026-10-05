@@ -20,7 +20,8 @@ use doorman_test_support::MockClock;
 
 use common::{
     Harness, RECOVERY_URL, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds, passkey_count,
-    provision_user, rp_origin, session_count, signup_config, token_from_email, ts, within_deadline,
+    provision_user, rp_origin, session_count, session_for, signup_config, token_from_email, ts,
+    within_deadline,
 };
 
 #[tokio::test]
@@ -408,12 +409,12 @@ async fn consume_replaces_unfinished_ceremonies_rather_than_hitting_the_pending_
 
     let (stale_id, stale_options) = h
         .passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect("fill the cap");
     let err = h
         .passkey
-        .start_registration(user.id)
+        .start_registration(&session_for(&h, &user))
         .await
         .expect_err("the cap is full");
     assert!(

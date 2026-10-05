@@ -528,8 +528,8 @@ fn plain_session(h: &Harness, user_id: UserId, cooldown: Option<DateTime<Utc>>) 
     }
 }
 
-/// Register a passkey for `user` through the full ceremony and return the
-/// stored credential.
+/// Register a passkey for `user` through the full ceremony, acting from an
+/// ordinary session, and return the stored credential.
 pub async fn register_passkey(
     h: &Harness,
     user: UserId,
@@ -538,7 +538,7 @@ pub async fn register_passkey(
 ) -> StoredPasskey {
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration(user)
+        .start_registration(&plain_session(h, user, None))
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);

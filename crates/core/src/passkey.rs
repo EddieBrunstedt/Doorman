@@ -286,65 +286,27 @@ impl PasskeyManager {
         })
     }
 
-    /// Begin registering a new passkey for `user_id`. The returned
-    /// [`CreationChallengeResponse`] is the JSON payload to hand to
-    /// `navigator.credentials.create` on the client; the
-    /// [`PasskeyChallengeId`] is what the client must echo back to
-    /// [`PasskeyManager::finish_registration`].
-    ///
-    /// Every `start_registration*` entry point refuses a missing user with
-    /// [`Error::UserNotFound`] and a disabled account with
-    /// [`Error::AccountDisabled`].
-    #[tracing::instrument(skip(self), fields(method = "passkey", user_id = %user_id))]
-    pub async fn start_registration(
-        &self,
-        user_id: UserId,
-    ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
-        self.start_registration_inner(user_id, None).await
-    }
-
     /// Begin registering a new passkey on behalf of an authenticated
-    /// `session`, propagating that session's *active* post-recovery cool-down
-    /// (if any) onto the in-progress ceremony. A passkey enrolled while the
-    /// session is locked down therefore inherits the same deadline and cannot
-    /// be turned into an unrestricted credential that escapes the cool-down; a
-    /// session with no active cool-down registers an ordinary, unrestricted
-    /// passkey.
+    /// `session`. The returned [`CreationChallengeResponse`] is the JSON
+    /// payload to hand to `navigator.credentials.create` on the client; the
+    /// [`PasskeyChallengeId`] is what the client must echo back to
+    /// [`finish_registration`](Self::finish_registration).
     ///
-    /// This is the session-aware entry point hosts should prefer for
-    /// authenticated re-registration: it keeps the cool-down propagation in
-    /// core (judged against this manager's clock, so expired cool-downs are
-    /// not carried forward) rather than relying on each transport to read the
-    /// deadline off the session and thread it through correctly. Use
-    /// [`start_registration`](Self::start_registration) for flows with no
-    /// acting session (e.g. signup), or
-    /// [`start_registration_with_recovery_cooldown`](Self::start_registration_with_recovery_cooldown)
-    /// to supply a deadline explicitly.
+    /// The session's *active* post-recovery cool-down, if any, is stamped
+    /// onto the ceremony, judged against this manager's clock. A passkey
+    /// registered while the session is locked down therefore inherits the
+    /// same deadline and cannot escape the cool-down. A session with no
+    /// active cool-down registers an ordinary, unrestricted passkey.
+    ///
+    /// Refuses a missing user with [`Error::UserNotFound`] and a disabled
+    /// account with [`Error::AccountDisabled`].
     #[tracing::instrument(skip(self, session), fields(method = "passkey", user_id = %session.user_id))]
-    pub async fn start_registration_for_session(
+    pub async fn start_registration(
         &self,
         session: &Session,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let cooldown_until = session.active_recovery_cooldown_until(self.clock.now());
         self.start_registration_inner(session.user_id, cooldown_until)
-            .await
-    }
-
-    /// Begin registering a new passkey and associate optional recovery
-    /// cool-down metadata with the in-progress ceremony. If the registration
-    /// later finishes through [`PasskeyManager::finish_registration`], the
-    /// stored credential receives the same timestamp. Prefer
-    /// [`start_registration_for_session`](Self::start_registration_for_session)
-    /// when the deadline comes from an authenticated session: it derives the
-    /// *active* deadline from the session itself so an expired cool-down is
-    /// not propagated by accident.
-    #[tracing::instrument(skip(self), fields(method = "passkey", user_id = %user_id))]
-    pub async fn start_registration_with_recovery_cooldown(
-        &self,
-        user_id: UserId,
-        recovery_cooldown_until: Option<DateTime<Utc>>,
-    ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
-        self.start_registration_inner(user_id, recovery_cooldown_until)
             .await
     }
 
@@ -411,11 +373,11 @@ impl PasskeyManager {
         Ok((id, ccr))
     }
 
-    /// Complete a registration ceremony. On success the passkey is
-    /// persisted and a [`CredentialAdded`](AuditEventKind::CredentialAdded)
-    /// event is emitted. If the registration challenge was started with
-    /// recovery cool-down metadata, the stored passkey receives that same
-    /// timestamp.
+    /// Complete a registration ceremony begun by
+    /// [`start_registration`](Self::start_registration). On success the
+    /// passkey is persisted, carrying the cool-down deadline stamped on the
+    /// ceremony (if any), and a
+    /// [`CredentialAdded`](AuditEventKind::CredentialAdded) event is emitted.
     #[tracing::instrument(
         skip(self, response, name, context),
         fields(method = "passkey", user_id = tracing::field::Empty),
@@ -427,46 +389,9 @@ impl PasskeyManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<StoredPasskey> {
-        self.finish_registration_inner(challenge_id, response, name, context, None)
-            .await
-    }
-
-    /// Complete a registration ceremony while overriding any cool-down stored
-    /// on the challenge.
-    #[tracing::instrument(
-        skip(self, response, name, context),
-        fields(method = "passkey", user_id = tracing::field::Empty),
-    )]
-    pub async fn finish_registration_with_recovery_cooldown(
-        &self,
-        challenge_id: PasskeyChallengeId,
-        response: &RegisterPublicKeyCredential,
-        name: Option<String>,
-        context: SessionContext,
-        recovery_cooldown_until: DateTime<Utc>,
-    ) -> Result<StoredPasskey> {
-        self.finish_registration_inner(
-            challenge_id,
-            response,
-            name,
-            context,
-            Some(recovery_cooldown_until),
-        )
-        .await
-    }
-
-    async fn finish_registration_inner(
-        &self,
-        challenge_id: PasskeyChallengeId,
-        response: &RegisterPublicKeyCredential,
-        name: Option<String>,
-        context: SessionContext,
-        recovery_cooldown_override: Option<DateTime<Utc>>,
-    ) -> Result<StoredPasskey> {
         let registration = self.redeem_registration(challenge_id, &context).await?;
         self.enforce_credential_cap(registration.user.id).await?;
-        let credential =
-            self.verify_registration(&registration, response, name, recovery_cooldown_override)?;
+        let credential = self.verify_registration(&registration, response, name, None)?;
         self.store_credential(&registration.user, credential, &context)
             .await
     }
