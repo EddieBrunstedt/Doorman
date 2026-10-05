@@ -474,9 +474,11 @@ impl EmailTemplates for DefaultEmailTemplates {}
 ///
 /// Managers and bundled HTTP handlers call this only after the protected
 /// action has already succeeded. Send failures are logged and deliberately
-/// do not roll back the action. Link-delivery emails do not use this helper,
-/// so they remain hard failures at the call sites that issue signup /
-/// recovery links.
+/// do not roll back the action. Every best-effort send in the library goes
+/// through here, including the signup and recovery link emails (whose
+/// delivery must not surface as an enumeration signal). The email-change
+/// confirmation link is the one hard failure: it is the whole flow, so the
+/// account manager sends it on the transport directly.
 #[derive(Clone)]
 pub struct SecurityEmailNotifier {
     sender: Arc<dyn EmailSender>,
@@ -491,7 +493,7 @@ impl SecurityEmailNotifier {
 
     /// Send the best-effort "passkey registered" notification.
     pub async fn passkey_registered(&self, user: &User, passkey_name: Option<&str>) {
-        self.send_notice(user, "passkey registered", |emails| {
+        self.send_best_effort(user, "passkey registered notification", |emails| {
             emails.passkey_registered_notification_email(user, passkey_name)
         })
         .await;
@@ -499,7 +501,7 @@ impl SecurityEmailNotifier {
 
     /// Send the best-effort "passkey removed" notification.
     pub async fn passkey_removed(&self, user: &User, passkey_name: Option<&str>) {
-        self.send_notice(user, "passkey removed", |emails| {
+        self.send_best_effort(user, "passkey removed notification", |emails| {
             emails.passkey_removed_notification_email(user, passkey_name)
         })
         .await;
@@ -508,7 +510,7 @@ impl SecurityEmailNotifier {
     /// Send the best-effort operator-aware "passkey removed by an
     /// administrator" notification.
     pub async fn operator_passkey_removed(&self, user: &User, passkey_name: Option<&str>) {
-        self.send_notice(user, "operator passkey removed", |emails| {
+        self.send_best_effort(user, "operator passkey removed notification", |emails| {
             emails.operator_passkey_removed_notification_email(user, passkey_name)
         })
         .await;
@@ -517,7 +519,7 @@ impl SecurityEmailNotifier {
     /// Send the best-effort operator-aware "signed out by an administrator"
     /// notification for an operator revoking all of a user's sessions.
     pub async fn operator_sessions_revoked(&self, user: &User) {
-        self.send_notice(user, "operator sessions revoked", |emails| {
+        self.send_best_effort(user, "operator sessions revoked notification", |emails| {
             emails.operator_sessions_revoked_notification_email(user)
         })
         .await;
@@ -526,7 +528,7 @@ impl SecurityEmailNotifier {
     /// Send the best-effort operator-aware "your account was disabled by an
     /// administrator" notification.
     pub async fn operator_account_disabled(&self, user: &User) {
-        self.send_notice(user, "operator account disabled", |emails| {
+        self.send_best_effort(user, "operator account disabled notification", |emails| {
             emails.operator_account_disabled_notification_email(user)
         })
         .await;
@@ -534,7 +536,7 @@ impl SecurityEmailNotifier {
 
     /// Send the best-effort notification for revoking one other session.
     pub async fn other_session_revoked(&self, user: &User) {
-        self.send_notice(user, "other-session revoked", |emails| {
+        self.send_best_effort(user, "other-session revoked notification", |emails| {
             emails.other_session_revoked_notification_email(user)
         })
         .await;
@@ -542,16 +544,43 @@ impl SecurityEmailNotifier {
 
     /// Send the best-effort notification for "sign out everywhere else".
     pub async fn other_sessions_revoked(&self, user: &User) {
-        self.send_notice(user, "other-sessions revoked", |emails| {
+        self.send_best_effort(user, "other-sessions revoked notification", |emails| {
             emails.other_sessions_revoked_notification_email(user)
+        })
+        .await;
+    }
+
+    /// Send the best-effort "account recovery requested" notification, which
+    /// accompanies the recovery link.
+    pub async fn recovery_requested(&self, user: &User) {
+        self.send_best_effort(user, "recovery requested notification", |emails| {
+            emails.recovery_requested_notification_email(user)
+        })
+        .await;
+    }
+
+    /// Send the best-effort "account recovery completed" notification.
+    pub async fn recovery_completed(&self, user: &User) {
+        self.send_best_effort(user, "recovery completed notification", |emails| {
+            emails.recovery_completed_notification_email(user)
+        })
+        .await;
+    }
+
+    /// Send the best-effort "email change requested" notification to the
+    /// account's current (old) address. `new_email` is the requested address.
+    pub async fn email_change_requested(&self, user: &User, new_email: &str) {
+        self.send_best_effort(user, "email change requested notification", |emails| {
+            emails.email_change_requested_notification_email(user, new_email)
         })
         .await;
     }
 
     /// Shared best-effort skeleton: skip (with a debug log) when the user has
     /// no email address, render through the configured templates, and log —
-    /// never propagate — a transport failure.
-    async fn send_notice(
+    /// never propagate — a transport failure. `what` names the email in the
+    /// log line.
+    pub(crate) async fn send_best_effort(
         &self,
         user: &User,
         what: &'static str,
@@ -560,7 +589,7 @@ impl SecurityEmailNotifier {
         if user.email.is_none() {
             tracing::debug!(
                 user_id = %user.id,
-                "{what} notification skipped because user has no email"
+                "{what} email skipped because user has no email"
             );
             return;
         }
@@ -570,7 +599,7 @@ impl SecurityEmailNotifier {
             tracing::warn!(
                 error = %err,
                 user_id = %user.id,
-                "{what} notification failed"
+                "{what} email failed (best-effort)"
             );
         }
     }

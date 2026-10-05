@@ -34,7 +34,7 @@ use crate::assembly::MAX_LIFETIME;
 use crate::audit::{AuditEventKind, RecoveryFailureReason};
 use crate::error::Result;
 use crate::passkey::{CredentialCap, EnrollmentPolicy};
-use crate::rate_limit::RateLimitPolicy;
+use crate::rate_limit::{self, RateLimitPolicy};
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, VerificationPurpose};
 use crate::user;
@@ -287,7 +287,7 @@ impl RecoveryManager {
         verification::validate_email(&email_normalized)?;
 
         let rate_limits = &self.config.rate_limits;
-        verification::enforce_all(
+        rate_limit::enforce_all(
             self.flow.rate_limiter().as_ref(),
             &[
                 (
@@ -379,17 +379,13 @@ impl RecoveryManager {
         // bounces (or simply measure two synchronous sends vs none) tell a
         // registered address from an unknown one, defeating the property this
         // endpoint exists to protect.
-        let link_email = self.flow.emails().recovery_email(&user, &url);
-        self.flow
-            .send_best_effort(link_email, "recovery link")
+        let notifier = self.flow.notifier();
+        notifier
+            .send_best_effort(&user, "recovery link", |emails| {
+                emails.recovery_email(&user, &url)
+            })
             .await;
-        let notification = self
-            .flow
-            .emails()
-            .recovery_requested_notification_email(&user);
-        self.flow
-            .send_best_effort(notification, "recovery requested notification")
-            .await;
+        notifier.recovery_requested(&user).await;
 
         self.flow
             .emit(
@@ -457,11 +453,7 @@ impl RecoveryManager {
             .await?;
 
         // Best-effort: a send failure does not undo the enrolment.
-        let notification = self
-            .flow
-            .emails()
-            .recovery_completed_notification_email(&outcome.user);
-        self.flow.send_best_effort(notification, "recovery").await;
+        self.flow.notifier().recovery_completed(&outcome.user).await;
 
         tracing::info!(outcome = "succeeded", "recovery finished");
         Ok(outcome)

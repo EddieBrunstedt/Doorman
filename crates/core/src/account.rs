@@ -27,7 +27,7 @@ use chrono::{DateTime, Utc};
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
-use crate::email::{Email, EmailSender, EmailTemplates};
+use crate::email::{EmailSender, EmailTemplates, SecurityEmailNotifier};
 use crate::error::{Error, Result};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::redeem::Redeemer;
@@ -79,6 +79,7 @@ pub struct AccountManager {
     audit: AuditDispatch,
     email: Arc<dyn EmailSender>,
     emails: Arc<dyn EmailTemplates>,
+    notifier: SecurityEmailNotifier,
     config: AccountConfig,
 }
 
@@ -98,6 +99,7 @@ impl AccountManager {
             audit: deps.audit.clone(),
             email: deps.email.clone(),
             emails: deps.emails.clone(),
+            notifier: deps.notifier.clone(),
             config,
         }
     }
@@ -117,15 +119,6 @@ impl AccountManager {
                 kind,
             })
             .await;
-    }
-
-    /// Send an email best-effort: a transport failure is logged but never
-    /// propagated. Used for the old-address notification, which must not fail
-    /// the request after the confirmation link has already been issued.
-    async fn send_best_effort(&self, email: Email, description: &str) {
-        if let Err(err) = self.email.send(email).await {
-            tracing::warn!(error = %err, description, "email send failed (best-effort)");
-        }
     }
 
     /// Request a verified change of `user`'s email to `new_email`.
@@ -199,10 +192,8 @@ impl AccountManager {
         self.email.send(confirmation).await?;
 
         // The old-address notice is advisory and must not fail the request.
-        let notice = self
-            .emails
-            .email_change_requested_notification_email(user, &normalized);
-        self.send_best_effort(notice, "email change requested notification")
+        self.notifier
+            .email_change_requested(user, &normalized)
             .await;
 
         self.emit(

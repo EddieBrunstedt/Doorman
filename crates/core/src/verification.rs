@@ -4,8 +4,8 @@
 //! consume it to start a passkey registration ceremony → finish the
 //! ceremony and issue a session. This module owns the pieces that are
 //! genuinely identical between them — email normalization/validation, URL
-//! templating, token generation, rate-limit enforcement, token issuance,
-//! the consume and finish steps, and the two result types — so [`signup`](crate::signup) and
+//! templating, token generation, token issuance, the consume and finish
+//! steps, and the two result types — so [`signup`](crate::signup) and
 //! [`recovery`](crate::recovery) read as thin specializations rather than
 //! parallel copies.
 //!
@@ -25,10 +25,10 @@ use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredentia
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, RecoveryFailureReason};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
-use crate::email::{Email, EmailSender, EmailTemplates};
+use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
 use crate::passkey::{EnrollmentPolicy, PasskeyManager};
-use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
+use crate::rate_limit::RateLimiter;
 use crate::redeem::Redeemer;
 use crate::session::{IssuedSession, SessionContext};
 use crate::storage::{
@@ -94,59 +94,6 @@ pub(crate) fn build_url(template: &str, token: &str) -> String {
     template.replace(TOKEN_PLACEHOLDER, token)
 }
 
-/// Enforce one rate-limit policy for an `operation` scoped to a single
-/// `(dimension, value)` axis. A `None` policy or a `None` value is a no-op
-/// (the policy is disabled or there is no value to key on — e.g. an absent
-/// client IP). The structured [`RateLimitKey`] names the dimension rather
-/// than concatenating it into the operation string, so a backend can layer
-/// independent counters per axis.
-pub(crate) async fn enforce_rate_limit(
-    rate_limiter: &dyn RateLimiter,
-    policy: Option<RateLimitPolicy>,
-    operation: &'static str,
-    dimension: &'static str,
-    value: Option<&str>,
-) -> Result<()> {
-    let (Some(policy), Some(value)) = (policy, value) else {
-        return Ok(());
-    };
-    let key = RateLimitKey::new(operation).with(dimension, value);
-    match rate_limiter.check_and_charge(&key, policy).await? {
-        RateLimitDecision::Allowed => Ok(()),
-        RateLimitDecision::Limited { retry_after } => Err(Error::RateLimited { retry_after }),
-    }
-}
-
-/// Enforce a list of rate-limit policies in order, short-circuiting on the
-/// first rejection. Each entry is `(policy, operation, dimension, value)`
-/// with the same semantics as [`enforce_rate_limit`]. `on_reject` runs once,
-/// just before the rejecting error is returned — recovery uses it to emit a
-/// `RateLimited` audit event; signup passes a no-op.
-pub(crate) async fn enforce_all<F, Fut>(
-    rate_limiter: &dyn RateLimiter,
-    policies: &[(
-        Option<RateLimitPolicy>,
-        &'static str,
-        &'static str,
-        Option<&str>,
-    )],
-    on_reject: F,
-) -> Result<()>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = ()>,
-{
-    for &(policy, operation, dimension, value) in policies {
-        if let Err(err) =
-            enforce_rate_limit(rate_limiter, policy, operation, dimension, value).await
-        {
-            on_reject().await;
-            return Err(err);
-        }
-    }
-    Ok(())
-}
-
 /// Issue a single-use verification link for `user_id`: drop any prior
 /// tokens of the same `purpose` (so a stale link cannot be redeemed after
 /// a fresh request), store a freshly-hashed token, and return the rendered
@@ -190,8 +137,7 @@ pub struct EnrollmentFlow {
     records: UserRecords,
     redeemer: Redeemer,
     tokens: Arc<dyn VerificationTokenStore>,
-    email: Arc<dyn EmailSender>,
-    emails: Arc<dyn EmailTemplates>,
+    notifier: SecurityEmailNotifier,
     rate_limiter: Arc<dyn RateLimiter>,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
@@ -207,18 +153,18 @@ impl EnrollmentFlow {
             records: UserRecords::new(deps),
             redeemer: Redeemer::from_deps(deps),
             tokens: deps.verification_tokens.clone(),
-            email: deps.email.clone(),
-            emails: deps.emails.clone(),
+            notifier: deps.notifier.clone(),
             rate_limiter: deps.rate_limiter.clone(),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
         }
     }
 
-    /// The renderer for the signup / recovery link copy and recovery notices,
-    /// threaded in from [`CoreDeps::emails`](crate::context::CoreDeps::emails).
-    pub(crate) fn emails(&self) -> &Arc<dyn EmailTemplates> {
-        &self.emails
+    /// The best-effort sender for the signup / recovery link emails and the
+    /// recovery notices, threaded in from
+    /// [`CoreDeps::notifier`](crate::context::CoreDeps::notifier).
+    pub(crate) fn notifier(&self) -> &SecurityEmailNotifier {
+        &self.notifier
     }
 
     pub(crate) fn records(&self) -> &UserRecords {
@@ -236,21 +182,6 @@ impl EnrollmentFlow {
             .list_passkey_summaries(user_id)
             .await?
             .is_empty())
-    }
-
-    /// Send an email on a best-effort basis: a transport failure is logged
-    /// server-side but never propagated to the caller. Both request endpoints
-    /// route every send through here so that a bounce or transport error on a
-    /// *registered* address cannot surface as a distinct (error) response —
-    /// which would re-introduce the enumeration oracle the silent-on-unknown
-    /// design exists to close. The caller's response shape is identical whether
-    /// the address resolved and whether delivery succeeded, so the only
-    /// residual signal is raw send latency (which a host decouples at its
-    /// transport layer if it wants to close that too).
-    pub(crate) async fn send_best_effort(&self, email: Email, description: &str) {
-        if let Err(err) = self.email.send(email).await {
-            tracing::warn!(error = %err, description, "email send failed (best-effort)");
-        }
     }
 
     pub(crate) fn rate_limiter(&self) -> &Arc<dyn RateLimiter> {

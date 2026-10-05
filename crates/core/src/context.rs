@@ -53,20 +53,23 @@ pub struct CoreDeps {
     pub email: Arc<dyn EmailSender>,
     /// The single [`EmailTemplates`] renderer
     /// that brands every transactional email: the signup / recovery / email-change
-    /// links and the security notices. Threaded through the enrollment and
-    /// account managers (for the link copy) and used to build
-    /// [`notifier`](Self::notifier) (for the notices) so one renderer covers
-    /// every flow. Defaults to
+    /// links and the security notices. Used to build
+    /// [`notifier`](Self::notifier) (for every best-effort send) and threaded
+    /// into the account manager (for the email-change confirmation link) so
+    /// one renderer covers every flow. Defaults to
     /// [`DefaultEmailTemplates`](crate::email::DefaultEmailTemplates).
     pub emails: Arc<dyn EmailTemplates>,
-    /// Notifier for best-effort security notices (passkey lifecycle,
-    /// session revocation). Built once at the composition root from
-    /// [`email`](Self::email) and the chosen [`EmailTemplates`]
-    /// renderer, then shared by the passkey and session managers so every
-    /// bundled notice originates from one configured helper.
+    /// Notifier for every best-effort send: the security notices (passkey
+    /// lifecycle, session revocation, recovery, email change) and the signup
+    /// / recovery link emails. Built once at the composition root from
+    /// [`email`](Self::email) and the chosen [`EmailTemplates`] renderer,
+    /// then shared by the managers so every best-effort email originates
+    /// from one configured helper.
     pub notifier: SecurityEmailNotifier,
     /// Limiter enforced by the enrollment (signup / recovery) request
-    /// endpoints. Unused by the passkey and session managers.
+    /// endpoints and the passkey login ceremony. Recovery runs on its own
+    /// limiter instead when the host wires one with
+    /// [`AuthCoreBuilder::recovery_limiter`](crate::assembly::AuthCoreBuilder::recovery_limiter).
     pub rate_limiter: Arc<dyn RateLimiter>,
     /// Optional metrics sink for the auth hot-path counters (login success,
     /// auth failure, auth latency). Defaults to

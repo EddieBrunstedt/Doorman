@@ -36,7 +36,7 @@ use chrono::{DateTime, Utc};
 use crate::audit::AuditEventKind;
 use crate::error::{Error, Result};
 use crate::passkey::{CredentialCap, EnrollmentPolicy};
-use crate::rate_limit::RateLimitPolicy;
+use crate::rate_limit::{self, RateLimitPolicy};
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, User, VerificationPurpose};
 use crate::verification::{
@@ -245,7 +245,7 @@ impl SignupManager {
         let email_normalized = verification::normalize_email(email);
         verification::validate_email(&email_normalized)?;
 
-        verification::enforce_all(
+        rate_limit::enforce_all(
             self.flow.rate_limiter().as_ref(),
             &[
                 (
@@ -362,8 +362,12 @@ impl SignupManager {
             now,
         )
         .await?;
-        let email = self.flow.emails().signup_email(user, &url);
-        self.flow.send_best_effort(email, "signup link").await;
+        self.flow
+            .notifier()
+            .send_best_effort(user, "signup link", |emails| {
+                emails.signup_email(user, &url)
+            })
+            .await;
         self.flow
             .emit(
                 context,

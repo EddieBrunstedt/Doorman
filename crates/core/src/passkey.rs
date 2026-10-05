@@ -33,7 +33,7 @@ use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
-use crate::rate_limit::{RateLimitPolicy, RateLimiter};
+use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::redeem::{RedeemedRegistration, Redeemer};
 use crate::session::{IssuedSession, SessionContext, SessionManager};
@@ -43,7 +43,7 @@ use crate::storage::{
     User, UserId,
 };
 use crate::user::UserRecords;
-use crate::verification::{EnrollmentOutcome, enforce_rate_limit};
+use crate::verification::EnrollmentOutcome;
 
 /// Rate-limit policies for the passkey authentication ceremony endpoints.
 ///
