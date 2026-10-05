@@ -35,7 +35,7 @@ use tracing::Instrument;
 use crate::config::CookieConfig;
 use crate::cookies::{bearer_token, read_cookie, session_cookie_with_max_age};
 use crate::csrf::{self, CsrfConfig};
-use crate::error::error_response;
+use crate::error::{csrf_rejection_response, error_response};
 
 /// Successfully resolved authentication state for a request.
 ///
@@ -140,7 +140,7 @@ where
                 if let Some(config) = state.csrf.as_ref()
                     && csrf::should_reject(req.method(), req.headers(), cookie_name, config)
                 {
-                    return Ok(csrf::rejection_response());
+                    return Ok(csrf_rejection_response());
                 }
 
                 // When resolution slides a cookie-sourced session, hold the

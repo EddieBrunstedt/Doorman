@@ -3,7 +3,9 @@
 //! Every variant is assigned a stable string code so a frontend can switch
 //! on it without scraping the human-readable message. [`Error::RateLimited`]
 //! additionally emits a `Retry-After` header (rounded up to whole seconds)
-//! so well-behaved clients can back off without parsing the body.
+//! so well-behaved clients can back off without parsing the body. The one
+//! HTTP-only rejection, the CSRF origin check, takes its code from here too,
+//! so every error response shares one body shape and one code table.
 
 use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};
@@ -59,10 +61,7 @@ pub(crate) fn error_response(err: &Error) -> Response {
     } else {
         err.to_string()
     };
-    let body = ErrorBody {
-        error: ErrorPayload { code, message },
-    };
-    let mut response = (status, Json(body)).into_response();
+    let mut response = json_error(status, code, message);
     if let Error::RateLimited { retry_after } = err {
         // Round up to whole seconds (floored at 1) so a client that waits the
         // advertised time is past the window, never told to retry while the
@@ -75,6 +74,24 @@ pub(crate) fn error_response(err: &Error) -> Response {
         }
     }
     response
+}
+
+/// The response for a cookie-authenticated state-changing request that failed
+/// the CSRF origin check. Not a [`doorman_core::Error`]: the check is an HTTP
+/// concern that core never sees.
+pub(crate) fn csrf_rejection_response() -> Response {
+    json_error(
+        StatusCode::FORBIDDEN,
+        "csrf_origin_mismatch",
+        "CSRF origin check failed".to_owned(),
+    )
+}
+
+fn json_error(status: StatusCode, code: &'static str, message: String) -> Response {
+    let body = ErrorBody {
+        error: ErrorPayload { code, message },
+    };
+    (status, Json(body)).into_response()
 }
 
 fn classify(err: &Error) -> (StatusCode, &'static str) {
@@ -232,12 +249,30 @@ mod tests {
                 S::CONFLICT,
                 "resource_limit_exceeded",
             ),
+            (
+                Error::InvalidOperatorActor {
+                    field: "id",
+                    limit: 256,
+                },
+                S::BAD_REQUEST,
+                "invalid_operator_actor",
+            ),
         ];
         for (err, status, code) in cases {
             let (got_status, got_code) = classify(err);
             assert_eq!(got_status, *status, "status for {code}");
             assert_eq!(got_code, *code, "code mismatch");
         }
+    }
+
+    #[test]
+    fn csrf_rejection_uses_the_shared_body() {
+        let response = csrf_rejection_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body: serde_json::Value =
+            serde_json::from_slice(&body_bytes(response)).expect("json body");
+        assert_eq!(body["error"]["code"], "csrf_origin_mismatch");
+        assert_eq!(body["error"]["message"], "CSRF origin check failed");
     }
 
     /// Server-error responses must not leak the inner error detail into the

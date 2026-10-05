@@ -12,16 +12,15 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use axum::Json;
 use axum::body::Body;
-use axum::http::{HeaderMap, Method, Request, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, Method, Request, header};
+use axum::response::Response;
 use tower_layer::Layer;
 use tower_service::Service;
 use url::Url;
 
 use crate::cookies::{bearer_token, read_cookie};
-use crate::error::{ErrorBody, ErrorPayload};
+use crate::error::csrf_rejection_response;
 
 /// CSRF origin-check configuration.
 ///
@@ -132,7 +131,7 @@ where
             &self.state.session_cookie_name,
             &self.state.config,
         ) {
-            return Box::pin(async { Ok(rejection_response()) });
+            return Box::pin(async { Ok(csrf_rejection_response()) });
         }
 
         // tower contract: hand the ready service instance to the future and
@@ -181,16 +180,6 @@ pub(crate) fn should_reject(
     // reject rather than wave it through. Reaching here means a cookie session
     // is in play and the safe-method / bearer escape hatches did not apply.
     true
-}
-
-pub(crate) fn rejection_response() -> Response {
-    let body = ErrorBody {
-        error: ErrorPayload {
-            code: "csrf_origin_mismatch",
-            message: "CSRF origin check failed".to_string(),
-        },
-    };
-    (StatusCode::FORBIDDEN, Json(body)).into_response()
 }
 
 fn is_safe_method(method: &Method) -> bool {
