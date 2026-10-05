@@ -151,11 +151,7 @@ impl EnrollmentFlow {
 
     /// Whether `user_id` has at least one registered passkey.
     pub(crate) async fn has_passkey(&self, user_id: UserId) -> Result<bool> {
-        Ok(!self
-            .passkey
-            .list_passkey_summaries(user_id)
-            .await?
-            .is_empty())
+        Ok(self.passkey.count_passkeys(user_id).await? > 0)
     }
 
     pub(crate) fn rate_limiter(&self) -> &Arc<dyn RateLimiter> {
