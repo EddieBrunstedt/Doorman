@@ -17,6 +17,7 @@ use crate::clock::Clock;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
 use crate::storage::{Session, SessionId, SessionStore, SessionSummary, TokenHash, User, UserId};
+use crate::sync;
 use crate::token::generate_token;
 pub use crate::token::hash_token;
 
@@ -205,10 +206,7 @@ impl SessionManager {
     /// to all existing and future clones of the manager — there is no "too
     /// late" ordering hazard.
     pub fn set_invalidation_hook(&self, hook: Arc<dyn SessionInvalidationHook>) {
-        *self
-            .invalidation_hook
-            .write()
-            .expect("invalidation hook lock poisoned") = hook;
+        *sync::write(&self.invalidation_hook) = hook;
     }
 
     /// Borrow the clock this manager reads time through. Framework layers
@@ -223,10 +221,7 @@ impl SessionManager {
     /// Snapshot the currently installed invalidation observer. Cloned out so
     /// the lock guard is never held across an `.await`.
     fn invalidation_hook(&self) -> Arc<dyn SessionInvalidationHook> {
-        self.invalidation_hook
-            .read()
-            .expect("invalidation hook lock poisoned")
-            .clone()
+        sync::read(&self.invalidation_hook).clone()
     }
 
     /// Issue an ordinary (non-cool-down) session for `user_id`, returning the
@@ -270,7 +265,7 @@ impl SessionManager {
             self.enforce_session_cap(user_id, max.get()).await?;
         }
 
-        let (token, token_hash) = generate_token();
+        let (token, token_hash) = generate_token()?;
         let now = self.clock.now();
 
         let session = Session {

@@ -38,6 +38,7 @@ pub mod resolve;
 pub mod session;
 pub mod signup;
 pub mod storage;
+mod sync;
 pub mod token;
 mod user;
 pub mod verification;

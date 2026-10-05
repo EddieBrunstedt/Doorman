@@ -57,6 +57,7 @@ use lru::LruCache;
 use crate::clock::Clock;
 use crate::session::SessionInvalidationHook;
 use crate::storage::{Session, SessionId, TokenHash, User, UserId};
+use crate::sync;
 
 /// Number of independent lock-striped shards the cache is split across.
 /// A power of two so the shard index is a cheap mask of the token-hash
@@ -64,7 +65,9 @@ use crate::storage::{Session, SessionId, TokenHash, User, UserId};
 pub(crate) const SHARD_COUNT: usize = 16;
 
 /// Default number of entries the cache will keep before LRU-evicting.
-pub const DEFAULT_CACHE_CAPACITY: usize = 1024;
+// The `unwrap` runs in const evaluation: a zero here fails the build, never
+// a running host.
+pub const DEFAULT_CACHE_CAPACITY: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
 
 /// Default freshness window for a cached entry. Picked to be well below
 /// the typical `SessionConfig::absolute_lifetime` (30 days by default) so that a
@@ -84,8 +87,7 @@ pub struct SessionCacheConfig {
 impl Default for SessionCacheConfig {
     fn default() -> Self {
         Self {
-            capacity: NonZeroUsize::new(DEFAULT_CACHE_CAPACITY)
-                .expect("DEFAULT_CACHE_CAPACITY is non-zero"),
+            capacity: DEFAULT_CACHE_CAPACITY,
             ttl: DEFAULT_CACHE_TTL,
         }
     }
@@ -172,11 +174,7 @@ impl SessionCache {
     /// the way out. The returned `Arc<CachedAuth>` is a refcount bump, not a
     /// deep copy of the session/user.
     pub fn get(&self, token_hash: &TokenHash) -> Option<Arc<CachedAuth>> {
-        let mut guard = self
-            .shard(token_hash)
-            .inner
-            .lock()
-            .expect("session cache lock poisoned");
+        let mut guard = sync::lock(&self.shard(token_hash).inner);
         let now = self.clock.now();
         match guard.get(token_hash) {
             Some(entry) if self.is_fresh(entry.inserted_at, now) => Some(entry.cached.clone()),
@@ -194,11 +192,7 @@ impl SessionCache {
             cached: Arc::new(CachedAuth { session, user }),
             inserted_at: self.clock.now(),
         };
-        self.shard(&token_hash)
-            .inner
-            .lock()
-            .expect("session cache lock poisoned")
-            .put(token_hash, entry);
+        sync::lock(&self.shard(&token_hash).inner).put(token_hash, entry);
     }
 
     /// Drop the single entry that maps to `session_id`, if any. Scans every
@@ -207,7 +201,7 @@ impl SessionCache {
     /// than the storage round-trip the cache is replacing.
     pub fn invalidate_session(&self, session_id: SessionId) {
         for shard in self.shards.iter() {
-            let mut guard = shard.inner.lock().expect("session cache lock poisoned");
+            let mut guard = sync::lock(&shard.inner);
             let victim = guard
                 .iter()
                 .find(|(_, entry)| entry.cached.session.id == session_id)
@@ -223,7 +217,7 @@ impl SessionCache {
     /// out everywhere. Scans every shard.
     pub fn invalidate_user(&self, user_id: UserId) {
         for shard in self.shards.iter() {
-            let mut guard = shard.inner.lock().expect("session cache lock poisoned");
+            let mut guard = sync::lock(&shard.inner);
             let victims: Vec<TokenHash> = guard
                 .iter()
                 .filter(|(_, entry)| entry.cached.session.user_id == user_id)
@@ -255,13 +249,7 @@ impl SessionCache {
     pub fn len(&self) -> usize {
         self.shards
             .iter()
-            .map(|shard| {
-                shard
-                    .inner
-                    .lock()
-                    .expect("session cache lock poisoned")
-                    .len()
-            })
+            .map(|shard| sync::lock(&shard.inner).len())
             .sum()
     }
 

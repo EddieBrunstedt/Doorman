@@ -117,7 +117,7 @@ pub(crate) async fn issue_link(
     let lifetime = chrono::Duration::from_std(token_lifetime).expect(
         "verification token lifetime overflows chrono::Duration; configure a smaller value",
     );
-    let (token, token_hash) = generate_token();
+    let (token, token_hash) = generate_token()?;
     tokens
         .create_token(VerificationToken {
             token_hash,
@@ -290,8 +290,8 @@ mod tests {
 
     #[test]
     fn tokens_are_unique() {
-        let (a, ha) = generate_token();
-        let (b, hb) = generate_token();
+        let (a, ha) = generate_token().expect("token");
+        let (b, hb) = generate_token().expect("token");
         assert_ne!(a, b);
         assert_ne!(ha, hb);
     }

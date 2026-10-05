@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
+use crate::error::{Error, Result};
+
 /// Length of the random token in bytes. 256 bits of entropy. Shared by
 /// session tokens and verification tokens (see `generate_token`).
 pub(crate) const TOKEN_BYTES: usize = 32;
@@ -53,24 +55,21 @@ impl fmt::Debug for TokenHash {
 
 /// Hash a cleartext token into its at-rest [`TokenHash`].
 pub fn hash_token(token: &str) -> TokenHash {
-    let digest = Sha256::digest(token.as_bytes());
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    TokenHash(out)
+    TokenHash(Sha256::digest(token.as_bytes()).into())
 }
 
 /// Generate a fresh random token and its at-rest hash. The cleartext token
 /// is handed to the client (session cookie or email link); only the hash is
 /// persisted. Shared by [`SessionManager`](crate::session::SessionManager)
-/// and the verification flows.
-pub(crate) fn generate_token() -> (String, TokenHash) {
+/// and the verification flows. Fails only if the OS random source does.
+pub(crate) fn generate_token() -> Result<(String, TokenHash)> {
     let mut bytes = [0u8; TOKEN_BYTES];
     SysRng
         .try_fill_bytes(&mut bytes)
-        .expect("OS CSPRNG must produce token bytes");
+        .map_err(|e| Error::Internal(format!("OS random source failed: {e}")))?;
     let token = URL_SAFE_NO_PAD.encode(bytes);
     let hash = hash_token(&token);
-    (token, hash)
+    Ok((token, hash))
 }
 
 #[cfg(test)]
@@ -112,7 +111,7 @@ mod tests {
         /// in lock-step. `seed` only varies the proptest case count.
         #[test]
         fn generated_token_is_url_safe_and_hash_matches(_seed in any::<u8>()) {
-            let (token, hash) = generate_token();
+            let (token, hash) = generate_token().expect("token");
             for ch in token.chars() {
                 prop_assert!(
                     ch.is_ascii_alphanumeric() || ch == '-' || ch == '_',
@@ -126,8 +125,8 @@ mod tests {
 
     #[test]
     fn generated_tokens_are_url_safe_and_unique() {
-        let (a, ha) = generate_token();
-        let (b, hb) = generate_token();
+        let (a, ha) = generate_token().expect("token");
+        let (b, hb) = generate_token().expect("token");
         assert_ne!(a, b);
         assert_ne!(ha, hb);
         for ch in a.chars() {

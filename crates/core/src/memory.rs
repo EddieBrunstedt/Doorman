@@ -23,6 +23,7 @@ use crate::storage::{
     StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
     VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
+use crate::sync;
 
 /// A backend handle owning one shared instance of each in-memory store.
 ///
@@ -127,11 +128,11 @@ impl InMemoryUserStore {
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, UserStoreState> {
-        self.inner.read().expect("user store rwlock poisoned")
+        sync::read(&self.inner)
     }
 
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, UserStoreState> {
-        self.inner.write().expect("user store rwlock poisoned")
+        sync::write(&self.inner)
     }
 }
 
@@ -273,11 +274,11 @@ impl InMemorySessionStore {
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, SessionStoreState> {
-        self.inner.read().expect("session store rwlock poisoned")
+        sync::read(&self.inner)
     }
 
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, SessionStoreState> {
-        self.inner.write().expect("session store rwlock poisoned")
+        sync::write(&self.inner)
     }
 
     /// Number of entries currently held.
@@ -390,9 +391,7 @@ impl InMemoryVerificationTokenStore {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<VerificationToken>> {
-        self.inner
-            .lock()
-            .expect("verification token store mutex poisoned")
+        sync::lock(&self.inner)
     }
 
     /// Number of entries currently held.
@@ -464,9 +463,7 @@ impl InMemoryPasskeyCredentialStore {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<StoredPasskey>> {
-        self.inner
-            .lock()
-            .expect("passkey credential store mutex poisoned")
+        sync::lock(&self.inner)
     }
 
     /// Number of entries currently held.
@@ -596,9 +593,7 @@ impl InMemoryPasskeyChallengeStore {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, PasskeyChallengeState> {
-        self.inner
-            .lock()
-            .expect("passkey challenge store mutex poisoned")
+        sync::lock(&self.inner)
     }
 
     /// Number of entries currently held.
@@ -710,7 +705,7 @@ impl InMemoryRateLimiter {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<BucketKey, Vec<DateTime<Utc>>>> {
-        self.inner.lock().expect("rate limiter mutex poisoned")
+        sync::lock(&self.inner)
     }
 }
 
@@ -722,9 +717,9 @@ impl RateLimiter for InMemoryRateLimiter {
         policy: RateLimitPolicy,
     ) -> StorageResult<RateLimitDecision> {
         let now = self.clock.now();
-        let window = chrono::Duration::from_std(policy.window)
-            .map_err(|_| StorageError::msg("rate limit window overflows chrono::Duration"))?;
-        let cutoff = now - window;
+        let out_of_range = || StorageError::msg("rate limit window is out of range");
+        let window = chrono::Duration::from_std(policy.window).map_err(|_| out_of_range())?;
+        let cutoff = now.checked_sub_signed(window).ok_or_else(out_of_range)?;
         let bucket = BucketKey {
             key: key.canonical(),
             window_ms: policy.window.as_millis(),
@@ -740,7 +735,7 @@ impl RateLimiter for InMemoryRateLimiter {
             // `retry_at = oldest + window > now`. Floor the advisory hint to one
             // millisecond at the window boundary so it is always positive.
             let oldest = entries.first().copied().unwrap_or(now);
-            let retry_at = oldest + window;
+            let retry_at = oldest.checked_add_signed(window).ok_or_else(out_of_range)?;
             let retry_after = (retry_at - now)
                 .to_std()
                 .unwrap_or(std::time::Duration::from_millis(1))
@@ -851,5 +846,17 @@ mod tests {
                 .expect("find via second handle"),
             Some(user),
         );
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_refuses_a_window_past_the_calendar() {
+        // The window converts to chrono but reaches before the earliest
+        // representable instant; the limiter reports it instead of panicking.
+        let limiter = InMemoryRateLimiter::new(Arc::new(crate::clock::SystemClock));
+        let policy = RateLimitPolicy::new(1, std::time::Duration::from_millis(i64::MAX as u64));
+        let result = limiter
+            .check_and_charge(&RateLimitKey::new("test"), policy)
+            .await;
+        assert!(result.is_err(), "expected an error, got {result:?}");
     }
 }
