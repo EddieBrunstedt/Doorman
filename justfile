@@ -99,10 +99,10 @@ check-features:
     cargo hack check -p doorman --feature-powerset --depth 2 --locked
     cargo hack check -p doorman-sqlx --feature-powerset --locked
 
-# Keep `1.94` in sync with `rust-version` in the manifest. The check below uses
-# the pinned 1.94.1 toolchain, which must be installed via rustup.
+# Keep `1.99` in sync with `rust-version` in the manifest. The check below uses
+# the pinned 1.99.0 toolchain, which must be installed via rustup.
 msrv:
-    cargo +1.94.1 check --workspace --all-features --locked
+    cargo +1.99.0 check --workspace --all-features --locked
 
 # Cheap-first ordering: format, dprint, lint, docs, feature isolation, MSRV,
 # then the container-backed test suite. The full local gate, mirroring CI.

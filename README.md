@@ -293,7 +293,7 @@ doorman follows [Semantic Versioning](https://semver.org/). Every published crat
 
 **Pre-1.0:** while the version is `0.x`, the public API is not yet stable. Per Cargo's semver rules a minor bump (`0.x` → `0.(x+1)`) may contain breaking changes, and this project uses minor bumps for exactly that — breaking changes land freely as the surface is refined toward `1.0`. Patch releases (`0.x.y` → `0.x.(y+1)`) stay backwards compatible. Pin a minor version if you need stability between upgrades.
 
-**MSRV:** the minimum supported Rust version is **1.94**, driven by the dependency tree (sqlx 0.9 requires 1.94). CI and `just msrv` enforce it against the pinned `1.94.1` toolchain. An MSRV bump is treated as a routine change, not a breaking one, and may occur in a minor (pre-1.0) release; it will be noted in the changelog.
+**MSRV:** the minimum supported Rust version is **1.99**, tracking a recent stable release. CI and `just msrv` enforce it against the pinned `1.99.0` toolchain. An MSRV bump is treated as a routine change, not a breaking one, and may occur in a minor (pre-1.0) release; it will be noted in the changelog.
 
 ## Development
 
@@ -302,10 +302,10 @@ The repo ships a [`justfile`](justfile) so the inner loop needs no manual setup.
 ```sh
 just test      # run the whole workspace suite
 just verify    # the full local gate, mirroring CI end to end
-just msrv      # MSRV check alone (needs the pinned 1.94.1 toolchain)
+just msrv      # MSRV check alone (needs the pinned 1.99.0 toolchain)
 ```
 
-`just verify` runs every gate CI does: `fmt-check`, `dprint-check`, `clippy`, `doc`, the isolated feature builds (`check-features`), `msrv`, and `test`. The full gate needs a running Docker daemon (for `test`) and the pinned `1.94.1` toolchain installed via rustup (for `msrv`); CI is the canonical `--locked` gate, but the compile-heavy recipes pass `--locked` locally too so lockfile drift surfaces before CI.
+`just verify` runs every gate CI does: `fmt-check`, `dprint-check`, `clippy`, `doc`, the isolated feature builds (`check-features`), `msrv`, and `test`. The full gate needs a running Docker daemon (for `test`) and the pinned `1.99.0` toolchain installed via rustup (for `msrv`); CI is the canonical `--locked` gate, but the compile-heavy recipes pass `--locked` locally too so lockfile drift surfaces before CI.
 
 Run `just` with no arguments to list every recipe.
 

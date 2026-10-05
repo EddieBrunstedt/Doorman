@@ -1,7 +1,7 @@
 # Continuous integration for doorman on Forgejo Actions (Codeberg).
 #
 # The runner is a self-hosted machine exposed under the `native` label. It
-# already carries most of the toolchain — a rustup with the stable and 1.94
+# already carries most of the toolchain — a rustup with the stable and 1.99
 # toolchains, dprint, cargo-deny, and a Docker daemon for the testcontainers
 # conformance tests. The one tool the pipeline installs itself is cargo-rdme
 # (pinned below): keeping it self-contained means the README-sync check never
@@ -87,10 +87,10 @@ jobs:
       - name: build — feature powerset (sqlx drivers)
         run: cargo hack check -p doorman-sqlx --feature-powerset --locked
 
-      # Minimum supported Rust version; keep `1.94` in sync with `rust-version`
+      # Minimum supported Rust version; keep `1.99` in sync with `rust-version`
       # in the workspace manifest. A compile check, not a test run.
-      - name: msrv (1.94)
-        run: cargo +1.94.1 check --workspace --all-features --locked
+      - name: msrv (1.99)
+        run: cargo +1.99.0 check --workspace --all-features --locked
 
       # The real correctness gate: the full suite with every backend enabled,
       # which starts throwaway databases through testcontainers (hence the Docker

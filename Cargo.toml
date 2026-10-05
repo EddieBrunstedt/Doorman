@@ -22,11 +22,10 @@ edition = "2024"
 homepage = "https://codeberg.org/EddieBrunstedt/Doorman"
 license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/EddieBrunstedt/Doorman"
-# MSRV is driven by the dependency tree: sqlx 0.9 requires rustc 1.94, which is
-# the highest floor among the deps (webauthn-rs/time need 1.88). `1.94` is the
-# minimum floor; CI and `just msrv` enforce it against the pinned `1.94.1`
-# toolchain (`cargo +1.94.1 check --workspace --all-features --locked`).
-rust-version = "1.94"
+# MSRV tracks a recent stable release rather than the dependency tree's floor.
+# CI and `just msrv` enforce it against the pinned `1.99.0` toolchain
+# (`cargo +1.99.0 check --workspace --all-features --locked`).
+rust-version = "1.99"
 
 # Shared lints applied to every crate that opts in with `[lints] workspace = true`.
 # `unsafe_code` is forbidden outright — doorman never uses `unsafe`. `clippy::all`
@@ -45,16 +44,16 @@ all = { level = "deny", priority = -1 }
 
 [workspace.dependencies]
 async-trait = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
-criterion = { version = "0.5", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
-lru = "0.16.3"
+criterion = { version = "0.8", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
+lru = "0.18"
 proptest = "1"
-rand = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rand = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 subtle = "2.5"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
