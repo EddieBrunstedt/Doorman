@@ -1039,18 +1039,8 @@ impl PasskeyManager {
         context: SessionContext,
     ) -> Result<StoredPasskey> {
         let user_id = session.user_id;
-        let Some(mut credential) = self
-            .credentials
-            .find_passkey_by_credential_id(credential_id)
-            .await?
-        else {
-            tracing::warn!(outcome = "credential_not_found", "passkey rename failed");
-            return Err(Error::PasskeyNotFound);
-        };
-        if credential.user_id != user_id {
-            tracing::warn!(outcome = "ownership_mismatch", "passkey rename failed");
-            return Err(Error::PasskeyOwnershipMismatch);
-        }
+        let mut credential =
+            find_owned_passkey(self.credentials.as_ref(), user_id, credential_id).await?;
         self.credentials
             .set_passkey_name(credential_id, name.as_deref())
             .await?;
@@ -1088,18 +1078,8 @@ impl PasskeyManager {
         actor: Actor,
         notice: PasskeyRemovalNotice,
     ) -> Result<()> {
-        let Some(credential) = self
-            .credentials
-            .find_passkey_by_credential_id(credential_id)
-            .await?
-        else {
-            tracing::warn!(outcome = "credential_not_found", "passkey remove failed");
-            return Err(Error::PasskeyNotFound);
-        };
-        if credential.user_id != user_id {
-            tracing::warn!(outcome = "ownership_mismatch", "passkey remove failed");
-            return Err(Error::PasskeyOwnershipMismatch);
-        }
+        let credential =
+            find_owned_passkey(self.credentials.as_ref(), user_id, credential_id).await?;
         self.credentials.delete_passkey(credential_id).await?;
         self.audit
             .emit(AuditEvent {
@@ -1152,6 +1132,38 @@ impl PasskeyRemovalNotice {
     fn sends(self) -> bool {
         matches!(self, Self::SelfService | Self::Operator)
     }
+}
+
+/// Resolve `credential_id` and confirm it belongs to `user_id`. The one place
+/// the "a user acts only on their own credential" rule lives: a missing
+/// credential is [`Error::PasskeyNotFound`] and one owned by a different user
+/// is [`Error::PasskeyOwnershipMismatch`].
+///
+/// Checking before a separate write is race-free because a credential's owner
+/// is fixed when it is added: no [`PasskeyCredentialStore`] write moves it.
+pub(crate) async fn find_owned_passkey(
+    credentials: &dyn PasskeyCredentialStore,
+    user_id: UserId,
+    credential_id: &[u8],
+) -> Result<StoredPasskey> {
+    let Some(credential) = credentials
+        .find_passkey_by_credential_id(credential_id)
+        .await?
+    else {
+        tracing::warn!(
+            outcome = "credential_not_found",
+            "passkey ownership check failed"
+        );
+        return Err(Error::PasskeyNotFound);
+    };
+    if credential.user_id != user_id {
+        tracing::warn!(
+            outcome = "ownership_mismatch",
+            "passkey ownership check failed"
+        );
+        return Err(Error::PasskeyOwnershipMismatch);
+    }
+    Ok(credential)
 }
 
 /// The label shown in the platform passkey UI. doorman uses the email when set

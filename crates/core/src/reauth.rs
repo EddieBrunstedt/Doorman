@@ -64,7 +64,7 @@ use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::passkey::{
     PasskeyConfig, build_webauthn, challenge_lifetime, decode_credential,
-    encode_passkey_authentication_state,
+    encode_passkey_authentication_state, find_owned_passkey,
 };
 use crate::redeem::Redeemer;
 use crate::session::SessionContext;
@@ -348,13 +348,9 @@ impl ReauthManager {
         // credentials, but re-checking the resolved owner closes any gap
         // between the allow-list and the stored binding.
         let cred_id: &[u8] = result.cred_id().as_ref();
-        match self
-            .credentials
-            .find_passkey_by_credential_id(cred_id)
-            .await?
-        {
-            Some(credential) if credential.user_id == user_id => {}
-            _ => {
+        match find_owned_passkey(self.credentials.as_ref(), user_id, cred_id).await {
+            Ok(_) => {}
+            Err(Error::PasskeyNotFound | Error::PasskeyOwnershipMismatch) => {
                 self.emit_failed(
                     now,
                     context,
@@ -364,6 +360,7 @@ impl ReauthManager {
                 .await;
                 return Err(Error::PasskeyOwnershipMismatch);
             }
+            Err(error) => return Err(error),
         }
 
         self.audit
