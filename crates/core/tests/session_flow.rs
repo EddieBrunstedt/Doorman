@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use chrono::Duration as ChronoDuration;
 use doorman_core::audit::AuditEventKind;
+use doorman_core::clock::Clock;
 use doorman_core::email::{Email, EmailSender};
 use doorman_core::error::Error;
 use doorman_core::memory::{InMemorySessionStore, InMemoryUserStore};
@@ -407,8 +408,12 @@ async fn purge_expired_deletes_only_expired() {
         .expect("long");
 
     clock.advance(ChronoDuration::seconds(45));
-    let removed = manager.purge_expired().await.expect("purge");
-    assert_eq!(removed, 1);
+    let summary = h
+        .storage
+        .purge_all_expired(clock.now())
+        .await
+        .expect("purge");
+    assert_eq!(summary.sessions, 1);
     assert!(
         sessions
             .find_session_by_id(short.session.id)

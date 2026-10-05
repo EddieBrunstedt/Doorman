@@ -211,6 +211,8 @@ pub struct Harness {
     pub tokens: Arc<InMemoryVerificationTokenStore>,
     pub credentials: Arc<InMemoryPasskeyCredentialStore>,
     pub challenges: Arc<InMemoryPasskeyChallengeStore>,
+    /// The composite the managers were built over.
+    pub storage: Storage,
     pub audit: Arc<InMemoryAuditSink>,
     pub email: Arc<CapturingEmailSender>,
     pub clock: Arc<MockClock>,
@@ -369,7 +371,7 @@ impl HarnessBuilder {
             passkey_challenges: challenges.clone(),
         };
 
-        let core = AuthCore::builder(storage)
+        let core = AuthCore::builder(storage.clone())
             .clock(clock.clone() as Arc<dyn Clock>)
             .audit(audit.clone() as Arc<dyn AuditSink>)
             .email(email.clone() as Arc<dyn EmailSender>)
@@ -405,6 +407,7 @@ impl HarnessBuilder {
             tokens,
             credentials,
             challenges,
+            storage,
             audit,
             email,
             clock,

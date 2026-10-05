@@ -546,15 +546,6 @@ impl SessionManager {
         self.revoke_session(session, actor).await
     }
 
-    /// Delete every session past its expiry, returning the number removed.
-    #[tracing::instrument(skip(self))]
-    pub async fn purge_expired(&self) -> Result<u64> {
-        let now = self.clock.now();
-        let count = self.sessions.purge_expired(now).await?;
-        tracing::info!(count, outcome = "purged", "expired sessions purged");
-        Ok(count)
-    }
-
     /// Delete `session`, fire the per-session invalidation hook, and emit the
     /// `SessionRevoked` audit event attributed to `actor`. Self-service callers
     /// pass an [`Actor::Subject`] built from the session's own request
