@@ -18,6 +18,12 @@
 //! ids and token hashes to stay isolated; assertions that touch
 //! whole-table operations (`purge_expired`) target a specific row rather
 //! than an exact count.
+//!
+//! The concurrency checks spawn tasks, so the suite must be awaited inside a
+//! Tokio runtime (`#[tokio::test]` is enough). Under a multi-thread runtime
+//! the racing callers also run in parallel.
+
+use std::future::Future;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use doorman_core::session::hash_token;
@@ -44,7 +50,12 @@ fn user(id: UserId, email: &str) -> User {
     }
 }
 
+/// Number of concurrent callers racing to redeem one single-use row.
+const RACERS: usize = 64;
+
 /// Run the full backend-agnostic suite against `storage`.
+///
+/// Must be awaited inside a Tokio runtime; see the crate docs.
 pub async fn run(storage: &Storage) {
     users_round_trip(storage).await;
     users_email_change(storage).await;
@@ -62,7 +73,9 @@ pub async fn run(storage: &Storage) {
     passkey_registration_cooldown_round_trip(storage).await;
     passkey_registration_delete_for_user(storage).await;
     passkey_authentication_single_use(storage).await;
+    single_use_under_concurrency(storage).await;
     passkey_challenge_purge_expired(storage).await;
+    owner_indexes_track_removals(storage).await;
     absent_lookups_return_none(storage).await;
 }
 
@@ -1429,6 +1442,278 @@ async fn passkey_challenge_purge_expired(storage: &Storage) {
             .is_some(),
         "the live registration survived the purge",
     );
+}
+
+/// Spawn [`RACERS`] copies of `redeem` as concurrent tasks and return how many
+/// of them observed the row.
+async fn count_redeemers<F, Fut>(redeem: F) -> usize
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = bool> + Send + 'static,
+{
+    let racers: Vec<_> = (0..RACERS).map(|_| tokio::spawn(redeem())).collect();
+    let mut redeemed = 0;
+    for racer in racers {
+        if racer.await.expect("racer task") {
+            redeemed += 1;
+        }
+    }
+    redeemed
+}
+
+/// Single-use holds under concurrency: when many callers race to consume one
+/// verification token, or to take one registration or authentication
+/// ceremony, exactly one observes it. A look-up followed by a separate delete
+/// would let two requests carrying the same secret both succeed; the stores
+/// must remove and return the row in one atomic step.
+async fn single_use_under_concurrency(storage: &Storage) {
+    let now = ts(2026, 1, 1);
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "race@example.com"))
+        .await
+        .expect("user");
+
+    let hash = hash_token("race-consume-token");
+    storage
+        .verification_tokens
+        .create_token(VerificationToken {
+            token_hash: hash,
+            user_id,
+            purpose: VerificationPurpose::Signup,
+            new_email: None,
+            created_at: now,
+            expires_at: ts(2099, 1, 1),
+        })
+        .await
+        .expect("create token");
+    let consumed = count_redeemers(|| {
+        let tokens = storage.verification_tokens.clone();
+        async move {
+            tokens
+                .consume_token(&hash, VerificationPurpose::Signup)
+                .await
+                .expect("consume")
+                .is_some()
+        }
+    })
+    .await;
+    assert_eq!(consumed, 1, "exactly one caller consumes the token");
+
+    let registration = PasskeyChallengeId::new();
+    storage
+        .passkey_challenges
+        .put_registration(StoredPasskeyRegistration {
+            id: registration,
+            user_id,
+            state: b"race-registration".to_vec(),
+            created_at: now,
+            expires_at: ts(2099, 1, 1),
+            recovery_cooldown_until: None,
+        })
+        .await
+        .expect("put registration");
+    let taken = count_redeemers(|| {
+        let challenges = storage.passkey_challenges.clone();
+        async move {
+            challenges
+                .take_registration(registration)
+                .await
+                .expect("take registration")
+                .is_some()
+        }
+    })
+    .await;
+    assert_eq!(taken, 1, "exactly one caller takes the registration");
+
+    let authentication = PasskeyChallengeId::new();
+    storage
+        .passkey_challenges
+        .put_authentication(StoredPasskeyAuthentication {
+            id: authentication,
+            purpose: AuthenticationPurpose::Login,
+            state: b"race-authentication".to_vec(),
+            created_at: now,
+            expires_at: ts(2099, 1, 1),
+        })
+        .await
+        .expect("put authentication");
+    let taken = count_redeemers(|| {
+        let challenges = storage.passkey_challenges.clone();
+        async move {
+            challenges
+                .take_authentication(authentication)
+                .await
+                .expect("take authentication")
+                .is_some()
+        }
+    })
+    .await;
+    assert_eq!(taken, 1, "exactly one caller takes the authentication");
+}
+
+/// Removing one row also drops it from its owner's index. After a consume,
+/// take, single delete, or purge, the per-user count and the bulk deletes see
+/// only the rows that remain. An adapter that maintains its own per-user index
+/// must unlink the entry together with the row; a stale entry inflates
+/// `count_registrations_for_user` toward the outstanding-ceremony cap.
+async fn owner_indexes_track_removals(storage: &Storage) {
+    let now = ts(2026, 1, 1);
+    let user_id = UserId::new();
+    storage
+        .users
+        .create_user(user(user_id, "index-removals@example.com"))
+        .await
+        .expect("user");
+
+    // Sessions: one deleted by id, one purged, one kept, one left over.
+    let sessions = &storage.sessions;
+    let session = |token: &str, expires_at| Session {
+        id: SessionId::new(),
+        user_id,
+        token_hash: hash_token(token),
+        created_at: ts(2020, 1, 1),
+        last_used_at: ts(2020, 1, 1),
+        expires_at,
+        ip: None,
+        user_agent: None,
+        recovery_cooldown_until: None,
+    };
+    let deleted = session("index-deleted-session", ts(2099, 1, 1));
+    let expired = session("index-expired-session", ts(2020, 1, 2));
+    let kept = session("index-kept-session", ts(2099, 1, 1));
+    let other = session("index-other-session", ts(2099, 1, 1));
+    for s in [&deleted, &expired, &kept, &other] {
+        sessions
+            .create_session(s.clone())
+            .await
+            .expect("create session");
+    }
+    sessions
+        .delete_session(deleted.id)
+        .await
+        .expect("delete session");
+    assert!(
+        sessions.purge_expired(now).await.expect("purge sessions") >= 1,
+        "the expired session was purged",
+    );
+    assert_eq!(
+        sessions
+            .delete_other_sessions_for_user(user_id, kept.id)
+            .await
+            .expect("delete other sessions"),
+        1,
+        "only the one remaining other session is removed",
+    );
+    assert_eq!(
+        sessions
+            .delete_sessions_for_user(user_id)
+            .await
+            .expect("delete sessions"),
+        1,
+        "only the kept session is left to remove",
+    );
+
+    // Verification tokens: one consumed, one purged, one left over.
+    let tokens = &storage.verification_tokens;
+    let token = |raw: &str, expires_at| VerificationToken {
+        token_hash: hash_token(raw),
+        user_id,
+        purpose: VerificationPurpose::Recovery,
+        new_email: None,
+        created_at: ts(2020, 1, 1),
+        expires_at,
+    };
+    let consumed = token("index-consumed-token", ts(2099, 1, 1));
+    let expired = token("index-expired-token", ts(2020, 1, 2));
+    let remaining = token("index-remaining-token", ts(2099, 1, 1));
+    for t in [&consumed, &expired, &remaining] {
+        tokens.create_token(t.clone()).await.expect("create token");
+    }
+    assert!(
+        tokens
+            .consume_token(&consumed.token_hash, VerificationPurpose::Recovery)
+            .await
+            .expect("consume token")
+            .is_some(),
+        "the token is consumed",
+    );
+    assert!(
+        tokens.purge_expired(now).await.expect("purge tokens") >= 1,
+        "the expired token was purged",
+    );
+    assert_eq!(
+        tokens
+            .delete_tokens_for_user(user_id, VerificationPurpose::Recovery)
+            .await
+            .expect("delete tokens"),
+        1,
+        "only the remaining token is left to remove",
+    );
+
+    // Registrations: one taken, one purged, one left over. The count is the
+    // index read the outstanding-ceremony cap relies on.
+    let challenges = &storage.passkey_challenges;
+    let registration = |expires_at| StoredPasskeyRegistration {
+        id: PasskeyChallengeId::new(),
+        user_id,
+        state: b"index-registration".to_vec(),
+        created_at: ts(2020, 1, 1),
+        expires_at,
+        recovery_cooldown_until: None,
+    };
+    let taken = registration(ts(2099, 1, 1));
+    let expired = registration(ts(2020, 1, 2));
+    let remaining = registration(ts(2099, 1, 1));
+    for r in [&taken, &expired, &remaining] {
+        challenges
+            .put_registration(r.clone())
+            .await
+            .expect("put registration");
+    }
+    let count = || async {
+        challenges
+            .count_registrations_for_user(user_id)
+            .await
+            .expect("count registrations")
+    };
+    assert_eq!(count().await, 3, "all three registrations are counted");
+    assert!(
+        challenges
+            .take_registration(taken.id)
+            .await
+            .expect("take registration")
+            .is_some(),
+        "the registration is taken",
+    );
+    assert_eq!(
+        count().await,
+        2,
+        "a taken registration is no longer counted"
+    );
+    assert!(
+        challenges
+            .purge_expired(now)
+            .await
+            .expect("purge challenges")
+            >= 1,
+        "the expired registration was purged",
+    );
+    assert_eq!(
+        count().await,
+        1,
+        "a purged registration is no longer counted"
+    );
+    assert_eq!(
+        challenges
+            .delete_registrations_for_user(user_id)
+            .await
+            .expect("delete registrations"),
+        1,
+        "only the remaining registration is left to remove",
+    );
+    assert_eq!(count().await, 0, "no registrations remain");
 }
 
 /// Looking up an id or token that was never stored resolves to `None` rather

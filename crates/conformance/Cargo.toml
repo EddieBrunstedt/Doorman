@@ -21,4 +21,5 @@ all-features = true
 [dependencies]
 chrono.workspace = true
 doorman-core = { path = "../core", version = "0.1.0" }
+tokio.workspace = true
 uuid.workspace = true

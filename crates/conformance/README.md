@@ -20,4 +20,6 @@ async fn my_adapter_conformance() {
 
 `run` is the backend-agnostic suite every adapter must pass. `run_db_backed` adds assertions that only hold for adapters which filter expired rows in their query layer (the in-memory reference store deliberately returns them and the manager filters instead), so call it only from those harnesses.
 
+Both must be awaited inside a Tokio runtime: the concurrency checks spawn tasks to race one single-use row. `#[tokio::test]` is enough; a multi-thread runtime also runs the racing callers in parallel.
+
 The checks share one `Storage` instance and isolate themselves with freshly minted ids and token hashes, so the suite is safe to run against a shared database; flush or use a disposable database for repeatable runs.
