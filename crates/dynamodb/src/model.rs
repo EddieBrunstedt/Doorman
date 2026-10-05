@@ -9,11 +9,17 @@
 //! | ---------------------- | ---------------------------- | ----------------- | ----------------------- |
 //! | User                   | `user#<id>`                  | —                 | —                       |
 //! | Email guard            | `email#<email>`              | —                 | —                       |
-//! | Session                | `session#<id>`               | `shash#<hash>`    | `usess#<uid>`           |
+//! | Session                | `session#<id>`               | `shash#<hash>`    | —                       |
+//! | Session index          | `usess#<uid>`                | —                 | —                       |
 //! | Verification token     | `vtoken#<purpose>#<hash>`    | —                 | `uvtok#<uid>#<purpose>` |
 //! | Passkey credential     | `passkey#<credential id>`    | —                 | `upk#<uid>`             |
 //! | Passkey registration   | `pkreg#<id>`                 | —                 | `upkreg#<uid>`          |
 //! | Passkey authentication | `pkauth#<id>`                | —                 | —                       |
+//!
+//! A user's sessions are found through their session index item rather than
+//! the `owner-index` GSI: the item holds the user's session ids as a string set
+//! and is read strongly-consistently, so a bulk revoke sees every session
+//! created before it (see [`crate::stores::session`]).
 //!
 //! Token hashes and credential ids are hex-encoded in keys (they are opaque
 //! bytes) but also stored verbatim as binary attributes so they round-trip
@@ -40,6 +46,7 @@ use crate::client::{self, GSI1PK, GSI2PK, Item};
 pub(crate) const ENTITY_USER: &str = "user";
 pub(crate) const ENTITY_EMAIL: &str = "email";
 pub(crate) const ENTITY_SESSION: &str = "session";
+pub(crate) const ENTITY_SESSION_INDEX: &str = "usess";
 pub(crate) const ENTITY_VTOKEN: &str = "vtoken";
 pub(crate) const ENTITY_PASSKEY: &str = "passkey";
 pub(crate) const ENTITY_PKREG: &str = "pkreg";
@@ -58,7 +65,12 @@ pub(crate) fn email_pk(email: &str) -> String {
 }
 
 pub(crate) fn session_pk(id: SessionId) -> String {
-    format!("session#{}", id.0)
+    session_pk_for(&id.0.to_string())
+}
+
+/// [`session_pk`] for a session id as the session index item stores it.
+pub(crate) fn session_pk_for(id: &str) -> String {
+    format!("session#{id}")
 }
 
 /// `lookup-index` key resolving a session's hashed bearer token to its row.
@@ -66,10 +78,14 @@ pub(crate) fn session_hash_key(hash: &TokenHash) -> String {
     format!("shash#{}", hex(&hash.0))
 }
 
-/// `owner-index` key for a user's sessions.
-pub(crate) fn user_sessions_key(user_id: UserId) -> String {
+/// Primary key of a user's session index item.
+pub(crate) fn session_index_pk(user_id: UserId) -> String {
     format!("usess#{}", user_id.0)
 }
+
+/// String-set attribute of the session index item holding the user's session
+/// ids.
+pub(crate) const SESSION_IDS: &str = "session_ids";
 
 /// Primary key for a verification token, scoped by purpose so a hash can never
 /// be redeemed under the wrong flow.
@@ -212,10 +228,6 @@ pub(crate) fn session_item(session: &Session) -> Item {
     item.insert(
         GSI1PK.to_string(),
         client::s(session_hash_key(&session.token_hash)),
-    );
-    item.insert(
-        GSI2PK.to_string(),
-        client::s(user_sessions_key(session.user_id)),
     );
     put_ttl(&mut item, session.expires_at);
     item

@@ -6,8 +6,8 @@
 //! around the AWS SDK client plus the table name, the helpers that translate
 //! between Rust values and DynamoDB [`AttributeValue`]s, and a small set of
 //! reusable operations (`get`, `put`, the atomic `take`, the two GSI queries, a
-//! filtered table scan, a batch delete, and the owner-scoped and expiry bulk
-//! deletes built on them) that the per-trait stores compose.
+//! filtered table scan, a batch get, a batch delete, and the owner-scoped and
+//! expiry bulk deletes built on them) that the per-trait stores compose.
 //!
 //! ## Indexes
 //!
@@ -18,8 +18,10 @@
 //!   consistent, which is acceptable here: the manager re-resolves and a stale
 //!   read self-heals on the next request.
 //! - **`owner-index`** ([`GSI2PK`]) — the per-user collections (a user's
-//!   sessions, passkeys, verification tokens of a purpose, and registration
-//!   ceremonies) that back the listing, counting, and bulk-delete paths.
+//!   passkeys, verification tokens of a purpose, and registration ceremonies)
+//!   that back the listing, counting, and bulk-delete paths. A user's sessions
+//!   use a strongly-consistent index item instead; see
+//!   [`crate::stores::session`].
 //!
 //! Both project every attribute (`ALL`) so an owner query returns whole records
 //! in one round trip. DynamoDB maintains the indexes automatically, so — unlike
@@ -39,8 +41,8 @@ use aws_sdk_dynamodb::client::Waiters as _;
 use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::{
     AttributeDefinition, AttributeValue, BillingMode, DeleteRequest, GlobalSecondaryIndex,
-    KeySchemaElement, KeyType, Projection, ProjectionType, ReturnValue, ScalarAttributeType,
-    Select, TimeToLiveSpecification, WriteRequest,
+    KeySchemaElement, KeyType, KeysAndAttributes, Projection, ProjectionType, ReturnValue,
+    ScalarAttributeType, Select, TimeToLiveSpecification, WriteRequest,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use doorman_core::error::{StorageError, StorageResult};
@@ -108,6 +110,12 @@ pub(crate) fn boolean(v: bool) -> AttributeValue {
 /// order and any empties of the source `Vec` survive the round trip.
 pub(crate) fn list_s(items: impl IntoIterator<Item = String>) -> AttributeValue {
     AttributeValue::L(items.into_iter().map(AttributeValue::S).collect())
+}
+
+/// A DynamoDB string set (`SS`). DynamoDB rejects an empty set, so callers
+/// pass at least one member.
+pub(crate) fn ss(items: impl IntoIterator<Item = String>) -> AttributeValue {
+    AttributeValue::Ss(items.into_iter().collect())
 }
 
 /// The TTL attribute value for a record expiring at `expires_at`, or `None`
@@ -188,6 +196,18 @@ pub(crate) fn get_list_s(item: &Item, key: &str) -> StorageResult<Vec<String>> {
                     .map_err(|_| wrong_type(key, "list of strings"))
             })
             .collect(),
+    }
+}
+
+/// Read a string-set attribute. A missing attribute yields an empty `Vec`:
+/// DynamoDB removes a set attribute once its last member is deleted.
+pub(crate) fn get_ss(item: &Item, key: &str) -> StorageResult<Vec<String>> {
+    match item.get(key) {
+        None => Ok(Vec::new()),
+        Some(av) => av
+            .as_ss()
+            .cloned()
+            .map_err(|_| wrong_type(key, "string set")),
     }
 }
 
@@ -408,10 +428,10 @@ impl DynamoClient {
     }
 
     /// Strongly-consistent table `Scan` returning every item whose `entity`
-    /// discriminator is one of `entities`. Backs [`delete_expired`](Self::delete_expired),
-    /// which then filters on `expires_at`. Consistent so a row written moments
+    /// discriminator is one of `entities`. Backs the `purge_expired` sweeps,
+    /// which then filter on `expires_at`. Consistent so a row written moments
     /// earlier (as the conformance suite does) is visible.
-    async fn scan_entities(&self, entities: &[&str]) -> StorageResult<Vec<Item>> {
+    pub(crate) async fn scan_entities(&self, entities: &[&str]) -> StorageResult<Vec<Item>> {
         let mut names = HashMap::new();
         names.insert("#e".to_string(), ENTITY.to_string());
         let mut values = HashMap::new();
@@ -444,6 +464,53 @@ impl DynamoClient {
             match resp.last_evaluated_key {
                 Some(k) if !k.is_empty() => start = Some(k),
                 _ => break,
+            }
+        }
+        Ok(out)
+    }
+
+    /// Strongly-consistent `BatchGetItem` of `pks`, chunked to the 100-key
+    /// limit and retrying any unprocessed keys the service returns. Absent keys
+    /// are simply missing from the result, which comes back in no particular
+    /// order.
+    pub(crate) async fn batch_get(&self, pks: &[String]) -> StorageResult<Vec<Item>> {
+        let mut out = Vec::with_capacity(pks.len());
+        for chunk in pks.chunks(100) {
+            let mut keys = Vec::with_capacity(chunk.len());
+            for pk in chunk {
+                keys.push(HashMap::from([(PK.to_string(), s(pk))]));
+            }
+            let request = KeysAndAttributes::builder()
+                .set_keys(Some(keys))
+                .consistent_read(true)
+                .build()
+                .map_err(err)?;
+            let mut pending = HashMap::from([(self.table.clone(), request)]);
+
+            // DynamoDB may defer some keys under load; resubmit until drained.
+            for _ in 0..8 {
+                if pending.is_empty() {
+                    break;
+                }
+                let resp = self
+                    .client
+                    .batch_get_item()
+                    .set_request_items(Some(pending))
+                    .send()
+                    .await
+                    .map_err(err)?;
+                if let Some(mut responses) = resp.responses
+                    && let Some(items) = responses.remove(&self.table)
+                {
+                    out.extend(items);
+                }
+                pending = resp.unprocessed_keys.unwrap_or_default();
+                pending.retain(|_, request| !request.keys.is_empty());
+            }
+            if !pending.is_empty() {
+                return Err(StorageError::msg(
+                    "batch get did not drain its unprocessed keys",
+                ));
             }
         }
         Ok(out)

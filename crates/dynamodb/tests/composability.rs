@@ -1,10 +1,10 @@
 //! Proves the "override one sub-store method, reuse the rest" pattern on the
 //! DynamoDB adapter: a host wraps the bundled `Arc<dyn SessionStore>` and makes
 //! `create_session` a single [`TransactWriteItems`] over the public
-//! [`session_item`] plus its own audit item — fail-closed audit, committed
-//! atomically — while delegating every read/delete. The delegated reads then
-//! find the row, proving the host's write carries the encoding the bundled
-//! reads expect.
+//! [`create_session_writes`] plus its own audit item — fail-closed audit,
+//! committed atomically — while delegating every read/delete. The delegated
+//! reads and revoke then reach the session, proving the host's writes carry the
+//! encoding the bundled store expects.
 //!
 //! Self-contained: starts a throwaway DynamoDB Local container, which supports
 //! `TransactWriteItems`, so the transaction is exercised for real.
@@ -24,7 +24,7 @@ use doorman_core::session::hash_token;
 use doorman_core::storage::{
     AccountStatus, Session, SessionId, SessionStore, Storage, TokenHash, User, UserId,
 };
-use doorman_dynamodb::{DynamoDbStorage, session_item};
+use doorman_dynamodb::{DynamoDbStorage, create_session_writes};
 use testcontainers_modules::dynamodb_local::DynamoDb;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
@@ -40,24 +40,21 @@ struct AuditedSessions {
 #[async_trait]
 impl SessionStore for AuditedSessions {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
-        // `session_item` produces the byte-identical item the bundled reads
-        // expect (including the GSI keys), so a row written here is later found
-        // by the delegated `find_session_by_token_hash`.
-        let session_put = Put::builder()
-            .table_name(&self.table)
-            .set_item(Some(session_item(&session)))
-            .build()
-            .map_err(|e| StorageError::msg(e.to_string()))?;
+        // `create_session_writes` produces the writes the bundled store makes
+        // (the row with its GSI key, and the session index entry), so a session
+        // created here is later found, listed and revoked by the delegated
+        // methods.
+        let mut writes = create_session_writes(&self.table, &session)?;
         let audit_put = Put::builder()
             .table_name(&self.table)
             .item("pk", AttributeValue::S(format!("audit#{}", session.id.0)))
             .item("event", AttributeValue::S("session.created".to_string()))
             .build()
             .map_err(|e| StorageError::msg(e.to_string()))?;
+        writes.push(TransactWriteItem::builder().put(audit_put).build());
         self.client
             .transact_write_items()
-            .transact_items(TransactWriteItem::builder().put(session_put).build())
-            .transact_items(TransactWriteItem::builder().put(audit_put).build())
+            .set_transact_items(Some(writes))
             .send()
             .await
             .map_err(|e| StorageError::msg(e.to_string()))?;
@@ -180,6 +177,16 @@ async fn override_create_session_reuses_bundled_reads() {
         .expect("session present");
     assert_eq!(found.id, session.id);
     assert_eq!(found.user_id, user_id);
+    assert_eq!(
+        composite
+            .sessions
+            .list_for_user(user_id, now)
+            .await
+            .expect("delegated list")
+            .len(),
+        1,
+        "the session is listed",
+    );
 
     // The host's audit item committed in the same transaction.
     let audit = client
@@ -190,4 +197,23 @@ async fn override_create_session_reuses_bundled_reads() {
         .await
         .expect("get audit item");
     assert!(audit.item().is_some(), "audit item present");
+
+    // The delegated bulk revoke reaches the host-created session.
+    assert_eq!(
+        composite
+            .sessions
+            .delete_sessions_for_user(user_id, None)
+            .await
+            .expect("delegated revoke"),
+        1,
+    );
+    assert!(
+        composite
+            .sessions
+            .find_session_by_id(session.id)
+            .await
+            .expect("find after revoke")
+            .is_none(),
+        "the revoke deleted the session",
+    );
 }

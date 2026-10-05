@@ -20,20 +20,23 @@
 //! - **Email uniqueness.** A GSI can enforce no constraints and is only
 //!   eventually consistent, so a user's email is guarded by a strongly-consistent
 //!   companion item written in the same transaction as the user — which also
-//!   serves as the email → user lookup. Every other secondary lookup uses a GSI,
-//!   which DynamoDB maintains automatically (no dangling-index bookkeeping).
+//!   serves as the email → user lookup.
+//! - **Session index.** A user's sessions are listed and bulk-revoked through a
+//!   strongly-consistent index item written in the same transaction as each
+//!   session, so a revoke sees every session created before it.
+//! - **GSIs.** The remaining secondary lookups use a GSI, which DynamoDB
+//!   maintains automatically.
 //! - **Expiry.** Native TTL deletion lags by up to ~48h and is a memory
 //!   backstop only: the stores filter `expires_at > now` on read and
 //!   `purge_expired` performs the authoritative, immediate reclamation.
 //!
 //! ## Eventual consistency
 //!
-//! Reads of the system-of-record (users, passkey credentials) are
-//! strongly-consistent. The per-user collection listings and the token-hash
-//! session lookup read a GSI, which is eventually consistent: a row is normally
-//! visible within milliseconds of its write but not guaranteed to be on the very
-//! next read. The managers re-resolve and re-filter, so this never yields an
-//! incorrect result — only, rarely, a momentarily stale one.
+//! Reads of the system-of-record (users, passkey credentials) and of a user's
+//! sessions are strongly-consistent. The other per-user collection listings
+//! and the token-hash session lookup read a GSI, which is eventually
+//! consistent: a row is normally visible within milliseconds of its write but
+//! not guaranteed to be on the very next read.
 //!
 //! ## Usage
 //!
@@ -68,10 +71,9 @@ mod client;
 mod model;
 mod stores;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use aws_sdk_dynamodb::types::AttributeValue;
+use aws_sdk_dynamodb::types::TransactWriteItem;
 use doorman_core::error::StorageResult;
 use doorman_core::storage::{
     PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionStore, Storage, UserStore,
@@ -169,20 +171,22 @@ impl DynamoDbStorage {
     }
 }
 
-/// Encode a [`Session`] into the DynamoDB item this adapter persists, including
-/// its two GSI key attributes.
+/// The writes that create `session` in the table `table_name`: the session row
+/// and the update that adds its id to the user's session index item.
 ///
 /// Exposed so an advanced host overriding `SessionStore::create_session` can
-/// compose a single [`TransactWriteItems`] from this item plus its own record
-/// (e.g. a fail-closed audit/outbox item) and commit them atomically, then
-/// delegate every other method to the bundled store. The item carries the
-/// byte-identical encoding the bundled reads — `find_session_by_token_hash`,
-/// `find_session_by_id`, `list_for_user` — expect, so a row written this way is
-/// later found by them, rather than the host hand-replicating the item layout
-/// and its GSI keys. Put it under [`DynamoDbStorage::table_name`] using the host's
-/// own `aws_sdk_dynamodb::Client`.
+/// commit these writes plus its own record (e.g. a fail-closed audit/outbox
+/// item) in one [`TransactWriteItems`], then delegate every other method to the
+/// bundled store. The writes carry the exact encoding the bundled reads and
+/// revokes expect, so a session created this way is found, listed and revoked
+/// by them, rather than the host hand-replicating the item layout. Commit every
+/// returned write in the same transaction: a row without its index entry
+/// escapes `delete_sessions_for_user`.
 ///
 /// [`TransactWriteItems`]: aws_sdk_dynamodb::operation::transact_write_items
-pub fn session_item(session: &Session) -> HashMap<String, AttributeValue> {
-    model::session_item(session)
+pub fn create_session_writes(
+    table_name: &str,
+    session: &Session,
+) -> StorageResult<Vec<TransactWriteItem>> {
+    stores::session::create_writes(table_name, session)
 }
