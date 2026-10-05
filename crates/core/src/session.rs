@@ -421,7 +421,11 @@ impl SessionManager {
         let mut updated = session.clone();
         updated.last_used_at = now;
         updated.expires_at = self.deadline(session.created_at, now);
-        match self.sessions.touch_session(&updated).await {
+        match self
+            .sessions
+            .touch_session(updated.id, updated.last_used_at, updated.expires_at)
+            .await
+        {
             Ok(()) => {
                 tracing::debug!(session_id = %updated.id, "session deadline slid");
                 (updated, true)

@@ -64,8 +64,13 @@ impl SessionStore for AuditedSessions {
         Ok(())
     }
 
-    async fn touch_session(&self, session: &Session) -> StorageResult<()> {
-        self.inner.touch_session(session).await
+    async fn touch_session(
+        &self,
+        id: SessionId,
+        last_used_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> StorageResult<()> {
+        self.inner.touch_session(id, last_used_at, expires_at).await
     }
 
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {

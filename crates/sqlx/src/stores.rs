@@ -313,7 +313,9 @@ macro_rules! sqlx_stores {
 
             async fn touch_session(
                 &self,
-                session: &$crate::stores::__reexport::Session,
+                id: $crate::stores::__reexport::SessionId,
+                last_used_at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
+                expires_at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 // A plain `UPDATE ... WHERE id = ?` is inherently safe against
                 // the resurrection hazard: a session deleted between resolution
@@ -324,9 +326,9 @@ macro_rules! sqlx_stores {
                     "UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE id = ?",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind($ts(session.last_used_at))
-                    .bind($ts(session.expires_at))
-                    .bind($crate::common::uuid_to_bytes(session.id.0))
+                    .bind($ts(last_used_at))
+                    .bind($ts(expires_at))
+                    .bind($crate::common::uuid_to_bytes(id.0))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage_err)?;

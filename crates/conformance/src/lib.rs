@@ -809,12 +809,10 @@ async fn session_touch_slides_deadline(storage: &Storage) {
 
     let new_last_used_at = ts(2026, 2, 1);
     let new_expires_at = ts(2099, 3, 1);
-    let slid = Session {
-        last_used_at: new_last_used_at,
-        expires_at: new_expires_at,
-        ..original.clone()
-    };
-    sessions.touch_session(&slid).await.expect("touch session");
+    sessions
+        .touch_session(original.id, new_last_used_at, new_expires_at)
+        .await
+        .expect("touch session");
 
     // Both resolution paths reflect the slid timestamps.
     let by_id = sessions
@@ -877,7 +875,7 @@ async fn session_touch_does_not_resurrect(storage: &Storage) {
         recovery_cooldown_until: None,
     };
     sessions
-        .touch_session(&phantom)
+        .touch_session(phantom.id, created_at, ts(2099, 2, 1))
         .await
         .expect("touch of never-created id is Ok");
     assert!(
@@ -907,7 +905,7 @@ async fn session_touch_does_not_resurrect(storage: &Storage) {
         .await
         .expect("delete revoked");
     sessions
-        .touch_session(&revoked)
+        .touch_session(revoked.id, created_at, ts(2099, 2, 1))
         .await
         .expect("touch of deleted id is Ok");
     assert!(

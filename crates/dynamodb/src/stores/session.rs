@@ -28,7 +28,7 @@ use chrono::{DateTime, Utc};
 use doorman_core::error::StorageResult;
 use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 
-use crate::client::{self, DynamoClient};
+use crate::client::{self, DynamoClient, PK};
 use crate::model::{self, ENTITY_SESSION};
 
 /// Session store backed by a DynamoDB connection.
@@ -48,15 +48,51 @@ impl SessionStore for DynamoSessionStore {
         self.client.put(model::session_item(&session)).await
     }
 
-    async fn touch_session(&self, session: &Session) -> StorageResult<()> {
-        // Conditional put guarded by `attribute_exists(pk)`: it rewrites the
-        // whole item — including the native TTL attribute (TTL coupling) and
-        // the slid `last_used_at`/`expires_at` — only if the row still exists,
-        // so a session revoked between resolution and touch is never
-        // resurrected.
-        self.client
-            .put_if_exists(model::session_item(session))
-            .await
+    async fn touch_session(
+        &self,
+        id: SessionId,
+        last_used_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> StorageResult<()> {
+        // `UpdateItem` guarded by `attribute_exists(pk)`: it writes the slid
+        // `last_used_at`/`expires_at` and the native TTL attribute (TTL
+        // coupling) only if the row still exists, so a session revoked between
+        // resolution and touch is never resurrected. Mirroring `session_item`,
+        // the TTL attribute is present only for a future-dated expiry.
+        let mut request = self
+            .client
+            .inner()
+            .update_item()
+            .table_name(self.client.table())
+            .key(PK, client::s(model::session_pk(id)))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", PK)
+            .expression_attribute_names("#last_used_at", "last_used_at")
+            .expression_attribute_names("#expires_at", client::EXPIRES_AT)
+            .expression_attribute_names("#ttl", client::TTL)
+            .expression_attribute_values(":last_used_at", client::s(client::fmt_ts(last_used_at)))
+            .expression_attribute_values(":expires_at", client::s(client::fmt_ts(expires_at)));
+        request = match client::ttl_attr(expires_at) {
+            Some(ttl) => request
+                .update_expression(
+                    "SET #last_used_at = :last_used_at, #expires_at = :expires_at, #ttl = :ttl",
+                )
+                .expression_attribute_values(":ttl", ttl),
+            None => request.update_expression(
+                "SET #last_used_at = :last_used_at, #expires_at = :expires_at REMOVE #ttl",
+            ),
+        };
+        match request.send().await {
+            Ok(_) => Ok(()),
+            // The row no longer exists; the conditional touch is a no-op.
+            Err(e)
+                if e.as_service_error()
+                    .is_some_and(|svc| svc.is_conditional_check_failed_exception()) =>
+            {
+                Ok(())
+            }
+            Err(e) => Err(client::err(e)),
+        }
     }
 
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {

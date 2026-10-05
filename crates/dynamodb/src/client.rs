@@ -292,35 +292,6 @@ impl DynamoClient {
         Ok(())
     }
 
-    /// Conditional `PutItem` that writes only when an item with the same
-    /// primary key already exists (`attribute_exists(pk)`). The
-    /// `ConditionalCheckFailedException` raised when the row is absent is
-    /// swallowed into a no-op `Ok(())`, so a touch never recreates a session
-    /// deleted between resolution and write (the resurrection hazard).
-    pub(crate) async fn put_if_exists(&self, item: Item) -> StorageResult<()> {
-        let result = self
-            .client
-            .put_item()
-            .table_name(&self.table)
-            .set_item(Some(item))
-            .condition_expression("attribute_exists(#pk)")
-            .expression_attribute_names("#pk", PK)
-            .send()
-            .await;
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                if e.as_service_error()
-                    .is_some_and(|svc| svc.is_conditional_check_failed_exception())
-                {
-                    // The row no longer exists; the conditional put is a no-op.
-                    return Ok(());
-                }
-                Err(err(e))
-            }
-        }
-    }
-
     /// `DeleteItem` by primary key. A delete of an absent key is a no-op.
     pub(crate) async fn delete(&self, pk: &str) -> StorageResult<()> {
         self.client

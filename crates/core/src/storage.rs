@@ -344,18 +344,23 @@ pub trait SessionStore: Send + Sync {
     /// Insert a new session row.
     async fn create_session(&self, session: Session) -> StorageResult<()>;
 
-    /// Persist a slid session deadline on use. The caller passes a `session`
-    /// it has just resolved with `last_used_at` and `expires_at` already updated
-    /// to the new values; the store writes those (and, for backends with native
-    /// auto-eviction, the eviction timer) for the matching row.
+    /// Persist a slid session deadline on use: set the session's
+    /// `last_used_at` and `expires_at` (and, for backends with native
+    /// auto-eviction, the eviction timer) to the given values. No other field
+    /// is written.
     ///
-    /// MUST be a conditional write: if no row with `session.id` currently
-    /// exists, this is a no-op returning `Ok(())`. It MUST NOT create a row —
-    /// see "the resurrection hazard" below.
+    /// MUST be a conditional write: if no row with `id` currently exists, this
+    /// is a no-op returning `Ok(())`. It MUST NOT create a row: a touch racing
+    /// a revoke would otherwise bring the revoked session back.
     ///
     /// The caller treats failures as best-effort (see `SessionResolver::resolve`): a
     /// storage error here MUST NOT fail an otherwise-valid request.
-    async fn touch_session(&self, session: &Session) -> StorageResult<()>;
+    async fn touch_session(
+        &self,
+        id: SessionId,
+        last_used_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> StorageResult<()>;
 
     /// Resolve a session by its token hash, or `None` if absent. The hot
     /// per-request lookup.

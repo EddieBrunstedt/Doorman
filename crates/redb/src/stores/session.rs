@@ -50,11 +50,15 @@ impl SessionStore for RedbSessionStore {
         .map_err(db::err)?
     }
 
-    async fn touch_session(&self, session: &Session) -> StorageResult<()> {
+    async fn touch_session(
+        &self,
+        id: SessionId,
+        last_used_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> StorageResult<()> {
         let db = self.handle.db();
-        let session = session.clone();
         tokio::task::spawn_blocking(move || {
-            let key = session.id.0.to_string();
+            let key = id.0.to_string();
             let wtxn = db.begin_write().map_err(db::err)?;
             {
                 let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
@@ -69,8 +73,8 @@ impl SessionStore for RedbSessionStore {
                     None => None,
                 };
                 if let Some(mut existing) = existing {
-                    existing.last_used_at = session.last_used_at;
-                    existing.expires_at = session.expires_at;
+                    existing.last_used_at = last_used_at;
+                    existing.expires_at = expires_at;
                     let bytes = db::encode(&existing)?;
                     sessions
                         .insert(key.as_str(), bytes.as_slice())

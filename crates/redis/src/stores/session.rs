@@ -64,21 +64,28 @@ impl SessionStore for RedisSessionStore {
         Ok(())
     }
 
-    async fn touch_session(&self, session: &Session) -> StorageResult<()> {
+    async fn touch_session(
+        &self,
+        id: SessionId,
+        last_used_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> StorageResult<()> {
         let keys = self.client.keys();
-        let session_key = keys.session(session.id);
-        let hash_key = keys.session_hash_index(&session.token_hash);
+        let session_key = keys.session(id);
         let mut conn = self.client.conn();
 
         // Read the current row, bump its two timestamps, and write back. A
         // `SET ... XX` only writes when the key still exists, so a session
         // deleted between this GET and SET makes the write a no-op rather than
-        // resurrecting a revoked session.
+        // resurrecting a revoked session. No other field of a session ever
+        // changes after creation, so writing back the rest of the row as read
+        // cannot undo a concurrent change.
         let Some(mut current) = client::get_json::<Session>(&mut conn, &session_key).await? else {
             return Ok(());
         };
-        current.last_used_at = session.last_used_at;
-        current.expires_at = session.expires_at;
+        current.last_used_at = last_used_at;
+        current.expires_at = expires_at;
+        let hash_key = keys.session_hash_index(&current.token_hash);
         let json = client::to_json(&current)?;
 
         // TTL coupling: rewrite the eviction timer on both the row and its hash
