@@ -24,6 +24,7 @@ pub mod context;
 pub mod email;
 pub mod encoding;
 pub mod error;
+mod link;
 pub mod memory;
 pub mod metrics;
 pub mod operator;

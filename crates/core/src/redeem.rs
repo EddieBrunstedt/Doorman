@@ -166,38 +166,12 @@ impl Redeemer {
         .await
     }
 
-    /// Redeem a signup or recovery link and return its active owner. Refusals
-    /// return [`Error::InvalidVerificationToken`], or
-    /// [`Error::AccountDisabled`] for a disabled owner.
-    pub(crate) async fn enrollment_link(
-        &self,
-        token: &str,
-        purpose: VerificationPurpose,
-        context: &SessionContext,
-    ) -> Result<User> {
-        let (user, _) = self.link(token, purpose, context, |_| Some(())).await?;
-        Ok(user)
-    }
-
-    /// Redeem an email-change link, returning its active owner and the
-    /// already-normalized address the link moves the account to. Refusals
-    /// return [`Error::InvalidVerificationToken`], or
-    /// [`Error::AccountDisabled`] for a disabled owner.
-    pub(crate) async fn email_change_link(
-        &self,
-        token: &str,
-        context: &SessionContext,
-    ) -> Result<(User, String)> {
-        self.link(token, VerificationPurpose::EmailChange, context, |record| {
-            record.new_email.clone()
-        })
-        .await
-    }
-
-    /// The shared link-token path: consume by hash and purpose, re-check the
-    /// purpose and lifetime, read the payload with `payload`, then require
-    /// the owner to be active.
-    async fn link<T>(
+    /// Redeem an emailed link of `purpose`: consume the token by hash and
+    /// purpose, re-check the purpose and lifetime, read the payload with
+    /// `payload`, then require the owner to be active. Refusals return
+    /// [`Error::InvalidVerificationToken`], or [`Error::AccountDisabled`] for a
+    /// disabled owner.
+    pub(crate) async fn link<T>(
         &self,
         token: &str,
         purpose: VerificationPurpose,

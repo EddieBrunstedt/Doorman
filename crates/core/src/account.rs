@@ -15,24 +15,26 @@
 //!   verification tokens, pending registration ceremonies), evicting any
 //!   framework-side session cache as it revokes.
 //!
-//! The flow reuses the verification-token machinery in
-//! [`crate::verification`] so the email-change link behaves exactly like the
-//! signup / recovery links (single-use, hashed at rest, purpose-bound).
+//! The email-change link is an emailed link like the signup and recovery
+//! ones (single-use, hashed at rest, purpose-bound), carrying the normalized
+//! new address as its payload.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
+use crate::assembly::AssemblyError;
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::{EmailSender, EmailTemplates, SecurityEmailNotifier};
 use crate::error::{Error, Result};
+use crate::link::{EmailChange, EmailedLink};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::redeem::Redeemer;
 use crate::session::SessionContext;
-use crate::storage::{Session, User, VerificationPurpose, VerificationTokenStore};
+use crate::storage::{Session, User};
 use crate::user::UserRecords;
 use crate::verification::{self, TOKEN_PLACEHOLDER};
 
@@ -71,15 +73,13 @@ impl Default for AccountConfig {
 #[derive(Clone)]
 pub struct AccountManager {
     records: UserRecords,
-    redeemer: Redeemer,
-    tokens: Arc<dyn VerificationTokenStore>,
+    link: EmailedLink<EmailChange>,
     reauth: ReauthManager,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     email: Arc<dyn EmailSender>,
     emails: Arc<dyn EmailTemplates>,
     notifier: SecurityEmailNotifier,
-    config: AccountConfig,
 }
 
 impl AccountManager {
@@ -87,19 +87,30 @@ impl AccountManager {
     /// [`AccountConfig`]. The collaborators (stores, clock, audit, email
     /// transport, re-auth manager) are read from `deps` so they are named once
     /// at the composition root.
-    pub fn new(deps: &CoreDeps, config: AccountConfig) -> Self {
-        Self {
+    ///
+    /// Returns [`AssemblyError::InvalidUrlTemplate`] or
+    /// [`AssemblyError::PlaceholderUrlTemplate`] for an unusable
+    /// [`url_template`](AccountConfig::url_template), and
+    /// [`AssemblyError::InvalidLifetime`] for an out-of-bounds
+    /// [`token_lifetime`](AccountConfig::token_lifetime).
+    pub fn new(deps: &CoreDeps, config: AccountConfig) -> std::result::Result<Self, AssemblyError> {
+        let link = EmailedLink::new(
+            deps.verification_tokens.clone(),
+            Redeemer::from_deps(deps),
+            deps.clock.clone(),
+            &config.url_template,
+            config.token_lifetime,
+        )?;
+        Ok(Self {
             records: UserRecords::new(deps),
-            redeemer: Redeemer::from_deps(deps),
-            tokens: deps.verification_tokens.clone(),
+            link,
             reauth: deps.reauth.clone(),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             email: deps.email.clone(),
             emails: deps.emails.clone(),
             notifier: deps.notifier.clone(),
-            config,
-        }
+        })
     }
 
     fn now(&self) -> DateTime<Utc> {
@@ -169,17 +180,7 @@ impl AccountManager {
             return Err(Error::EmailAlreadyInUse);
         }
 
-        let now = self.now();
-        let url = verification::issue_link(
-            self.tokens.as_ref(),
-            user.id,
-            VerificationPurpose::EmailChange,
-            Some(normalized.clone()),
-            self.config.token_lifetime,
-            &self.config.url_template,
-            now,
-        )
-        .await?;
+        let url = self.link.issue(user.id, normalized.clone()).await?;
 
         // The confirmation link is the whole flow, so its delivery is a hard
         // failure (unlike the enumeration-sensitive signup / recovery sends).
@@ -213,9 +214,8 @@ impl AccountManager {
     /// [`Error::EmailAlreadyInUse`].
     #[tracing::instrument(skip(self, token, context), fields(user_id = tracing::field::Empty))]
     pub async fn confirm_email_change(&self, token: &str, context: SessionContext) -> Result<User> {
-        let (user, new_email) = self.redeemer.email_change_link(token, &context).await?;
+        let (user, new_email) = self.link.redeem(token, &context).await?;
         let user_id = user.id;
-        tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
         // Clicking a link sent to the new address proves ownership of it. The
         // address is re-checked: another account may have claimed it between

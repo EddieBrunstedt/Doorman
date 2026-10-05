@@ -31,14 +31,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
-use chrono::{DateTime, Utc};
-
+use crate::assembly::AssemblyError;
 use crate::audit::AuditEventKind;
 use crate::error::{Error, Result};
+use crate::link::{self, EmailedLink};
 use crate::passkey::{CredentialCap, EnrollmentPolicy};
 use crate::rate_limit::{self, RateLimitPolicy};
 use crate::session::SessionContext;
-use crate::storage::{PasskeyChallengeId, User, VerificationPurpose};
+use crate::storage::{PasskeyChallengeId, User};
 use crate::verification::{
     self, EnrollmentFlow, EnrollmentOutcome, TOKEN_PLACEHOLDER, VerificationConsumeOutcome,
 };
@@ -201,6 +201,7 @@ impl Default for SignupConfig {
 #[derive(Clone)]
 pub struct SignupManager {
     flow: EnrollmentFlow,
+    link: EmailedLink<link::Signup>,
     config: SignupConfig,
 }
 
@@ -208,8 +209,18 @@ impl SignupManager {
     /// Build the signup manager from an enrollment flow and its config. The
     /// email renderer comes from the [`EnrollmentFlow`] (and thus the shared
     /// [`CoreDeps`](crate::context::CoreDeps)).
-    pub fn new(flow: EnrollmentFlow, config: SignupConfig) -> Self {
-        Self { flow, config }
+    ///
+    /// Returns [`AssemblyError::InvalidUrlTemplate`] or
+    /// [`AssemblyError::PlaceholderUrlTemplate`] for an unusable
+    /// [`url_template`](SignupConfig::url_template), and
+    /// [`AssemblyError::InvalidLifetime`] for an out-of-bounds
+    /// [`token_lifetime`](SignupConfig::token_lifetime).
+    pub fn new(
+        flow: EnrollmentFlow,
+        config: SignupConfig,
+    ) -> std::result::Result<Self, AssemblyError> {
+        let link = flow.emailed_link(&config.url_template, config.token_lifetime)?;
+        Ok(Self { flow, link, config })
     }
 
     /// Issue a signup link to `email`. Returns `Ok(())` regardless of
@@ -288,17 +299,16 @@ impl SignupManager {
             }
         }
 
-        let now = self.flow.now();
         let records = self.flow.records();
         if let Some(existing) = records.find_by_email(&email_normalized).await? {
-            return self.request_for_existing(&existing, now, &context).await;
+            return self.request_for_existing(&existing, &context).await;
         }
         let Some(user) = records.create_unverified(&email_normalized).await? else {
             // A concurrent request provisioned the address after the lookup
             // above. Answer as if its row had been there all along, so the
             // race ends as the two requests arriving in turn would.
             return match records.find_by_email(&email_normalized).await? {
-                Some(existing) => self.request_for_existing(&existing, now, &context).await,
+                Some(existing) => self.request_for_existing(&existing, &context).await,
                 // Gone again already: nothing to send, and the response stays
                 // the silent success every other branch returns.
                 None => Ok(()),
@@ -306,18 +316,13 @@ impl SignupManager {
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
-        self.send_link(&user, now, &context).await?;
+        self.send_link(&user, &context).await?;
         tracing::info!(outcome = "sent", "signup email sent");
         Ok(())
     }
 
     /// Answer a signup request for an address `existing` already holds.
-    async fn request_for_existing(
-        &self,
-        existing: &User,
-        now: DateTime<Utc>,
-        context: &SessionContext,
-    ) -> Result<()> {
+    async fn request_for_existing(&self, existing: &User, context: &SessionContext) -> Result<()> {
         tracing::Span::current().record("user_id", tracing::field::display(existing.id));
 
         // A user row with zero credentials never finished its first
@@ -332,7 +337,7 @@ impl SignupManager {
             // The signup-request rate limit enforced by `request_signup`
             // already covers this send, so it cannot be used to email-bomb
             // the address.
-            self.send_link(existing, now, context).await?;
+            self.send_link(existing, context).await?;
             tracing::info!(
                 outcome = "reissued",
                 "signup email re-sent to passkey-less user"
@@ -363,22 +368,8 @@ impl SignupManager {
     /// response. The already-registered branch of `request_signup` returns
     /// `Ok(())` with no send, so propagating a send error here would make a
     /// bounce distinguish a fresh address from a registered one.
-    async fn send_link(
-        &self,
-        user: &User,
-        now: DateTime<Utc>,
-        context: &SessionContext,
-    ) -> Result<()> {
-        let url = verification::issue_link(
-            self.flow.tokens().as_ref(),
-            user.id,
-            VerificationPurpose::Signup,
-            None,
-            self.config.token_lifetime,
-            &self.config.url_template,
-            now,
-        )
-        .await?;
+    async fn send_link(&self, user: &User, context: &SessionContext) -> Result<()> {
+        let url = self.link.issue(user.id, ()).await?;
         self.flow
             .notifier()
             .send_best_effort(user, "signup link", |emails| {
@@ -408,10 +399,7 @@ impl SignupManager {
         token: &str,
         context: SessionContext,
     ) -> Result<VerificationConsumeOutcome> {
-        let user = self
-            .flow
-            .redeem_link(token, VerificationPurpose::Signup, &context)
-            .await?;
+        let (user, ()) = self.link.redeem(token, &context).await?;
         // Clicking a link sent to the address proves ownership.
         self.flow.records().mark_email_verified(&user).await?;
         let outcome = self.flow.start_enrollment(user.id).await?;

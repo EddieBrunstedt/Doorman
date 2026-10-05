@@ -30,13 +30,14 @@ use std::time::Duration;
 
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
-use crate::assembly::MAX_LIFETIME;
+use crate::assembly::{AssemblyError, MAX_LIFETIME};
 use crate::audit::{AuditEventKind, RecoveryFailureReason};
 use crate::error::Result;
+use crate::link::{self, EmailedLink};
 use crate::passkey::{CredentialCap, EnrollmentPolicy};
 use crate::rate_limit::{self, RateLimitPolicy};
 use crate::session::SessionContext;
-use crate::storage::{PasskeyChallengeId, VerificationPurpose};
+use crate::storage::PasskeyChallengeId;
 use crate::user;
 use crate::verification::{
     self, EnrollmentFlow, EnrollmentOutcome, TOKEN_PLACEHOLDER, VerificationConsumeOutcome,
@@ -98,12 +99,10 @@ pub const MIN_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 /// certainly a units mistake.
 pub const MAX_COOLDOWN: Duration = MAX_LIFETIME;
 
-/// Rejection returned by [`RecoveryManager::new`] when the supplied
-/// [`RecoveryConfig`] is invalid. Construction is fallible rather than a
-/// panic so the misconfiguration is threaded back to the host through the
-/// assembly builder as [`AssemblyError::RecoveryCooldown`].
-///
-/// [`AssemblyError::RecoveryCooldown`]: crate::assembly::AssemblyError::RecoveryCooldown
+/// Why [`RecoveryManager::new`] rejected the supplied
+/// [`RecoveryConfig::cooldown`]. Construction is fallible rather than a panic
+/// so the misconfiguration is threaded back to the host through the assembly
+/// builder as [`AssemblyError::RecoveryCooldown`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RecoveryConfigError {
     /// `cooldown` is below the documented [`MIN_COOLDOWN`] floor and
@@ -227,6 +226,7 @@ impl Default for RecoveryConfig {
 #[derive(Clone)]
 pub struct RecoveryManager {
     flow: EnrollmentFlow,
+    link: EmailedLink<link::Recovery>,
     config: RecoveryConfig,
     /// `config.cooldown`, converted once by [`RecoveryManager::new`].
     cooldown: chrono::Duration,
@@ -235,10 +235,10 @@ pub struct RecoveryManager {
 impl RecoveryManager {
     /// Construct a `RecoveryManager`.
     ///
-    /// Returns [`RecoveryConfigError::CooldownTooLong`] if `config.cooldown`
-    /// is above [`MAX_COOLDOWN`], and
-    /// [`RecoveryConfigError::CooldownTooShort`] if it is below
-    /// [`MIN_COOLDOWN`] (one hour) and
+    /// Returns [`AssemblyError::RecoveryCooldown`] wrapping
+    /// [`RecoveryConfigError::CooldownTooLong`] if `config.cooldown` is above
+    /// [`MAX_COOLDOWN`], or [`RecoveryConfigError::CooldownTooShort`] if it is
+    /// below [`MIN_COOLDOWN`] (one hour) and
     /// [`config.danger_allow_cooldown_below_floor`] is `false`. The floor
     /// exists because the cool-down is the only thing protecting a
     /// freshly-recovered account from an attacker who phished the link before
@@ -246,27 +246,36 @@ impl RecoveryManager {
     /// the post-recovery cool-down protection. A host that has deliberately
     /// accepted that trade-off sets the escape hatch to opt out of the floor.
     ///
+    /// Returns [`AssemblyError::InvalidUrlTemplate`] or
+    /// [`AssemblyError::PlaceholderUrlTemplate`] for an unusable
+    /// [`url_template`](RecoveryConfig::url_template), and
+    /// [`AssemblyError::InvalidLifetime`] for an out-of-bounds
+    /// [`token_lifetime`](RecoveryConfig::token_lifetime).
+    ///
     /// [`config.danger_allow_cooldown_below_floor`]: RecoveryConfig::danger_allow_cooldown_below_floor
     pub fn new(
         flow: EnrollmentFlow,
         config: RecoveryConfig,
-    ) -> std::result::Result<Self, RecoveryConfigError> {
+    ) -> std::result::Result<Self, AssemblyError> {
         let too_long = RecoveryConfigError::CooldownTooLong {
             configured: config.cooldown,
             maximum: MAX_COOLDOWN,
         };
         if config.cooldown > MAX_COOLDOWN {
-            return Err(too_long);
+            return Err(too_long.into());
         }
         if config.cooldown < MIN_COOLDOWN && !config.danger_allow_cooldown_below_floor {
             return Err(RecoveryConfigError::CooldownTooShort {
                 configured: config.cooldown,
                 minimum: MIN_COOLDOWN,
-            });
+            }
+            .into());
         }
         let cooldown = chrono::Duration::from_std(config.cooldown).map_err(|_| too_long)?;
+        let link = flow.emailed_link(&config.url_template, config.token_lifetime)?;
         Ok(Self {
             flow,
+            link,
             config,
             cooldown,
         })
@@ -323,7 +332,6 @@ impl RecoveryManager {
         )
         .await?;
 
-        let now = self.flow.now();
         let Some(user) = self.flow.records().find_by_email(&email_normalized).await? else {
             // Unknown email: audit the attempt and silently no-op so the
             // endpoint cannot tell the caller whether or not the address
@@ -361,18 +369,7 @@ impl RecoveryManager {
             return Ok(());
         }
 
-        // Invalidate any prior recovery tokens for the user, store a fresh
-        // single-use token, and render the link URL.
-        let url = verification::issue_link(
-            self.flow.tokens().as_ref(),
-            user.id,
-            VerificationPurpose::Recovery,
-            None,
-            self.config.token_lifetime,
-            &self.config.url_template,
-            now,
-        )
-        .await?;
+        let url = self.link.issue(user.id, ()).await?;
         // Best-effort: an unknown address sends nothing and returns `Ok(())`,
         // so a transport failure on either of these sends must not surface as a
         // distinct error response — that would let an attacker who can force
@@ -411,10 +408,7 @@ impl RecoveryManager {
         token: &str,
         context: SessionContext,
     ) -> Result<VerificationConsumeOutcome> {
-        let user = self
-            .flow
-            .redeem_link(token, VerificationPurpose::Recovery, &context)
-            .await?;
+        let (user, ()) = self.link.redeem(token, &context).await?;
         let outcome = self.flow.start_enrollment(user.id).await?;
 
         self.flow

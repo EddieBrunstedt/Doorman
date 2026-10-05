@@ -10,7 +10,7 @@ use doorman_core::session::SessionContext;
 use doorman_core::storage::{AccountStatus, UserStore};
 
 use common::{
-    ACCOUNT_URL, Harness, assert_last_redemption_unknown, authenticator, kinds,
+    ACCOUNT_URL, Harness, SIGNUP_URL, assert_last_redemption_unknown, authenticator, kinds,
     last_email_change_token, make_user, passkey_count, provision_user, restricted_session_for,
     session_count, session_for, token_from_email, within_deadline,
 };
@@ -490,6 +490,68 @@ async fn confirm_rejects_unknown_token() {
             reason: RedemptionFailureReason::Unknown,
         }
     )));
+}
+
+#[tokio::test]
+async fn email_change_token_cannot_be_redeemed_by_another_flow() {
+    // The purpose binds at redemption: an email-change link never starts a
+    // signup or recovery ceremony, and the failed attempts leave it usable.
+    let h = Harness::fresh();
+    let user = provision_user(&h, "old@example.com").await;
+    let session = session_for(&h, &user);
+    h.account
+        .request_email_change(
+            &user,
+            &session,
+            "new@example.com",
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("request email change");
+    let token = last_email_change_token(&h);
+
+    let err = h
+        .signup
+        .consume_signup(&token, SessionContext::default())
+        .await
+        .expect_err("email-change token rejected on signup");
+    assert!(matches!(err, Error::InvalidVerificationToken));
+    let err = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect_err("email-change token rejected on recovery");
+    assert!(matches!(err, Error::InvalidVerificationToken));
+
+    let updated = h
+        .account
+        .confirm_email_change(&token, SessionContext::default())
+        .await
+        .expect("email-change token still valid on its own flow");
+    assert_eq!(updated.email.as_deref(), Some("new@example.com"));
+}
+
+#[tokio::test]
+async fn signup_token_cannot_confirm_an_email_change() {
+    let h = Harness::fresh();
+    h.signup
+        .request_signup("cross@example.com", None, SessionContext::default())
+        .await
+        .expect("request signup");
+    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
+
+    let err = h
+        .account
+        .confirm_email_change(&token, SessionContext::default())
+        .await
+        .expect_err("signup token rejected on email change");
+    assert!(matches!(err, Error::InvalidVerificationToken));
+
+    h.signup
+        .consume_signup(&token, SessionContext::default())
+        .await
+        .expect("signup token still valid on its own flow");
 }
 
 #[tokio::test]

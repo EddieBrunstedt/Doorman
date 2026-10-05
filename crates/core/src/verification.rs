@@ -1,11 +1,12 @@
-//! Shared "verification link" primitive behind signup and recovery.
+//! Shared enrollment steps behind signup and recovery.
 //!
-//! Both flows are the same shape: email a single-use, hashed-token link →
-//! consume it to start a passkey registration ceremony → finish the
-//! ceremony and issue a session. This module owns the pieces that are
-//! genuinely identical between them — email normalization/validation, URL
-//! templating, token generation, token issuance, the consume and finish
-//! steps, and the two result types — so [`signup`](crate::signup) and
+//! Both flows are the same shape: email a single-use link → redeem it to
+//! start a passkey registration ceremony → finish the ceremony and issue a
+//! session. The link itself, from minting to redemption, is an emailed link
+//! of the flow's purpose. This module owns the rest of what is genuinely
+//! identical between them — email normalization/validation, the URL
+//! template's [`TOKEN_PLACEHOLDER`], the start and finish steps, and the two
+//! result types — so [`signup`](crate::signup) and
 //! [`recovery`](crate::recovery) read as thin specializations rather than
 //! parallel copies.
 //!
@@ -17,25 +18,22 @@
 //! audit trail.
 
 use std::sync::Arc;
-
-use chrono::{DateTime, Utc};
+use std::time::Duration;
 
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
+use crate::assembly::AssemblyError;
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, RecoveryFailureReason};
-use crate::clock::{Clock, expiry};
+use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
+use crate::link::{EmailedLink, LinkPurpose};
 use crate::passkey::{EnrollmentPolicy, PasskeyManager};
 use crate::rate_limit::RateLimiter;
 use crate::redeem::Redeemer;
 use crate::session::{IssuedSession, SessionContext};
-use crate::storage::{
-    PasskeyChallengeId, StoredPasskey, User, UserId, VerificationPurpose, VerificationToken,
-    VerificationTokenStore,
-};
-use crate::token::generate_token;
+use crate::storage::{PasskeyChallengeId, StoredPasskey, User, UserId, VerificationTokenStore};
 use crate::user::UserRecords;
 
 /// Placeholder substituted with the generated token in URL templates. The
@@ -92,47 +90,9 @@ pub(crate) fn validate_email(email: &str) -> Result<()> {
     Ok(())
 }
 
-/// Substitute [`TOKEN_PLACEHOLDER`] in a configured URL template with the
-/// generated token.
-pub(crate) fn build_url(template: &str, token: &str) -> String {
-    template.replace(TOKEN_PLACEHOLDER, token)
-}
-
-/// Issue a single-use verification link for `user_id`: drop any prior
-/// tokens of the same `purpose` (so a stale link cannot be redeemed after
-/// a fresh request), store a freshly-hashed token, and return the rendered
-/// URL for the caller to drop into an email. Only the cleartext token
-/// leaves this function, embedded in the returned URL.
-pub(crate) async fn issue_link(
-    tokens: &dyn VerificationTokenStore,
-    user_id: UserId,
-    purpose: VerificationPurpose,
-    new_email: Option<String>,
-    token_lifetime: std::time::Duration,
-    url_template: &str,
-    now: DateTime<Utc>,
-) -> Result<String> {
-    tokens.delete_tokens_for_user(user_id, purpose).await?;
-
-    let expires_at = expiry(now, token_lifetime)?;
-    let (token, token_hash) = generate_token()?;
-    tokens
-        .create_token(VerificationToken {
-            token_hash,
-            user_id,
-            purpose,
-            new_email,
-            created_at: now,
-            expires_at,
-        })
-        .await?;
-
-    Ok(build_url(url_template, &token))
-}
-
-/// Dependencies the signup and recovery managers share, and the consume and
+/// Dependencies the signup and recovery managers share, and the start and
 /// finish steps both flows run. Each manager composes these steps with its
-/// own policy, events and notices.
+/// own emailed link, policy, events and notices.
 #[derive(Clone)]
 pub struct EnrollmentFlow {
     passkey: PasskeyManager,
@@ -173,8 +133,20 @@ impl EnrollmentFlow {
         &self.records
     }
 
-    pub(crate) fn tokens(&self) -> &Arc<dyn VerificationTokenStore> {
-        &self.tokens
+    /// Build the flow's emailed links of purpose `P` from the host's
+    /// `template` and `lifetime`, validating both.
+    pub(crate) fn emailed_link<P: LinkPurpose>(
+        &self,
+        template: &str,
+        lifetime: Duration,
+    ) -> std::result::Result<EmailedLink<P>, AssemblyError> {
+        EmailedLink::new(
+            self.tokens.clone(),
+            self.redeemer.clone(),
+            self.clock.clone(),
+            template,
+            lifetime,
+        )
     }
 
     /// Whether `user_id` has at least one registered passkey.
@@ -188,10 +160,6 @@ impl EnrollmentFlow {
 
     pub(crate) fn rate_limiter(&self) -> &Arc<dyn RateLimiter> {
         &self.rate_limiter
-    }
-
-    pub(crate) fn now(&self) -> DateTime<Utc> {
-        self.clock.now()
     }
 
     /// Emit one audit event stamped with the current clock and the request
@@ -218,24 +186,6 @@ impl EnrollmentFlow {
     ) {
         self.emit(context, AuditEventKind::RecoveryFailed { user_id, reason })
             .await;
-    }
-
-    /// Redeem a signup or recovery link and return its active owner. The
-    /// token is consumed atomically, so a link cannot be replayed; a refused
-    /// link is audited as
-    /// [`RedemptionFailed`](AuditEventKind::RedemptionFailed).
-    pub(crate) async fn redeem_link(
-        &self,
-        token: &str,
-        purpose: VerificationPurpose,
-        context: &SessionContext,
-    ) -> Result<User> {
-        let user = self
-            .redeemer
-            .enrollment_link(token, purpose, context)
-            .await?;
-        tracing::Span::current().record("user_id", tracing::field::display(user.id));
-        Ok(user)
     }
 
     /// Start the passkey registration ceremony a redeemed link leads to.
@@ -279,20 +229,6 @@ impl EnrollmentFlow {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn build_url_substitutes_placeholder() {
-        let url = build_url("https://x.test/s?token={token}", "abc");
-        assert_eq!(url, "https://x.test/s?token=abc");
-    }
-
-    #[test]
-    fn tokens_are_unique() {
-        let (a, ha) = generate_token().expect("token");
-        let (b, hb) = generate_token().expect("token");
-        assert_ne!(a, b);
-        assert_ne!(ha, hb);
-    }
 
     #[test]
     fn normalize_email_trims_and_lowercases() {

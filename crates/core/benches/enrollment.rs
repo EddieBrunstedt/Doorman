@@ -108,6 +108,7 @@ fn signup_manager() -> SignupManager {
             ..SignupConfig::default()
         },
     )
+    .expect("build signup manager")
 }
 
 fn enrollment(c: &mut Criterion) {

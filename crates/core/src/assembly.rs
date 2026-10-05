@@ -57,17 +57,13 @@ use crate::resolve::SessionResolver;
 use crate::session::{SessionConfig, SessionManager};
 use crate::signup::{SignupConfig, SignupManager};
 use crate::storage::Storage;
-use crate::verification::{EnrollmentFlow, TOKEN_PLACEHOLDER};
+use crate::verification::EnrollmentFlow;
 
 /// Upper bound on any host-supplied lifetime (session / token / challenge). Ten years —
 /// well below the point where converting to a `chrono::Duration` overflows,
 /// and far past any sane session or verification-link validity. A value
 /// above this is almost certainly a units mistake, so the build rejects it.
 pub(crate) const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 10);
-
-/// Host (DNS suffix) reserved for documentation/examples. A `url_template`
-/// still pointing here is the stock default the host never replaced.
-pub(crate) const PLACEHOLDER_URL_HOST: &str = "example.invalid";
 
 /// Errors returned when the framework-agnostic auth engine is incompletely
 /// or invalidly configured through [`AuthCore::builder`].
@@ -114,7 +110,7 @@ pub enum AssemblyError {
     #[error("passkey manager construction failed: {0}")]
     Passkey(crate::error::Error),
     /// A flow's `url_template` does not contain the
-    /// [`TOKEN_PLACEHOLDER`]
+    /// [`TOKEN_PLACEHOLDER`](crate::verification::TOKEN_PLACEHOLDER)
     /// substring, so the rendered link would not carry the verification
     /// token. The build fails closed rather than emailing a dead link.
     #[error(
@@ -173,7 +169,7 @@ pub enum AssemblyError {
 
 /// Reject a zero or implausibly large lifetime before it reaches a manager
 /// (where an expiry beyond chrono's range would otherwise fail every mint).
-fn validate_lifetime(field: &'static str, value: Duration) -> Result<(), AssemblyError> {
+pub(crate) fn validate_lifetime(field: &'static str, value: Duration) -> Result<(), AssemblyError> {
     if value.is_zero() || value > MAX_LIFETIME {
         return Err(AssemblyError::InvalidLifetime {
             field,
@@ -205,35 +201,6 @@ fn validate_idle_timeout(
         });
     }
     Ok(())
-}
-
-/// Reject a `url_template` that would render a link without the verification
-/// token. The link is the entire signup / recovery flow, so a template
-/// missing the placeholder is a hard error rather than a warning.
-fn validate_url_template(flow: &'static str, template: &str) -> Result<(), AssemblyError> {
-    if template.contains(TOKEN_PLACEHOLDER) {
-        Ok(())
-    } else {
-        Err(AssemblyError::InvalidUrlTemplate {
-            flow,
-            placeholder: TOKEN_PLACEHOLDER,
-        })
-    }
-}
-
-/// Reject a `url_template` still pointing at the reserved `example.invalid`
-/// host — the stock default the host never replaced. The link would carry a
-/// valid token but resolve nowhere, so the build fails closed rather than
-/// emailing a dead link.
-fn reject_placeholder_url(flow: &'static str, template: &str) -> Result<(), AssemblyError> {
-    if template.contains(PLACEHOLDER_URL_HOST) {
-        Err(AssemblyError::PlaceholderUrlTemplate {
-            flow,
-            placeholder_host: PLACEHOLDER_URL_HOST,
-        })
-    } else {
-        Ok(())
-    }
 }
 
 /// The assembled, framework-agnostic auth engine.
@@ -461,24 +428,13 @@ impl AuthCoreBuilder {
         let recovery_config = self.recovery.unwrap_or_default();
         let account_config = self.account.unwrap_or_default();
 
-        // Fail closed on every misconfigured value before constructing any
-        // manager: a template that drops the token, a template still pointing
-        // at the stock example.invalid host (a valid link to a domain the host
-        // does not own — effectively dead), or a zero/absurd lifetime (which
-        // would otherwise fail every mint at runtime).
-        validate_url_template("signup", &signup_config.url_template)?;
-        validate_url_template("recovery", &recovery_config.url_template)?;
-        validate_url_template("account email change", &account_config.url_template)?;
-        reject_placeholder_url("signup", &signup_config.url_template)?;
-        reject_placeholder_url("recovery", &recovery_config.url_template)?;
-        reject_placeholder_url("account email change", &account_config.url_template)?;
+        // Fail closed on a zero or absurd lifetime, which would otherwise fail
+        // every mint at runtime. Each emailed link validates its own template
+        // and lifetime when its manager is built below.
         validate_lifetime(
             "session absolute_lifetime",
             session_config.absolute_lifetime,
         )?;
-        validate_lifetime("signup token_lifetime", signup_config.token_lifetime)?;
-        validate_lifetime("recovery token_lifetime", recovery_config.token_lifetime)?;
-        validate_lifetime("account token_lifetime", account_config.token_lifetime)?;
         validate_lifetime(
             "passkey challenge_lifetime",
             passkey_config.challenge_lifetime,
@@ -511,7 +467,7 @@ impl AuthCoreBuilder {
         // No re-auth default: the host must decide whether destructive actions
         // require a fresh passkey assertion. Mirrors the CSRF decision — fail
         // closed rather than silently leaving the gate off. Resolved here,
-        // after the other collaborator and URL/lifetime validation, so a build
+        // after the other collaborator and lifetime validation, so a build
         // missing several inputs still surfaces the most specific error first.
         let reauth_policy = self.reauth.ok_or(AssemblyError::ReauthDecisionRequired)?;
 
@@ -565,16 +521,17 @@ impl AuthCoreBuilder {
         };
 
         // Signup is part of the only login UX — always on. Hosts that need to
-        // tune the rate limits or token lifetime call `.signup(...)`.
-        let signup = SignupManager::new(signup_flow, signup_config);
+        // tune the rate limits or token lifetime call `.signup(...)`. Its
+        // emailed link validates the template and lifetime here.
+        let signup = SignupManager::new(signup_flow, signup_config)?;
 
         // Recovery rides on the same primitives as signup and is similarly
-        // always-on. The cool-down bounds are enforced here.
+        // always-on. The cool-down bounds are enforced here too.
         let recovery = RecoveryManager::new(recovery_flow, recovery_config)?;
 
         // The account manager reads its collaborators (stores, clock, audit,
         // email transport, session manager) from the same shared context.
-        let account = AccountManager::new(&deps, account_config);
+        let account = AccountManager::new(&deps, account_config)?;
 
         // The operator manager reuses the account cascade and reads its own
         // collaborators from the same context. Its notification policy is
