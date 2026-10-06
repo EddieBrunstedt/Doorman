@@ -5,8 +5,7 @@ use async_trait::async_trait;
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
 use crate::assembly::AssemblyError;
-use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind};
-use crate::clock::Clock;
+use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
@@ -109,7 +108,6 @@ pub struct SignupManager {
     link: EmailedLink<link::Signup>,
     notifier: SecurityEmailNotifier,
     rate_limiter: Arc<dyn RateLimiter>,
-    clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     config: SignupConfig,
 }
@@ -126,23 +124,9 @@ impl SignupManager {
             link: EmailedLink::new(deps, &config.url_template, config.token_lifetime)?,
             notifier: deps.notifier.clone(),
             rate_limiter: deps.rate_limiter.clone(),
-            clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             config,
         })
-    }
-
-    async fn emit(&self, context: &SessionContext, kind: AuditEventKind) {
-        self.audit
-            .emit(AuditEvent {
-                timestamp: self.clock.now(),
-                actor: Actor::Subject {
-                    ip: context.ip.clone(),
-                    user_agent: context.user_agent.clone(),
-                },
-                kind,
-            })
-            .await;
     }
 
     #[tracing::instrument(
@@ -186,12 +170,16 @@ impl SignupManager {
         {
             SignupDecision::Allow => {}
             SignupDecision::DenySilently => {
-                self.emit(&context, AuditEventKind::SignupDenied).await;
+                self.audit
+                    .emit(&context, AuditEventKind::SignupDenied)
+                    .await;
                 tracing::info!(outcome = "denied_silent", "signup request denied");
                 return Ok(());
             }
             SignupDecision::Deny { reason } => {
-                self.emit(&context, AuditEventKind::SignupDenied).await;
+                self.audit
+                    .emit(&context, AuditEventKind::SignupDenied)
+                    .await;
                 tracing::info!(outcome = "denied", reason = ?reason, "signup request denied");
                 return Err(Error::SignupNotAllowed);
             }
@@ -226,13 +214,14 @@ impl SignupManager {
             return Ok(());
         }
 
-        self.emit(
-            context,
-            AuditEventKind::SignupRequested {
-                user_id: existing.id,
-            },
-        )
-        .await;
+        self.audit
+            .emit(
+                context,
+                AuditEventKind::SignupRequested {
+                    user_id: existing.id,
+                },
+            )
+            .await;
         tracing::info!(outcome = "already_registered", "signup request (silent)");
         Ok(())
     }
@@ -244,11 +233,12 @@ impl SignupManager {
                 emails.signup_email(user, &url)
             })
             .await;
-        self.emit(
-            context,
-            AuditEventKind::SignupRequested { user_id: user.id },
-        )
-        .await;
+        self.audit
+            .emit(
+                context,
+                AuditEventKind::SignupRequested { user_id: user.id },
+            )
+            .await;
         Ok(())
     }
 
@@ -268,11 +258,12 @@ impl SignupManager {
             .start_email_link_registration(user.id, EmailLinkRegistration::Signup)
             .await?;
 
-        self.emit(
-            &context,
-            AuditEventKind::SignupConsumed { user_id: user.id },
-        )
-        .await;
+        self.audit
+            .emit(
+                &context,
+                AuditEventKind::SignupConsumed { user_id: user.id },
+            )
+            .await;
         tracing::info!(outcome = "consumed", "signup token consumed");
         Ok(VerificationConsumeOutcome {
             challenge_id,

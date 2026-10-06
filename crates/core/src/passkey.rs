@@ -13,7 +13,7 @@ use webauthn_rs::prelude::{
 };
 
 use crate::assertion::{AssertionVerifier, VerifiedAssertion};
-use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, AuthFailureReason};
+use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::challenge::{Login, PasskeyChallenge, RedeemedRegistration, Registration};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
@@ -281,14 +281,10 @@ impl PasskeyManager {
             .issue(user.id, context.clone(), cooldown)
             .await?;
         self.audit
-            .emit(AuditEvent {
-                timestamp: self.clock.now(),
-                actor: Actor::Subject {
-                    ip: context.ip,
-                    user_agent: context.user_agent,
-                },
-                kind: AuditEventKind::LoginSucceeded { user_id: user.id },
-            })
+            .emit(
+                &context,
+                AuditEventKind::LoginSucceeded { user_id: user.id },
+            )
             .await;
 
         Ok(RegistrationOutcome {
@@ -369,39 +365,15 @@ impl PasskeyManager {
         self.credentials.add_passkey(credential.clone()).await?;
 
         self.audit
-            .emit(AuditEvent {
-                timestamp: self.clock.now(),
-                actor: Actor::Subject {
-                    ip: context.ip.clone(),
-                    user_agent: context.user_agent.clone(),
-                },
-                kind: AuditEventKind::CredentialAdded { user_id: user.id },
-            })
+            .emit(
+                context,
+                AuditEventKind::CredentialAdded { user_id: user.id },
+            )
             .await;
         self.notifier
             .passkey_registered(user, credential.name.as_deref())
             .await;
         Ok(credential)
-    }
-
-    async fn emit_auth_failure(
-        &self,
-        now: DateTime<Utc>,
-        context: &SessionContext,
-        user_id: Option<UserId>,
-        reason: AuthFailureReason,
-    ) {
-        self.metrics.record(MetricEvent::AuthFailed { reason });
-        self.audit
-            .emit(AuditEvent {
-                timestamp: now,
-                actor: Actor::Subject {
-                    ip: context.ip.clone(),
-                    user_agent: context.user_agent.clone(),
-                },
-                kind: AuditEventKind::AuthenticationFailed { user_id, reason },
-            })
-            .await;
     }
 
     #[tracing::instrument(skip(self, context), fields(method = "passkey"))]
@@ -454,13 +426,22 @@ impl PasskeyManager {
         .await?;
 
         let pending = self.logins.redeem(challenge_id, &context).await?;
-        let now = self.clock.now();
 
         let VerifiedAssertion { user, passkey } =
             match self.assertions.verify(pending, response).await? {
                 Ok(verified) => verified,
                 Err(refusal) => {
-                    self.emit_auth_failure(now, &context, refusal.user_id, refusal.reason)
+                    self.metrics.record(MetricEvent::AuthFailed {
+                        reason: refusal.reason,
+                    });
+                    self.audit
+                        .emit(
+                            &context,
+                            AuditEventKind::AuthenticationFailed {
+                                user_id: refusal.user_id,
+                                reason: refusal.reason,
+                            },
+                        )
                         .await;
                     return Err(refusal.error);
                 }
@@ -468,7 +449,7 @@ impl PasskeyManager {
         let user_id = user.id;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
-        let cooldown = RecoveryCooldown::of_passkey(&passkey, now);
+        let cooldown = RecoveryCooldown::of_passkey(&passkey, self.clock.now());
 
         let session = self
             .sessions
@@ -476,14 +457,7 @@ impl PasskeyManager {
             .await?;
         self.metrics.record(MetricEvent::LoginSucceeded);
         self.audit
-            .emit(AuditEvent {
-                timestamp: now,
-                actor: Actor::Subject {
-                    ip: context.ip,
-                    user_agent: context.user_agent,
-                },
-                kind: AuditEventKind::LoginSucceeded { user_id },
-            })
+            .emit(&context, AuditEventKind::LoginSucceeded { user_id })
             .await;
         Ok(AuthenticationOutcome { user, session })
     }
@@ -526,10 +500,7 @@ impl PasskeyManager {
         self.remove_passkey_for(
             user_id,
             credential_id,
-            Actor::Subject {
-                ip: context.ip,
-                user_agent: context.user_agent,
-            },
+            Actor::from(&context),
             PasskeyRemovalNotice::SelfService,
         )
         .await
@@ -551,14 +522,7 @@ impl PasskeyManager {
             .await?;
         credential.name = name;
         self.audit
-            .emit(AuditEvent {
-                timestamp: self.clock.now(),
-                actor: Actor::Subject {
-                    ip: context.ip,
-                    user_agent: context.user_agent,
-                },
-                kind: AuditEventKind::CredentialRenamed { user_id },
-            })
+            .emit(&context, AuditEventKind::CredentialRenamed { user_id })
             .await;
         Ok(credential)
     }
@@ -574,11 +538,7 @@ impl PasskeyManager {
             find_owned_passkey(self.credentials.as_ref(), user_id, credential_id).await?;
         self.credentials.delete_passkey(credential_id).await?;
         self.audit
-            .emit(AuditEvent {
-                timestamp: self.clock.now(),
-                actor,
-                kind: AuditEventKind::CredentialRemoved { user_id },
-            })
+            .emit(actor, AuditEventKind::CredentialRemoved { user_id })
             .await;
         if notice.sends()
             && let Some(user) = self

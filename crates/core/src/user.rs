@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
-use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind};
+use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result, StorageErrorKind};
@@ -170,11 +170,7 @@ impl UserRecords {
         self.users.delete_user(user_id).await?;
 
         self.audit
-            .emit(AuditEvent {
-                timestamp: self.now(),
-                actor,
-                kind: AuditEventKind::AccountDeleted { user_id },
-            })
+            .emit(actor, AuditEventKind::AccountDeleted { user_id })
             .await;
 
         self.challenges

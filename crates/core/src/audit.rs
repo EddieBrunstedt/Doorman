@@ -6,8 +6,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::clock::Clock;
 use crate::error::{Error, Result};
-use crate::storage::{SessionId, UserId};
+use crate::session::SessionContext;
+use crate::storage::{Session, SessionId, UserId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEvent {
@@ -24,6 +26,30 @@ pub enum Actor {
         user_agent: Option<String>,
     },
     Operator(OperatorActor),
+}
+
+impl Actor {
+    pub(crate) fn of_session(session: &Session) -> Self {
+        Self::Subject {
+            ip: session.ip.clone(),
+            user_agent: session.user_agent.clone(),
+        }
+    }
+}
+
+impl From<&SessionContext> for Actor {
+    fn from(context: &SessionContext) -> Self {
+        Self::Subject {
+            ip: context.ip.clone(),
+            user_agent: context.user_agent.clone(),
+        }
+    }
+}
+
+impl From<OperatorActor> for Actor {
+    fn from(operator: OperatorActor) -> Self {
+        Self::Operator(operator)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,16 +291,22 @@ impl AuditSink for NoopAuditSink {
 }
 
 #[derive(Clone)]
-pub struct AuditDispatch {
+pub(crate) struct AuditDispatch {
     sink: Arc<dyn AuditSink>,
+    clock: Arc<dyn Clock>,
 }
 
 impl AuditDispatch {
-    pub fn new(sink: Arc<dyn AuditSink>) -> Self {
-        Self { sink }
+    pub(crate) fn new(sink: Arc<dyn AuditSink>, clock: Arc<dyn Clock>) -> Self {
+        Self { sink, clock }
     }
 
-    pub async fn emit(&self, event: AuditEvent) {
+    pub(crate) async fn emit(&self, actor: impl Into<Actor>, kind: AuditEventKind) {
+        let event = AuditEvent {
+            timestamp: self.clock.now(),
+            actor: actor.into(),
+            kind,
+        };
         let actor = ActorDisplay(&event.actor);
         let user_id = event.kind.user_id();
         match event.kind.severity() {

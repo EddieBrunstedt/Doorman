@@ -4,8 +4,7 @@ use std::time::Duration;
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
 use crate::assembly::{AssemblyError, MAX_LIFETIME};
-use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, RecoveryFailureReason};
-use crate::clock::Clock;
+use crate::audit::{AuditDispatch, AuditEventKind, RecoveryFailureReason};
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
 use crate::error::Result;
@@ -13,7 +12,7 @@ use crate::link::{self, EmailedLink};
 use crate::passkey::{EmailLinkRegistration, PasskeyManager, RegistrationOutcome};
 use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
 use crate::session::SessionContext;
-use crate::storage::{PasskeyChallengeId, UserId};
+use crate::storage::PasskeyChallengeId;
 use crate::user::{self, UserRecords};
 use crate::verification::{self, TOKEN_PLACEHOLDER, VerificationConsumeOutcome};
 
@@ -105,7 +104,6 @@ pub struct RecoveryManager {
     link: EmailedLink<link::Recovery>,
     notifier: SecurityEmailNotifier,
     rate_limiter: Arc<dyn RateLimiter>,
-    clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     config: RecoveryConfig,
     registration: EmailLinkRegistration,
@@ -138,34 +136,10 @@ impl RecoveryManager {
             link: EmailedLink::new(deps, &config.url_template, config.token_lifetime)?,
             notifier: deps.notifier.clone(),
             rate_limiter: deps.rate_limiter.clone(),
-            clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             config,
             registration: EmailLinkRegistration::Recovery { cooldown },
         })
-    }
-
-    async fn emit(&self, context: &SessionContext, kind: AuditEventKind) {
-        self.audit
-            .emit(AuditEvent {
-                timestamp: self.clock.now(),
-                actor: Actor::Subject {
-                    ip: context.ip.clone(),
-                    user_agent: context.user_agent.clone(),
-                },
-                kind,
-            })
-            .await;
-    }
-
-    async fn audit_failed(
-        &self,
-        user_id: Option<UserId>,
-        reason: RecoveryFailureReason,
-        context: &SessionContext,
-    ) {
-        self.emit(context, AuditEventKind::RecoveryFailed { user_id, reason })
-            .await;
     }
 
     #[tracing::instrument(
@@ -206,31 +180,49 @@ impl RecoveryManager {
                 ),
             ],
             || async {
-                self.audit_failed(None, RecoveryFailureReason::RateLimited, &context)
+                self.audit
+                    .emit(
+                        &context,
+                        AuditEventKind::RecoveryFailed {
+                            user_id: None,
+                            reason: RecoveryFailureReason::RateLimited,
+                        },
+                    )
                     .await;
             },
         )
         .await?;
 
         let Some(user) = self.records.find_by_email(&email_normalized).await? else {
-            self.emit(
-                &context,
-                AuditEventKind::RecoveryRequested { user_id: None },
-            )
-            .await;
-            self.audit_failed(None, RecoveryFailureReason::UnknownEmail, &context)
+            self.audit
+                .emit(
+                    &context,
+                    AuditEventKind::RecoveryRequested { user_id: None },
+                )
+                .await;
+            self.audit
+                .emit(
+                    &context,
+                    AuditEventKind::RecoveryFailed {
+                        user_id: None,
+                        reason: RecoveryFailureReason::UnknownEmail,
+                    },
+                )
                 .await;
             return Ok(());
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
         if user::ensure_active(&user).is_err() {
-            self.audit_failed(
-                Some(user.id),
-                RecoveryFailureReason::AccountDisabled,
-                &context,
-            )
-            .await;
+            self.audit
+                .emit(
+                    &context,
+                    AuditEventKind::RecoveryFailed {
+                        user_id: Some(user.id),
+                        reason: RecoveryFailureReason::AccountDisabled,
+                    },
+                )
+                .await;
             return Ok(());
         }
 
@@ -242,13 +234,14 @@ impl RecoveryManager {
             .await;
         self.notifier.recovery_requested(&user).await;
 
-        self.emit(
-            &context,
-            AuditEventKind::RecoveryRequested {
-                user_id: Some(user.id),
-            },
-        )
-        .await;
+        self.audit
+            .emit(
+                &context,
+                AuditEventKind::RecoveryRequested {
+                    user_id: Some(user.id),
+                },
+            )
+            .await;
         Ok(())
     }
 
@@ -267,11 +260,12 @@ impl RecoveryManager {
             .start_email_link_registration(user.id, self.registration)
             .await?;
 
-        self.emit(
-            &context,
-            AuditEventKind::RecoveryConsumed { user_id: user.id },
-        )
-        .await;
+        self.audit
+            .emit(
+                &context,
+                AuditEventKind::RecoveryConsumed { user_id: user.id },
+            )
+            .await;
         tracing::info!(outcome = "consumed", "recovery token consumed");
         Ok(VerificationConsumeOutcome {
             challenge_id,

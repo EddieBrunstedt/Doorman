@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::account::{AccountConfig, AccountManager};
-use crate::audit::AuditSink;
+use crate::audit::{AuditDispatch, AuditSink};
 use crate::clock::{Clock, SystemClock};
 use crate::context::CoreDeps;
 use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityEmailNotifier};
@@ -226,6 +226,7 @@ impl AuthCoreBuilder {
         let email: Arc<dyn EmailSender> = self.email.ok_or(AssemblyError::MissingEmailSender)?;
         let passkey_config = self.passkey.ok_or(AssemblyError::MissingPasskeyConfig)?;
         let audit: Arc<dyn AuditSink> = self.audit.ok_or(AssemblyError::MissingAuditSink)?;
+        let audit = AuditDispatch::new(audit, clock.clone());
         let limiter: Arc<dyn RateLimiter> =
             self.rate_limiter.ok_or(AssemblyError::MissingRateLimiter)?;
         let metrics: Arc<dyn MetricSink> = self

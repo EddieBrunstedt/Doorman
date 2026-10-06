@@ -1,7 +1,4 @@
-use std::sync::Arc;
-
-use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, OperatorActor};
-use crate::clock::Clock;
+use crate::audit::{AuditDispatch, AuditEventKind, OperatorActor};
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
@@ -39,7 +36,6 @@ pub struct OperatorManager {
     sessions: SessionManager,
     passkey: PasskeyManager,
     notifier: SecurityEmailNotifier,
-    clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     notifications: NotificationPolicy,
 }
@@ -55,7 +51,6 @@ impl OperatorManager {
             sessions: deps.sessions.clone(),
             passkey,
             notifier: deps.notifier.clone(),
-            clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             notifications,
         }
@@ -65,20 +60,10 @@ impl OperatorManager {
         &self.notifications
     }
 
-    async fn emit_operator(&self, actor: OperatorActor, kind: AuditEventKind) {
-        self.audit
-            .emit(AuditEvent {
-                timestamp: self.clock.now(),
-                actor: Actor::Operator(actor),
-                kind,
-            })
-            .await;
-    }
-
     #[tracing::instrument(skip(self, actor), fields(target_user_id = %target_user_id))]
     pub async fn delete_account(&self, target_user_id: UserId, actor: OperatorActor) -> Result<()> {
         self.records
-            .delete(target_user_id, Actor::Operator(actor))
+            .delete(target_user_id, actor.into())
             .await
             .inspect_err(|error| tracing::warn!(%error, "operator delete failed"))
     }
@@ -88,22 +73,24 @@ impl OperatorManager {
         let user = self.resolve_subject(target_user_id).await?;
 
         let revoked_count = self.records.disable(target_user_id).await?;
-        self.emit_operator(
-            actor.clone(),
-            AuditEventKind::OperatorRevokedAllSessions {
-                user_id: target_user_id,
-                revoked_count,
-            },
-        )
-        .await;
+        self.audit
+            .emit(
+                actor.clone(),
+                AuditEventKind::OperatorRevokedAllSessions {
+                    user_id: target_user_id,
+                    revoked_count,
+                },
+            )
+            .await;
 
-        self.emit_operator(
-            actor,
-            AuditEventKind::OperatorDisabledAccount {
-                user_id: target_user_id,
-            },
-        )
-        .await;
+        self.audit
+            .emit(
+                actor,
+                AuditEventKind::OperatorDisabledAccount {
+                    user_id: target_user_id,
+                },
+            )
+            .await;
 
         if self.notifications.account_disabled == OperatorNotice::Send {
             self.notifier.operator_account_disabled(&user).await;
@@ -118,13 +105,14 @@ impl OperatorManager {
 
         self.records.enable(target_user_id).await?;
 
-        self.emit_operator(
-            actor,
-            AuditEventKind::OperatorEnabledAccount {
-                user_id: target_user_id,
-            },
-        )
-        .await;
+        self.audit
+            .emit(
+                actor,
+                AuditEventKind::OperatorEnabledAccount {
+                    user_id: target_user_id,
+                },
+            )
+            .await;
 
         Ok(())
     }
@@ -155,12 +143,7 @@ impl OperatorManager {
         };
 
         self.passkey
-            .remove_passkey_for(
-                target_user_id,
-                credential_id,
-                Actor::Operator(actor),
-                notice,
-            )
+            .remove_passkey_for(target_user_id, credential_id, actor.into(), notice)
             .await?;
 
         Ok(())
@@ -176,14 +159,15 @@ impl OperatorManager {
 
         let count = self.sessions.revoke_all_for_user(target_user_id).await?;
 
-        self.emit_operator(
-            actor,
-            AuditEventKind::OperatorRevokedAllSessions {
-                user_id: target_user_id,
-                revoked_count: count,
-            },
-        )
-        .await;
+        self.audit
+            .emit(
+                actor,
+                AuditEventKind::OperatorRevokedAllSessions {
+                    user_id: target_user_id,
+                    revoked_count: count,
+                },
+            )
+            .await;
 
         if count > 0 && self.notifications.sessions_revoked == OperatorNotice::Send {
             self.notifier.operator_sessions_revoked(&user).await;
@@ -202,7 +186,7 @@ impl OperatorManager {
         self.resolve_subject(target_user_id).await?;
 
         self.sessions
-            .revoke_session_for_target(target_user_id, session_id, Actor::Operator(actor))
+            .revoke_session_for_target(target_user_id, session_id, actor.into())
             .await?;
 
         Ok(())
@@ -218,13 +202,14 @@ impl OperatorManager {
 
         let summaries = self.passkey.list_passkey_summaries(target_user_id).await?;
 
-        self.emit_operator(
-            actor,
-            AuditEventKind::OperatorListedPasskeys {
-                user_id: target_user_id,
-            },
-        )
-        .await;
+        self.audit
+            .emit(
+                actor,
+                AuditEventKind::OperatorListedPasskeys {
+                    user_id: target_user_id,
+                },
+            )
+            .await;
 
         tracing::info!(
             count = summaries.len(),
@@ -247,13 +232,14 @@ impl OperatorManager {
             .list_summaries_for_user(target_user_id)
             .await?;
 
-        self.emit_operator(
-            actor,
-            AuditEventKind::OperatorListedSessions {
-                user_id: target_user_id,
-            },
-        )
-        .await;
+        self.audit
+            .emit(
+                actor,
+                AuditEventKind::OperatorListedSessions {
+                    user_id: target_user_id,
+                },
+            )
+            .await;
 
         tracing::info!(
             count = summaries.len(),

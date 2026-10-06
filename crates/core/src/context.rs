@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::audit::{AuditDispatch, AuditSink};
+use crate::audit::AuditDispatch;
 use crate::clock::Clock;
 use crate::email::{EmailSender, EmailTemplates, SecurityEmailNotifier};
 use crate::metrics::{MetricSink, NoopMetricSink};
@@ -35,7 +35,7 @@ impl CoreDeps {
     )]
     pub(crate) fn new(
         clock: Arc<dyn Clock>,
-        audit: Arc<dyn AuditSink>,
+        audit: AuditDispatch,
         email: Arc<dyn EmailSender>,
         emails: Arc<dyn EmailTemplates>,
         notifier: SecurityEmailNotifier,
@@ -46,7 +46,7 @@ impl CoreDeps {
     ) -> Self {
         Self {
             clock,
-            audit: AuditDispatch::new(audit),
+            audit,
             email,
             emails,
             notifier,

@@ -5,9 +5,7 @@ use chrono::{DateTime, Utc};
 use crate::audit::RedemptionFailureReason::{
     AccountDisabled, Expired, Malformed, Unknown, UserNotFound, WrongPurpose,
 };
-use crate::audit::{
-    Actor, AuditDispatch, AuditEvent, AuditEventKind, RedemptionFailureReason, SecretKind,
-};
+use crate::audit::{AuditDispatch, AuditEventKind, RedemptionFailureReason, SecretKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result};
@@ -98,18 +96,14 @@ impl Redeemer {
         context: &SessionContext,
     ) -> Error {
         self.audit
-            .emit(AuditEvent {
-                timestamp: self.clock.now(),
-                actor: Actor::Subject {
-                    ip: context.ip.clone(),
-                    user_agent: context.user_agent.clone(),
-                },
-                kind: AuditEventKind::RedemptionFailed {
+            .emit(
+                context,
+                AuditEventKind::RedemptionFailed {
                     user_id,
                     secret,
                     reason,
                 },
-            })
+            )
             .await;
         refusal_error(secret, reason)
     }

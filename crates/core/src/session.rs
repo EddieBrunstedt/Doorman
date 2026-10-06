@@ -6,7 +6,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use crate::assembly::AssemblyError;
-use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, AuditSink};
+use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::recovery_cooldown::RecoveryCooldown;
@@ -81,7 +81,7 @@ impl SessionManager {
         sessions: Arc<dyn SessionStore>,
         users: Arc<dyn UserStore>,
         clock: Arc<dyn Clock>,
-        audit: Arc<dyn AuditSink>,
+        audit: AuditDispatch,
         config: SessionConfig,
     ) -> std::result::Result<Self, AssemblyError> {
         if let Some(idle_timeout) = config.idle_timeout
@@ -96,7 +96,7 @@ impl SessionManager {
             sessions,
             users,
             clock,
-            audit: AuditDispatch::new(audit),
+            audit,
             config,
         })
     }
@@ -177,17 +177,13 @@ impl SessionManager {
         }
 
         self.audit
-            .emit(AuditEvent {
-                timestamp: now,
-                actor: Actor::Subject {
-                    ip: context.ip,
-                    user_agent: context.user_agent,
-                },
-                kind: AuditEventKind::SessionCreated {
+            .emit(
+                &context,
+                AuditEventKind::SessionCreated {
                     user_id,
                     session_id: session.id,
                 },
-            })
+            )
             .await;
 
         Ok(IssuedSession { session, token })
@@ -202,11 +198,8 @@ impl SessionManager {
         let evict = active.len() + 1 - max;
         active.sort_by_key(|s| s.created_at);
         for session in active.into_iter().take(evict) {
-            let actor = Actor::Subject {
-                ip: session.ip.clone(),
-                user_agent: session.user_agent.clone(),
-            };
-            self.revoke_session(session, actor).await?;
+            self.revoke_session(&session, Actor::of_session(&session))
+                .await?;
         }
         Ok(())
     }
@@ -242,17 +235,13 @@ impl SessionManager {
         let now = self.clock.now();
         if session.expires_at <= now {
             self.audit
-                .emit(AuditEvent {
-                    timestamp: now,
-                    actor: Actor::Subject {
-                        ip: session.ip.clone(),
-                        user_agent: session.user_agent.clone(),
-                    },
-                    kind: AuditEventKind::SessionExpired {
+                .emit(
+                    Actor::of_session(&session),
+                    AuditEventKind::SessionExpired {
                         user_id: session.user_id,
                         session_id: session.id,
                     },
-                })
+                )
                 .await;
             return Err(Error::SessionExpired);
         }
@@ -302,11 +291,8 @@ impl SessionManager {
             tracing::warn!(outcome = "not_found", "session revoke failed");
             return Err(Error::SessionNotFound);
         };
-        let actor = Actor::Subject {
-            ip: session.ip.clone(),
-            user_agent: session.user_agent.clone(),
-        };
-        self.revoke_session(session, actor).await
+        self.revoke_session(&session, Actor::of_session(&session))
+            .await
     }
 
     #[tracing::instrument(skip(self), fields(session_id = %session_id))]
@@ -315,11 +301,8 @@ impl SessionManager {
             tracing::warn!(outcome = "not_found", "session revoke failed");
             return Err(Error::SessionNotFound);
         };
-        let actor = Actor::Subject {
-            ip: session.ip.clone(),
-            user_agent: session.user_agent.clone(),
-        };
-        self.revoke_session(session, actor).await
+        self.revoke_session(&session, Actor::of_session(&session))
+            .await
     }
 
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
@@ -371,20 +354,19 @@ impl SessionManager {
             tracing::warn!(outcome = "not_owned", "session revoke failed");
             return Err(Error::SessionNotFound);
         }
-        self.revoke_session(session, actor).await
+        self.revoke_session(&session, actor).await
     }
 
-    async fn revoke_session(&self, session: Session, actor: Actor) -> Result<()> {
+    async fn revoke_session(&self, session: &Session, actor: Actor) -> Result<()> {
         self.sessions.delete_session(session.id).await?;
         self.audit
-            .emit(AuditEvent {
-                timestamp: self.clock.now(),
+            .emit(
                 actor,
-                kind: AuditEventKind::SessionRevoked {
+                AuditEventKind::SessionRevoked {
                     user_id: session.user_id,
                     session_id: session.id,
                 },
-            })
+            )
             .await;
         Ok(())
     }

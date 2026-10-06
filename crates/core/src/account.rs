@@ -1,11 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
-
 use crate::assembly::AssemblyError;
-use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind};
-use crate::clock::Clock;
+use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
 use crate::email::{EmailSender, EmailTemplates, SecurityEmailNotifier};
 use crate::error::{Error, Result};
@@ -41,7 +38,6 @@ pub struct AccountManager {
     sessions: SessionManager,
     link: EmailedLink<EmailChange>,
     reauth: ReauthManager,
-    clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     email: Arc<dyn EmailSender>,
     emails: Arc<dyn EmailTemplates>,
@@ -59,29 +55,11 @@ impl AccountManager {
             sessions: deps.sessions.clone(),
             link,
             reauth: deps.reauth.clone(),
-            clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             email: deps.email.clone(),
             emails: deps.emails.clone(),
             notifier: deps.notifier.clone(),
         })
-    }
-
-    fn now(&self) -> DateTime<Utc> {
-        self.clock.now()
-    }
-
-    async fn emit(&self, context: &SessionContext, kind: AuditEventKind) {
-        self.audit
-            .emit(AuditEvent {
-                timestamp: self.now(),
-                actor: Actor::Subject {
-                    ip: context.ip.clone(),
-                    user_agent: context.user_agent.clone(),
-                },
-                kind,
-            })
-            .await;
     }
 
     #[tracing::instrument(skip(self, session, new_email, reauth, context), fields(user_id = %session.user_id))]
@@ -120,11 +98,12 @@ impl AccountManager {
             .email_change_requested(&user, &normalized)
             .await;
 
-        self.emit(
-            &context,
-            AuditEventKind::EmailChangeRequested { user_id: user.id },
-        )
-        .await;
+        self.audit
+            .emit(
+                &context,
+                AuditEventKind::EmailChangeRequested { user_id: user.id },
+            )
+            .await;
         Ok(())
     }
 
@@ -141,7 +120,8 @@ impl AccountManager {
             }
         };
 
-        self.emit(&context, AuditEventKind::EmailChangeCompleted { user_id })
+        self.audit
+            .emit(&context, AuditEventKind::EmailChangeCompleted { user_id })
             .await;
         Ok(user)
     }
@@ -162,13 +142,7 @@ impl AccountManager {
             )
             .await?;
         self.records
-            .delete(
-                session.user_id,
-                Actor::Subject {
-                    ip: context.ip,
-                    user_agent: context.user_agent,
-                },
-            )
+            .delete(session.user_id, Actor::from(&context))
             .await
     }
 
@@ -222,14 +196,7 @@ impl AccountManager {
                 .await?;
         }
         self.sessions
-            .revoke_session_for_target(
-                session.user_id,
-                target,
-                Actor::Subject {
-                    ip: session.ip.clone(),
-                    user_agent: session.user_agent.clone(),
-                },
-            )
+            .revoke_session_for_target(session.user_id, target, Actor::of_session(session))
             .await?;
         if !is_current
             && let Some(user) = self

@@ -1,12 +1,9 @@
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use webauthn_rs::prelude::{PublicKeyCredential, RequestChallengeResponse, Webauthn};
 
 use crate::assertion::AssertionVerifier;
-use crate::audit::{
-    Actor, AuditDispatch, AuditEvent, AuditEventKind, AuditSink, AuthFailureReason,
-};
+use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::challenge::{PasskeyChallenge, Reauth};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
@@ -90,11 +87,10 @@ impl ReauthManager {
         config: &PasskeyConfig,
         storage: &Storage,
         clock: Arc<dyn Clock>,
-        audit: Arc<dyn AuditSink>,
+        audit: AuditDispatch,
         policy: ReauthPolicy,
         webauthn: Arc<Webauthn>,
     ) -> Self {
-        let audit = AuditDispatch::new(audit);
         Self {
             challenges: PasskeyChallenge::new(
                 config,
@@ -152,43 +148,23 @@ impl ReauthManager {
             .challenges
             .redeem(proof.challenge_id, user_id, context)
             .await?;
-        let now = self.clock.now();
         if let Err(refusal) = self.assertions.verify(pending, &proof.assertion).await? {
-            self.emit_failed(now, context, user_id, refusal.reason)
+            self.audit
+                .emit(
+                    context,
+                    AuditEventKind::ReauthFailed {
+                        user_id,
+                        reason: refusal.reason,
+                    },
+                )
                 .await;
             return Err(refusal.error);
         }
 
         self.audit
-            .emit(AuditEvent {
-                timestamp: now,
-                actor: Actor::Subject {
-                    ip: context.ip.clone(),
-                    user_agent: context.user_agent.clone(),
-                },
-                kind: AuditEventKind::ReauthSucceeded { user_id },
-            })
+            .emit(context, AuditEventKind::ReauthSucceeded { user_id })
             .await;
         Ok(())
-    }
-
-    async fn emit_failed(
-        &self,
-        now: DateTime<Utc>,
-        context: &SessionContext,
-        user_id: UserId,
-        reason: AuthFailureReason,
-    ) {
-        self.audit
-            .emit(AuditEvent {
-                timestamp: now,
-                actor: Actor::Subject {
-                    ip: context.ip.clone(),
-                    user_agent: context.user_agent.clone(),
-                },
-                kind: AuditEventKind::ReauthFailed { user_id, reason },
-            })
-            .await;
     }
 }
 
