@@ -182,7 +182,7 @@ async fn consume_refused_for_disabled_user() {
 }
 
 #[tokio::test]
-async fn finish_refused_for_disabled_user_enrolls_nothing() {
+async fn finish_refused_for_disabled_user_registers_nothing() {
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;
     let credentials_before = passkey_count(&h, user.id).await;
@@ -224,7 +224,7 @@ async fn finish_refused_for_disabled_user_enrolls_nothing() {
     assert_eq!(
         passkey_count(&h, user.id).await,
         credentials_before,
-        "no passkey enrolled onto a disabled account",
+        "no passkey registered for a disabled user",
     );
     assert_eq!(
         session_count(&h, user.id).await,
@@ -400,7 +400,7 @@ async fn consume_rejects_expired_token_without_notification() {
 }
 
 #[tokio::test]
-async fn successful_recovery_enrols_passkey_and_sends_success_notification() {
+async fn successful_recovery_registers_passkey_and_sends_success_notification() {
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;
     let credentials_before = passkey_count(&h, user.id).await;
@@ -449,7 +449,7 @@ async fn successful_recovery_enrols_passkey_and_sends_success_notification() {
     assert_eq!(
         passkey_count(&h, user.id).await,
         credentials_before + 1,
-        "new passkey enrolled",
+        "new passkey registered",
     );
     let user_credentials = h
         .credentials
@@ -460,7 +460,7 @@ async fn successful_recovery_enrols_passkey_and_sends_success_notification() {
         user_credentials
             .iter()
             .any(|c| c.name.as_deref() == Some("backup device")),
-        "recovery-enrolled passkey shows up in list_passkeys for the user",
+        "passkey registered by recovery shows up in list_passkeys for the user",
     );
     let sessions = h
         .session_manager
@@ -1268,7 +1268,7 @@ fn recovery_config_at_floor_is_accepted() {
 async fn drive_recovery_finish(
     h: &Harness,
     email: &str,
-) -> doorman_core::verification::EnrollmentOutcome {
+) -> doorman_core::passkey::RegistrationOutcome {
     h.recovery
         .request_recovery(email, SessionContext::default())
         .await
@@ -1508,92 +1508,5 @@ async fn ordinary_registration_still_rejected_at_cap() {
         passkey_count(&h, user.id).await,
         u64::from(CAP),
         "no credential added past the cap",
-    );
-}
-
-#[tokio::test]
-async fn recovery_registration_finished_as_plain_registration_keeps_cooldown() {
-    let h = Harness::fresh();
-    let _ = provision_user(&h, "alice@example.com").await;
-    h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
-        .await
-        .expect("request");
-    let link = h
-        .email
-        .sent()
-        .into_iter()
-        .rev()
-        .find(|e| e.subject == "Recover access to your account")
-        .expect("link queued");
-    let token = token_from_email(&link.body_text, RECOVERY_URL);
-    let consume = h
-        .recovery
-        .consume_recovery(&token, SessionContext::default())
-        .await
-        .expect("consume");
-
-    let mut wa = authenticator();
-    let attestation = wa.do_registration(consume.options);
-    let passkey = h
-        .passkey
-        .finish_registration(
-            consume.challenge_id,
-            &attestation,
-            None,
-            SessionContext::default(),
-        )
-        .await
-        .expect("finish_registration");
-    assert!(passkey.recovery_cooldown_until.is_some());
-
-    let (auth_id, options) = h
-        .passkey
-        .start_authentication(SessionContext::default())
-        .await
-        .expect("start auth");
-    let assertion = wa.do_authentication(options, &passkey.credential_id);
-    let issued = h
-        .passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
-        .await
-        .expect("finish auth")
-        .session;
-    assert!(issued.session.is_in_recovery_cooldown(h.clock.now()));
-}
-
-#[tokio::test]
-async fn registration_started_in_cooldown_finished_as_signup_keeps_cooldown() {
-    let h = Harness::fresh();
-    let _ = provision_user(&h, "alice@example.com").await;
-    let outcome = drive_recovery_finish(&h, "alice@example.com").await;
-    let resolved = h
-        .session_manager
-        .resolve(&outcome.session.token)
-        .await
-        .expect("the recovery session is live");
-
-    let mut wa = authenticator();
-    let (challenge_id, ccr) = h
-        .passkey
-        .start_registration(&resolved.session)
-        .await
-        .expect("start_registration");
-    let response = wa.do_registration(ccr);
-    let signed_up = h
-        .signup
-        .finish_signup(challenge_id, &response, None, SessionContext::default())
-        .await
-        .expect("finish_signup");
-
-    assert_eq!(
-        signed_up.session.session.recovery_cooldown_until,
-        outcome.session.session.recovery_cooldown_until,
-    );
-    assert!(
-        signed_up
-            .session
-            .session
-            .is_in_recovery_cooldown(h.clock.now())
     );
 }

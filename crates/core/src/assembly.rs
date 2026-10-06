@@ -16,7 +16,6 @@ use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
 use crate::session::{SessionConfig, SessionManager};
 use crate::signup::{SignupConfig, SignupManager};
 use crate::storage::Storage;
-use crate::verification::EnrollmentFlow;
 
 pub(crate) const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 10);
 
@@ -302,21 +301,16 @@ impl AuthCoreBuilder {
 
         let passkey = PasskeyManager::new(&deps, passkey_config, webauthn);
 
-        let signup_flow = EnrollmentFlow::new(&deps, passkey.clone());
-        let recovery_flow = match self.recovery_rate_limiter {
-            Some(rate_limiter) => EnrollmentFlow::new(
-                &CoreDeps {
-                    rate_limiter,
-                    ..deps.clone()
-                },
-                passkey.clone(),
-            ),
-            None => signup_flow.clone(),
+        let signup = SignupManager::new(&deps, passkey.clone(), signup_config)?;
+
+        let recovery_deps = match self.recovery_rate_limiter {
+            Some(rate_limiter) => CoreDeps {
+                rate_limiter,
+                ..deps.clone()
+            },
+            None => deps.clone(),
         };
-
-        let signup = SignupManager::new(signup_flow, signup_config)?;
-
-        let recovery = RecoveryManager::new(recovery_flow, recovery_config)?;
+        let recovery = RecoveryManager::new(&recovery_deps, passkey.clone(), recovery_config)?;
 
         let account = AccountManager::new(&deps, account_config)?;
 

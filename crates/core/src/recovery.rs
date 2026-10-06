@@ -1,19 +1,21 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
 use crate::assembly::{AssemblyError, MAX_LIFETIME};
-use crate::audit::{AuditEventKind, RecoveryFailureReason};
+use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, RecoveryFailureReason};
+use crate::clock::Clock;
+use crate::context::CoreDeps;
+use crate::email::SecurityEmailNotifier;
 use crate::error::Result;
 use crate::link::{self, EmailedLink};
-use crate::passkey::{CredentialCap, EnrollmentPolicy};
-use crate::rate_limit::{self, RateLimitPolicy};
+use crate::passkey::{EmailLinkRegistration, PasskeyManager, RegistrationOutcome};
+use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
 use crate::session::SessionContext;
-use crate::storage::PasskeyChallengeId;
-use crate::user;
-use crate::verification::{
-    self, EnrollmentFlow, EnrollmentOutcome, TOKEN_PLACEHOLDER, VerificationConsumeOutcome,
-};
+use crate::storage::{PasskeyChallengeId, UserId};
+use crate::user::{self, UserRecords};
+use crate::verification::{self, TOKEN_PLACEHOLDER, VerificationConsumeOutcome};
 
 #[derive(Clone)]
 pub struct RecoveryConfig {
@@ -98,15 +100,21 @@ impl Default for RecoveryConfig {
 
 #[derive(Clone)]
 pub struct RecoveryManager {
-    flow: EnrollmentFlow,
+    passkeys: PasskeyManager,
+    records: UserRecords,
     link: EmailedLink<link::Recovery>,
+    notifier: SecurityEmailNotifier,
+    rate_limiter: Arc<dyn RateLimiter>,
+    clock: Arc<dyn Clock>,
+    audit: AuditDispatch,
     config: RecoveryConfig,
-    policy: EnrollmentPolicy,
+    registration: EmailLinkRegistration,
 }
 
 impl RecoveryManager {
     pub(crate) fn new(
-        flow: EnrollmentFlow,
+        deps: &CoreDeps,
+        passkeys: PasskeyManager,
         config: RecoveryConfig,
     ) -> std::result::Result<Self, AssemblyError> {
         let too_long = RecoveryConfigError::CooldownTooLong {
@@ -124,16 +132,40 @@ impl RecoveryManager {
             .into());
         }
         let cooldown = chrono::Duration::from_std(config.cooldown).map_err(|_| too_long)?;
-        let link = flow.emailed_link(&config.url_template, config.token_lifetime)?;
         Ok(Self {
-            flow,
-            link,
+            passkeys,
+            records: UserRecords::new(deps),
+            link: EmailedLink::new(deps, &config.url_template, config.token_lifetime)?,
+            notifier: deps.notifier.clone(),
+            rate_limiter: deps.rate_limiter.clone(),
+            clock: deps.clock.clone(),
+            audit: deps.audit.clone(),
             config,
-            policy: EnrollmentPolicy {
-                cooldown: Some(cooldown),
-                credential_cap: CredentialCap::Exempt,
-            },
+            registration: EmailLinkRegistration::Recovery { cooldown },
         })
+    }
+
+    async fn emit(&self, context: &SessionContext, kind: AuditEventKind) {
+        self.audit
+            .emit(AuditEvent {
+                timestamp: self.clock.now(),
+                actor: Actor::Subject {
+                    ip: context.ip.clone(),
+                    user_agent: context.user_agent.clone(),
+                },
+                kind,
+            })
+            .await;
+    }
+
+    async fn audit_failed(
+        &self,
+        user_id: Option<UserId>,
+        reason: RecoveryFailureReason,
+        context: &SessionContext,
+    ) {
+        self.emit(context, AuditEventKind::RecoveryFailed { user_id, reason })
+            .await;
     }
 
     #[tracing::instrument(
@@ -146,7 +178,7 @@ impl RecoveryManager {
 
         let rate_limits = &self.config.rate_limits;
         rate_limit::enforce_all(
-            self.flow.rate_limiter().as_ref(),
+            self.rate_limiter.as_ref(),
             &[
                 (
                     rate_limits.request_per_ip,
@@ -174,55 +206,49 @@ impl RecoveryManager {
                 ),
             ],
             || async {
-                self.flow
-                    .audit_recovery_failed(None, RecoveryFailureReason::RateLimited, &context)
+                self.audit_failed(None, RecoveryFailureReason::RateLimited, &context)
                     .await;
             },
         )
         .await?;
 
-        let Some(user) = self.flow.records().find_by_email(&email_normalized).await? else {
-            self.flow
-                .emit(
-                    &context,
-                    AuditEventKind::RecoveryRequested { user_id: None },
-                )
-                .await;
-            self.flow
-                .audit_recovery_failed(None, RecoveryFailureReason::UnknownEmail, &context)
+        let Some(user) = self.records.find_by_email(&email_normalized).await? else {
+            self.emit(
+                &context,
+                AuditEventKind::RecoveryRequested { user_id: None },
+            )
+            .await;
+            self.audit_failed(None, RecoveryFailureReason::UnknownEmail, &context)
                 .await;
             return Ok(());
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
         if user::ensure_active(&user).is_err() {
-            self.flow
-                .audit_recovery_failed(
-                    Some(user.id),
-                    RecoveryFailureReason::AccountDisabled,
-                    &context,
-                )
-                .await;
+            self.audit_failed(
+                Some(user.id),
+                RecoveryFailureReason::AccountDisabled,
+                &context,
+            )
+            .await;
             return Ok(());
         }
 
         let url = self.link.issue(user.id, ()).await?;
-        let notifier = self.flow.notifier();
-        notifier
+        self.notifier
             .send_best_effort(&user, "recovery link", |emails| {
                 emails.recovery_email(&user, &url)
             })
             .await;
-        notifier.recovery_requested(&user).await;
+        self.notifier.recovery_requested(&user).await;
 
-        self.flow
-            .emit(
-                &context,
-                AuditEventKind::RecoveryRequested {
-                    user_id: Some(user.id),
-                },
-            )
-            .await;
+        self.emit(
+            &context,
+            AuditEventKind::RecoveryRequested {
+                user_id: Some(user.id),
+            },
+        )
+        .await;
         Ok(())
     }
 
@@ -236,16 +262,21 @@ impl RecoveryManager {
         context: SessionContext,
     ) -> Result<VerificationConsumeOutcome> {
         let (user, ()) = self.link.redeem(token, &context).await?;
-        let outcome = self.flow.start_enrollment(user.id, self.policy).await?;
+        let (challenge_id, options) = self
+            .passkeys
+            .start_email_link_registration(user.id, self.registration)
+            .await?;
 
-        self.flow
-            .emit(
-                &context,
-                AuditEventKind::RecoveryConsumed { user_id: user.id },
-            )
-            .await;
+        self.emit(
+            &context,
+            AuditEventKind::RecoveryConsumed { user_id: user.id },
+        )
+        .await;
         tracing::info!(outcome = "consumed", "recovery token consumed");
-        Ok(outcome)
+        Ok(VerificationConsumeOutcome {
+            challenge_id,
+            options,
+        })
     }
 
     pub async fn finish_recovery(
@@ -254,13 +285,19 @@ impl RecoveryManager {
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
         context: SessionContext,
-    ) -> Result<EnrollmentOutcome> {
+    ) -> Result<RegistrationOutcome> {
         let outcome = self
-            .flow
-            .enroll(challenge_id, response, name, context, self.policy)
+            .passkeys
+            .finish_email_link_registration(
+                challenge_id,
+                response,
+                name,
+                context,
+                self.registration,
+            )
             .await?;
 
-        self.flow.notifier().recovery_completed(&outcome.user).await;
+        self.notifier.recovery_completed(&outcome.user).await;
 
         tracing::info!(outcome = "succeeded", "recovery finished");
         Ok(outcome)

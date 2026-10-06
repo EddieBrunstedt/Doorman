@@ -46,7 +46,7 @@ async fn full_signup_round_trip_cookie_path() {
     assert!(auth.user.email_verified);
     assert_eq!(
         auth.user.passkey_count, 1,
-        "freshly-registered user owns exactly the passkey just enrolled"
+        "freshly-registered user owns exactly the passkey just registered"
     );
     assert!(!auth.token.is_empty());
 

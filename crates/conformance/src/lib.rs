@@ -4,9 +4,9 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use doorman_core::error::{StorageErrorKind, StorageResult};
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
-    AccountStatus, AuthenticationPurpose, PasskeyChallengeId, PasskeySummary, PasskeyUse, Session,
-    SessionId, Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
-    User, UserId, VerificationPurpose, VerificationToken,
+    AccountStatus, AuthenticationPurpose, PasskeyChallengeId, PasskeySummary, PasskeyUse,
+    RegistrationPurpose, Session, SessionId, Storage, StoredPasskey, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, User, UserId, VerificationPurpose, VerificationToken,
 };
 
 fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
@@ -58,7 +58,7 @@ pub async fn run(storage: &Storage) {
     passkey_field_changes_compose(storage).await;
     passkey_writes_refuse_missing_credential(storage).await;
     passkey_credentials_bulk_delete_for_user(storage).await;
-    passkey_registration_cooldown_round_trip(storage).await;
+    passkey_registration_round_trip(storage).await;
     passkey_registration_delete_for_user(storage).await;
     passkey_authentication_single_use(storage).await;
     single_use_under_concurrency(storage).await;
@@ -1367,7 +1367,7 @@ async fn passkey_credentials_bulk_delete_for_user(storage: &Storage) {
     assert_eq!(surviving[0].credential_id, bystander_cred);
 }
 
-async fn passkey_registration_cooldown_round_trip(storage: &Storage) {
+async fn passkey_registration_round_trip(storage: &Storage) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
     storage
@@ -1378,44 +1378,52 @@ async fn passkey_registration_cooldown_round_trip(storage: &Storage) {
 
     let state_blob = b"opaque-serialised-registration-state".to_vec();
     let cooldown_until = now + Duration::hours(24);
-    let challenge_id = PasskeyChallengeId::new();
-    storage
-        .passkey_challenges
-        .put_registration(StoredPasskeyRegistration {
-            id: challenge_id,
-            user_id,
-            state: state_blob.clone(),
-            created_at: now,
-            expires_at: now + Duration::minutes(5),
-            recovery_cooldown_until: Some(cooldown_until),
-        })
-        .await
-        .expect("put registration");
-
-    let taken = storage
-        .passkey_challenges
-        .take_registration(challenge_id)
-        .await
-        .expect("take registration")
-        .expect("registration present");
-    assert_eq!(taken.id, challenge_id);
-    assert_eq!(taken.user_id, user_id);
-    assert_eq!(taken.created_at, now);
-    assert_eq!(taken.expires_at, now + Duration::minutes(5));
-    assert_eq!(taken.recovery_cooldown_until, Some(cooldown_until));
-    assert_eq!(
-        taken.state, state_blob,
-        "ceremony blob round-trips verbatim"
-    );
-    assert!(
+    for purpose in [
+        RegistrationPurpose::Signup,
+        RegistrationPurpose::Recovery,
+        RegistrationPurpose::AddPasskey,
+    ] {
+        let challenge_id = PasskeyChallengeId::new();
         storage
+            .passkey_challenges
+            .put_registration(StoredPasskeyRegistration {
+                id: challenge_id,
+                purpose,
+                user_id,
+                state: state_blob.clone(),
+                created_at: now,
+                expires_at: now + Duration::minutes(5),
+                recovery_cooldown_until: Some(cooldown_until),
+            })
+            .await
+            .expect("put registration");
+
+        let taken = storage
             .passkey_challenges
             .take_registration(challenge_id)
             .await
-            .expect("second take")
-            .is_none(),
-        "registration challenges are single-use",
-    );
+            .expect("take registration")
+            .expect("registration present");
+        assert_eq!(taken.id, challenge_id);
+        assert_eq!(taken.purpose, purpose, "purpose round-trips verbatim");
+        assert_eq!(taken.user_id, user_id);
+        assert_eq!(taken.created_at, now);
+        assert_eq!(taken.expires_at, now + Duration::minutes(5));
+        assert_eq!(taken.recovery_cooldown_until, Some(cooldown_until));
+        assert_eq!(
+            taken.state, state_blob,
+            "ceremony blob round-trips verbatim"
+        );
+        assert!(
+            storage
+                .passkey_challenges
+                .take_registration(challenge_id)
+                .await
+                .expect("second take")
+                .is_none(),
+            "registration challenges are single-use",
+        );
+    }
 }
 
 async fn passkey_registration_delete_for_user(storage: &Storage) {
@@ -1440,6 +1448,7 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
                 .passkey_challenges
                 .put_registration(StoredPasskeyRegistration {
                     id: challenge_id,
+                    purpose: RegistrationPurpose::AddPasskey,
                     user_id,
                     state: b"opaque-state".to_vec(),
                     created_at: now,
@@ -1578,6 +1587,7 @@ async fn passkey_challenge_purge_expired(storage: &Storage) {
     challenges
         .put_registration(StoredPasskeyRegistration {
             id: expired_registration,
+            purpose: RegistrationPurpose::AddPasskey,
             user_id,
             state: b"expired-registration".to_vec(),
             created_at: ts(2020, 1, 1),
@@ -1601,6 +1611,7 @@ async fn passkey_challenge_purge_expired(storage: &Storage) {
     challenges
         .put_registration(StoredPasskeyRegistration {
             id: live_registration,
+            purpose: RegistrationPurpose::AddPasskey,
             user_id,
             state: b"live-registration".to_vec(),
             created_at: now,
@@ -1693,6 +1704,7 @@ async fn single_use_under_concurrency(storage: &Storage) {
         .passkey_challenges
         .put_registration(StoredPasskeyRegistration {
             id: registration,
+            purpose: RegistrationPurpose::AddPasskey,
             user_id,
             state: b"race-registration".to_vec(),
             created_at: now,
@@ -1835,6 +1847,7 @@ async fn owner_indexes_track_removals(storage: &Storage) {
     let challenges = &storage.passkey_challenges;
     let registration = |expires_at| StoredPasskeyRegistration {
         id: PasskeyChallengeId::new(),
+        purpose: RegistrationPurpose::AddPasskey,
         user_id,
         state: b"index-registration".to_vec(),
         created_at: ts(2020, 1, 1),

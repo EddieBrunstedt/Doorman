@@ -11,7 +11,6 @@ use crate::email::{EmailSender, EmailTemplates, SecurityEmailNotifier};
 use crate::error::{Error, Result};
 use crate::link::{EmailChange, EmailedLink};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
-use crate::redeem::Redeemer;
 use crate::session::{SessionContext, SessionManager};
 use crate::storage::{Session, SessionId, User};
 use crate::user::UserRecords;
@@ -54,13 +53,7 @@ impl AccountManager {
         deps: &CoreDeps,
         config: AccountConfig,
     ) -> std::result::Result<Self, AssemblyError> {
-        let link = EmailedLink::new(
-            deps.verification_tokens.clone(),
-            Redeemer::from_deps(deps),
-            deps.clock.clone(),
-            &config.url_template,
-            config.token_lifetime,
-        )?;
+        let link = EmailedLink::new(deps, &config.url_template, config.token_lifetime)?;
         Ok(Self {
             records: UserRecords::new(deps),
             sessions: deps.sessions.clone(),

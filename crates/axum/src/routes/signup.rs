@@ -12,7 +12,7 @@ use crate::dto::{
 };
 use crate::error::ErrorResponse;
 use crate::extractors::RequestContext;
-use crate::routes::{consume_response, enrollment_success, parse_challenge_id};
+use crate::routes::{consume_response, parse_challenge_id, registration_success};
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
@@ -55,5 +55,5 @@ async fn finish(
     let outcome = manager(&state)
         .finish_signup(challenge_id, &body.response, body.name, context)
         .await?;
-    enrollment_success(&state, outcome).await
+    registration_success(&state, outcome).await
 }

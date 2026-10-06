@@ -26,11 +26,10 @@ use crate::recovery_cooldown::RecoveryCooldown;
 use crate::redeem::Redeemer;
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
-    PasskeyChallengeId, PasskeyCredentialStore, PasskeySummary, Session, StoredPasskey, User,
-    UserId,
+    PasskeyChallengeId, PasskeyCredentialStore, PasskeySummary, RegistrationPurpose, Session,
+    StoredPasskey, User, UserId,
 };
 use crate::user::UserRecords;
-use crate::verification::EnrollmentOutcome;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PasskeyRateLimits {
@@ -66,23 +65,30 @@ impl Default for PasskeyRateLimits {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CredentialCap {
-    Enforce,
-    Exempt,
-}
-
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct EnrollmentPolicy {
-    pub cooldown: Option<chrono::Duration>,
-    pub credential_cap: CredentialCap,
+pub(crate) enum EmailLinkRegistration {
+    Signup,
+    Recovery { cooldown: chrono::Duration },
 }
 
-impl EnrollmentPolicy {
-    fn started_cooldown(&self, now: DateTime<Utc>) -> RecoveryCooldown {
-        self.cooldown.map_or(RecoveryCooldown::NONE, |length| {
-            RecoveryCooldown::start(now, length)
-        })
+impl EmailLinkRegistration {
+    fn purpose(self) -> RegistrationPurpose {
+        match self {
+            Self::Signup => RegistrationPurpose::Signup,
+            Self::Recovery { .. } => RegistrationPurpose::Recovery,
+        }
+    }
+
+    // A user who has lost their passkeys may still sit at the cap, and recovery is their way back.
+    fn enforces_credential_cap(self) -> bool {
+        matches!(self, Self::Signup)
+    }
+
+    fn started_cooldown(self, now: DateTime<Utc>) -> RecoveryCooldown {
+        match self {
+            Self::Signup => RecoveryCooldown::NONE,
+            Self::Recovery { cooldown } => RecoveryCooldown::start(now, cooldown),
+        }
     }
 }
 
@@ -126,6 +132,13 @@ impl PasskeyConfig {
 pub struct AuthenticationOutcome {
     pub user: User,
     pub session: IssuedSession,
+}
+
+#[derive(Debug, Clone)]
+pub struct RegistrationOutcome {
+    pub user: User,
+    pub session: IssuedSession,
+    pub passkey: StoredPasskey,
 }
 
 #[derive(Clone)]
@@ -191,17 +204,18 @@ impl PasskeyManager {
         session: &Session,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let cooldown = RecoveryCooldown::of_session(session, self.clock.now());
-        self.start_registration_inner(session.user_id, cooldown)
+        self.issue_registration(session.user_id, RegistrationPurpose::AddPasskey, cooldown)
             .await
     }
 
-    async fn start_registration_inner(
+    async fn issue_registration(
         &self,
         user_id: UserId,
+        purpose: RegistrationPurpose,
         cooldown: RecoveryCooldown,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let user = self.records.find_active(user_id).await?;
-        let (id, ccr) = self.registrations.issue(&user, cooldown).await?;
+        let (id, ccr) = self.registrations.issue(&user, purpose, cooldown).await?;
         tracing::info!(outcome = "started", "passkey registration started");
         Ok((id, ccr))
     }
@@ -217,7 +231,9 @@ impl PasskeyManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<StoredPasskey> {
-        let registration = self.redeem_registration(challenge_id, &context).await?;
+        let registration = self
+            .redeem_registration(challenge_id, RegistrationPurpose::AddPasskey, &context)
+            .await?;
         self.enforce_credential_cap(registration.user.id).await?;
         let credential =
             self.verify_registration(&registration, response, name, registration.cooldown)?;
@@ -225,41 +241,58 @@ impl PasskeyManager {
             .await
     }
 
-    pub(crate) async fn start_enrollment(
+    pub(crate) async fn start_email_link_registration(
         &self,
         user_id: UserId,
-        policy: EnrollmentPolicy,
+        registration: EmailLinkRegistration,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         self.registrations.invalidate_pending(user_id).await?;
-        let cooldown = policy.started_cooldown(self.clock.now());
-        self.start_registration_inner(user_id, cooldown).await
+        let cooldown = registration.started_cooldown(self.clock.now());
+        self.issue_registration(user_id, registration.purpose(), cooldown)
+            .await
     }
 
-    pub(crate) async fn enroll(
+    pub(crate) async fn finish_email_link_registration(
         &self,
         challenge_id: PasskeyChallengeId,
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
         context: SessionContext,
-        policy: EnrollmentPolicy,
-    ) -> Result<EnrollmentOutcome> {
-        let started = policy.started_cooldown(self.clock.now());
+        registration: EmailLinkRegistration,
+    ) -> Result<RegistrationOutcome> {
+        let started = registration.started_cooldown(self.clock.now());
 
-        let registration = self.redeem_registration(challenge_id, &context).await?;
-        let user = &registration.user;
-        if policy.credential_cap == CredentialCap::Enforce {
+        let redeemed = self
+            .redeem_registration(challenge_id, registration.purpose(), &context)
+            .await?;
+        let user = &redeemed.user;
+        if registration.enforces_credential_cap() {
             self.enforce_credential_cap(user.id).await?;
         }
-        let cooldown = registration.cooldown.extended_by(started);
-        let credential = self.verify_registration(&registration, response, name, cooldown)?;
-        if policy.cooldown.is_some() {
+        let cooldown = redeemed.cooldown.extended_by(started);
+        let credential = self.verify_registration(&redeemed, response, name, cooldown)?;
+        // Registrations started before the recovery may belong to whoever holds the lost passkey.
+        if let EmailLinkRegistration::Recovery { .. } = registration {
             self.registrations.invalidate_pending(user.id).await?;
         }
         let passkey = self.store_credential(user, credential, &context).await?;
-        let session = self.sessions.issue(user.id, context, cooldown).await?;
+        let session = self
+            .sessions
+            .issue(user.id, context.clone(), cooldown)
+            .await?;
+        self.audit
+            .emit(AuditEvent {
+                timestamp: self.clock.now(),
+                actor: Actor::Subject {
+                    ip: context.ip,
+                    user_agent: context.user_agent,
+                },
+                kind: AuditEventKind::LoginSucceeded { user_id: user.id },
+            })
+            .await;
 
-        Ok(EnrollmentOutcome {
-            user: registration.user,
+        Ok(RegistrationOutcome {
+            user: redeemed.user,
             session,
             passkey,
         })
@@ -268,9 +301,13 @@ impl PasskeyManager {
     async fn redeem_registration(
         &self,
         challenge_id: PasskeyChallengeId,
+        purpose: RegistrationPurpose,
         context: &SessionContext,
     ) -> Result<RedeemedRegistration> {
-        let registration = self.registrations.redeem(challenge_id, context).await?;
+        let registration = self
+            .registrations
+            .redeem(challenge_id, purpose, context)
+            .await?;
         tracing::Span::current().record("user_id", tracing::field::display(registration.user.id));
         Ok(registration)
     }

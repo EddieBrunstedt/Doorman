@@ -4,7 +4,9 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::error::{StorageError, StorageResult};
-use crate::storage::{AccountStatus, AuthenticationPurpose, VerificationPurpose};
+use crate::storage::{
+    AccountStatus, AuthenticationPurpose, RegistrationPurpose, VerificationPurpose,
+};
 
 pub fn purpose_to_str(purpose: VerificationPurpose) -> &'static str {
     match purpose {
@@ -38,6 +40,25 @@ pub fn authentication_purpose_from_str(raw: &str) -> StorageResult<Authenticatio
         "reauth" => Ok(AuthenticationPurpose::Reauth),
         other => Err(StorageError::msg(format!(
             "unknown authentication purpose `{other}` in storage"
+        ))),
+    }
+}
+
+pub fn registration_purpose_to_str(purpose: RegistrationPurpose) -> &'static str {
+    match purpose {
+        RegistrationPurpose::Signup => "signup",
+        RegistrationPurpose::Recovery => "recovery",
+        RegistrationPurpose::AddPasskey => "add_passkey",
+    }
+}
+
+pub fn registration_purpose_from_str(raw: &str) -> StorageResult<RegistrationPurpose> {
+    match raw {
+        "signup" => Ok(RegistrationPurpose::Signup),
+        "recovery" => Ok(RegistrationPurpose::Recovery),
+        "add_passkey" => Ok(RegistrationPurpose::AddPasskey),
+        other => Err(StorageError::msg(format!(
+            "unknown registration purpose `{other}` in storage"
         ))),
     }
 }
@@ -154,6 +175,23 @@ mod tests {
             );
         }
         assert!(authentication_purpose_from_str("nope").is_err());
+    }
+
+    #[test]
+    fn registration_purpose_round_trips_and_matches_serde() {
+        for p in [
+            RegistrationPurpose::Signup,
+            RegistrationPurpose::Recovery,
+            RegistrationPurpose::AddPasskey,
+        ] {
+            let raw = registration_purpose_to_str(p);
+            assert_eq!(registration_purpose_from_str(raw).unwrap(), p);
+            assert_eq!(
+                serde_json::to_value(p).unwrap(),
+                serde_json::Value::String(raw.to_string())
+            );
+        }
+        assert!(registration_purpose_from_str("nope").is_err());
     }
 
     #[test]

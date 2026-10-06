@@ -40,6 +40,7 @@ fn to_binary(bytes: Vec<u8>) -> Binary {
 pub(crate) use doorman_core::encoding::{
     account_status_from_parts, account_status_to_str, authentication_purpose_from_str,
     authentication_purpose_to_str, hex, purpose_from_str, purpose_to_str as purpose_str,
+    registration_purpose_from_str, registration_purpose_to_str,
 };
 
 pub(crate) fn get_str(doc: &Document, key: &str) -> StorageResult<String> {
@@ -320,6 +321,7 @@ pub(crate) fn pkreg_to_doc(value: &StoredPasskeyRegistration) -> Document {
     let state_bin = to_binary(value.state.clone());
     let mut doc = doc! {
         "_id": challenge_id_str(value.id),
+        "purpose": registration_purpose_to_str(value.purpose),
         "user_id": value.user_id.0.to_string(),
         "state": state_bin,
         "created_at": to_bson_dt(value.created_at),
@@ -337,6 +339,7 @@ pub(crate) fn pkreg_to_doc(value: &StoredPasskeyRegistration) -> Document {
 pub(crate) fn pkreg_from_doc(doc: &Document) -> StorageResult<StoredPasskeyRegistration> {
     Ok(StoredPasskeyRegistration {
         id: PasskeyChallengeId(get_uuid(doc, "_id")?),
+        purpose: registration_purpose_from_str(&get_str(doc, "purpose")?)?,
         user_id: UserId(get_uuid(doc, "user_id")?),
         state: get_bytes(doc, "state")?,
         created_at: get_dt(doc, "created_at")?,

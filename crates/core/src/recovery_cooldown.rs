@@ -28,8 +28,8 @@ impl RecoveryCooldown {
         Self(registration.recovery_cooldown_until)
     }
 
-    // A passkey registration can be finished by a different flow than the one that started
-    // it, so whatever the finishing flow starts must never shorten what the start carried.
+    // A recovery stamps its challenge when the email link is redeemed and starts again when the
+    // registration finishes; the later deadline wins, so a slow ceremony never eats into it.
     pub(crate) fn extended_by(self, other: Self) -> Self {
         Self(self.0.max(other.0))
     }

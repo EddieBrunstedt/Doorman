@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use doorman_core::encoding::{
     account_status_from_parts, account_status_to_str, authentication_purpose_from_str,
     authentication_purpose_to_str, hex, purpose_from_str, purpose_to_str as purpose_str,
+    registration_purpose_from_str, registration_purpose_to_str,
 };
 use doorman_core::error::StorageResult;
 use doorman_core::storage::{
@@ -309,6 +310,10 @@ pub(crate) fn pkreg_item(value: &StoredPasskeyRegistration) -> Item {
     let mut item = base(ENTITY_PKREG, pkreg_pk(value.id));
     item.insert("id".to_string(), client::s(value.id.0.to_string()));
     item.insert(
+        "purpose".to_string(),
+        client::s(registration_purpose_to_str(value.purpose)),
+    );
+    item.insert(
         "user_id".to_string(),
         client::s(value.user_id.0.to_string()),
     );
@@ -331,6 +336,7 @@ pub(crate) fn pkreg_item(value: &StoredPasskeyRegistration) -> Item {
 pub(crate) fn pkreg_from_item(item: &Item) -> StorageResult<StoredPasskeyRegistration> {
     Ok(StoredPasskeyRegistration {
         id: PasskeyChallengeId(client::get_uuid(item, "id")?),
+        purpose: registration_purpose_from_str(&client::get_s(item, "purpose")?)?,
         user_id: UserId(client::get_uuid(item, "user_id")?),
         state: client::get_b(item, "state")?,
         created_at: client::get_ts(item, "created_at")?,

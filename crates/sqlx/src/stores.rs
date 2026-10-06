@@ -752,11 +752,12 @@ macro_rules! sqlx_stores {
                 value: $crate::stores::__reexport::StoredPasskeyRegistration,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "INSERT INTO passkey_registrations (id, user_id, state, created_at, expires_at, recovery_cooldown_until)
-                     VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO passkey_registrations (id, purpose, user_id, state, created_at, expires_at, recovery_cooldown_until)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(value.id.0))
+                    .bind($crate::common::registration_purpose_to_str(value.purpose))
                     .bind($crate::common::uuid_to_bytes(value.user_id.0))
                     .bind(&value.state)
                     .bind($ts(value.created_at))
@@ -779,7 +780,7 @@ macro_rules! sqlx_stores {
                     pool: self.pool,
                     ph: $ph,
                     table: "passkey_registrations",
-                    cols: "id, user_id, state, created_at, expires_at, recovery_cooldown_until",
+                    cols: "id, purpose, user_id, state, created_at, expires_at, recovery_cooldown_until",
                     filter: "id = ?",
                     binds: [$crate::common::uuid_to_bytes(id.0)],
                     map: row_to_registration,
@@ -880,12 +881,14 @@ macro_rules! sqlx_stores {
         > {
             use ::sqlx::Row as _;
             let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage_err)?;
+            let purpose: String = row.try_get("purpose").map_err($crate::common::storage_err)?;
             let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage_err)?;
             let state: Vec<u8> = row.try_get("state").map_err($crate::common::storage_err)?;
             Ok($crate::stores::__reexport::StoredPasskeyRegistration {
                 id: $crate::stores::__reexport::PasskeyChallengeId(
                     $crate::common::uuid_from_row(id_bytes)?,
                 ),
+                purpose: $crate::common::registration_purpose_from_str(&purpose)?,
                 user_id: $crate::stores::__reexport::UserId(
                     $crate::common::uuid_from_row(user_id_bytes)?,
                 ),

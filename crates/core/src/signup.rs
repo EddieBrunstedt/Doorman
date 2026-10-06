@@ -5,16 +5,18 @@ use async_trait::async_trait;
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
 use crate::assembly::AssemblyError;
-use crate::audit::AuditEventKind;
+use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind};
+use crate::clock::Clock;
+use crate::context::CoreDeps;
+use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
 use crate::link::{self, EmailedLink};
-use crate::passkey::{CredentialCap, EnrollmentPolicy};
-use crate::rate_limit::{self, RateLimitPolicy};
+use crate::passkey::{EmailLinkRegistration, PasskeyManager, RegistrationOutcome};
+use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, User};
-use crate::verification::{
-    self, EnrollmentFlow, EnrollmentOutcome, TOKEN_PLACEHOLDER, VerificationConsumeOutcome,
-};
+use crate::user::UserRecords;
+use crate::verification::{self, TOKEN_PLACEHOLDER, VerificationConsumeOutcome};
 
 #[derive(Debug, Clone)]
 pub enum SignupDecision {
@@ -100,25 +102,47 @@ impl Default for SignupConfig {
     }
 }
 
-const SIGNUP_POLICY: EnrollmentPolicy = EnrollmentPolicy {
-    cooldown: None,
-    credential_cap: CredentialCap::Enforce,
-};
-
 #[derive(Clone)]
 pub struct SignupManager {
-    flow: EnrollmentFlow,
+    passkeys: PasskeyManager,
+    records: UserRecords,
     link: EmailedLink<link::Signup>,
+    notifier: SecurityEmailNotifier,
+    rate_limiter: Arc<dyn RateLimiter>,
+    clock: Arc<dyn Clock>,
+    audit: AuditDispatch,
     config: SignupConfig,
 }
 
 impl SignupManager {
     pub(crate) fn new(
-        flow: EnrollmentFlow,
+        deps: &CoreDeps,
+        passkeys: PasskeyManager,
         config: SignupConfig,
     ) -> std::result::Result<Self, AssemblyError> {
-        let link = flow.emailed_link(&config.url_template, config.token_lifetime)?;
-        Ok(Self { flow, link, config })
+        Ok(Self {
+            passkeys,
+            records: UserRecords::new(deps),
+            link: EmailedLink::new(deps, &config.url_template, config.token_lifetime)?,
+            notifier: deps.notifier.clone(),
+            rate_limiter: deps.rate_limiter.clone(),
+            clock: deps.clock.clone(),
+            audit: deps.audit.clone(),
+            config,
+        })
+    }
+
+    async fn emit(&self, context: &SessionContext, kind: AuditEventKind) {
+        self.audit
+            .emit(AuditEvent {
+                timestamp: self.clock.now(),
+                actor: Actor::Subject {
+                    ip: context.ip.clone(),
+                    user_agent: context.user_agent.clone(),
+                },
+                kind,
+            })
+            .await;
     }
 
     #[tracing::instrument(
@@ -135,7 +159,7 @@ impl SignupManager {
         verification::validate_email(&email_normalized)?;
 
         rate_limit::enforce_all(
-            self.flow.rate_limiter().as_ref(),
+            self.rate_limiter.as_ref(),
             &[
                 (
                     self.config.rate_limits.request_per_ip,
@@ -162,18 +186,18 @@ impl SignupManager {
         {
             SignupDecision::Allow => {}
             SignupDecision::DenySilently => {
-                self.flow.emit(&context, AuditEventKind::SignupDenied).await;
+                self.emit(&context, AuditEventKind::SignupDenied).await;
                 tracing::info!(outcome = "denied_silent", "signup request denied");
                 return Ok(());
             }
             SignupDecision::Deny { reason } => {
-                self.flow.emit(&context, AuditEventKind::SignupDenied).await;
+                self.emit(&context, AuditEventKind::SignupDenied).await;
                 tracing::info!(outcome = "denied", reason = ?reason, "signup request denied");
                 return Err(Error::SignupNotAllowed);
             }
         }
 
-        let records = self.flow.records();
+        let records = &self.records;
         if let Some(existing) = records.find_by_email(&email_normalized).await? {
             return self.request_for_existing(&existing, &context).await;
         }
@@ -193,7 +217,7 @@ impl SignupManager {
     async fn request_for_existing(&self, existing: &User, context: &SessionContext) -> Result<()> {
         tracing::Span::current().record("user_id", tracing::field::display(existing.id));
 
-        if !self.flow.has_passkey(existing.id).await? {
+        if self.passkeys.count_passkeys(existing.id).await? == 0 {
             self.send_link(existing, context).await?;
             tracing::info!(
                 outcome = "reissued",
@@ -202,32 +226,29 @@ impl SignupManager {
             return Ok(());
         }
 
-        self.flow
-            .emit(
-                context,
-                AuditEventKind::SignupRequested {
-                    user_id: existing.id,
-                },
-            )
-            .await;
+        self.emit(
+            context,
+            AuditEventKind::SignupRequested {
+                user_id: existing.id,
+            },
+        )
+        .await;
         tracing::info!(outcome = "already_registered", "signup request (silent)");
         Ok(())
     }
 
     async fn send_link(&self, user: &User, context: &SessionContext) -> Result<()> {
         let url = self.link.issue(user.id, ()).await?;
-        self.flow
-            .notifier()
+        self.notifier
             .send_best_effort(user, "signup link", |emails| {
                 emails.signup_email(user, &url)
             })
             .await;
-        self.flow
-            .emit(
-                context,
-                AuditEventKind::SignupRequested { user_id: user.id },
-            )
-            .await;
+        self.emit(
+            context,
+            AuditEventKind::SignupRequested { user_id: user.id },
+        )
+        .await;
         Ok(())
     }
 
@@ -241,17 +262,22 @@ impl SignupManager {
         context: SessionContext,
     ) -> Result<VerificationConsumeOutcome> {
         let (user, ()) = self.link.redeem(token, &context).await?;
-        self.flow.records().mark_email_verified(&user).await?;
-        let outcome = self.flow.start_enrollment(user.id, SIGNUP_POLICY).await?;
+        self.records.mark_email_verified(&user).await?;
+        let (challenge_id, options) = self
+            .passkeys
+            .start_email_link_registration(user.id, EmailLinkRegistration::Signup)
+            .await?;
 
-        self.flow
-            .emit(
-                &context,
-                AuditEventKind::SignupConsumed { user_id: user.id },
-            )
-            .await;
+        self.emit(
+            &context,
+            AuditEventKind::SignupConsumed { user_id: user.id },
+        )
+        .await;
         tracing::info!(outcome = "consumed", "signup token consumed");
-        Ok(outcome)
+        Ok(VerificationConsumeOutcome {
+            challenge_id,
+            options,
+        })
     }
 
     pub async fn finish_signup(
@@ -260,10 +286,16 @@ impl SignupManager {
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
         context: SessionContext,
-    ) -> Result<EnrollmentOutcome> {
+    ) -> Result<RegistrationOutcome> {
         let outcome = self
-            .flow
-            .enroll(challenge_id, response, name, context, SIGNUP_POLICY)
+            .passkeys
+            .finish_email_link_registration(
+                challenge_id,
+                response,
+                name,
+                context,
+                EmailLinkRegistration::Signup,
+            )
             .await?;
         tracing::info!(outcome = "succeeded", "signup finished");
         Ok(outcome)

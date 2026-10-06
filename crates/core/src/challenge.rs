@@ -21,7 +21,7 @@ use crate::redeem::{Candidate, Redeemer};
 use crate::session::SessionContext;
 use crate::storage::{
     AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
-    StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
+    RegistrationPurpose, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
 };
 
 pub(crate) enum Registration {}
@@ -125,6 +125,7 @@ impl PasskeyChallenge<Registration> {
     pub(crate) async fn issue(
         &self,
         user: &User,
+        purpose: RegistrationPurpose,
         cooldown: RecoveryCooldown,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let user_id = user.id;
@@ -166,6 +167,7 @@ impl PasskeyChallenge<Registration> {
         self.challenges
             .put_registration(StoredPasskeyRegistration {
                 id,
+                purpose,
                 user_id,
                 state: encode_state(&state)?,
                 created_at: now,
@@ -179,13 +181,14 @@ impl PasskeyChallenge<Registration> {
     pub(crate) async fn redeem(
         &self,
         id: PasskeyChallengeId,
+        purpose: RegistrationPurpose,
         context: &SessionContext,
     ) -> Result<RedeemedRegistration> {
         let secret = SecretKind::RegistrationChallenge;
         let stored = self.challenges.take_registration(id).await?;
         let candidate = stored.map(|stored| Candidate {
             owner: Some(stored.user_id),
-            purpose_matches: true,
+            purpose_matches: stored.purpose == purpose,
             expires_at: stored.expires_at,
             payload: decode_state(&stored.state).map(|state| {
                 (

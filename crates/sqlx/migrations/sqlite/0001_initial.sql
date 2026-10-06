@@ -51,6 +51,7 @@ CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
 
 CREATE TABLE passkey_registrations (
     id BLOB PRIMARY KEY,
+    purpose TEXT NOT NULL,
     user_id BLOB NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     state BLOB NOT NULL,
     created_at TEXT NOT NULL,

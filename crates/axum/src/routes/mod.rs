@@ -2,9 +2,10 @@ use axum::Json;
 use axum::Router;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use doorman_core::passkey::RegistrationOutcome;
 use doorman_core::reauth::ReauthProof;
 use doorman_core::storage::PasskeyChallengeId;
-use doorman_core::verification::{EnrollmentOutcome, VerificationConsumeOutcome};
+use doorman_core::verification::VerificationConsumeOutcome;
 use uuid::Uuid;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
@@ -69,9 +70,9 @@ pub(crate) fn consume_response(
     })
 }
 
-pub(crate) async fn enrollment_success(
+pub(crate) async fn registration_success(
     state: &AuthState,
-    outcome: EnrollmentOutcome,
+    outcome: RegistrationOutcome,
 ) -> Result<Response, ErrorResponse> {
     let passkey_count = state.core.passkey.count_passkeys(outcome.user.id).await?;
     auth_success(

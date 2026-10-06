@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::assembly::{AssemblyError, validate_lifetime};
 use crate::audit::SecretKind;
 use crate::clock::{Clock, expiry};
+use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::redeem::{Candidate, Redeemer};
 use crate::session::SessionContext;
@@ -104,9 +105,7 @@ impl<P> Clone for EmailedLink<P> {
 
 impl<P: LinkPurpose> EmailedLink<P> {
     pub(crate) fn new(
-        tokens: Arc<dyn VerificationTokenStore>,
-        redeemer: Redeemer,
-        clock: Arc<dyn Clock>,
+        deps: &CoreDeps,
         template: &str,
         lifetime: Duration,
     ) -> std::result::Result<Self, AssemblyError> {
@@ -126,9 +125,9 @@ impl<P: LinkPurpose> EmailedLink<P> {
         Ok(Self {
             template: template.to_owned(),
             lifetime,
-            tokens,
-            redeemer,
-            clock,
+            tokens: deps.verification_tokens.clone(),
+            redeemer: Redeemer::from_deps(deps),
+            clock: deps.clock.clone(),
             purpose: PhantomData,
         })
     }

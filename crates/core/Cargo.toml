@@ -56,7 +56,7 @@ name = "rate_limit"
 harness = false
 
 [[bench]]
-name = "enrollment"
+name = "signup"
 harness = false
 
 [[bench]]

@@ -262,9 +262,18 @@ impl From<&StoredPasskey> for PasskeySummary {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrationPurpose {
+    Signup,
+    Recovery,
+    AddPasskey,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredPasskeyRegistration {
     pub id: PasskeyChallengeId,
+    pub purpose: RegistrationPurpose,
     pub user_id: UserId,
     pub state: Vec<u8>,
     pub created_at: DateTime<Utc>,
@@ -434,6 +443,7 @@ mod tests {
     fn stored_passkey_registration_json_round_trips() {
         let reg = StoredPasskeyRegistration {
             id: PasskeyChallengeId::new(),
+            purpose: RegistrationPurpose::Recovery,
             user_id: UserId::new(),
             state: vec![0x00, 0x01, 0xfe, 0xff],
             created_at: ts(1_000),
@@ -444,6 +454,7 @@ mod tests {
         let back: StoredPasskeyRegistration =
             serde_json::from_str(&json).expect("deserialize registration");
         assert_eq!(reg.id, back.id);
+        assert_eq!(reg.purpose, back.purpose);
         assert_eq!(reg.user_id, back.user_id);
         assert_eq!(reg.state, back.state);
         assert_eq!(reg.created_at, back.created_at);

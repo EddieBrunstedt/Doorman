@@ -63,8 +63,9 @@ mod tests {
     use super::*;
     use crate::memory::InMemoryStorage;
     use crate::storage::{
-        AuthenticationPurpose, PasskeyChallengeId, Session, SessionId, StoredPasskeyAuthentication,
-        StoredPasskeyRegistration, TokenHash, UserId, VerificationPurpose, VerificationToken,
+        AuthenticationPurpose, PasskeyChallengeId, RegistrationPurpose, Session, SessionId,
+        StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, UserId,
+        VerificationPurpose, VerificationToken,
     };
 
     fn ts(secs: i64) -> DateTime<Utc> {
@@ -118,6 +119,7 @@ mod tests {
 
         let mk_reg = |expires_at: DateTime<Utc>| StoredPasskeyRegistration {
             id: PasskeyChallengeId::new(),
+            purpose: RegistrationPurpose::AddPasskey,
             user_id,
             state: vec![1, 2, 3],
             created_at: now - chrono::Duration::hours(2),

@@ -10,7 +10,7 @@ fn signup_manager() -> SignupManager {
     support::in_memory_core(InMemoryStorage::new().all_stores()).signup
 }
 
-fn enrollment(c: &mut Criterion) {
+fn signup(c: &mut Criterion) {
     let runtime = Runtime::new().expect("tokio runtime");
 
     c.bench_function("signup_request", |b| {
@@ -27,5 +27,5 @@ fn enrollment(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, enrollment);
+criterion_group!(benches, signup);
 criterion_main!(benches);

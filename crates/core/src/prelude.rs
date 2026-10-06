@@ -14,7 +14,9 @@ pub use crate::email::{
 pub use crate::error::{Error, Result, StorageError, StorageErrorKind, StorageResult};
 pub use crate::metrics::{MetricEvent, MetricSink, NoopMetricSink};
 pub use crate::operator::{NotificationPolicy, OperatorManager, OperatorNotice};
-pub use crate::passkey::{AuthenticationOutcome, PasskeyConfig, PasskeyManager};
+pub use crate::passkey::{
+    AuthenticationOutcome, PasskeyConfig, PasskeyManager, RegistrationOutcome,
+};
 pub use crate::purge::PurgeSummary;
 pub use crate::rate_limit::{
     NoopRateLimiter, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter,
@@ -31,8 +33,8 @@ pub use crate::signup::{
 };
 pub use crate::storage::{
     AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
-    Session, SessionId, SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication,
-    StoredPasskeyRegistration, TokenHash, User, UserId, UserStore, VerificationPurpose,
-    VerificationToken, VerificationTokenStore,
+    RegistrationPurpose, Session, SessionId, SessionStore, Storage, StoredPasskey,
+    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
+    VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
-pub use crate::verification::{EnrollmentOutcome, TOKEN_PLACEHOLDER, VerificationConsumeOutcome};
+pub use crate::verification::{TOKEN_PLACEHOLDER, VerificationConsumeOutcome};

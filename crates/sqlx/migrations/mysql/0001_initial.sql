@@ -54,6 +54,7 @@ CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
 
 CREATE TABLE passkey_registrations (
     id BINARY(16) PRIMARY KEY,
+    purpose VARCHAR(32) NOT NULL,
     user_id BINARY(16) NOT NULL,
     state BLOB NOT NULL,
     created_at DATETIME(6) NOT NULL,
