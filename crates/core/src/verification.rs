@@ -125,8 +125,9 @@ impl EnrollmentFlow {
     pub(crate) async fn start_enrollment(
         &self,
         user_id: UserId,
+        policy: EnrollmentPolicy,
     ) -> Result<VerificationConsumeOutcome> {
-        let (challenge_id, options) = self.passkey.start_enrollment(user_id).await?;
+        let (challenge_id, options) = self.passkey.start_enrollment(user_id, policy).await?;
         Ok(VerificationConsumeOutcome {
             challenge_id,
             options,

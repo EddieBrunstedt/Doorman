@@ -101,7 +101,7 @@ pub struct RecoveryManager {
     flow: EnrollmentFlow,
     link: EmailedLink<link::Recovery>,
     config: RecoveryConfig,
-    cooldown: chrono::Duration,
+    policy: EnrollmentPolicy,
 }
 
 impl RecoveryManager {
@@ -129,7 +129,10 @@ impl RecoveryManager {
             flow,
             link,
             config,
-            cooldown,
+            policy: EnrollmentPolicy {
+                cooldown: Some(cooldown),
+                credential_cap: CredentialCap::Exempt,
+            },
         })
     }
 
@@ -233,7 +236,7 @@ impl RecoveryManager {
         context: SessionContext,
     ) -> Result<VerificationConsumeOutcome> {
         let (user, ()) = self.link.redeem(token, &context).await?;
-        let outcome = self.flow.start_enrollment(user.id).await?;
+        let outcome = self.flow.start_enrollment(user.id, self.policy).await?;
 
         self.flow
             .emit(
@@ -252,13 +255,9 @@ impl RecoveryManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<EnrollmentOutcome> {
-        let policy = EnrollmentPolicy {
-            cooldown: Some(self.cooldown),
-            credential_cap: CredentialCap::Exempt,
-        };
         let outcome = self
             .flow
-            .enroll(challenge_id, response, name, context, policy)
+            .enroll(challenge_id, response, name, context, self.policy)
             .await?;
 
         self.flow.notifier().recovery_completed(&outcome.user).await;

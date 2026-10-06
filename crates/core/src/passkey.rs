@@ -22,6 +22,7 @@ use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
 use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
+use crate::recovery_cooldown::RecoveryCooldown;
 use crate::redeem::Redeemer;
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
@@ -75,6 +76,14 @@ pub(crate) enum CredentialCap {
 pub(crate) struct EnrollmentPolicy {
     pub cooldown: Option<chrono::Duration>,
     pub credential_cap: CredentialCap,
+}
+
+impl EnrollmentPolicy {
+    fn started_cooldown(&self, now: DateTime<Utc>) -> RecoveryCooldown {
+        self.cooldown.map_or(RecoveryCooldown::NONE, |length| {
+            RecoveryCooldown::start(now, length)
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -181,21 +190,18 @@ impl PasskeyManager {
         &self,
         session: &Session,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
-        let cooldown_until = session.active_recovery_cooldown_until(self.clock.now());
-        self.start_registration_inner(session.user_id, cooldown_until)
+        let cooldown = RecoveryCooldown::of_session(session, self.clock.now());
+        self.start_registration_inner(session.user_id, cooldown)
             .await
     }
 
     async fn start_registration_inner(
         &self,
         user_id: UserId,
-        recovery_cooldown_until: Option<DateTime<Utc>>,
+        cooldown: RecoveryCooldown,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let user = self.records.find_active(user_id).await?;
-        let (id, ccr) = self
-            .registrations
-            .issue(&user, recovery_cooldown_until)
-            .await?;
+        let (id, ccr) = self.registrations.issue(&user, cooldown).await?;
         tracing::info!(outcome = "started", "passkey registration started");
         Ok((id, ccr))
     }
@@ -213,7 +219,8 @@ impl PasskeyManager {
     ) -> Result<StoredPasskey> {
         let registration = self.redeem_registration(challenge_id, &context).await?;
         self.enforce_credential_cap(registration.user.id).await?;
-        let credential = self.verify_registration(&registration, response, name, None)?;
+        let credential =
+            self.verify_registration(&registration, response, name, registration.cooldown)?;
         self.store_credential(&registration.user, credential, &context)
             .await
     }
@@ -221,9 +228,11 @@ impl PasskeyManager {
     pub(crate) async fn start_enrollment(
         &self,
         user_id: UserId,
+        policy: EnrollmentPolicy,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         self.registrations.invalidate_pending(user_id).await?;
-        self.start_registration_inner(user_id, None).await
+        let cooldown = policy.started_cooldown(self.clock.now());
+        self.start_registration_inner(user_id, cooldown).await
     }
 
     pub(crate) async fn enroll(
@@ -234,27 +243,20 @@ impl PasskeyManager {
         context: SessionContext,
         policy: EnrollmentPolicy,
     ) -> Result<EnrollmentOutcome> {
-        let cooldown_until = policy.cooldown.map(|cooldown| {
-            self.clock
-                .now()
-                .checked_add_signed(cooldown)
-                .unwrap_or(DateTime::<Utc>::MAX_UTC)
-        });
+        let started = policy.started_cooldown(self.clock.now());
 
         let registration = self.redeem_registration(challenge_id, &context).await?;
         let user = &registration.user;
         if policy.credential_cap == CredentialCap::Enforce {
             self.enforce_credential_cap(user.id).await?;
         }
-        let credential = self.verify_registration(&registration, response, name, cooldown_until)?;
-        if cooldown_until.is_some() {
+        let cooldown = registration.cooldown.extended_by(started);
+        let credential = self.verify_registration(&registration, response, name, cooldown)?;
+        if policy.cooldown.is_some() {
             self.registrations.invalidate_pending(user.id).await?;
         }
         let passkey = self.store_credential(user, credential, &context).await?;
-        let session = self
-            .sessions
-            .issue(user.id, context, cooldown_until)
-            .await?;
+        let session = self.sessions.issue(user.id, context, cooldown).await?;
 
         Ok(EnrollmentOutcome {
             user: registration.user,
@@ -293,7 +295,7 @@ impl PasskeyManager {
         registration: &RedeemedRegistration,
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
-        recovery_cooldown_override: Option<DateTime<Utc>>,
+        cooldown: RecoveryCooldown,
     ) -> Result<StoredPasskey> {
         let user_id = registration.user.id;
         let passkey = self
@@ -317,8 +319,7 @@ impl PasskeyManager {
             transports: metadata.transports,
             backup_eligible: metadata.backup_eligible,
             backup_state: metadata.backup_state,
-            recovery_cooldown_until: recovery_cooldown_override
-                .or(registration.recovery_cooldown_until),
+            recovery_cooldown_until: cooldown.until(),
         })
     }
 
@@ -451,7 +452,7 @@ impl PasskeyManager {
         let user_id = user.id;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
-        let active_recovery_cooldown_until = passkey.active_recovery_cooldown_until(now);
+        let cooldown = RecoveryCooldown::of_passkey(&passkey, now);
 
         self.metrics.record(MetricEvent::LoginSucceeded);
         self.audit
@@ -465,14 +466,7 @@ impl PasskeyManager {
             })
             .await;
 
-        let session = match active_recovery_cooldown_until {
-            Some(cooldown_until) => {
-                self.sessions
-                    .create_restricted(user_id, context, cooldown_until)
-                    .await?
-            }
-            None => self.sessions.create(user_id, context).await?,
-        };
+        let session = self.sessions.issue(user_id, context, cooldown).await?;
         Ok(AuthenticationOutcome { user, session })
     }
 

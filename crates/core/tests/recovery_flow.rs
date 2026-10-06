@@ -1510,3 +1510,90 @@ async fn ordinary_registration_still_rejected_at_cap() {
         "no credential added past the cap",
     );
 }
+
+#[tokio::test]
+async fn recovery_registration_finished_as_plain_registration_keeps_cooldown() {
+    let h = Harness::fresh();
+    let _ = provision_user(&h, "alice@example.com").await;
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access to your account")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+    let consume = h
+        .recovery
+        .consume_recovery(&token, SessionContext::default())
+        .await
+        .expect("consume");
+
+    let mut wa = authenticator();
+    let attestation = wa.do_registration(consume.options);
+    let passkey = h
+        .passkey
+        .finish_registration(
+            consume.challenge_id,
+            &attestation,
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish_registration");
+    assert!(passkey.recovery_cooldown_until.is_some());
+
+    let (auth_id, options) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
+    let assertion = wa.do_authentication(options, &passkey.credential_id);
+    let issued = h
+        .passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect("finish auth")
+        .session;
+    assert!(issued.session.is_in_recovery_cooldown(h.clock.now()));
+}
+
+#[tokio::test]
+async fn registration_started_in_cooldown_finished_as_signup_keeps_cooldown() {
+    let h = Harness::fresh();
+    let _ = provision_user(&h, "alice@example.com").await;
+    let outcome = drive_recovery_finish(&h, "alice@example.com").await;
+    let resolved = h
+        .session_manager
+        .resolve(&outcome.session.token)
+        .await
+        .expect("the recovery session is live");
+
+    let mut wa = authenticator();
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration(&resolved.session)
+        .await
+        .expect("start_registration");
+    let response = wa.do_registration(ccr);
+    let signed_up = h
+        .signup
+        .finish_signup(challenge_id, &response, None, SessionContext::default())
+        .await
+        .expect("finish_signup");
+
+    assert_eq!(
+        signed_up.session.session.recovery_cooldown_until,
+        outcome.session.session.recovery_cooldown_until,
+    );
+    assert!(
+        signed_up
+            .session
+            .session
+            .is_in_recovery_cooldown(h.clock.now())
+    );
+}

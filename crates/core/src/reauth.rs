@@ -11,6 +11,7 @@ use crate::challenge::{PasskeyChallenge, Reauth};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::passkey::PasskeyConfig;
+use crate::recovery_cooldown::RecoveryCooldown;
 use crate::redeem::Redeemer;
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, Session, Storage, UserId};
@@ -137,9 +138,7 @@ impl ReauthManager {
         proof: Option<&ReauthProof>,
         context: &SessionContext,
     ) -> Result<()> {
-        if session.is_in_recovery_cooldown(self.clock.now()) {
-            return Err(Error::RecoveryCooldownActive);
-        }
+        RecoveryCooldown::refuse_destructive_action(session, self.clock.now())?;
         if !self.policy.requires(action) {
             return Ok(());
         }

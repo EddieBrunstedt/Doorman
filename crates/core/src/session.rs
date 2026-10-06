@@ -11,6 +11,7 @@ use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
+use crate::recovery_cooldown::RecoveryCooldown;
 use crate::storage::{
     Session, SessionId, SessionStore, SessionSummary, TokenHash, User, UserId, UserStore,
 };
@@ -166,27 +167,14 @@ impl SessionManager {
 
     #[tracing::instrument(skip(self, context), fields(user_id = %user_id))]
     pub async fn create(&self, user_id: UserId, context: SessionContext) -> Result<IssuedSession> {
-        self.issue(user_id, context, None).await
-    }
-
-    #[tracing::instrument(
-        skip(self, context),
-        fields(user_id = %user_id, cooldown_until = %cooldown_until),
-    )]
-    pub(crate) async fn create_restricted(
-        &self,
-        user_id: UserId,
-        context: SessionContext,
-        cooldown_until: DateTime<Utc>,
-    ) -> Result<IssuedSession> {
-        self.issue(user_id, context, Some(cooldown_until)).await
+        self.issue(user_id, context, RecoveryCooldown::NONE).await
     }
 
     pub(crate) async fn issue(
         &self,
         user_id: UserId,
         context: SessionContext,
-        cooldown_until: Option<DateTime<Utc>>,
+        cooldown: RecoveryCooldown,
     ) -> Result<IssuedSession> {
         if let Some(max) = self.config.max_sessions_per_user {
             self.enforce_session_cap(user_id, max.get()).await?;
@@ -204,7 +192,7 @@ impl SessionManager {
             expires_at: self.deadline(now, now),
             ip: context.ip.clone(),
             user_agent: context.user_agent.clone(),
-            recovery_cooldown_until: cooldown_until,
+            recovery_cooldown_until: cooldown.until(),
         };
 
         self.sessions.create_session(session.clone()).await?;

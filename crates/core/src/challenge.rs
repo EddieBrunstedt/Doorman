@@ -3,7 +3,6 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use webauthn_rs::prelude::{
@@ -17,6 +16,7 @@ use crate::audit::SecretKind;
 use crate::clock::{Clock, expiry};
 use crate::error::{Error, Result};
 use crate::passkey::{PasskeyConfig, decode_credential};
+use crate::recovery_cooldown::RecoveryCooldown;
 use crate::redeem::{Candidate, Redeemer};
 use crate::session::SessionContext;
 use crate::storage::{
@@ -33,7 +33,7 @@ pub(crate) enum Reauth {}
 pub(crate) struct RedeemedRegistration {
     pub user: User,
     pub state: PasskeyRegistration,
-    pub recovery_cooldown_until: Option<DateTime<Utc>>,
+    pub cooldown: RecoveryCooldown,
 }
 
 pub(crate) struct PasskeyChallenge<P> {
@@ -125,7 +125,7 @@ impl PasskeyChallenge<Registration> {
     pub(crate) async fn issue(
         &self,
         user: &User,
-        recovery_cooldown_until: Option<DateTime<Utc>>,
+        cooldown: RecoveryCooldown,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let user_id = user.id;
         if let Some(max) = self.max_pending_registrations {
@@ -170,7 +170,7 @@ impl PasskeyChallenge<Registration> {
                 state: encode_state(&state)?,
                 created_at: now,
                 expires_at: expiry(now, self.lifetime)?,
-                recovery_cooldown_until,
+                recovery_cooldown_until: cooldown.until(),
             })
             .await?;
         Ok((id, ccr))
@@ -187,10 +187,15 @@ impl PasskeyChallenge<Registration> {
             owner: Some(stored.user_id),
             purpose_matches: true,
             expires_at: stored.expires_at,
-            payload: decode_state(&stored.state)
-                .map(|state| (stored.user_id, stored.recovery_cooldown_until, state)),
+            payload: decode_state(&stored.state).map(|state| {
+                (
+                    stored.user_id,
+                    RecoveryCooldown::of_registration(&stored),
+                    state,
+                )
+            }),
         });
-        let (user_id, recovery_cooldown_until, state) = self
+        let (user_id, cooldown, state) = self
             .redeemer
             .check(secret, None, candidate, context)
             .await?;
@@ -198,7 +203,7 @@ impl PasskeyChallenge<Registration> {
         Ok(RedeemedRegistration {
             user,
             state,
-            recovery_cooldown_until,
+            cooldown,
         })
     }
 

@@ -19,6 +19,7 @@ pub mod purge;
 pub mod rate_limit;
 pub mod reauth;
 pub mod recovery;
+mod recovery_cooldown;
 mod redeem;
 pub mod session;
 pub mod signup;

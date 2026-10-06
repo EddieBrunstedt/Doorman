@@ -27,7 +27,7 @@ fn harness_with_lifetime(absolute_lifetime: Duration) -> Harness {
 }
 
 #[test]
-fn session_active_recovery_cooldown_until_filters_expired_deadlines() {
+fn session_recovery_cooldown_ignores_expired_deadlines() {
     let now = ts(2026, 1, 1);
     let active_until = now + ChronoDuration::minutes(10);
     let session = Session {
@@ -42,24 +42,18 @@ fn session_active_recovery_cooldown_until_filters_expired_deadlines() {
         recovery_cooldown_until: Some(active_until),
     };
 
-    assert_eq!(
-        session.active_recovery_cooldown_until(now),
-        Some(active_until)
-    );
     assert!(session.is_in_recovery_cooldown(now));
 
     let expired = Session {
         recovery_cooldown_until: Some(now - ChronoDuration::seconds(1)),
         ..session.clone()
     };
-    assert_eq!(expired.active_recovery_cooldown_until(now), None);
     assert!(!expired.is_in_recovery_cooldown(now));
 
     let unrestricted = Session {
         recovery_cooldown_until: None,
         ..session
     };
-    assert_eq!(unrestricted.active_recovery_cooldown_until(now), None);
     assert!(!unrestricted.is_in_recovery_cooldown(now));
 }
 
@@ -81,23 +75,13 @@ fn stored_passkey_cooldown_predicate_mirrors_session() {
         recovery_cooldown_until: Some(active_until),
     };
 
-    assert_eq!(
-        credential.active_recovery_cooldown_until(now),
-        Some(active_until)
-    );
     assert!(credential.is_in_recovery_cooldown(now));
-
-    assert_eq!(
-        credential.active_recovery_cooldown_until(active_until),
-        None
-    );
     assert!(!credential.is_in_recovery_cooldown(active_until));
 
     let unrestricted = StoredPasskey {
         recovery_cooldown_until: None,
         ..credential
     };
-    assert_eq!(unrestricted.active_recovery_cooldown_until(now), None);
     assert!(!unrestricted.is_in_recovery_cooldown(now));
 }
 

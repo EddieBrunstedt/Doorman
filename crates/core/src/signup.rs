@@ -100,6 +100,11 @@ impl Default for SignupConfig {
     }
 }
 
+const SIGNUP_POLICY: EnrollmentPolicy = EnrollmentPolicy {
+    cooldown: None,
+    credential_cap: CredentialCap::Enforce,
+};
+
 #[derive(Clone)]
 pub struct SignupManager {
     flow: EnrollmentFlow,
@@ -237,7 +242,7 @@ impl SignupManager {
     ) -> Result<VerificationConsumeOutcome> {
         let (user, ()) = self.link.redeem(token, &context).await?;
         self.flow.records().mark_email_verified(&user).await?;
-        let outcome = self.flow.start_enrollment(user.id).await?;
+        let outcome = self.flow.start_enrollment(user.id, SIGNUP_POLICY).await?;
 
         self.flow
             .emit(
@@ -256,13 +261,9 @@ impl SignupManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<EnrollmentOutcome> {
-        let policy = EnrollmentPolicy {
-            cooldown: None,
-            credential_cap: CredentialCap::Enforce,
-        };
         let outcome = self
             .flow
-            .enroll(challenge_id, response, name, context, policy)
+            .enroll(challenge_id, response, name, context, SIGNUP_POLICY)
             .await?;
         tracing::info!(outcome = "succeeded", "signup finished");
         Ok(outcome)

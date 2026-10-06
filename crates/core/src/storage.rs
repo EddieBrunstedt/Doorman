@@ -110,16 +110,6 @@ pub struct Session {
     pub recovery_cooldown_until: Option<DateTime<Utc>>,
 }
 
-impl Session {
-    pub fn active_recovery_cooldown_until(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        self.recovery_cooldown_until.filter(|&until| now < until)
-    }
-
-    pub fn is_in_recovery_cooldown(&self, now: DateTime<Utc>) -> bool {
-        self.active_recovery_cooldown_until(now).is_some()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSummary {
     pub id: SessionId,
@@ -222,16 +212,6 @@ pub struct StoredPasskey {
     pub backup_eligible: bool,
     pub backup_state: bool,
     pub recovery_cooldown_until: Option<DateTime<Utc>>,
-}
-
-impl StoredPasskey {
-    pub fn active_recovery_cooldown_until(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        self.recovery_cooldown_until.filter(|&until| now < until)
-    }
-
-    pub fn is_in_recovery_cooldown(&self, now: DateTime<Utc>) -> bool {
-        self.active_recovery_cooldown_until(now).is_some()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
