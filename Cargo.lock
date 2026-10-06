@@ -1453,6 +1453,9 @@ dependencies = [
  "async-trait",
  "chrono",
  "doorman-core",
+ "url",
+ "webauthn-authenticator-rs",
+ "webauthn-rs-proto",
 ]
 
 [[package]]

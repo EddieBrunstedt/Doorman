@@ -21,9 +21,9 @@ use doorman_core::storage::{PasskeyStore, User, UserStatus, UserStore};
 use doorman_test_support::MockClock;
 
 use crate::common::{
-    Harness, RECOVERY_URL, RP_ID, RP_NAME, ResidentTestAuthenticator, authenticator, kinds,
-    make_user, passkey_count, provision_user, recovery_config, register_passkey, rp_origin,
-    session_count, session_for, token_from_email,
+    Harness, RECOVERY_URL, RP_ID, RP_NAME, authenticator, kinds, make_user, passkey_count,
+    provision_user, recovery_config, register_passkey, rp_origin, session_count, session_for,
+    token_from_email,
 };
 
 #[tokio::test]
@@ -195,7 +195,7 @@ async fn finish_refused_for_disabled_user_registers_nothing() {
         .redeem_recovery_link(&token, SessionContext::default())
         .await
         .expect("redeem while active");
-    let mut wa = ResidentTestAuthenticator::new();
+    let mut wa = authenticator();
     let attestation = wa.do_registration(started.options);
 
     disable_user(&h, &user).await;
@@ -422,7 +422,7 @@ async fn successful_recovery_registers_passkey_and_sends_success_notice() {
         .expect("redeem");
 
     let mail_before_finish = h.email.sent().len();
-    let mut wa = ResidentTestAuthenticator::new();
+    let mut wa = authenticator();
     let attestation = wa.do_registration(started.options);
     let outcome = h
         .recovery
@@ -706,7 +706,7 @@ async fn finish_recovery_stores_same_cool_down_on_session_and_passkey() {
         .redeem_recovery_link(&token, SessionContext::default())
         .await
         .expect("redeem");
-    let mut wa = ResidentTestAuthenticator::new();
+    let mut wa = authenticator();
     let attestation = wa.do_registration(started.options);
     let now_at_finish = h.clock.now();
     let outcome = h
@@ -764,7 +764,7 @@ async fn recovery_created_passkey_login_inherits_active_cool_down() {
         .redeem_recovery_link(&token, SessionContext::default())
         .await
         .expect("redeem");
-    let mut wa = ResidentTestAuthenticator::new();
+    let mut wa = authenticator();
     let attestation = wa.do_registration(started.options);
     let outcome = h
         .recovery
@@ -938,7 +938,7 @@ async fn recovery_cool_down_expires_after_window() {
         .redeem_recovery_link(&token, SessionContext::default())
         .await
         .expect("redeem");
-    let mut wa = ResidentTestAuthenticator::new();
+    let mut wa = authenticator();
     let attestation = wa.do_registration(started.options);
     let outcome = h
         .recovery
@@ -1268,7 +1268,7 @@ async fn drive_recovery_finish(
         .redeem_recovery_link(&token, SessionContext::default())
         .await
         .expect("redeem");
-    let mut wa = ResidentTestAuthenticator::new();
+    let mut wa = authenticator();
     let attestation = wa.do_registration(started.options);
     h.recovery
         .finish_recovery(
@@ -1413,7 +1413,7 @@ async fn recovery_succeeds_when_at_passkey_cap() {
         .redeem_recovery_link(&token, SessionContext::default())
         .await
         .expect("redeem");
-    let mut recovery_wa = ResidentTestAuthenticator::new();
+    let mut recovery_wa = authenticator();
     let attestation = recovery_wa.do_registration(started.options);
     let outcome = h
         .recovery

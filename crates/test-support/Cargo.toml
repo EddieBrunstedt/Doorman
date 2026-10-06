@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 repository.workspace = true
 rust-version.workspace = true
-description = "Test-only collaborators (mock clock, in-memory audit sink, capturing email sender) shared by the doorman test suites. Not published."
+description = "Test-only collaborators (mock clock, in-memory audit sink, capturing email sender, resident soft authenticator) shared by the doorman test suites. Not published."
 
 [lints]
 workspace = true
@@ -16,3 +16,6 @@ workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 doorman-core = { path = "../core", version = "0.1.0" }
+url.workspace = true
+webauthn-authenticator-rs.workspace = true
+webauthn-rs-proto.workspace = true

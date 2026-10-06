@@ -1,3 +1,5 @@
+mod authenticator;
+
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -9,6 +11,11 @@ use doorman_core::email::{Email, EmailSender};
 use doorman_core::email_link::TOKEN_PLACEHOLDER;
 use doorman_core::error::{EmailError, EmailResult};
 use doorman_core::metrics::{MetricEvent, MetricSink};
+
+pub use authenticator::{
+    ResidentAuthenticator, assert_discoverable_request_options,
+    assert_resident_registration_options,
+};
 
 pub fn token_from_email(body: &str, template: &str) -> String {
     let prefix = template

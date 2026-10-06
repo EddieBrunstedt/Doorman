@@ -75,7 +75,7 @@ async fn ensure_matrix_cool_down_blocks_every_action_before_policy() {
 async fn fresh_proof(
     h: &Harness,
     user: doorman_core::storage::UserId,
-    wa: &mut common::ResidentTestAuthenticator,
+    wa: &mut common::ResidentAuthenticator,
 ) -> ReauthProof {
     let (challenge_id, options) = h.reauth.start(user).await.expect("reauth start");
     let assertion = wa.do_scoped_authentication(options);

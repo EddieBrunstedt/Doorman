@@ -33,15 +33,11 @@ use doorman_core::storage::{
 use doorman_core::user::{UserConfig, UserManager};
 pub use doorman_test_support::token_from_email;
 use doorman_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
-use url::Url;
-use webauthn_authenticator_rs::WebauthnAuthenticator;
-use webauthn_authenticator_rs::prelude::Url as AuthUrl;
-use webauthn_authenticator_rs::softpasskey::SoftPasskey;
-use webauthn_rs::prelude::{
-    CreationChallengeResponse, PublicKeyCredential, RegisterPublicKeyCredential,
-    RequestChallengeResponse,
+pub use doorman_test_support::{
+    ResidentAuthenticator, assert_discoverable_request_options,
+    assert_resident_registration_options,
 };
-use webauthn_rs_proto::{AllowCredentials, ResidentKeyRequirement};
+use url::Url;
 
 pub const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 pub const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
@@ -51,10 +47,6 @@ pub const RP_NAME: &str = "doorman tests";
 
 pub fn rp_origin() -> Url {
     Url::parse("http://localhost:8080").expect("valid url")
-}
-
-pub fn auth_origin() -> AuthUrl {
-    AuthUrl::parse("http://localhost:8080").expect("valid auth url")
 }
 
 pub fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
@@ -546,7 +538,7 @@ fn plain_session(h: &Harness, user_id: UserId, cool_down: Option<DateTime<Utc>>)
 pub async fn register_passkey(
     h: &Harness,
     user: UserId,
-    wa: &mut ResidentTestAuthenticator,
+    wa: &mut ResidentAuthenticator,
     name: Option<&str>,
 ) -> StoredPasskey {
     let (challenge_id, ccr) = h
@@ -586,7 +578,7 @@ pub async fn provision_user(h: &Harness, email: &str) -> User {
         .await
         .expect("signup redeem");
 
-    let mut wa = ResidentTestAuthenticator::new();
+    let mut wa = authenticator();
     let attestation = wa.do_registration(started.options);
     let outcome = h
         .signup
@@ -601,140 +593,6 @@ pub async fn provision_user(h: &Harness, email: &str) -> User {
     outcome.user
 }
 
-#[derive(Clone)]
-struct ResidentCredential {
-    credential_id: Vec<u8>,
-    user_handle: Vec<u8>,
-}
-
-pub struct ResidentTestAuthenticator {
-    inner: WebauthnAuthenticator<SoftPasskey>,
-    resident_credentials: Vec<ResidentCredential>,
-}
-
-impl ResidentTestAuthenticator {
-    pub fn new() -> Self {
-        Self {
-            inner: WebauthnAuthenticator::new(SoftPasskey::new(true)),
-            resident_credentials: Vec::new(),
-        }
-    }
-
-    pub fn do_registration(
-        &mut self,
-        challenge: CreationChallengeResponse,
-    ) -> RegisterPublicKeyCredential {
-        assert_resident_registration_options(&challenge);
-
-        let user_handle = challenge.public_key.user.id.as_ref().to_vec();
-        let mut compatible = challenge;
-        let selection = compatible
-            .public_key
-            .authenticator_selection
-            .as_mut()
-            .expect("passkey registration includes authenticator selection");
-        selection.require_resident_key = false;
-        selection.resident_key = None;
-
-        let response = self
-            .inner
-            .do_registration(auth_origin(), compatible)
-            .expect("authenticator register");
-        self.resident_credentials.push(ResidentCredential {
-            credential_id: response.raw_id.as_ref().to_vec(),
-            user_handle,
-        });
-        response
-    }
-
-    pub fn do_authentication(
-        &mut self,
-        challenge: RequestChallengeResponse,
-        credential_id: &[u8],
-    ) -> PublicKeyCredential {
-        self.do_authentication_inner(challenge, credential_id, true)
-    }
-
-    pub fn do_scoped_authentication(
-        &mut self,
-        challenge: RequestChallengeResponse,
-    ) -> PublicKeyCredential {
-        assert!(
-            !challenge.public_key.allow_credentials.is_empty(),
-            "re-auth challenge must be allow-list scoped"
-        );
-        self.inner
-            .do_authentication(auth_origin(), challenge)
-            .expect("authenticator auth")
-    }
-
-    pub fn do_authentication_without_user_handle(
-        &mut self,
-        challenge: RequestChallengeResponse,
-        credential_id: &[u8],
-    ) -> PublicKeyCredential {
-        self.do_authentication_inner(challenge, credential_id, false)
-    }
-
-    fn do_authentication_inner(
-        &mut self,
-        challenge: RequestChallengeResponse,
-        credential_id: &[u8],
-        include_user_handle: bool,
-    ) -> PublicKeyCredential {
-        assert_discoverable_request_options(&challenge);
-        let resident = self
-            .resident_credentials
-            .iter()
-            .find(|c| c.credential_id == credential_id)
-            .cloned()
-            .expect("credential is resident on test authenticator");
-
-        let mut compatible = challenge;
-        compatible.public_key.allow_credentials = vec![AllowCredentials {
-            type_: "public-key".to_string(),
-            id: resident.credential_id.clone().into(),
-            transports: None,
-        }];
-        let mut assertion = self
-            .inner
-            .do_authentication(auth_origin(), compatible)
-            .expect("authenticator auth");
-        assertion.response.user_handle = include_user_handle.then(|| resident.user_handle.into());
-        assertion
-    }
-}
-
-impl Default for ResidentTestAuthenticator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub fn authenticator() -> ResidentTestAuthenticator {
-    ResidentTestAuthenticator::new()
-}
-
-pub fn assert_resident_registration_options(challenge: &CreationChallengeResponse) {
-    let selection = challenge
-        .public_key
-        .authenticator_selection
-        .as_ref()
-        .expect("registration includes authenticator selection");
-    assert!(
-        selection.require_resident_key,
-        "registration must require resident keys"
-    );
-    assert_eq!(
-        selection.resident_key,
-        Some(ResidentKeyRequirement::Required),
-        "registration must set residentKey=required"
-    );
-}
-
-pub fn assert_discoverable_request_options(challenge: &RequestChallengeResponse) {
-    assert!(
-        challenge.public_key.allow_credentials.is_empty(),
-        "discoverable auth must not send allowCredentials"
-    );
+pub fn authenticator() -> ResidentAuthenticator {
+    ResidentAuthenticator::new(&rp_origin())
 }
