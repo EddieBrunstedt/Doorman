@@ -3,11 +3,16 @@
 use crate::common;
 
 use testcontainers_modules::mysql::Mysql;
+use testcontainers_modules::testcontainers::ImageExt;
+use testcontainers_modules::testcontainers::core::Mount;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
 #[tokio::test]
 async fn mysql_storage_conformance() {
+    // A tmpfs data directory cuts the server's first-boot initialisation from
+    // about 25s to 6s.
     let node = Mysql::default()
+        .with_mount(Mount::tmpfs_mount("/var/lib/mysql"))
         .start()
         .await
         .expect("start mysql container");
