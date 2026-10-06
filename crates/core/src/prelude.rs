@@ -4,6 +4,7 @@ pub use crate::audit::{
     Actor, AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, OperatorActor,
     RecoveryFailureReason, RedemptionFailureReason, SecretKind,
 };
+pub use crate::cache::{SessionCacheConfig, SessionCachePolicy};
 pub use crate::clock::{Clock, SystemClock};
 #[cfg(feature = "file-email")]
 pub use crate::email::FileEmailSender;

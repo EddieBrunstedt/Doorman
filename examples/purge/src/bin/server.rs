@@ -25,6 +25,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             external_origin.clone(),
             "doorman purge example",
         )?)
+        .session_cache(SessionCachePolicy::disabled())
         .reauthentication(ReauthPolicy::disabled())
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))

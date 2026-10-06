@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use doorman_axum::SessionCacheConfig;
+use doorman_axum::SessionCachePolicy;
 use doorman_core::account::AccountConfig;
 use doorman_core::assembly::AuthCore;
 use doorman_core::audit::NoopAuditSink;
@@ -15,7 +15,7 @@ use doorman_core::storage::Storage;
 use doorman_test_support::CapturingEmailSender;
 use url::Url;
 
-pub fn in_memory_core(storage: Storage, cache: SessionCacheConfig) -> AuthCore {
+pub fn in_memory_core(storage: Storage, cache: SessionCachePolicy) -> AuthCore {
     AuthCore::builder(storage)
         .email(Arc::new(CapturingEmailSender::new()))
         .audit(Arc::new(NoopAuditSink))
@@ -30,7 +30,7 @@ pub fn in_memory_core(storage: Storage, cache: SessionCacheConfig) -> AuthCore {
             absolute_lifetime: Duration::from_secs(60 * 60),
             ..SessionConfig::default()
         })
-        .cache(cache)
+        .session_cache(cache)
         .signup(SignupConfig {
             url_template: "https://app.test/signup?token={token}".to_string(),
             ..SignupConfig::default()

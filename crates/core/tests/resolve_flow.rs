@@ -8,7 +8,7 @@ use chrono::Duration as ChronoDuration;
 use doorman_core::Error;
 use doorman_core::assembly::AssemblyError;
 use doorman_core::audit::OperatorActor;
-use doorman_core::cache::SessionCacheConfig;
+use doorman_core::cache::{SessionCacheConfig, SessionCachePolicy};
 use doorman_core::clock::Clock;
 use doorman_core::metrics::MetricEvent;
 use doorman_core::session::{SessionConfig, SessionContext, hash_token};
@@ -20,12 +20,25 @@ fn sliding_config() -> SessionConfig {
     SessionConfig {
         absolute_lifetime: Duration::from_secs(60 * 60),
         idle_timeout: Some(Duration::from_secs(60 * 10)),
-        max_sessions_per_user: None,
+        ..SessionConfig::default()
     }
 }
 
 fn sliding_harness() -> Harness {
     Harness::builder().session_config(sliding_config()).build()
+}
+
+fn per_process(ttl: Duration) -> SessionCachePolicy {
+    SessionCachePolicy::per_process(SessionCacheConfig {
+        ttl,
+        ..SessionCacheConfig::default()
+    })
+}
+
+fn cached_harness() -> Harness {
+    Harness::builder()
+        .session_cache(per_process(Duration::from_secs(60)))
+        .build()
 }
 
 async fn signed_in(h: &Harness, email: &str) -> (User, String) {
@@ -48,7 +61,7 @@ fn misses(h: &Harness) -> usize {
 
 #[tokio::test]
 async fn resolves_from_storage_then_serves_from_cache() {
-    let h = Harness::fresh();
+    let h = cached_harness();
     let (user, token) = signed_in(&h, "alice@example.com").await;
 
     let first = h
@@ -81,6 +94,52 @@ async fn resolves_from_storage_then_serves_from_cache() {
 }
 
 #[tokio::test]
+async fn a_revocation_reaches_another_process_at_once() {
+    let h = Harness::fresh();
+    let other = h.another_process();
+    let (_, token) = signed_in(&h, "alice@example.com").await;
+    other
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("the other process resolves the session");
+
+    h.session_manager.revoke(&token).await.expect("revoke");
+    let err = other.session_manager.resolve(&token).await.err();
+    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn a_caching_process_serves_a_revoked_session_until_its_ttl() {
+    let h = cached_harness();
+    let other = h.another_process();
+    let (_, token) = signed_in(&h, "alice@example.com").await;
+    other
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("warm the other process");
+
+    h.session_manager.revoke(&token).await.expect("revoke");
+    h.session_manager
+        .resolve(&token)
+        .await
+        .err()
+        .expect("the revoking process refuses it at once");
+
+    h.clock.advance(ChronoDuration::seconds(59));
+    other
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("the other process still serves its cached session");
+
+    h.clock.advance(ChronoDuration::seconds(1));
+    let err = other.session_manager.resolve(&token).await.err();
+    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
+}
+
+#[tokio::test]
 async fn unknown_token_is_refused() {
     let h = Harness::fresh();
     let err = h.session_manager.resolve("not-a-session").await.err();
@@ -94,6 +153,7 @@ async fn warm_entry_past_its_session_deadline_is_not_served() {
             absolute_lifetime: Duration::from_secs(30),
             ..SessionConfig::default()
         })
+        .session_cache(per_process(Duration::from_secs(60)))
         .build();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     h.session_manager
@@ -109,7 +169,7 @@ async fn warm_entry_past_its_session_deadline_is_not_served() {
 
 #[tokio::test]
 async fn revoke_evicts_the_warm_entry() {
-    let h = Harness::fresh();
+    let h = cached_harness();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     h.session_manager
         .resolve(&token)
@@ -124,7 +184,7 @@ async fn revoke_evicts_the_warm_entry() {
 
 #[tokio::test]
 async fn revoke_by_id_evicts_the_warm_entry() {
-    let h = Harness::fresh();
+    let h = cached_harness();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     let warm = h.session_manager.resolve(&token).await.expect("warm");
 
@@ -139,7 +199,7 @@ async fn revoke_by_id_evicts_the_warm_entry() {
 
 #[tokio::test]
 async fn revoke_other_sessions_evicts_only_the_others() {
-    let h = Harness::fresh();
+    let h = cached_harness();
     let (user, current) = signed_in(&h, "carol@example.com").await;
     let other = h
         .session_manager
@@ -171,6 +231,7 @@ async fn session_cap_eviction_evicts_the_warm_entry() {
             max_sessions_per_user: NonZeroU32::new(1),
             ..SessionConfig::default()
         })
+        .session_cache(per_process(Duration::from_secs(60)))
         .build();
     let (user, oldest) = signed_in(&h, "dave@example.com").await;
     h.session_manager.resolve(&oldest).await.expect("warm");
@@ -186,7 +247,7 @@ async fn session_cap_eviction_evicts_the_warm_entry() {
 
 #[tokio::test]
 async fn revoke_all_for_user_evicts_every_warm_entry() {
-    let h = Harness::fresh();
+    let h = cached_harness();
     let (user, first) = signed_in(&h, "bob@example.com").await;
     let second = h
         .session_manager
@@ -215,7 +276,7 @@ async fn revoke_all_for_user_evicts_every_warm_entry() {
 
 #[tokio::test]
 async fn disabled_account_is_refused_and_never_cached() {
-    let h = Harness::fresh();
+    let h = cached_harness();
     let (user, token) = signed_in(&h, "frozen@example.com").await;
     let now = h.clock.now();
     h.users
@@ -236,7 +297,7 @@ async fn disabled_account_is_refused_and_never_cached() {
 
 #[tokio::test]
 async fn operator_disable_evicts_the_warm_entry() {
-    let h = Harness::fresh();
+    let h = cached_harness();
     let (user, token) = signed_in(&h, "locked@example.com").await;
     h.session_manager
         .resolve(&token)
@@ -253,7 +314,7 @@ async fn operator_disable_evicts_the_warm_entry() {
 
 #[tokio::test]
 async fn email_change_evicts_the_warm_entry() {
-    let h = Harness::fresh();
+    let h = cached_harness();
     let (_, token) = signed_in(&h, "old@example.com").await;
     let warm = h
         .session_manager
@@ -283,7 +344,7 @@ async fn email_change_evicts_the_warm_entry() {
 
 #[tokio::test]
 async fn email_verification_evicts_the_warm_entry() {
-    let h = Harness::fresh();
+    let h = cached_harness();
     let now = h.clock.now();
     let user = User {
         id: UserId::new(),
@@ -371,7 +432,10 @@ async fn miss_after_the_throttle_slides_and_reports_it() {
 
 #[tokio::test]
 async fn hit_never_slides() {
-    let h = sliding_harness();
+    let h = Harness::builder()
+        .session_config(sliding_config())
+        .session_cache(per_process(Duration::from_secs(60)))
+        .build();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     h.clock.advance(ChronoDuration::seconds(90));
     let slid = h.session_manager.resolve(&token).await.expect("slide");
@@ -384,18 +448,37 @@ async fn hit_never_slides() {
 }
 
 #[tokio::test]
-async fn miss_within_the_throttle_does_not_slide() {
+async fn read_within_the_slide_interval_does_not_slide() {
     let h = sliding_harness();
-    let (user, token) = signed_in(&h, "alice@example.com").await;
+    let (_, token) = signed_in(&h, "alice@example.com").await;
     h.clock.advance(ChronoDuration::seconds(90));
     let first = h.session_manager.resolve(&token).await.expect("slide");
 
-    h.session_manager.cache().invalidate_user(user.id);
     h.clock.advance(ChronoDuration::seconds(30));
-    let second = h.session_manager.resolve(&token).await.expect("miss");
+    let second = h.session_manager.resolve(&token).await.expect("read");
     assert!(!second.slid);
     assert_eq!(second.session.expires_at, first.session.expires_at);
     assert_eq!(second.session.last_used_at, first.session.last_used_at);
+}
+
+#[tokio::test]
+async fn a_cached_session_due_to_slide_is_read_and_slid() {
+    let h = Harness::builder()
+        .session_config(sliding_config())
+        .session_cache(per_process(Duration::from_secs(5 * 60)))
+        .build();
+    let (_, token) = signed_in(&h, "alice@example.com").await;
+    h.session_manager.resolve(&token).await.expect("warm");
+
+    h.clock.advance(ChronoDuration::seconds(90));
+    let now = h.clock.now();
+    let resolved = h.session_manager.resolve(&token).await.expect("resolve");
+    assert!(
+        resolved.slid,
+        "a fresh entry does not hold back a due slide"
+    );
+    assert_eq!(resolved.session.last_used_at, now);
+    assert_eq!((hits(&h), misses(&h)), (0, 2));
 }
 
 #[tokio::test]
@@ -472,14 +555,13 @@ async fn validate_does_not_slide() {
 }
 
 #[test]
-fn cache_ttl_must_be_strictly_below_the_idle_timeout() {
+fn slide_interval_must_be_strictly_below_the_idle_timeout() {
     let idle = Duration::from_secs(60 * 10);
-    let build = |ttl| {
+    let build = |slide_interval| {
         Harness::builder()
-            .session_config(sliding_config())
-            .cache_config(SessionCacheConfig {
-                ttl,
-                ..SessionCacheConfig::default()
+            .session_config(SessionConfig {
+                slide_interval,
+                ..sliding_config()
             })
             .try_build()
     };
@@ -487,18 +569,19 @@ fn cache_ttl_must_be_strictly_below_the_idle_timeout() {
     let err = build(idle).err();
     assert!(
         matches!(err, Some(AssemblyError::IdleTimeoutInvalid { idle_timeout, .. }) if idle_timeout == idle),
-        "a ttl equal to the idle timeout is rejected, got {err:?}",
+        "a slide interval equal to the idle timeout is rejected, got {err:?}",
     );
     assert!(build(idle - Duration::from_secs(1)).is_ok());
 }
 
 #[test]
-fn without_an_idle_timeout_any_ttl_is_accepted() {
+fn an_idle_timeout_does_not_bound_the_cache_ttl() {
     let built = Harness::builder()
-        .cache_config(SessionCacheConfig {
-            ttl: Duration::from_secs(60 * 60 * 24),
-            ..SessionCacheConfig::default()
+        .session_config(SessionConfig {
+            idle_timeout: Some(Duration::from_secs(2 * 60)),
+            ..sliding_config()
         })
+        .session_cache(per_process(Duration::from_secs(5 * 60)))
         .try_build();
     assert!(built.is_ok());
 }

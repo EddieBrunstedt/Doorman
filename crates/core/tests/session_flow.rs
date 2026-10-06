@@ -153,6 +153,7 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
             absolute_lifetime: Duration::from_secs(60 * 60),
             idle_timeout: None,
             max_sessions_per_user: NonZeroU32::new(2),
+            ..SessionConfig::default()
         })
         .build();
     let (manager, sessions, audit, clock) = (&h.session_manager, &h.sessions, &h.audit, &h.clock);

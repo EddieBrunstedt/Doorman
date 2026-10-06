@@ -23,7 +23,7 @@ async fn sliding_app(clock: Arc<MockClock>) -> TestApp {
             b.clock(clock as Arc<dyn Clock>).session(SessionConfig {
                 absolute_lifetime: StdDuration::from_secs(60 * 60 * 24),
                 idle_timeout: Some(IDLE),
-                max_sessions_per_user: None,
+                ..SessionConfig::default()
             })
         },
         |b| {

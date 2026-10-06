@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use doorman_axum::{SessionCache, SessionCacheConfig};
+use doorman_axum::{SessionCache, SessionCacheConfig, SessionCachePolicy};
 use doorman_core::memory::InMemoryStorage;
 use doorman_core::session::{SessionContext, SessionManager, hash_token};
 use doorman_core::storage::{AccountStatus, TokenHash, User, UserId};
@@ -26,10 +26,10 @@ async fn build_scaffold() -> Scaffold {
     let storage = InMemoryStorage::new().all_stores();
     let core = support::in_memory_core(
         storage.clone(),
-        SessionCacheConfig {
+        SessionCachePolicy::per_process(SessionCacheConfig {
             capacity: NonZeroUsize::new(POOL * 16).expect("non-zero capacity"),
             ..SessionCacheConfig::default()
-        },
+        }),
     );
 
     let now = Utc::now();
@@ -58,7 +58,11 @@ async fn build_scaffold() -> Scaffold {
     }
 
     Scaffold {
-        cache: core.session_manager.cache().clone(),
+        cache: core
+            .session_manager
+            .cache()
+            .expect("per-process cache")
+            .clone(),
         session_manager: core.session_manager,
         token_hashes: Arc::new(token_hashes),
     }

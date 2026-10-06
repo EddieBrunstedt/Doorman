@@ -2,7 +2,7 @@ mod support;
 
 use chrono::Utc;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use doorman_axum::SessionCacheConfig;
+use doorman_axum::{SessionCacheConfig, SessionCachePolicy};
 use doorman_core::memory::InMemoryStorage;
 use doorman_core::session::{SessionContext, SessionManager, hash_token};
 use doorman_core::storage::{AccountStatus, User, UserId};
@@ -16,7 +16,10 @@ struct Scaffold {
 
 async fn build_scaffold() -> Scaffold {
     let storage = InMemoryStorage::new().all_stores();
-    let core = support::in_memory_core(storage.clone(), SessionCacheConfig::default());
+    let core = support::in_memory_core(
+        storage.clone(),
+        SessionCachePolicy::per_process(SessionCacheConfig::default()),
+    );
 
     let now = Utc::now();
     let user = User {
@@ -49,7 +52,7 @@ async fn build_scaffold() -> Scaffold {
 fn session_cache(c: &mut Criterion) {
     let runtime = Runtime::new().expect("tokio runtime");
     let scaffold = runtime.block_on(build_scaffold());
-    let cache = scaffold.sessions.cache();
+    let cache = scaffold.sessions.cache().expect("per-process cache");
 
     let mut group = c.benchmark_group("session_cache");
 

@@ -16,7 +16,7 @@ use doorman_core::assembly::{AssemblyError, AuthCore};
 use doorman_core::audit::{
     AuditEvent, AuditEventKind, AuditSink, RedemptionFailureReason, SecretKind,
 };
-use doorman_core::cache::SessionCacheConfig;
+use doorman_core::cache::SessionCachePolicy;
 use doorman_core::clock::Clock;
 use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
 use doorman_core::error::StorageResult;
@@ -182,6 +182,8 @@ pub struct Harness {
     pub email: Arc<CapturingEmailSender>,
     pub clock: Arc<MockClock>,
     pub metrics: Arc<CapturingMetrics>,
+    session_config: SessionConfig,
+    session_cache: SessionCachePolicy,
 }
 
 impl Harness {
@@ -192,13 +194,33 @@ impl Harness {
     pub fn builder() -> HarnessBuilder {
         HarnessBuilder::new()
     }
+
+    pub fn another_process(&self) -> AuthCore {
+        AuthCore::builder(self.storage.clone())
+            .clock(self.clock.clone() as Arc<dyn Clock>)
+            .audit(self.audit.clone() as Arc<dyn AuditSink>)
+            .email(self.email.clone() as Arc<dyn EmailSender>)
+            .limiter(Arc::new(NoopRateLimiter))
+            .session(self.session_config.clone())
+            .session_cache(self.session_cache)
+            .passkey(PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME))
+            .signup(signup_config())
+            .recovery(recovery_config())
+            .account(AccountConfig {
+                url_template: ACCOUNT_URL.to_string(),
+                ..AccountConfig::default()
+            })
+            .reauthentication(ReauthPolicy::disabled())
+            .build()
+            .expect("another process assembles")
+    }
 }
 
 pub struct HarnessBuilder {
     signup: SignupConfig,
     recovery: RecoveryConfig,
     session_config: SessionConfig,
-    cache_config: SessionCacheConfig,
+    session_cache: SessionCachePolicy,
     passkey: PasskeyConfig,
     signup_limiter: Arc<dyn RateLimiter>,
     recovery_limiter: Arc<dyn RateLimiter>,
@@ -216,7 +238,7 @@ impl HarnessBuilder {
                 absolute_lifetime: Duration::from_secs(60 * 60),
                 ..SessionConfig::default()
             },
-            cache_config: SessionCacheConfig::default(),
+            session_cache: SessionCachePolicy::disabled(),
             passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
             signup_limiter: Arc::new(NoopRateLimiter),
             recovery_limiter: Arc::new(NoopRateLimiter),
@@ -266,8 +288,8 @@ impl HarnessBuilder {
         self
     }
 
-    pub fn cache_config(mut self, config: SessionCacheConfig) -> Self {
-        self.cache_config = config;
+    pub fn session_cache(mut self, policy: SessionCachePolicy) -> Self {
+        self.session_cache = policy;
         self
     }
 
@@ -316,8 +338,8 @@ impl HarnessBuilder {
             .limiter(self.signup_limiter)
             .recovery_limiter(self.recovery_limiter)
             .metrics(metrics.clone() as Arc<dyn MetricSink>)
-            .session(self.session_config)
-            .cache(self.cache_config)
+            .session(self.session_config.clone())
+            .session_cache(self.session_cache)
             .passkey(self.passkey)
             .signup(self.signup)
             .recovery(self.recovery)
@@ -348,6 +370,8 @@ impl HarnessBuilder {
             email,
             clock,
             metrics,
+            session_config: self.session_config,
+            session_cache: self.session_cache,
         })
     }
 }

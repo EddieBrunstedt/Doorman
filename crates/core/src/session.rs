@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 
 use crate::assembly::AssemblyError;
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, AuditSink};
-use crate::cache::{SessionCache, SessionCacheConfig};
+use crate::cache::{MAX_CACHE_TTL, SessionCache, SessionCachePolicy};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
@@ -36,10 +36,13 @@ impl fmt::Debug for IssuedSession {
 
 pub const DEFAULT_SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 
+pub const DEFAULT_SLIDE_INTERVAL: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     pub absolute_lifetime: Duration,
     pub idle_timeout: Option<Duration>,
+    pub slide_interval: Duration,
     pub max_sessions_per_user: Option<NonZeroU32>,
 }
 
@@ -48,6 +51,7 @@ impl Default for SessionConfig {
         Self {
             absolute_lifetime: DEFAULT_SESSION_LIFETIME,
             idle_timeout: None,
+            slide_interval: DEFAULT_SLIDE_INTERVAL,
             max_sessions_per_user: None,
         }
     }
@@ -70,7 +74,7 @@ pub struct ResolvedSession {
 pub struct SessionManager {
     sessions: Arc<dyn SessionStore>,
     users: Arc<dyn UserStore>,
-    cache: SessionCache,
+    cache: Option<SessionCache>,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     metrics: Arc<dyn MetricSink>,
@@ -85,20 +89,33 @@ impl SessionManager {
         audit: Arc<dyn AuditSink>,
         metrics: Arc<dyn MetricSink>,
         config: SessionConfig,
-        cache: SessionCacheConfig,
+        cache: SessionCachePolicy,
     ) -> std::result::Result<Self, AssemblyError> {
         if let Some(idle_timeout) = config.idle_timeout
-            && cache.ttl >= idle_timeout
+            && config.slide_interval >= idle_timeout
         {
             return Err(AssemblyError::IdleTimeoutInvalid {
                 idle_timeout,
-                reason: "must be strictly greater than the cache ttl so a cache-miss touch can slide the session before it idles out",
+                reason: "must be strictly greater than the slide interval so an active session slides before it idles out",
             });
         }
+        let cache = match cache.config() {
+            Some(cache) => {
+                if cache.ttl.is_zero() || cache.ttl > MAX_CACHE_TTL {
+                    return Err(AssemblyError::InvalidLifetime {
+                        field: "session cache ttl",
+                        value: cache.ttl,
+                        max: MAX_CACHE_TTL,
+                    });
+                }
+                Some(SessionCache::new(cache, clock.clone()))
+            }
+            None => None,
+        };
         Ok(Self {
             sessions,
             users,
-            cache: SessionCache::new(cache, clock.clone()),
+            cache,
             clock,
             audit: AuditDispatch::new(audit),
             metrics,
@@ -116,12 +133,18 @@ impl SessionManager {
         &self.clock
     }
 
-    pub fn cache(&self) -> &SessionCache {
-        &self.cache
+    pub fn cache(&self) -> Option<&SessionCache> {
+        self.cache.as_ref()
     }
 
     pub(crate) fn user_changed(&self, user_id: UserId) {
-        self.cache.invalidate_user(user_id);
+        self.evict_user(user_id);
+    }
+
+    fn evict_user(&self, user_id: UserId) {
+        if let Some(cache) = &self.cache {
+            cache.invalidate_user(user_id);
+        }
     }
 
     #[tracing::instrument(
@@ -133,31 +156,34 @@ impl SessionManager {
         let now = self.clock.now();
         let span = tracing::Span::current();
 
-        if let Some(cached) = self
-            .cache
-            .get(&token_hash)
-            .filter(|cached| cached.session.expires_at > now)
-        {
-            self.metrics.record(MetricEvent::CacheHit);
-            span.record("session_id", tracing::field::display(cached.session.id));
-            span.record("user_id", tracing::field::display(cached.user.id));
-            return Ok(ResolvedSession {
-                user: cached.user.clone(),
-                session: cached.session.clone(),
-                slid: false,
-            });
+        if let Some(cache) = &self.cache {
+            // A hit never slides, so a session due to slide goes to storage.
+            if let Some(cached) = cache.get(&token_hash).filter(|cached| {
+                cached.session.expires_at > now && !self.slide_due(&cached.session, now)
+            }) {
+                self.metrics.record(MetricEvent::CacheHit);
+                span.record("session_id", tracing::field::display(cached.session.id));
+                span.record("user_id", tracing::field::display(cached.user.id));
+                return Ok(ResolvedSession {
+                    user: cached.user.clone(),
+                    session: cached.session.clone(),
+                    slid: false,
+                });
+            }
+            self.metrics.record(MetricEvent::CacheMiss);
         }
-        self.metrics.record(MetricEvent::CacheMiss);
 
         let session = self.validate_by_hash(&token_hash).await?;
         span.record("session_id", tracing::field::display(session.id));
         span.record("user_id", tracing::field::display(session.user_id));
         let user = find_active_user(self.users.as_ref(), session.user_id).await?;
-        let (session, slid) = self.slide(session, now, self.cache.ttl()).await;
+        let (session, slid) = self.slide(session, now).await;
 
         let session = Arc::new(session);
         let user = Arc::new(user);
-        self.cache.insert(token_hash, session.clone(), user.clone());
+        if let Some(cache) = &self.cache {
+            cache.insert(token_hash, session.clone(), user.clone());
+        }
         Ok(ResolvedSession {
             user,
             session,
@@ -281,16 +307,15 @@ impl SessionManager {
         Ok(session)
     }
 
-    async fn slide(
-        &self,
-        session: Session,
-        now: DateTime<Utc>,
-        granularity: Duration,
-    ) -> (Session, bool) {
-        let due = (now - session.last_used_at)
-            .to_std()
-            .is_ok_and(|since_used| since_used >= granularity);
-        if self.config.idle_timeout.is_none() || !due {
+    fn slide_due(&self, session: &Session, now: DateTime<Utc>) -> bool {
+        self.config.idle_timeout.is_some()
+            && (now - session.last_used_at)
+                .to_std()
+                .is_ok_and(|since_used| since_used >= self.config.slide_interval)
+    }
+
+    async fn slide(&self, session: Session, now: DateTime<Utc>) -> (Session, bool) {
+        if !self.slide_due(&session, now) {
             return (session, false);
         }
 
@@ -351,7 +376,7 @@ impl SessionManager {
             .delete_sessions_for_user(user_id, None)
             .await?;
         if count > 0 {
-            self.cache.invalidate_user(user_id);
+            self.evict_user(user_id);
         }
         tracing::info!(count, outcome = "revoked_all", "user sessions revoked");
         Ok(count)
@@ -375,7 +400,7 @@ impl SessionManager {
             .delete_sessions_for_user(user_id, Some(keep))
             .await?;
         if count > 0 {
-            self.cache.invalidate_user(user_id);
+            self.evict_user(user_id);
         }
         tracing::info!(
             count,
@@ -404,7 +429,9 @@ impl SessionManager {
 
     async fn revoke_session(&self, session: Session, actor: Actor) -> Result<()> {
         self.sessions.delete_session(session.id).await?;
-        self.cache.invalidate_session(session.id);
+        if let Some(cache) = &self.cache {
+            cache.invalidate_session(session.id);
+        }
         self.audit
             .emit(AuditEvent {
                 timestamp: self.clock.now(),

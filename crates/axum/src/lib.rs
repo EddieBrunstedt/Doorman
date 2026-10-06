@@ -15,7 +15,10 @@ mod builder;
 pub use doorman_core as core;
 
 pub use builder::{AuthServiceBuilder, BuilderError};
-pub use cache::{DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, SessionCache, SessionCacheConfig};
+pub use cache::{
+    DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, MAX_CACHE_TTL, SessionCache, SessionCacheConfig,
+    SessionCachePolicy,
+};
 pub use config::CookieConfig;
 pub use csrf::CsrfConfig;
 pub use error::{ErrorBody, ErrorPayload, ErrorResponse};
@@ -49,7 +52,7 @@ impl AuthService {
         &self.state
     }
 
-    pub fn cache(&self) -> &SessionCache {
+    pub fn cache(&self) -> Option<&SessionCache> {
         self.state.core.session_manager.cache()
     }
 }

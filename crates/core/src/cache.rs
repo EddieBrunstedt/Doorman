@@ -15,6 +15,10 @@ pub const DEFAULT_CACHE_CAPACITY: NonZeroUsize = NonZeroUsize::new(1024).unwrap(
 
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(60);
 
+// The ttl is how long another process may keep serving a revoked session, so
+// it stays short.
+pub const MAX_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+
 #[derive(Debug, Clone, Copy)]
 pub struct SessionCacheConfig {
     pub capacity: NonZeroUsize,
@@ -27,6 +31,27 @@ impl Default for SessionCacheConfig {
             capacity: DEFAULT_CACHE_CAPACITY,
             ttl: DEFAULT_CACHE_TTL,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SessionCachePolicy {
+    config: Option<SessionCacheConfig>,
+}
+
+impl SessionCachePolicy {
+    pub const fn disabled() -> Self {
+        Self { config: None }
+    }
+
+    pub const fn per_process(config: SessionCacheConfig) -> Self {
+        Self {
+            config: Some(config),
+        }
+    }
+
+    pub(crate) fn config(self) -> Option<SessionCacheConfig> {
+        self.config
     }
 }
 

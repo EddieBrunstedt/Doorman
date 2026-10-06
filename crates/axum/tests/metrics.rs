@@ -5,6 +5,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::StatusCode;
 use common::{TestApp, login};
+use doorman_axum::{SessionCacheConfig, SessionCachePolicy};
 use doorman_core::metrics::{MetricEvent, MetricSink};
 use doorman_test_support::CapturingMetrics;
 
@@ -24,6 +25,9 @@ async fn session_layer_records_cache_miss_then_hit() {
     let metrics_for_app = metrics.clone();
     let app = TestApp::start_with(Router::new(), false, move |b| {
         b.metrics(metrics_for_app as Arc<dyn MetricSink>)
+            .session_cache(SessionCachePolicy::per_process(
+                SessionCacheConfig::default(),
+            ))
     })
     .await;
     let client = reqwest::Client::new();
@@ -59,6 +63,9 @@ async fn unauthenticated_request_records_no_cache_observation() {
     let metrics_for_app = metrics.clone();
     let app = TestApp::start_with(Router::new(), false, move |b| {
         b.metrics(metrics_for_app as Arc<dyn MetricSink>)
+            .session_cache(SessionCachePolicy::per_process(
+                SessionCacheConfig::default(),
+            ))
     })
     .await;
     let client = reqwest::Client::new();

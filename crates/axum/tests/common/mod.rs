@@ -11,7 +11,6 @@ use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
-use doorman_axum::SessionCacheConfig;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
 use doorman_axum::dto::{
@@ -23,6 +22,7 @@ use doorman_axum::{AuthService, AuthServiceBuilder};
 use doorman_core::account::AccountConfig;
 use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
 use doorman_core::audit::NoopAuditSink;
+use doorman_core::cache::SessionCachePolicy;
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::email::EmailSender;
 use doorman_core::memory::{
@@ -81,10 +81,6 @@ impl TestApp {
         Self::start_with(host_routes, secure_cookies, move |b| {
             b.clock(clock.clone())
                 .limiter(Arc::new(InMemoryRateLimiter::new(clock.clone())))
-                .cache(SessionCacheConfig {
-                    ttl: std::time::Duration::ZERO,
-                    ..SessionCacheConfig::default()
-                })
         })
         .await
     }
@@ -148,6 +144,7 @@ impl TestApp {
                 url_template: ACCOUNT_URL.to_string(),
                 ..AccountConfig::default()
             })
+            .session_cache(SessionCachePolicy::disabled())
             .reauthentication(ReauthPolicy::disabled());
         let core = customise_core(core_builder)
             .build()

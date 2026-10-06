@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::account::{AccountConfig, AccountManager};
 use crate::audit::AuditSink;
-use crate::cache::SessionCacheConfig;
+use crate::cache::SessionCachePolicy;
 use crate::clock::{Clock, SystemClock};
 use crate::context::CoreDeps;
 use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityEmailNotifier};
@@ -35,6 +35,10 @@ pub enum AssemblyError {
         "a re-authentication decision is required: pass ReauthPolicy::required_for([..]) to gate destructive actions, or ReauthPolicy::disabled() to opt out"
     )]
     ReauthDecisionRequired,
+    #[error(
+        "a session cache decision is required: pass SessionCachePolicy::disabled() so every process refuses a revoked session at once, or SessionCachePolicy::per_process(..) to serve sessions from memory while other processes lag a revocation by up to its ttl"
+    )]
+    SessionCacheDecisionRequired,
     #[error("passkey manager construction failed: {0}")]
     Passkey(crate::error::Error),
     #[error(
@@ -123,7 +127,7 @@ pub struct AuthCoreBuilder {
     recovery_rate_limiter: Option<Arc<dyn RateLimiter>>,
     metrics: Option<Arc<dyn MetricSink>>,
     session_config: Option<SessionConfig>,
-    cache_config: Option<SessionCacheConfig>,
+    session_cache: Option<SessionCachePolicy>,
     passkey: Option<PasskeyConfig>,
     signup: Option<SignupConfig>,
     recovery: Option<RecoveryConfig>,
@@ -144,7 +148,7 @@ impl AuthCoreBuilder {
             recovery_rate_limiter: None,
             metrics: None,
             session_config: None,
-            cache_config: None,
+            session_cache: None,
             passkey: None,
             signup: None,
             recovery: None,
@@ -194,8 +198,8 @@ impl AuthCoreBuilder {
         self
     }
 
-    pub fn cache(mut self, config: SessionCacheConfig) -> Self {
-        self.cache_config = Some(config);
+    pub fn session_cache(mut self, policy: SessionCachePolicy) -> Self {
+        self.session_cache = Some(policy);
         self
     }
 
@@ -240,6 +244,9 @@ impl AuthCoreBuilder {
             .metrics
             .unwrap_or_else(|| Arc::new(NoopMetricSink) as Arc<dyn MetricSink>);
         let session_config = self.session_config.unwrap_or_default();
+        let session_cache = self
+            .session_cache
+            .ok_or(AssemblyError::SessionCacheDecisionRequired)?;
 
         let emails: Arc<dyn EmailTemplates> = self
             .emails
@@ -270,7 +277,7 @@ impl AuthCoreBuilder {
             audit.clone(),
             metrics.clone(),
             session_config,
-            self.cache_config.unwrap_or_default(),
+            session_cache,
         )?;
 
         let reauth_policy = self.reauth.ok_or(AssemblyError::ReauthDecisionRequired)?;

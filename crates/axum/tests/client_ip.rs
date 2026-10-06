@@ -49,6 +49,7 @@ fn router(limits: PasskeyRateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAud
             url_template: common::ACCOUNT_URL.to_owned(),
             ..Default::default()
         })
+        .session_cache(SessionCachePolicy::disabled())
         .reauthentication(ReauthPolicy::disabled())
         .audit(audit.clone())
         .clock(clock.clone())

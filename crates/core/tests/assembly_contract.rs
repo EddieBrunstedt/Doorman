@@ -4,6 +4,7 @@ use std::time::Duration;
 use doorman_core::account::AccountConfig;
 use doorman_core::assembly::{AssemblyError, AuthCore, AuthCoreBuilder};
 use doorman_core::audit::{AuditSink, NoopAuditSink};
+use doorman_core::cache::{MAX_CACHE_TTL, SessionCacheConfig, SessionCachePolicy};
 use doorman_core::clock::SystemClock;
 use doorman_core::email::EmailSender;
 use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
@@ -74,6 +75,7 @@ fn valid_builder() -> AuthCoreBuilder {
         .signup(real_signup())
         .recovery(real_recovery())
         .account(real_account())
+        .session_cache(SessionCachePolicy::disabled())
         .reauthentication(ReauthPolicy::disabled())
 }
 
@@ -160,12 +162,59 @@ fn reauth_decision_required_when_policy_not_set() {
         .signup(real_signup())
         .recovery(real_recovery())
         .account(real_account())
+        .session_cache(SessionCachePolicy::disabled())
         .build()
         .err();
     assert!(
         matches!(err, Some(AssemblyError::ReauthDecisionRequired)),
         "expected ReauthDecisionRequired when no policy is wired, got: {err:?}"
     );
+}
+
+#[test]
+fn session_cache_decision_required_when_policy_not_set() {
+    let err = AuthCore::builder(fresh_storage())
+        .email(capturing_email())
+        .passkey(passkey_config())
+        .audit(noop_audit())
+        .limiter(in_memory_limiter())
+        .signup(real_signup())
+        .recovery(real_recovery())
+        .account(real_account())
+        .reauthentication(ReauthPolicy::disabled())
+        .build()
+        .err();
+    assert!(
+        matches!(err, Some(AssemblyError::SessionCacheDecisionRequired)),
+        "expected SessionCacheDecisionRequired when no policy is wired, got: {err:?}"
+    );
+}
+
+#[test]
+fn session_cache_ttl_is_capped() {
+    let build = |ttl| {
+        valid_builder()
+            .session_cache(SessionCachePolicy::per_process(SessionCacheConfig {
+                ttl,
+                ..SessionCacheConfig::default()
+            }))
+            .build()
+            .err()
+    };
+
+    for ttl in [Duration::ZERO, MAX_CACHE_TTL + Duration::from_secs(1)] {
+        let err = build(ttl);
+        assert!(
+            matches!(
+                err,
+                Some(AssemblyError::InvalidLifetime { field: "session cache ttl", value, .. })
+                    if value == ttl
+            ),
+            "a ttl of {ttl:?} is refused, got: {err:?}"
+        );
+    }
+    let err = build(MAX_CACHE_TTL);
+    assert!(err.is_none(), "a ttl at the cap builds, got: {err:?}");
 }
 
 #[test]

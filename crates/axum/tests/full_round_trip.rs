@@ -43,6 +43,7 @@ async fn signup_login_recovery_round_trip() {
     let core = AuthCore::builder(storage.all_stores())
         .email(email.clone() as Arc<dyn doorman_core::email::EmailSender>)
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
+        .session_cache(SessionCachePolicy::disabled())
         .reauthentication(ReauthPolicy::disabled())
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
