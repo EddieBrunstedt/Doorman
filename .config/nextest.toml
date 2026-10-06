@@ -1,0 +1,5 @@
+# A container that never becomes ready would otherwise hang the run: flag any
+# test still running after 30s and kill it after two minutes. No retries, since
+# a retry would hide the store races the conformance suite exists to catch.
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 4 }

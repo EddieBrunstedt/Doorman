@@ -19,34 +19,37 @@ clean:
 
 # Run the whole workspace test suite. This includes the storage-conformance
 # tests, which start their own database containers, so a Docker daemon must be
-# running. Use the per-backend recipes below to run just one adapter.
+# running. nextest runs the test binaries in parallel, so the containers start
+# side by side rather than one after another. Needs cargo-nextest
+# (`cargo install cargo-nextest --locked`). Use the per-backend recipes below to
+# run just one adapter.
 test *args:
-    cargo test --workspace --all-features --locked {{ args }}
+    cargo nextest run --workspace --all-features --locked {{ args }}
 
 # Run only the doorman-redis (redis + valkey) conformance suite.
 test-redis *args:
-    cargo test -p doorman-redis --all-features {{ args }}
+    cargo nextest run -p doorman-redis --all-features {{ args }}
 
 # Run only the doorman-sqlx mysql + mariadb conformance tests.
 test-mysql *args:
-    cargo test -p doorman-sqlx --features mysql {{ args }}
+    cargo nextest run -p doorman-sqlx --features mysql {{ args }}
 
 # Run only the doorman-sqlx postgres conformance test.
 test-postgres *args:
-    cargo test -p doorman-sqlx --features postgres {{ args }}
+    cargo nextest run -p doorman-sqlx --features postgres {{ args }}
 
 # Run only the doorman-dynamodb conformance suite.
 test-dynamodb *args:
-    cargo test -p doorman-dynamodb {{ args }}
+    cargo nextest run -p doorman-dynamodb {{ args }}
 
 # Run only the doorman-mongodb conformance suite.
 test-mongodb *args:
-    cargo test -p doorman-mongodb {{ args }}
+    cargo nextest run -p doorman-mongodb {{ args }}
 
 # Run only the doorman-redb conformance suite. redb is embedded (a local
 # file), so this is the one backend suite that needs no Docker.
 test-redb *args:
-    cargo test -p doorman-redb {{ args }}
+    cargo nextest run -p doorman-redb {{ args }}
 
 # Format the workspace.
 fmt:
