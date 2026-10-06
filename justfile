@@ -86,16 +86,27 @@ doc:
 # covered at depth 2 (78 combos) — a triple breaking when all its pairs build is
 # vanishingly unlikely. doorman-sqlx has only three driver features, so it gets
 # the full powerset for free.
+#
+# It builds into its own target directory, so `verify` can run it beside the
+# test suite without either waiting on the other's build lock.
 check-features:
-    cargo check --workspace --locked
-    cargo hack check -p doorman --feature-powerset --depth 2 --locked
-    cargo hack check -p doorman-sqlx --feature-powerset --locked
+    CARGO_TARGET_DIR={{ features_target }} cargo check --workspace --locked
+    CARGO_TARGET_DIR={{ features_target }} cargo hack check -p doorman --feature-powerset --depth 2 --locked
+    CARGO_TARGET_DIR={{ features_target }} cargo hack check -p doorman-sqlx --feature-powerset --locked
+
+features_target := env("CARGO_TARGET_DIR", "target") / "check-features"
 
 # Keep `1.99` in sync with `rust-version` in the manifest. The check below uses
 # the pinned 1.99.0 toolchain, which must be installed via rustup.
 msrv:
     cargo +1.99.0 check --workspace --all-features --locked
 
-# Cheap-first ordering: format, dprint, lint, docs, feature isolation, MSRV,
-# then the container-backed test suite. The full local gate, mirroring CI.
-verify: fmt-check dprint-check clippy doc check-features msrv test
+# Cheap-first ordering: format, dprint, lint, docs, MSRV, then the two slow
+# steps side by side, since the feature-combination checks are CPU-bound while
+# the test suite spends much of its time waiting on containers.
+# The full local gate, running the same checks as CI.
+verify: fmt-check dprint-check clippy doc msrv slow-checks
+
+[parallel]
+[private]
+slow-checks: check-features test
