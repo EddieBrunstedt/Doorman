@@ -1,7 +1,6 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use crate::common::ResidentHttpAuthenticator;
 use axum::http::StatusCode;
 use axum::{Router, routing::get};
 use doorman_axum::dto::{
@@ -13,6 +12,7 @@ use doorman_core::email_link::TOKEN_PLACEHOLDER;
 use doorman_core::memory::InMemoryRateLimiter;
 use doorman_sqlx::SqliteStorage;
 use doorman_test_support::CapturingEmailSender;
+use doorman_test_support::ResidentAuthenticator;
 use tokio::net::TcpListener;
 use url::Url;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
@@ -85,7 +85,7 @@ async fn signup_login_recovery_round_trip() {
 
     let client = reqwest::Client::new();
     let url = |path: &str| format!("http://{addr}{path}");
-    let mut authenticator = ResidentHttpAuthenticator::new(&origin);
+    let mut authenticator = ResidentAuthenticator::new(&origin);
 
     let request = client
         .post(url("/auth/signup/request"))

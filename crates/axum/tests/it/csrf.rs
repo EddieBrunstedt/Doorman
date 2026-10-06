@@ -1,204 +1,114 @@
-use crate::common::{SignupClient, TestApp};
-use axum::Router;
 use axum::http::StatusCode;
 use doorman_axum::csrf::CsrfConfig;
-use doorman_axum::dto::AuthResponse;
-use reqwest::header;
 use url::Url;
+
+use crate::common::TestApp;
 
 const APP_ORIGIN: &str = "https://app.test";
 const EVIL_ORIGIN: &str = "https://evil.test";
 
-async fn start(csrf_config: Option<CsrfConfig>) -> TestApp {
+#[derive(Debug, Clone, Copy)]
+enum Credential {
+    Cookie,
+    Bearer,
+    Both,
+}
+
+fn app(csrf: Option<CsrfConfig>) -> TestApp {
     let origin = Url::parse(APP_ORIGIN).expect("origin");
-    TestApp::start_configured(
-        Router::new(),
-        false,
+    TestApp::with(
         |b| b,
-        move |builder| {
-            let config = csrf_config.unwrap_or_else(|| CsrfConfig::new(origin.clone()));
-            builder.external_origin(origin.clone()).csrf(config)
+        move |b| {
+            let csrf = csrf.unwrap_or_else(|| CsrfConfig::new(origin.clone()));
+            b.external_origin(origin).csrf(csrf)
         },
     )
-    .await
-}
-
-fn cookie_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .cookie_store(true)
-        .build()
-        .expect("client")
-}
-
-async fn login(client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
-    SignupClient::new(app).signup(client, app, email).await
 }
 
 #[tokio::test]
-async fn same_origin_post_with_cookie_passes() {
-    let app = start(None).await;
-    let client = cookie_client();
-    let issued = login(&client, &app, "same-origin@example.com").await;
+async fn a_cookie_request_that_changes_state_must_come_from_the_application() {
+    let evil_referer = format!("{EVIL_ORIGIN}/settings");
+    let app_referer = format!("{APP_ORIGIN}/settings");
+    let cases = [
+        (
+            Credential::Cookie,
+            Some(("origin", APP_ORIGIN)),
+            StatusCode::NO_CONTENT,
+        ),
+        (
+            Credential::Cookie,
+            Some(("referer", &app_referer)),
+            StatusCode::NO_CONTENT,
+        ),
+        (
+            Credential::Cookie,
+            Some(("origin", EVIL_ORIGIN)),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            Credential::Cookie,
+            Some(("referer", &evil_referer)),
+            StatusCode::FORBIDDEN,
+        ),
+        (Credential::Cookie, None, StatusCode::FORBIDDEN),
+        (Credential::Bearer, None, StatusCode::NO_CONTENT),
+        (
+            Credential::Both,
+            Some(("origin", EVIL_ORIGIN)),
+            StatusCode::NO_CONTENT,
+        ),
+    ];
 
-    let resp = client
-        .delete(app.url(&format!("/auth/sessions/{}", issued.session.id)))
-        .header(header::ORIGIN, APP_ORIGIN)
-        .send()
-        .await
-        .expect("delete");
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    for (credential, header, expected) in cases {
+        let app = app(None);
+        let session = app.session_for("alice@example.com").await;
+        let mut call = app.delete(&format!("/auth/sessions/{}", session.session.id));
+        call = match credential {
+            Credential::Cookie => call.cookie(&session.token),
+            Credential::Bearer => call.bearer(&session.token),
+            Credential::Both => call.cookie(&session.token).bearer(&session.token),
+        };
+        if let Some((name, value)) = header {
+            call = call.header(name, value);
+        }
 
-    let me = client.get(app.url("/me")).send().await.expect("me");
-    assert_eq!(me.status(), StatusCode::UNAUTHORIZED);
+        let reply = call.send().await;
 
-    app.shutdown().await;
+        let case = format!("{credential:?} {header:?}");
+        assert_eq!(reply.status, expected, "{case}");
+        if expected == StatusCode::FORBIDDEN {
+            assert_eq!(reply.error_code(), "csrf_origin_mismatch", "{case}");
+            assert!(app.is_authenticated(&session.token).await, "{case}");
+        }
+    }
 }
 
 #[tokio::test]
-async fn cross_origin_post_with_cookie_is_rejected() {
-    let app = start(None).await;
-    let client = cookie_client();
-    let issued = login(&client, &app, "cross-origin@example.com").await;
+async fn a_cookie_read_is_not_checked() {
+    let app = app(None);
+    let session = app.session_for("alice@example.com").await;
 
-    let resp = client
-        .delete(app.url(&format!("/auth/sessions/{}", issued.session.id)))
-        .header(header::ORIGIN, EVIL_ORIGIN)
+    let reply = app
+        .get("/me")
+        .cookie(&session.token)
+        .header("origin", EVIL_ORIGIN)
         .send()
-        .await
-        .expect("delete");
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let body: serde_json::Value = resp.json().await.expect("error body");
-    assert_eq!(body["error"]["code"], "csrf_origin_mismatch");
+        .await;
 
-    let me = client.get(app.url("/me")).send().await.expect("me");
-    assert_eq!(me.status(), StatusCode::OK);
-
-    app.shutdown().await;
+    assert_eq!(reply.status, StatusCode::OK);
 }
 
 #[tokio::test]
-async fn missing_origin_and_referer_with_cookie_is_rejected() {
-    let app = start(None).await;
-    let client = cookie_client();
-    let issued = login(&client, &app, "no-headers@example.com").await;
+async fn a_disabled_check_lets_a_cross_origin_cookie_request_through() {
+    let app = app(Some(CsrfConfig::disabled()));
+    let session = app.session_for("alice@example.com").await;
 
-    let resp = client
-        .delete(app.url(&format!("/auth/sessions/{}", issued.session.id)))
+    let reply = app
+        .delete(&format!("/auth/sessions/{}", session.session.id))
+        .cookie(&session.token)
+        .header("origin", EVIL_ORIGIN)
         .send()
-        .await
-        .expect("delete");
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let body: serde_json::Value = resp.json().await.expect("error body");
-    assert_eq!(body["error"]["code"], "csrf_origin_mismatch");
+        .await;
 
-    let me = client.get(app.url("/me")).send().await.expect("me");
-    assert_eq!(me.status(), StatusCode::OK);
-
-    app.shutdown().await;
-}
-
-#[tokio::test]
-async fn missing_origin_and_referer_with_bearer_passes() {
-    let app = start(None).await;
-    let client = cookie_client();
-    let issued = login(&client, &app, "bearer-no-headers@example.com").await;
-
-    let resp = client
-        .delete(app.url(&format!("/auth/sessions/{}", issued.session.id)))
-        .bearer_auth(&issued.token)
-        .send()
-        .await
-        .expect("delete");
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    app.shutdown().await;
-}
-
-#[tokio::test]
-async fn same_origin_referer_with_cookie_passes() {
-    let app = start(None).await;
-    let client = cookie_client();
-    let issued = login(&client, &app, "referer-ok@example.com").await;
-
-    let resp = client
-        .delete(app.url(&format!("/auth/sessions/{}", issued.session.id)))
-        .header(header::REFERER, format!("{APP_ORIGIN}/settings"))
-        .send()
-        .await
-        .expect("delete");
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    app.shutdown().await;
-}
-
-#[tokio::test]
-async fn cross_origin_referer_with_cookie_is_rejected() {
-    let app = start(None).await;
-    let client = cookie_client();
-    let issued = login(&client, &app, "referer-evil@example.com").await;
-
-    let resp = client
-        .delete(app.url(&format!("/auth/sessions/{}", issued.session.id)))
-        .header(header::REFERER, format!("{EVIL_ORIGIN}/settings"))
-        .send()
-        .await
-        .expect("delete");
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-
-    let me = client.get(app.url("/me")).send().await.expect("me");
-    assert_eq!(me.status(), StatusCode::OK);
-
-    app.shutdown().await;
-}
-
-#[tokio::test]
-async fn get_with_cookie_is_unaffected() {
-    let app = start(None).await;
-    let client = cookie_client();
-    let _ = login(&client, &app, "get@example.com").await;
-
-    let resp = client
-        .get(app.url("/me"))
-        .header(header::ORIGIN, EVIL_ORIGIN)
-        .send()
-        .await
-        .expect("me");
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    app.shutdown().await;
-}
-
-#[tokio::test]
-async fn bearer_request_is_unaffected_even_with_cookie() {
-    let app = start(None).await;
-    let client = cookie_client();
-    let issued = login(&client, &app, "bearer@example.com").await;
-
-    let resp = client
-        .delete(app.url(&format!("/auth/sessions/{}", issued.session.id)))
-        .bearer_auth(&issued.token)
-        .header(header::ORIGIN, EVIL_ORIGIN)
-        .send()
-        .await
-        .expect("delete");
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    app.shutdown().await;
-}
-
-#[tokio::test]
-async fn disabled_mode_allows_cross_origin_post_with_cookie() {
-    let app = start(Some(CsrfConfig::disabled())).await;
-    let client = cookie_client();
-    let issued = login(&client, &app, "disabled@example.com").await;
-
-    let resp = client
-        .delete(app.url(&format!("/auth/sessions/{}", issued.session.id)))
-        .header(header::ORIGIN, EVIL_ORIGIN)
-        .send()
-        .await
-        .expect("delete");
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    app.shutdown().await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
 }

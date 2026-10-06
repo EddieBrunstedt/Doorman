@@ -2,120 +2,72 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::Extension;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Json, Response};
+use axum::body::{Body, Bytes, to_bytes};
+use axum::extract::ConnectInfo;
+use axum::http::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::routing::get;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
 use doorman_axum::dto::{
-    AuthResponse, PasskeyChallenge, PasskeyDto, Reauthentication, RegistrationFinishRequest,
-    SignupRedeemRequest, SignupRequest, UserDto,
+    AuthResponse, PasskeyChallenge, PasskeyDto, Reauthentication, RecoveryRedeemRequest,
+    RecoveryRequest, RegistrationFinishRequest, SignupRedeemRequest, SignupRequest,
 };
 use doorman_axum::extractors::AuthUser;
 use doorman_axum::{AuthService, AuthServiceBuilder};
 use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
 use doorman_core::audit::NoopAuditSink;
-use doorman_core::clock::{Clock, SystemClock};
-use doorman_core::email::EmailSender;
-use doorman_core::email::normalize_email;
-use doorman_core::memory::{
-    InMemoryEmailLinkStore, InMemoryPasskeyChallengeStore, InMemoryPasskeyStore,
-    InMemoryRateLimiter, InMemorySessionStore, InMemoryUserStore,
-};
-use doorman_core::operator::OperatorManager;
+use doorman_core::clock::SystemClock;
+use doorman_core::email::{EmailSender, normalize_email};
+use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use doorman_core::session::{SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupRateLimits};
-use doorman_core::storage::{PasskeyStore, Storage, User, UserId, UserStatus, UserStore};
+use doorman_core::storage::{User, UserId, UserStatus, UserStore};
 use doorman_core::user::UserConfig;
-use doorman_test_support::CapturingEmailSender;
+pub use doorman_test_support::ResidentAuthenticator;
+use doorman_test_support::{CapturingEmailSender, token_from_email};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
-use url::Url as ServerUrl;
-use webauthn_authenticator_rs::WebauthnAuthenticator;
-use webauthn_authenticator_rs::prelude::Url as AuthUrl;
-use webauthn_authenticator_rs::softpasskey::SoftPasskey;
-use webauthn_rs::prelude::{
-    CreationChallengeResponse, PublicKeyCredential, RegisterPublicKeyCredential,
-    RequestChallengeResponse,
-};
-use webauthn_rs_proto::AllowCredentials;
+use tower::ServiceExt;
+use url::Url;
+use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 pub const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 pub const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
 pub const USER_URL: &str = "https://app.test/email-change?token={token}";
+pub const RP_ORIGIN: &str = "http://localhost:8080";
+pub const PEER: &str = "127.0.0.1";
 
 pub struct TestApp {
-    pub addr: SocketAddr,
+    router: Router,
+    default_headers: HeaderMap,
     pub email: Arc<CapturingEmailSender>,
-    pub rp_origin: ServerUrl,
-    pub passkeys: Arc<InMemoryPasskeyStore>,
     pub session_manager: SessionManager,
-    pub operator: OperatorManager,
-    user_store: Arc<InMemoryUserStore>,
-    handle: JoinHandle<()>,
-    shutdown: tokio::sync::oneshot::Sender<()>,
+    users: Arc<dyn UserStore>,
 }
 
 impl TestApp {
-    pub async fn start(host_routes: Router, secure_cookies: bool) -> Self {
-        Self::start_with(host_routes, secure_cookies, |b| b).await
+    pub fn new() -> Self {
+        Self::with(|b| b, |b| b)
     }
 
-    pub async fn start_with_clock(
-        host_routes: Router,
-        secure_cookies: bool,
-        clock: Arc<dyn Clock>,
+    pub fn with(
+        customise_core: impl FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
+        customise_http: impl FnOnce(AuthServiceBuilder) -> AuthServiceBuilder,
     ) -> Self {
-        Self::start_with(host_routes, secure_cookies, move |b| {
-            b.clock(clock.clone())
-                .limiter(Arc::new(InMemoryRateLimiter::new(clock.clone())))
-        })
-        .await
-    }
-
-    pub async fn start_with<F>(host_routes: Router, secure_cookies: bool, customise: F) -> Self
-    where
-        F: FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
-    {
-        Self::start_configured(host_routes, secure_cookies, customise, |b| b).await
-    }
-
-    pub async fn start_configured<C, H>(
-        host_routes: Router,
-        secure_cookies: bool,
-        customise_core: C,
-        customise_http: H,
-    ) -> Self
-    where
-        C: FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
-        H: FnOnce(AuthServiceBuilder) -> AuthServiceBuilder,
-    {
         let email = Arc::new(CapturingEmailSender::new());
-        let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
-        let session_store: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-        let token_store: Arc<InMemoryEmailLinkStore> = Arc::new(InMemoryEmailLinkStore::new());
-        let passkeys: Arc<InMemoryPasskeyStore> = Arc::new(InMemoryPasskeyStore::new());
-        let passkey_challenges: Arc<InMemoryPasskeyChallengeStore> =
-            Arc::new(InMemoryPasskeyChallengeStore::new());
-
-        let rp_origin = ServerUrl::parse("http://localhost:8080").expect("rp origin");
-        let storage = Storage {
-            users: user_store.clone(),
-            sessions: session_store.clone(),
-            email_links: token_store,
-            passkeys: passkeys.clone(),
-            passkey_challenges,
-        };
-
-        let core_builder = AuthCore::builder(storage)
+        let memory = InMemoryStorage::new();
+        let users = memory.user_store();
+        let core = AuthCore::builder(memory.all_stores())
             .email(email.clone() as Arc<dyn EmailSender>)
             .passkey(PasskeyConfig::new(
                 "localhost",
-                rp_origin.clone(),
+                rp_origin(),
                 "doorman tests",
             ))
             .audit(Arc::new(NoopAuditSink))
@@ -135,39 +87,48 @@ impl TestApp {
                 ..UserConfig::default()
             })
             .reauthentication(ReauthPolicy::disabled());
-        let core = customise_core(core_builder)
-            .build()
-            .expect("auth core built");
+        let core = customise_core(core).build().expect("auth core built");
 
-        let builder = AuthService::builder(core)
+        let http = AuthService::builder(core)
             .csrf(CsrfConfig::disabled())
             .cookie(CookieConfig {
-                secure: secure_cookies,
+                secure: false,
                 ..CookieConfig::default()
             });
-        let auth = customise_http(builder).build().expect("auth built");
-
+        let auth = customise_http(http).build().expect("auth built");
         let session_manager = auth.state().session_manager().clone();
-        let operator = auth.state().operator().clone();
 
-        let passkeys_dyn: Arc<dyn PasskeyStore> = passkeys.clone();
-        let app = Router::new()
+        let router = Router::new()
             .merge(auth.router())
-            .route("/me", get(me_handler))
-            .merge(host_routes)
-            .layer(Extension(passkeys_dyn))
+            .route("/me", get(me))
             .layer(auth.session_layer());
 
+        TestApp {
+            router,
+            default_headers: HeaderMap::new(),
+            email,
+            session_manager,
+            users,
+        }
+    }
+
+    pub fn default_header(mut self, name: &'static str, value: &'static str) -> Self {
+        self.default_headers
+            .insert(name, HeaderValue::from_static(value));
+        self
+    }
+
+    pub async fn serve(&self) -> Server {
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .await
             .expect("bind");
         let addr = listener.local_addr().expect("addr");
-
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let router = self.router.clone();
+        let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
             axum::serve(
                 listener,
-                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                router.into_make_service_with_connect_info::<SocketAddr>(),
             )
             .with_graceful_shutdown(async move {
                 let _ = rx.await;
@@ -175,29 +136,336 @@ impl TestApp {
             .await
             .expect("serve");
         });
-
-        TestApp {
+        Server {
             addr,
-            email,
-            rp_origin,
-            passkeys,
-            session_manager,
-            operator,
-            user_store,
             handle,
-            shutdown: tx,
+            shutdown,
         }
     }
 
-    pub fn url(&self, path: &str) -> String {
-        format!("http://{}{}", self.addr, path)
+    pub fn get(&self, path: &str) -> Call<'_> {
+        self.call(Method::GET, path)
+    }
+
+    pub fn post(&self, path: &str) -> Call<'_> {
+        self.call(Method::POST, path)
+    }
+
+    pub fn patch(&self, path: &str) -> Call<'_> {
+        self.call(Method::PATCH, path)
+    }
+
+    pub fn delete(&self, path: &str) -> Call<'_> {
+        self.call(Method::DELETE, path)
+    }
+
+    pub fn call(&self, method: Method, path: &str) -> Call<'_> {
+        let mut request = Request::builder().method(method).uri(path);
+        for (name, value) in &self.default_headers {
+            request = request.header(name, value);
+        }
+        Call {
+            app: self,
+            request,
+            body: Body::empty(),
+        }
+    }
+
+    pub async fn session_for(&self, email: &str) -> AuthResponse {
+        let email = normalize_email(email);
+        let user = match self
+            .users
+            .find_user_by_email(&email)
+            .await
+            .expect("find user")
+        {
+            Some(user) => user,
+            None => {
+                let now = chrono::Utc::now();
+                let user = User {
+                    id: UserId::new(),
+                    email: Some(email),
+                    email_verified_at: Some(now),
+                    status: UserStatus::Active,
+                    created_at: now,
+                    updated_at: now,
+                };
+                self.users
+                    .create_user(user.clone())
+                    .await
+                    .expect("create user");
+                user
+            }
+        };
+        let issued = self
+            .session_manager
+            .create(user.id, SessionContext::default())
+            .await
+            .expect("create session");
+        AuthResponse::from_issued(user, issued, 0)
     }
 
     pub async fn set_user_status(&self, user_id: UserId, status: UserStatus) {
-        self.user_store
+        self.users
             .set_user_status(user_id, status, chrono::Utc::now())
             .await
             .expect("update user status");
+    }
+
+    pub fn last_link(&self, template: &str) -> String {
+        let prefix = template.split('{').next().expect("template prefix");
+        let email = self
+            .email
+            .sent()
+            .into_iter()
+            .rev()
+            .find(|e| e.body_text.contains(prefix))
+            .expect("an email carrying the link was sent");
+        token_from_email(&email.body_text, template)
+    }
+
+    pub async fn signup(&self, email: &str) -> (AuthResponse, ResidentAuthenticator) {
+        let mut authenticator = ResidentAuthenticator::new(&rp_origin());
+        let request = self
+            .post("/auth/signup/request")
+            .json(&SignupRequest {
+                email: email.into(),
+                invite_token: None,
+            })
+            .send()
+            .await;
+        assert_eq!(request.status, StatusCode::NO_CONTENT);
+
+        let redeem = self
+            .post("/auth/signup/redeem")
+            .json(&SignupRedeemRequest {
+                token: self.last_link(SIGNUP_URL),
+            })
+            .send()
+            .await;
+        assert_eq!(redeem.status, StatusCode::OK);
+        let challenge: PasskeyChallenge<CreationChallengeResponse> = redeem.json();
+
+        let finish = self
+            .post("/auth/signup/finish")
+            .json(&RegistrationFinishRequest {
+                challenge_id: challenge.challenge_id,
+                response: authenticator.do_registration(challenge.options),
+                name: Some("first device".into()),
+            })
+            .send()
+            .await;
+        assert_eq!(finish.status, StatusCode::OK);
+        (finish.json(), authenticator)
+    }
+
+    pub async fn recover(
+        &self,
+        email: &str,
+        authenticator: &mut ResidentAuthenticator,
+    ) -> AuthResponse {
+        let request = self
+            .post("/auth/recovery/request")
+            .json(&RecoveryRequest {
+                email: email.into(),
+            })
+            .send()
+            .await;
+        assert_eq!(request.status, StatusCode::NO_CONTENT);
+
+        let redeem = self
+            .post("/auth/recovery/redeem")
+            .json(&RecoveryRedeemRequest {
+                token: self.last_link(RECOVERY_URL),
+            })
+            .send()
+            .await;
+        assert_eq!(redeem.status, StatusCode::OK);
+        let challenge: PasskeyChallenge<CreationChallengeResponse> = redeem.json();
+
+        let finish = self
+            .post("/auth/recovery/finish")
+            .json(&RegistrationFinishRequest {
+                challenge_id: challenge.challenge_id,
+                response: authenticator.do_registration(challenge.options),
+                name: Some("recovery device".into()),
+            })
+            .send()
+            .await;
+        assert_eq!(finish.status, StatusCode::OK);
+        finish.json()
+    }
+
+    pub async fn register_passkey(
+        &self,
+        authenticator: &mut ResidentAuthenticator,
+        bearer: &str,
+    ) -> PasskeyDto {
+        let start = self
+            .post("/auth/passkey/register/start")
+            .bearer(bearer)
+            .send()
+            .await;
+        assert_eq!(start.status, StatusCode::OK);
+        let challenge: PasskeyChallenge<CreationChallengeResponse> = start.json();
+
+        let finish = self
+            .post("/auth/passkey/register/finish")
+            .bearer(bearer)
+            .json(&RegistrationFinishRequest {
+                challenge_id: challenge.challenge_id,
+                response: authenticator.do_registration(challenge.options),
+                name: Some("backup device".into()),
+            })
+            .send()
+            .await;
+        assert_eq!(finish.status, StatusCode::OK);
+        finish.json()
+    }
+
+    pub async fn log_in(
+        &self,
+        authenticator: &mut ResidentAuthenticator,
+        credential_id: &[u8],
+    ) -> Reply {
+        let start = self.post("/auth/passkey/authenticate/start").send().await;
+        assert_eq!(start.status, StatusCode::OK);
+        let challenge: PasskeyChallenge<RequestChallengeResponse> = start.json();
+        self.post("/auth/passkey/authenticate/finish")
+            .json(&serde_json::json!({
+                "challenge_id": challenge.challenge_id,
+                "response": authenticator.do_authentication(challenge.options, credential_id),
+            }))
+            .send()
+            .await
+    }
+
+    pub async fn reauth(
+        &self,
+        authenticator: &mut ResidentAuthenticator,
+        bearer: &str,
+    ) -> Reauthentication {
+        let start = self.post("/auth/reauth/start").bearer(bearer).send().await;
+        assert_eq!(start.status, StatusCode::OK);
+        let challenge: PasskeyChallenge<RequestChallengeResponse> = start.json();
+        Reauthentication {
+            challenge_id: challenge.challenge_id,
+            assertion: authenticator.do_scoped_authentication(challenge.options),
+        }
+    }
+
+    pub async fn is_authenticated(&self, bearer: &str) -> bool {
+        let me = self.get("/me").bearer(bearer).send().await;
+        match me.status {
+            StatusCode::OK => true,
+            StatusCode::UNAUTHORIZED => false,
+            other => panic!("unexpected /me status {other}"),
+        }
+    }
+}
+
+pub fn rp_origin() -> Url {
+    RP_ORIGIN.parse().expect("rp origin")
+}
+
+pub struct Call<'a> {
+    app: &'a TestApp,
+    request: axum::http::request::Builder,
+    body: Body,
+}
+
+impl Call<'_> {
+    pub fn bearer(self, token: &str) -> Self {
+        self.header("authorization", &format!("Bearer {token}"))
+    }
+
+    pub fn cookie(self, token: &str) -> Self {
+        self.header(COOKIE.as_str(), &format!("doorman_session={token}"))
+    }
+
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.request = self.request.header(
+            HeaderName::try_from(name).expect("header name"),
+            HeaderValue::try_from(value).expect("header value"),
+        );
+        self
+    }
+
+    pub fn json(mut self, body: &impl Serialize) -> Self {
+        self.request = self.request.header(CONTENT_TYPE, "application/json");
+        self.body = Body::from(serde_json::to_vec(body).expect("json body"));
+        self
+    }
+
+    pub async fn send(self) -> Reply {
+        let mut request = self.request.body(self.body).expect("request");
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((
+                PEER.parse::<Ipv4Addr>().expect("peer"),
+                40000,
+            ))));
+        let response = self
+            .app
+            .router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("infallible router");
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        Reply {
+            status,
+            headers,
+            body,
+        }
+    }
+}
+
+pub struct Reply {
+    pub status: StatusCode,
+    pub headers: HeaderMap,
+    body: Bytes,
+}
+
+impl Reply {
+    pub fn json<T: DeserializeOwned>(&self) -> T {
+        serde_json::from_slice(&self.body).unwrap_or_else(|e| {
+            panic!(
+                "{} body is not the expected JSON ({e}): {}",
+                self.status,
+                String::from_utf8_lossy(&self.body)
+            )
+        })
+    }
+
+    pub fn error_code(&self) -> String {
+        let body: serde_json::Value = self.json();
+        body["error"]["code"]
+            .as_str()
+            .expect("error code")
+            .to_owned()
+    }
+
+    pub fn set_cookie(&self) -> Option<&str> {
+        self.headers
+            .get(SET_COOKIE)
+            .map(|v| v.to_str().expect("ascii cookie"))
+    }
+}
+
+pub struct Server {
+    addr: SocketAddr,
+    handle: JoinHandle<()>,
+    shutdown: tokio::sync::oneshot::Sender<()>,
+}
+
+impl Server {
+    pub fn url(&self, path: &str) -> String {
+        format!("http://{}{}", self.addr, path)
     }
 
     pub async fn shutdown(self) {
@@ -206,272 +474,6 @@ impl TestApp {
     }
 }
 
-pub async fn login(_client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
-    let email_normalized = normalize_email(email);
-
-    let user = if let Some(existing) = app
-        .user_store
-        .find_user_by_email(&email_normalized)
-        .await
-        .expect("find user")
-    {
-        existing
-    } else {
-        let now = chrono::Utc::now();
-        let user = User {
-            id: UserId::new(),
-            email: Some(email_normalized),
-            email_verified_at: Some(now),
-            status: UserStatus::Active,
-            created_at: now,
-            updated_at: now,
-        };
-        app.user_store
-            .create_user(user.clone())
-            .await
-            .expect("create user");
-        user
-    };
-
-    let issued = app
-        .session_manager
-        .create(user.id, SessionContext::default())
-        .await
-        .expect("create session");
-    AuthResponse::from_issued(user, issued, 0)
-}
-
-pub struct SignupClient {
-    inner: WebauthnAuthenticator<SoftPasskey>,
-    rp_origin: AuthUrl,
-}
-
-impl SignupClient {
-    pub fn new(app: &TestApp) -> Self {
-        Self {
-            inner: WebauthnAuthenticator::new(SoftPasskey::new(true)),
-            rp_origin: AuthUrl::parse(app.rp_origin.as_str()).expect("rp origin"),
-        }
-    }
-
-    pub async fn signup(
-        &mut self,
-        client: &reqwest::Client,
-        app: &TestApp,
-        email: &str,
-    ) -> AuthResponse {
-        let request = client
-            .post(app.url("/auth/signup/request"))
-            .json(&SignupRequest {
-                email: email.into(),
-                invite_token: None,
-            })
-            .send()
-            .await
-            .expect("signup request");
-        assert_eq!(request.status(), StatusCode::NO_CONTENT);
-
-        let sent = app.email.sent();
-        let token = token_from_email(&sent.last().expect("signup email queued").body_text.clone());
-
-        let redeem = client
-            .post(app.url("/auth/signup/redeem"))
-            .json(&SignupRedeemRequest { token })
-            .send()
-            .await
-            .expect("signup redeem");
-        assert_eq!(redeem.status(), StatusCode::OK);
-        let challenge: PasskeyChallenge<CreationChallengeResponse> =
-            redeem.json().await.expect("redeem body");
-
-        let mut options = challenge.options;
-        let selection = options
-            .public_key
-            .authenticator_selection
-            .as_mut()
-            .expect("authenticator selection present");
-        selection.require_resident_key = false;
-        selection.resident_key = None;
-
-        let attestation = self
-            .inner
-            .do_registration(self.rp_origin.clone(), options)
-            .expect("authenticator register");
-
-        let finish = client
-            .post(app.url("/auth/signup/finish"))
-            .json(&RegistrationFinishRequest {
-                challenge_id: challenge.challenge_id,
-                response: attestation,
-                name: Some("test device".into()),
-            })
-            .send()
-            .await
-            .expect("signup finish");
-        assert_eq!(finish.status(), StatusCode::OK);
-        finish.json().await.expect("finish body")
-    }
-
-    pub async fn register_additional_passkey(
-        &mut self,
-        client: &reqwest::Client,
-        app: &TestApp,
-        bearer: &str,
-    ) -> PasskeyDto {
-        let start = client
-            .post(app.url("/auth/passkey/register/start"))
-            .bearer_auth(bearer)
-            .send()
-            .await
-            .expect("register start");
-        assert_eq!(start.status(), StatusCode::OK);
-        let challenge: PasskeyChallenge<CreationChallengeResponse> =
-            start.json().await.expect("start body");
-
-        let mut options = challenge.options;
-        let selection = options
-            .public_key
-            .authenticator_selection
-            .as_mut()
-            .expect("authenticator selection present");
-        selection.require_resident_key = false;
-        selection.resident_key = None;
-
-        let attestation = self
-            .inner
-            .do_registration(self.rp_origin.clone(), options)
-            .expect("authenticator register");
-
-        let finish = client
-            .post(app.url("/auth/passkey/register/finish"))
-            .bearer_auth(bearer)
-            .json(&serde_json::json!({
-                "challenge_id": challenge.challenge_id,
-                "response": attestation,
-                "name": "backup device",
-            }))
-            .send()
-            .await
-            .expect("register finish");
-        assert_eq!(finish.status(), StatusCode::OK);
-        finish.json().await.expect("register finish body")
-    }
-
-    pub async fn reauth(
-        &mut self,
-        client: &reqwest::Client,
-        app: &TestApp,
-        bearer: &str,
-    ) -> Reauthentication {
-        let start = client
-            .post(app.url("/auth/reauth/start"))
-            .bearer_auth(bearer)
-            .send()
-            .await
-            .expect("reauth start");
-        assert_eq!(start.status(), StatusCode::OK);
-        let challenge: PasskeyChallenge<RequestChallengeResponse> =
-            start.json().await.expect("reauth start body");
-        let assertion = self
-            .inner
-            .do_authentication(self.rp_origin.clone(), challenge.options)
-            .expect("authenticator scoped auth");
-        Reauthentication {
-            challenge_id: challenge.challenge_id,
-            assertion,
-        }
-    }
-}
-
-#[derive(Clone)]
-struct ResidentCredential {
-    credential_id: Vec<u8>,
-    user_handle: Vec<u8>,
-}
-
-pub struct ResidentHttpAuthenticator {
-    inner: WebauthnAuthenticator<SoftPasskey>,
-    rp_origin: AuthUrl,
-    resident_credentials: Vec<ResidentCredential>,
-}
-
-impl ResidentHttpAuthenticator {
-    pub fn new(rp_origin: &ServerUrl) -> Self {
-        Self {
-            inner: WebauthnAuthenticator::new(SoftPasskey::new(true)),
-            rp_origin: AuthUrl::parse(rp_origin.as_str()).expect("rp origin"),
-            resident_credentials: Vec::new(),
-        }
-    }
-
-    pub fn do_registration(
-        &mut self,
-        challenge: CreationChallengeResponse,
-    ) -> RegisterPublicKeyCredential {
-        let user_handle = challenge.public_key.user.id.as_ref().to_vec();
-        let mut compatible = challenge;
-        let selection = compatible
-            .public_key
-            .authenticator_selection
-            .as_mut()
-            .expect("authenticator selection present");
-        selection.require_resident_key = false;
-        selection.resident_key = None;
-
-        let response = self
-            .inner
-            .do_registration(self.rp_origin.clone(), compatible)
-            .expect("authenticator register");
-        self.resident_credentials.push(ResidentCredential {
-            credential_id: response.raw_id.as_ref().to_vec(),
-            user_handle,
-        });
-        response
-    }
-
-    pub fn do_authentication(
-        &mut self,
-        challenge: RequestChallengeResponse,
-        credential_id: &[u8],
-    ) -> PublicKeyCredential {
-        let resident = self
-            .resident_credentials
-            .iter()
-            .find(|passkey| passkey.credential_id == credential_id)
-            .cloned()
-            .expect("credential is resident on test authenticator");
-
-        let mut compatible = challenge;
-        compatible.public_key.allow_credentials = vec![AllowCredentials {
-            type_: "public-key".to_string(),
-            id: resident.credential_id.clone().into(),
-            transports: None,
-        }];
-        let mut assertion = self
-            .inner
-            .do_authentication(self.rp_origin.clone(), compatible)
-            .expect("authenticator auth");
-        assertion.response.user_handle = Some(resident.user_handle.into());
-        assertion
-    }
-}
-
-pub fn token_from_email(body: &str) -> String {
-    token_from_email_with(body, SIGNUP_URL)
-}
-
-pub fn token_from_email_with(body: &str, template: &str) -> String {
-    doorman_test_support::token_from_email(body, template)
-}
-
-async fn me_handler(
-    AuthUser(user): AuthUser,
-    Extension(passkeys): Extension<Arc<dyn PasskeyStore>>,
-) -> Response {
-    let passkey_count = passkeys.count_passkeys_for_user(user.id).await.unwrap_or(0);
-    (
-        StatusCode::OK,
-        Json(UserDto::from_user(&user, passkey_count)),
-    )
-        .into_response()
+async fn me(AuthUser(user): AuthUser) -> String {
+    user.email.unwrap_or_default()
 }

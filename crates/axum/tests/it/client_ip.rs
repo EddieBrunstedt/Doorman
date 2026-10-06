@@ -1,12 +1,10 @@
-use crate::common;
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::common::{SignupClient, TestApp};
+use crate::common::{self, PEER, TestApp};
 use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
-use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
+use axum::http::{HeaderValue, Request, StatusCode};
 use axum::response::Response;
 use axum::{Json, Router, routing::get};
 use chrono::{Duration, TimeZone, Utc};
@@ -106,10 +104,18 @@ async fn body(response: Response) -> Value {
 
 #[tokio::test]
 async fn real_socket_enforces_default_limit_and_ignores_spoofed_headers() {
-    let app = TestApp::start_with_clock(Router::new(), false, clock()).await;
+    let clock = clock();
+    let app = TestApp::with(
+        |b| {
+            b.clock(clock.clone())
+                .limiter(Arc::new(InMemoryRateLimiter::new(clock)))
+        },
+        |b| b,
+    );
+    let server = app.serve().await;
     let client = reqwest::Client::new();
     for n in 1..=61 {
-        let response = client.post(app.url(START)).send().await.expect("start");
+        let response = client.post(server.url(START)).send().await.expect("start");
         assert_eq!(
             response.status(),
             if n <= 60 {
@@ -128,7 +134,7 @@ async fn real_socket_enforces_default_limit_and_ignores_spoofed_headers() {
             ("x-real-ip", "203.0.113.4"),
         ],
     ] {
-        let mut request = client.post(app.url(START));
+        let mut request = client.post(server.url(START));
         for (name, value) in headers {
             request = request.header(name, value);
         }
@@ -140,7 +146,8 @@ async fn real_socket_enforces_default_limit_and_ignores_spoofed_headers() {
             "rate_limited"
         );
     }
-    app.shutdown().await;
+
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -320,26 +327,21 @@ async fn signup_and_recovery_charge_socket_ip_and_audit_it() {
 }
 
 #[tokio::test]
-async fn signup_session_and_audit_record_socket_identity_despite_spoofing() {
+async fn signup_session_and_audit_record_the_peer_despite_spoofing() {
     let audit = Arc::new(InMemoryAuditSink::new());
-    let app = TestApp::start_with(Router::new(), false, |b| b.audit(audit.clone())).await;
-    let mut headers = HeaderMap::new();
-    headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.1"));
-    headers.insert("x-real-ip", HeaderValue::from_static("203.0.113.2"));
-    headers.insert("user-agent", HeaderValue::from_static("signup agent"));
-    let client = reqwest::Client::builder()
-        .default_headers(headers)
-        .build()
-        .expect("client");
-    let auth = SignupClient::new(&app)
-        .signup(&client, &app, "identity@example.com")
-        .await;
+    let app = TestApp::with(|b| b.audit(audit.clone()), |b| b)
+        .default_header("x-forwarded-for", "203.0.113.1")
+        .default_header("x-real-ip", "203.0.113.2")
+        .default_header("user-agent", "signup agent");
+
+    let (auth, _) = app.signup("identity@example.com").await;
+
     let session = app
         .session_manager
         .validate(&auth.token)
         .await
         .expect("session");
-    assert_eq!(session.ip.as_deref(), Some("127.0.0.1"));
+    assert_eq!(session.ip.as_deref(), Some(PEER));
     assert_eq!(session.user_agent.as_deref(), Some("signup agent"));
     let events = audit.events();
     assert!(
@@ -354,8 +356,7 @@ async fn signup_session_and_audit_record_socket_identity_despite_spoofing() {
     );
     for event in events {
         assert!(
-            matches!(event.actor, Actor::Subject { ip: Some(ref ip), user_agent: Some(ref ua) } if ip == "127.0.0.1" && ua == "signup agent")
+            matches!(event.actor, Actor::Subject { ip: Some(ref ip), user_agent: Some(ref ua) } if ip == PEER && ua == "signup agent")
         );
     }
-    app.shutdown().await;
 }
