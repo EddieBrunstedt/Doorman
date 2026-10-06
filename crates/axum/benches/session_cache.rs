@@ -18,7 +18,7 @@ async fn build_scaffold() -> Scaffold {
     let storage = InMemoryStorage::new().all_stores();
     let core = support::in_memory_core(
         storage.clone(),
-        SessionCachePolicy::per_process(SessionCacheConfig::default()),
+        SessionCachePolicy::full(SessionCacheConfig::default()),
     );
 
     let now = Utc::now();
@@ -52,7 +52,7 @@ async fn build_scaffold() -> Scaffold {
 fn session_cache(c: &mut Criterion) {
     let runtime = Runtime::new().expect("tokio runtime");
     let scaffold = runtime.block_on(build_scaffold());
-    let cache = scaffold.sessions.cache().expect("per-process cache");
+    let cache = scaffold.sessions.cache();
 
     let mut group = c.benchmark_group("session_cache");
 

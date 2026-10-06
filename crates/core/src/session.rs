@@ -74,7 +74,7 @@ pub struct ResolvedSession {
 pub struct SessionManager {
     sessions: Arc<dyn SessionStore>,
     users: Arc<dyn UserStore>,
-    cache: Option<SessionCache>,
+    cache: SessionCache,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     metrics: Arc<dyn MetricSink>,
@@ -99,23 +99,18 @@ impl SessionManager {
                 reason: "must be strictly greater than the slide interval so an active session slides before it idles out",
             });
         }
-        let cache = match cache.config() {
-            Some(cache) => {
-                if cache.ttl.is_zero() || cache.ttl > MAX_CACHE_TTL {
-                    return Err(AssemblyError::InvalidLifetime {
-                        field: "session cache ttl",
-                        value: cache.ttl,
-                        max: MAX_CACHE_TTL,
-                    });
-                }
-                Some(SessionCache::new(cache, clock.clone()))
-            }
-            None => None,
-        };
+        let ttl = cache.config().ttl;
+        if ttl.is_zero() || ttl > MAX_CACHE_TTL {
+            return Err(AssemblyError::InvalidLifetime {
+                field: "session cache ttl",
+                value: ttl,
+                max: MAX_CACHE_TTL,
+            });
+        }
         Ok(Self {
             sessions,
             users,
-            cache,
+            cache: SessionCache::new(cache, clock.clone()),
             clock,
             audit: AuditDispatch::new(audit),
             metrics,
@@ -133,18 +128,12 @@ impl SessionManager {
         &self.clock
     }
 
-    pub fn cache(&self) -> Option<&SessionCache> {
-        self.cache.as_ref()
+    pub fn cache(&self) -> &SessionCache {
+        &self.cache
     }
 
     pub(crate) fn user_changed(&self, user_id: UserId) {
-        self.evict_user(user_id);
-    }
-
-    fn evict_user(&self, user_id: UserId) {
-        if let Some(cache) = &self.cache {
-            cache.invalidate_user(user_id);
-        }
+        self.cache.invalidate_user(user_id);
     }
 
     #[tracing::instrument(
@@ -156,39 +145,65 @@ impl SessionManager {
         let now = self.clock.now();
         let span = tracing::Span::current();
 
-        if let Some(cache) = &self.cache {
-            // A hit never slides, so a session due to slide goes to storage.
-            if let Some(cached) = cache.get(&token_hash).filter(|cached| {
-                cached.session.expires_at > now && !self.slide_due(&cached.session, now)
-            }) {
-                self.metrics.record(MetricEvent::CacheHit);
-                span.record("session_id", tracing::field::display(cached.session.id));
-                span.record("user_id", tracing::field::display(cached.user.id));
-                return Ok(ResolvedSession {
-                    user: cached.user.clone(),
-                    session: cached.session.clone(),
-                    slid: false,
-                });
-            }
-            self.metrics.record(MetricEvent::CacheMiss);
+        // A hit never slides, so a session due to slide goes to storage.
+        let cached = self
+            .cache
+            .session(&token_hash)
+            .filter(|session| session.expires_at > now && !self.slide_due(session, now));
+        if let Some(session) = cached {
+            span.record("session_id", tracing::field::display(session.id));
+            span.record("user_id", tracing::field::display(session.user_id));
+            let user = self.cache.user(session.user_id);
+            self.record_cache(user.is_some());
+            let user = match user {
+                Some(user) => user,
+                None => self.read_user(session.user_id).await?,
+            };
+            return Ok(ResolvedSession {
+                user,
+                session,
+                slid: false,
+            });
+        }
+        let caches_sessions = self.cache.caches_sessions();
+        if caches_sessions {
+            self.record_cache(false);
         }
 
         let session = self.validate_by_hash(&token_hash).await?;
         span.record("session_id", tracing::field::display(session.id));
         span.record("user_id", tracing::field::display(session.user_id));
-        let user = find_active_user(self.users.as_ref(), session.user_id).await?;
+        let user = self.cache.user(session.user_id);
+        if !caches_sessions {
+            self.record_cache(user.is_some());
+        }
+        let user = match user {
+            Some(user) => user,
+            None => self.read_user(session.user_id).await?,
+        };
         let (session, slid) = self.slide(session, now).await;
 
         let session = Arc::new(session);
-        let user = Arc::new(user);
-        if let Some(cache) = &self.cache {
-            cache.insert(token_hash, session.clone(), user.clone());
-        }
+        self.cache.insert_session(token_hash, session.clone());
         Ok(ResolvedSession {
             user,
             session,
             slid,
         })
+    }
+
+    fn record_cache(&self, hit: bool) {
+        self.metrics.record(if hit {
+            MetricEvent::CacheHit
+        } else {
+            MetricEvent::CacheMiss
+        });
+    }
+
+    async fn read_user(&self, user_id: UserId) -> Result<Arc<User>> {
+        let user = Arc::new(find_active_user(self.users.as_ref(), user_id).await?);
+        self.cache.insert_user(user.clone());
+        Ok(user)
     }
 
     #[tracing::instrument(skip(self, context), fields(user_id = %user_id))]
@@ -376,7 +391,7 @@ impl SessionManager {
             .delete_sessions_for_user(user_id, None)
             .await?;
         if count > 0 {
-            self.evict_user(user_id);
+            self.cache.invalidate_user(user_id);
         }
         tracing::info!(count, outcome = "revoked_all", "user sessions revoked");
         Ok(count)
@@ -400,7 +415,7 @@ impl SessionManager {
             .delete_sessions_for_user(user_id, Some(keep))
             .await?;
         if count > 0 {
-            self.evict_user(user_id);
+            self.cache.invalidate_user(user_id);
         }
         tracing::info!(
             count,
@@ -429,9 +444,7 @@ impl SessionManager {
 
     async fn revoke_session(&self, session: Session, actor: Actor) -> Result<()> {
         self.sessions.delete_session(session.id).await?;
-        if let Some(cache) = &self.cache {
-            cache.invalidate_session(session.id);
-        }
+        self.cache.invalidate_session(session.id);
         self.audit
             .emit(AuditEvent {
                 timestamp: self.clock.now(),

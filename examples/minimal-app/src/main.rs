@@ -46,7 +46,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let core = AuthCore::builder(storage.all_stores())
         .email(Arc::new(TerminalEmailSender))
         .passkey(passkey_config)
-        .session_cache(SessionCachePolicy::disabled())
+        .session_cache(SessionCachePolicy::users_only(SessionCacheConfig::default()))
         .reauthentication(ReauthPolicy::required_for([
             ReauthAction::DeleteAccount,
             ReauthAction::RequestEmailChange,

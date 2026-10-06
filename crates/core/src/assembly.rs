@@ -36,7 +36,7 @@ pub enum AssemblyError {
     )]
     ReauthDecisionRequired,
     #[error(
-        "a session cache decision is required: pass SessionCachePolicy::disabled() so every process refuses a revoked session at once, or SessionCachePolicy::per_process(..) to serve sessions from memory while other processes lag a revocation by up to its ttl"
+        "a session cache decision is required: pass SessionCachePolicy::users_only(..) to read the session on every request so every process refuses a revoked session at once, or SessionCachePolicy::full(..) to serve warm requests from memory while other processes lag a revocation by up to its ttl"
     )]
     SessionCacheDecisionRequired,
     #[error("passkey manager construction failed: {0}")]

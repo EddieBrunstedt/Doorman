@@ -26,7 +26,7 @@ async fn build_scaffold() -> Scaffold {
     let storage = InMemoryStorage::new().all_stores();
     let core = support::in_memory_core(
         storage.clone(),
-        SessionCachePolicy::per_process(SessionCacheConfig {
+        SessionCachePolicy::full(SessionCacheConfig {
             capacity: NonZeroUsize::new(POOL * 16).expect("non-zero capacity"),
             ..SessionCacheConfig::default()
         }),
@@ -58,11 +58,7 @@ async fn build_scaffold() -> Scaffold {
     }
 
     Scaffold {
-        cache: core
-            .session_manager
-            .cache()
-            .expect("per-process cache")
-            .clone(),
+        cache: core.session_manager.cache().clone(),
         session_manager: core.session_manager,
         token_hashes: Arc::new(token_hashes),
     }

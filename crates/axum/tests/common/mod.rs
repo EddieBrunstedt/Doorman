@@ -22,7 +22,7 @@ use doorman_axum::{AuthService, AuthServiceBuilder};
 use doorman_core::account::AccountConfig;
 use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
 use doorman_core::audit::NoopAuditSink;
-use doorman_core::cache::SessionCachePolicy;
+use doorman_core::cache::{SessionCacheConfig, SessionCachePolicy};
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::email::EmailSender;
 use doorman_core::memory::{
@@ -144,7 +144,7 @@ impl TestApp {
                 url_template: ACCOUNT_URL.to_string(),
                 ..AccountConfig::default()
             })
-            .session_cache(SessionCachePolicy::disabled())
+            .session_cache(SessionCachePolicy::users_only(SessionCacheConfig::default()))
             .reauthentication(ReauthPolicy::disabled());
         let core = customise_core(core_builder)
             .build()

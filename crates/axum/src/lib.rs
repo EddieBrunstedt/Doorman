@@ -52,7 +52,7 @@ impl AuthService {
         &self.state
     }
 
-    pub fn cache(&self) -> Option<&SessionCache> {
+    pub fn cache(&self) -> &SessionCache {
         self.state.core.session_manager.cache()
     }
 }

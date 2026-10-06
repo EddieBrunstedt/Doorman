@@ -16,7 +16,7 @@ use doorman_core::assembly::{AssemblyError, AuthCore};
 use doorman_core::audit::{
     AuditEvent, AuditEventKind, AuditSink, RedemptionFailureReason, SecretKind,
 };
-use doorman_core::cache::SessionCachePolicy;
+use doorman_core::cache::{SessionCacheConfig, SessionCachePolicy};
 use doorman_core::clock::Clock;
 use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
 use doorman_core::error::StorageResult;
@@ -238,7 +238,7 @@ impl HarnessBuilder {
                 absolute_lifetime: Duration::from_secs(60 * 60),
                 ..SessionConfig::default()
             },
-            session_cache: SessionCachePolicy::disabled(),
+            session_cache: SessionCachePolicy::users_only(SessionCacheConfig::default()),
             passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
             signup_limiter: Arc::new(NoopRateLimiter),
             recovery_limiter: Arc::new(NoopRateLimiter),

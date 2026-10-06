@@ -64,9 +64,7 @@ async fn build_scaffold() -> Scaffold {
         .email(email as Arc<dyn EmailSender>)
         .passkey(PasskeyConfig::new("localhost", rp_origin, "doorman bench"))
         .reauthentication(doorman_core::reauth::ReauthPolicy::disabled())
-        .session_cache(SessionCachePolicy::per_process(
-            SessionCacheConfig::default(),
-        ))
+        .session_cache(SessionCachePolicy::full(SessionCacheConfig::default()))
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
         .signup(SignupConfig {
@@ -93,7 +91,7 @@ async fn build_scaffold() -> Scaffold {
         .expect("auth built");
 
     let session_manager: SessionManager = auth.state().session_manager().clone();
-    let cache = auth.cache().expect("per-process cache").clone();
+    let cache = auth.cache().clone();
 
     let now = chrono::Utc::now();
     let user = User {

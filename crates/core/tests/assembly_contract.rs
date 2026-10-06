@@ -75,7 +75,7 @@ fn valid_builder() -> AuthCoreBuilder {
         .signup(real_signup())
         .recovery(real_recovery())
         .account(real_account())
-        .session_cache(SessionCachePolicy::disabled())
+        .session_cache(SessionCachePolicy::users_only(SessionCacheConfig::default()))
         .reauthentication(ReauthPolicy::disabled())
 }
 
@@ -162,7 +162,7 @@ fn reauth_decision_required_when_policy_not_set() {
         .signup(real_signup())
         .recovery(real_recovery())
         .account(real_account())
-        .session_cache(SessionCachePolicy::disabled())
+        .session_cache(SessionCachePolicy::users_only(SessionCacheConfig::default()))
         .build()
         .err();
     assert!(
@@ -194,7 +194,7 @@ fn session_cache_decision_required_when_policy_not_set() {
 fn session_cache_ttl_is_capped() {
     let build = |ttl| {
         valid_builder()
-            .session_cache(SessionCachePolicy::per_process(SessionCacheConfig {
+            .session_cache(SessionCachePolicy::full(SessionCacheConfig {
                 ttl,
                 ..SessionCacheConfig::default()
             }))

@@ -28,16 +28,16 @@ fn sliding_harness() -> Harness {
     Harness::builder().session_config(sliding_config()).build()
 }
 
-fn per_process(ttl: Duration) -> SessionCachePolicy {
-    SessionCachePolicy::per_process(SessionCacheConfig {
+fn full_cache(ttl: Duration) -> SessionCachePolicy {
+    SessionCachePolicy::full(SessionCacheConfig {
         ttl,
         ..SessionCacheConfig::default()
     })
 }
 
-fn cached_harness() -> Harness {
+fn full_cache_harness() -> Harness {
     Harness::builder()
-        .session_cache(per_process(Duration::from_secs(60)))
+        .session_cache(full_cache(Duration::from_secs(60)))
         .build()
 }
 
@@ -61,7 +61,7 @@ fn misses(h: &Harness) -> usize {
 
 #[tokio::test]
 async fn resolves_from_storage_then_serves_from_cache() {
-    let h = cached_harness();
+    let h = full_cache_harness();
     let (user, token) = signed_in(&h, "alice@example.com").await;
 
     let first = h
@@ -110,8 +110,68 @@ async fn a_revocation_reaches_another_process_at_once() {
 }
 
 #[tokio::test]
-async fn a_caching_process_serves_a_revoked_session_until_its_ttl() {
-    let h = cached_harness();
+async fn a_warm_request_reads_only_the_session() {
+    let h = Harness::fresh();
+    let (_, token) = signed_in(&h, "alice@example.com").await;
+    h.user_store.reset();
+
+    h.session_manager.resolve(&token).await.expect("cold");
+    assert_eq!(
+        h.user_store.reads_by_id(),
+        1,
+        "a cold request reads the user"
+    );
+    h.session_manager.resolve(&token).await.expect("warm");
+    assert_eq!(h.user_store.reads_by_id(), 1, "a warm request does not");
+    assert_eq!((hits(&h), misses(&h)), (1, 1));
+}
+
+#[tokio::test]
+async fn another_process_sees_a_changed_email_after_its_ttl() {
+    let h = Harness::fresh();
+    let other = h.another_process();
+    let (_, token) = signed_in(&h, "old@example.com").await;
+    let warm = h.session_manager.resolve(&token).await.expect("warm");
+    other
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("warm other");
+
+    h.account
+        .request_email_change(
+            &warm.user,
+            &warm.session,
+            "new@example.com",
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("request email change");
+    h.account
+        .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
+        .await
+        .expect("confirm email change");
+
+    let stale = other
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("resolve");
+    assert_eq!(stale.user.email.as_deref(), Some("old@example.com"));
+
+    h.clock.advance(ChronoDuration::seconds(60));
+    let fresh = other
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("resolve");
+    assert_eq!(fresh.user.email.as_deref(), Some("new@example.com"));
+}
+
+#[tokio::test]
+async fn a_full_cache_serves_a_revoked_session_until_its_ttl() {
+    let h = full_cache_harness();
     let other = h.another_process();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     other
@@ -153,7 +213,7 @@ async fn warm_entry_past_its_session_deadline_is_not_served() {
             absolute_lifetime: Duration::from_secs(30),
             ..SessionConfig::default()
         })
-        .session_cache(per_process(Duration::from_secs(60)))
+        .session_cache(full_cache(Duration::from_secs(60)))
         .build();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     h.session_manager
@@ -169,7 +229,7 @@ async fn warm_entry_past_its_session_deadline_is_not_served() {
 
 #[tokio::test]
 async fn revoke_evicts_the_warm_entry() {
-    let h = cached_harness();
+    let h = full_cache_harness();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     h.session_manager
         .resolve(&token)
@@ -184,7 +244,7 @@ async fn revoke_evicts_the_warm_entry() {
 
 #[tokio::test]
 async fn revoke_by_id_evicts_the_warm_entry() {
-    let h = cached_harness();
+    let h = full_cache_harness();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     let warm = h.session_manager.resolve(&token).await.expect("warm");
 
@@ -199,7 +259,7 @@ async fn revoke_by_id_evicts_the_warm_entry() {
 
 #[tokio::test]
 async fn revoke_other_sessions_evicts_only_the_others() {
-    let h = cached_harness();
+    let h = full_cache_harness();
     let (user, current) = signed_in(&h, "carol@example.com").await;
     let other = h
         .session_manager
@@ -231,7 +291,7 @@ async fn session_cap_eviction_evicts_the_warm_entry() {
             max_sessions_per_user: NonZeroU32::new(1),
             ..SessionConfig::default()
         })
-        .session_cache(per_process(Duration::from_secs(60)))
+        .session_cache(full_cache(Duration::from_secs(60)))
         .build();
     let (user, oldest) = signed_in(&h, "dave@example.com").await;
     h.session_manager.resolve(&oldest).await.expect("warm");
@@ -247,7 +307,7 @@ async fn session_cap_eviction_evicts_the_warm_entry() {
 
 #[tokio::test]
 async fn revoke_all_for_user_evicts_every_warm_entry() {
-    let h = cached_harness();
+    let h = full_cache_harness();
     let (user, first) = signed_in(&h, "bob@example.com").await;
     let second = h
         .session_manager
@@ -276,7 +336,7 @@ async fn revoke_all_for_user_evicts_every_warm_entry() {
 
 #[tokio::test]
 async fn disabled_account_is_refused_and_never_cached() {
-    let h = cached_harness();
+    let h = full_cache_harness();
     let (user, token) = signed_in(&h, "frozen@example.com").await;
     let now = h.clock.now();
     h.users
@@ -297,7 +357,7 @@ async fn disabled_account_is_refused_and_never_cached() {
 
 #[tokio::test]
 async fn operator_disable_evicts_the_warm_entry() {
-    let h = cached_harness();
+    let h = full_cache_harness();
     let (user, token) = signed_in(&h, "locked@example.com").await;
     h.session_manager
         .resolve(&token)
@@ -314,7 +374,7 @@ async fn operator_disable_evicts_the_warm_entry() {
 
 #[tokio::test]
 async fn email_change_evicts_the_warm_entry() {
-    let h = cached_harness();
+    let h = full_cache_harness();
     let (_, token) = signed_in(&h, "old@example.com").await;
     let warm = h
         .session_manager
@@ -344,7 +404,7 @@ async fn email_change_evicts_the_warm_entry() {
 
 #[tokio::test]
 async fn email_verification_evicts_the_warm_entry() {
-    let h = cached_harness();
+    let h = full_cache_harness();
     let now = h.clock.now();
     let user = User {
         id: UserId::new(),
@@ -434,7 +494,7 @@ async fn miss_after_the_throttle_slides_and_reports_it() {
 async fn hit_never_slides() {
     let h = Harness::builder()
         .session_config(sliding_config())
-        .session_cache(per_process(Duration::from_secs(60)))
+        .session_cache(full_cache(Duration::from_secs(60)))
         .build();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     h.clock.advance(ChronoDuration::seconds(90));
@@ -465,7 +525,7 @@ async fn read_within_the_slide_interval_does_not_slide() {
 async fn a_cached_session_due_to_slide_is_read_and_slid() {
     let h = Harness::builder()
         .session_config(sliding_config())
-        .session_cache(per_process(Duration::from_secs(5 * 60)))
+        .session_cache(full_cache(Duration::from_secs(5 * 60)))
         .build();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     h.session_manager.resolve(&token).await.expect("warm");
@@ -581,7 +641,7 @@ fn an_idle_timeout_does_not_bound_the_cache_ttl() {
             idle_timeout: Some(Duration::from_secs(2 * 60)),
             ..sliding_config()
         })
-        .session_cache(per_process(Duration::from_secs(5 * 60)))
+        .session_cache(full_cache(Duration::from_secs(5 * 60)))
         .try_build();
     assert!(built.is_ok());
 }
