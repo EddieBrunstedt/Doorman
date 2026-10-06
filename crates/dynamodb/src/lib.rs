@@ -1,3 +1,12 @@
+// A panic aborts the host's whole process; returning an error leaves that decision to the host.
+#![deny(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::unwrap_used
+)]
+
 mod client;
 mod model;
 mod stores;
