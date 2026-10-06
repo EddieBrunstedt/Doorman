@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, HeaderValue, Request, header};
 use axum::response::Response;
 use doorman_core::Error;
 use doorman_core::clock::Clock;
-use doorman_core::resolve::SessionResolver;
+use doorman_core::session::SessionManager;
 use doorman_core::storage::{Session, User};
 use tower_layer::Layer;
 use tower_service::Service;
@@ -28,7 +28,7 @@ pub struct AuthContext {
 }
 
 pub(crate) struct SessionLayerState {
-    pub(crate) resolver: SessionResolver,
+    pub(crate) sessions: SessionManager,
     pub(crate) cookie: CookieConfig,
     pub(crate) csrf: Option<CsrfConfig>,
 }
@@ -94,14 +94,14 @@ where
 
                 let mut cookie_refresh: Option<HeaderValue> = None;
                 if let Some((token, source)) = extract_token(req.headers(), cookie_name) {
-                    match state.resolver.resolve(&token).await {
+                    match state.sessions.resolve(&token).await {
                         Ok(resolved) => {
                             let span = tracing::Span::current();
                             span.record("session_id", tracing::field::display(resolved.session.id));
                             span.record("user_id", tracing::field::display(resolved.user.id));
                             if resolved.slid && source == TokenSource::Cookie {
                                 let remaining = (resolved.session.expires_at
-                                    - state.resolver.clock().now())
+                                    - state.sessions.clock().now())
                                 .to_std()
                                 .unwrap_or(Duration::ZERO);
                                 match session_cookie_with_max_age(&state.cookie, &token, remaining)
@@ -116,7 +116,7 @@ where
                                 user: resolved.user,
                                 session: resolved.session,
                                 token,
-                                clock: state.resolver.clock().clone(),
+                                clock: state.sessions.clock().clone(),
                             });
                         }
                         Err(error @ Error::AccountDisabled) => {

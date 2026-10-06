@@ -13,7 +13,6 @@ use crate::passkey::{PasskeyConfig, PasskeyManager, build_webauthn};
 use crate::rate_limit::RateLimiter;
 use crate::reauth::{ReauthManager, ReauthPolicy};
 use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
-use crate::resolve::SessionResolver;
 use crate::session::{SessionConfig, SessionManager};
 use crate::signup::{SignupConfig, SignupManager};
 use crate::storage::Storage;
@@ -101,8 +100,6 @@ fn validate_idle_timeout(
 #[derive(Clone)]
 pub struct AuthCore {
     pub session_manager: SessionManager,
-    pub resolver: SessionResolver,
-    pub storage: Storage,
     pub passkey: PasskeyManager,
     pub signup: SignupManager,
     pub recovery: RecoveryManager,
@@ -269,16 +266,13 @@ impl AuthCoreBuilder {
 
         let session_manager = SessionManager::new(
             self.storage.sessions.clone(),
+            self.storage.users.clone(),
             clock.clone(),
             audit.clone(),
+            metrics.clone(),
             session_config,
-        );
-        let resolver = SessionResolver::new(
-            session_manager.clone(),
-            self.storage.users.clone(),
             self.cache_config.unwrap_or_default(),
-        )?
-        .with_metrics(metrics.clone());
+        )?;
 
         let reauth_policy = self.reauth.ok_or(AssemblyError::ReauthDecisionRequired)?;
 
@@ -302,7 +296,7 @@ impl AuthCoreBuilder {
             limiter,
             session_manager.clone(),
             reauth.clone(),
-            self.storage.clone(),
+            self.storage,
         )
         .with_metrics(metrics);
 
@@ -334,8 +328,6 @@ impl AuthCoreBuilder {
 
         Ok(AuthCore {
             session_manager,
-            resolver,
-            storage: self.storage,
             passkey,
             signup,
             recovery,

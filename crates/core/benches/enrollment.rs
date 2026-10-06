@@ -1,12 +1,13 @@
 mod support;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use doorman_core::memory::InMemoryStorage;
 use doorman_core::session::SessionContext;
 use doorman_core::signup::SignupManager;
 use tokio::runtime::Runtime;
 
 fn signup_manager() -> SignupManager {
-    support::in_memory_core().signup
+    support::in_memory_core(InMemoryStorage::new().all_stores()).signup
 }
 
 fn enrollment(c: &mut Criterion) {

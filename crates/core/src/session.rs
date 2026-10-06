@@ -1,18 +1,22 @@
 use std::fmt;
 use std::num::NonZeroU32;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::assembly::AssemblyError;
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, AuditSink};
+use crate::cache::{SessionCache, SessionCacheConfig};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
-use crate::storage::{Session, SessionId, SessionStore, SessionSummary, TokenHash, UserId};
-use crate::sync;
+use crate::metrics::{MetricEvent, MetricSink};
+use crate::storage::{
+    Session, SessionId, SessionStore, SessionSummary, TokenHash, User, UserId, UserStore,
+};
 use crate::token::generate_token;
 pub use crate::token::hash_token;
+use crate::user::find_active_user;
 
 #[derive(Clone)]
 pub struct IssuedSession {
@@ -54,47 +58,51 @@ pub struct SessionContext {
     pub user_agent: Option<String>,
 }
 
-#[async_trait]
-pub(crate) trait SessionInvalidationHook: Send + Sync {
-    async fn on_session_invalidated(&self, session_id: SessionId);
-    async fn on_user_invalidated(&self, user_id: UserId);
-}
-
-pub(crate) struct NoopSessionInvalidationHook;
-
-#[async_trait]
-impl SessionInvalidationHook for NoopSessionInvalidationHook {
-    async fn on_session_invalidated(&self, _: SessionId) {}
-    async fn on_user_invalidated(&self, _: UserId) {}
+#[derive(Clone)]
+pub struct ResolvedSession {
+    pub user: Arc<User>,
+    pub session: Arc<Session>,
+    pub slid: bool,
 }
 
 #[derive(Clone)]
 pub struct SessionManager {
     sessions: Arc<dyn SessionStore>,
+    users: Arc<dyn UserStore>,
+    cache: SessionCache,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
-    invalidation_hook: Arc<RwLock<Arc<dyn SessionInvalidationHook>>>,
+    metrics: Arc<dyn MetricSink>,
     config: SessionConfig,
 }
 
 impl SessionManager {
     pub(crate) fn new(
         sessions: Arc<dyn SessionStore>,
+        users: Arc<dyn UserStore>,
         clock: Arc<dyn Clock>,
         audit: Arc<dyn AuditSink>,
+        metrics: Arc<dyn MetricSink>,
         config: SessionConfig,
-    ) -> Self {
-        Self {
+        cache: SessionCacheConfig,
+    ) -> std::result::Result<Self, AssemblyError> {
+        if let Some(idle_timeout) = config.idle_timeout
+            && cache.ttl >= idle_timeout
+        {
+            return Err(AssemblyError::IdleTimeoutInvalid {
+                idle_timeout,
+                reason: "must be strictly greater than the cache ttl so a cache-miss touch can slide the session before it idles out",
+            });
+        }
+        Ok(Self {
             sessions,
+            users,
+            cache: SessionCache::new(cache, clock.clone()),
             clock,
             audit: AuditDispatch::new(audit),
-            invalidation_hook: Arc::new(RwLock::new(Arc::new(NoopSessionInvalidationHook))),
+            metrics,
             config,
-        }
-    }
-
-    pub(crate) fn idle_timeout(&self) -> Option<Duration> {
-        self.config.idle_timeout
+        })
     }
 
     pub fn unused_lifetime(&self) -> Duration {
@@ -103,20 +111,57 @@ impl SessionManager {
             .unwrap_or(self.config.absolute_lifetime)
     }
 
-    pub(crate) fn set_invalidation_hook(&self, hook: Arc<dyn SessionInvalidationHook>) {
-        *sync::write(&self.invalidation_hook) = hook;
-    }
-
     pub fn clock(&self) -> &Arc<dyn Clock> {
         &self.clock
     }
 
-    pub(crate) async fn forget_cached_user(&self, user_id: UserId) {
-        self.invalidation_hook().on_user_invalidated(user_id).await;
+    pub fn cache(&self) -> &SessionCache {
+        &self.cache
     }
 
-    fn invalidation_hook(&self) -> Arc<dyn SessionInvalidationHook> {
-        sync::read(&self.invalidation_hook).clone()
+    pub(crate) fn user_changed(&self, user_id: UserId) {
+        self.cache.invalidate_user(user_id);
+    }
+
+    #[tracing::instrument(
+        skip_all,
+        fields(session_id = tracing::field::Empty, user_id = tracing::field::Empty),
+    )]
+    pub async fn resolve(&self, token: &str) -> Result<ResolvedSession> {
+        let token_hash = hash_token(token);
+        let now = self.clock.now();
+        let span = tracing::Span::current();
+
+        if let Some(cached) = self
+            .cache
+            .get(&token_hash)
+            .filter(|cached| cached.session.expires_at > now)
+        {
+            self.metrics.record(MetricEvent::CacheHit);
+            span.record("session_id", tracing::field::display(cached.session.id));
+            span.record("user_id", tracing::field::display(cached.user.id));
+            return Ok(ResolvedSession {
+                user: cached.user.clone(),
+                session: cached.session.clone(),
+                slid: false,
+            });
+        }
+        self.metrics.record(MetricEvent::CacheMiss);
+
+        let session = self.validate_by_hash(&token_hash).await?;
+        span.record("session_id", tracing::field::display(session.id));
+        span.record("user_id", tracing::field::display(session.user_id));
+        let user = find_active_user(self.users.as_ref(), session.user_id).await?;
+        let (session, slid) = self.slide(session, now, self.cache.ttl()).await;
+
+        let session = Arc::new(session);
+        let user = Arc::new(user);
+        self.cache.insert(token_hash, session.clone(), user.clone());
+        Ok(ResolvedSession {
+            user,
+            session,
+            slid,
+        })
     }
 
     #[tracing::instrument(skip(self, context), fields(user_id = %user_id))]
@@ -248,7 +293,7 @@ impl SessionManager {
         Ok(session)
     }
 
-    pub(crate) async fn slide(
+    async fn slide(
         &self,
         session: Session,
         now: DateTime<Utc>,
@@ -318,7 +363,7 @@ impl SessionManager {
             .delete_sessions_for_user(user_id, None)
             .await?;
         if count > 0 {
-            self.invalidation_hook().on_user_invalidated(user_id).await;
+            self.cache.invalidate_user(user_id);
         }
         tracing::info!(count, outcome = "revoked_all", "user sessions revoked");
         Ok(count)
@@ -342,7 +387,7 @@ impl SessionManager {
             .delete_sessions_for_user(user_id, Some(keep))
             .await?;
         if count > 0 {
-            self.invalidation_hook().on_user_invalidated(user_id).await;
+            self.cache.invalidate_user(user_id);
         }
         tracing::info!(
             count,
@@ -371,9 +416,7 @@ impl SessionManager {
 
     async fn revoke_session(&self, session: Session, actor: Actor) -> Result<()> {
         self.sessions.delete_session(session.id).await?;
-        self.invalidation_hook()
-            .on_session_invalidated(session.id)
-            .await;
+        self.cache.invalidate_session(session.id);
         self.audit
             .emit(AuditEvent {
                 timestamp: self.clock.now(),
@@ -421,10 +464,6 @@ impl From<&Session> for SessionSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audit::NoopAuditSink;
-    use crate::clock::SystemClock;
-    use crate::memory::InMemorySessionStore;
-    use std::sync::Mutex;
 
     #[test]
     fn default_config_builds() {
@@ -493,207 +532,5 @@ mod tests {
         );
         assert!(rendered.contains("<redacted>"), "expected redaction marker");
         assert_eq!(issued.token, "super-secret-bearer-token");
-    }
-
-    #[derive(Default)]
-    struct RecordingHook {
-        sessions: Mutex<Vec<SessionId>>,
-        users: Mutex<Vec<UserId>>,
-    }
-
-    impl RecordingHook {
-        fn sessions(&self) -> Vec<SessionId> {
-            sync::lock(&self.sessions).clone()
-        }
-
-        fn users(&self) -> Vec<UserId> {
-            sync::lock(&self.users).clone()
-        }
-    }
-
-    #[async_trait]
-    impl SessionInvalidationHook for RecordingHook {
-        async fn on_session_invalidated(&self, session_id: SessionId) {
-            sync::lock(&self.sessions).push(session_id);
-        }
-        async fn on_user_invalidated(&self, user_id: UserId) {
-            sync::lock(&self.users).push(user_id);
-        }
-    }
-
-    fn plain_manager() -> SessionManager {
-        SessionManager::new(
-            Arc::new(InMemorySessionStore::new()),
-            Arc::new(SystemClock),
-            Arc::new(NoopAuditSink),
-            SessionConfig::default(),
-        )
-    }
-
-    fn manager_with_hook(hook: Arc<RecordingHook>) -> SessionManager {
-        let manager = plain_manager();
-        manager.set_invalidation_hook(hook);
-        manager
-    }
-
-    #[tokio::test]
-    async fn revoke_notifies_hook_with_session_id() {
-        let hook = Arc::new(RecordingHook::default());
-        let manager = manager_with_hook(hook.clone());
-
-        let issued = manager
-            .create(UserId::new(), SessionContext::default())
-            .await
-            .expect("create");
-        manager.revoke(&issued.token).await.expect("revoke");
-
-        assert_eq!(hook.sessions(), vec![issued.session.id]);
-        assert!(
-            hook.users().is_empty(),
-            "no user-level hook on single revoke"
-        );
-    }
-
-    #[tokio::test]
-    async fn revoke_by_id_notifies_hook_with_session_id() {
-        let hook = Arc::new(RecordingHook::default());
-        let manager = manager_with_hook(hook.clone());
-
-        let issued = manager
-            .create(UserId::new(), SessionContext::default())
-            .await
-            .expect("create");
-        manager
-            .revoke_by_id(issued.session.id)
-            .await
-            .expect("revoke_by_id");
-
-        assert_eq!(hook.sessions(), vec![issued.session.id]);
-    }
-
-    #[tokio::test]
-    async fn hook_install_order_does_not_matter() {
-        let manager = plain_manager();
-        let early_clone = manager.clone();
-        let hook = Arc::new(RecordingHook::default());
-        manager.set_invalidation_hook(hook.clone());
-
-        let issued = early_clone
-            .create(UserId::new(), SessionContext::default())
-            .await
-            .expect("create");
-        early_clone
-            .revoke(&issued.token)
-            .await
-            .expect("revoke via early clone");
-        assert_eq!(
-            hook.sessions(),
-            vec![issued.session.id],
-            "a clone taken before the install still observes invalidation",
-        );
-
-        let late_clone = manager.clone();
-        let issued = late_clone
-            .create(UserId::new(), SessionContext::default())
-            .await
-            .expect("create");
-        late_clone
-            .revoke(&issued.token)
-            .await
-            .expect("revoke via late clone");
-        assert_eq!(hook.sessions().len(), 2, "a later clone shares the hook");
-    }
-
-    #[tokio::test]
-    async fn revoke_all_does_not_notify_hook_on_zero_count() {
-        let hook = Arc::new(RecordingHook::default());
-        let manager = manager_with_hook(hook.clone());
-
-        let count = manager
-            .revoke_all_for_user(UserId::new())
-            .await
-            .expect("revoke all");
-        assert_eq!(count, 0, "no sessions to revoke");
-        assert!(
-            hook.users().is_empty(),
-            "a zero-count sweep must not notify the hook",
-        );
-    }
-
-    #[tokio::test]
-    async fn revoke_all_notifies_hook_when_sessions_removed() {
-        let hook = Arc::new(RecordingHook::default());
-        let manager = manager_with_hook(hook.clone());
-        let user_id = UserId::new();
-        manager
-            .create(user_id, SessionContext::default())
-            .await
-            .expect("create session");
-
-        let count = manager
-            .revoke_all_for_user(user_id)
-            .await
-            .expect("revoke all");
-        assert_eq!(count, 1);
-        assert_eq!(
-            hook.users(),
-            vec![user_id],
-            "revoking sessions notifies the hook exactly once",
-        );
-        assert!(
-            hook.sessions().is_empty(),
-            "a bulk revoke does not notify per session",
-        );
-    }
-
-    #[tokio::test]
-    async fn revoke_others_keeps_the_exception_and_notifies_hook() {
-        let hook = Arc::new(RecordingHook::default());
-        let manager = manager_with_hook(hook.clone());
-        let user_id = UserId::new();
-        let keep = manager
-            .create(user_id, SessionContext::default())
-            .await
-            .expect("keep");
-        manager
-            .create(user_id, SessionContext::default())
-            .await
-            .expect("other");
-
-        let count = manager
-            .revoke_others(user_id, keep.session.id)
-            .await
-            .expect("revoke others");
-        assert_eq!(count, 1);
-        let remaining: Vec<SessionId> = manager
-            .list_for_user(user_id)
-            .await
-            .expect("list")
-            .into_iter()
-            .map(|s| s.id)
-            .collect();
-        assert_eq!(remaining, vec![keep.session.id]);
-        assert_eq!(hook.users(), vec![user_id]);
-    }
-
-    #[tokio::test]
-    async fn revoke_others_does_not_notify_hook_on_zero_count() {
-        let hook = Arc::new(RecordingHook::default());
-        let manager = manager_with_hook(hook.clone());
-        let user_id = UserId::new();
-        let only = manager
-            .create(user_id, SessionContext::default())
-            .await
-            .expect("only");
-
-        let count = manager
-            .revoke_others(user_id, only.session.id)
-            .await
-            .expect("revoke others");
-        assert_eq!(count, 0);
-        assert!(
-            hook.users().is_empty(),
-            "a no-op revoke must not spam the cache invalidator",
-        );
     }
 }

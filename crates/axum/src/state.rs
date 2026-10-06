@@ -8,7 +8,6 @@ use doorman_core::reauth::ReauthManager;
 use doorman_core::recovery::RecoveryManager;
 use doorman_core::session::SessionManager;
 use doorman_core::signup::SignupManager;
-use doorman_core::storage::UserStore;
 
 use crate::config::CookieConfig;
 
@@ -25,10 +24,6 @@ impl AuthState {
 
     pub fn session_manager(&self) -> &SessionManager {
         &self.core.session_manager
-    }
-
-    pub fn user_store(&self) -> &Arc<dyn UserStore> {
-        &self.core.storage.users
     }
 
     pub fn passkey(&self) -> &PasskeyManager {

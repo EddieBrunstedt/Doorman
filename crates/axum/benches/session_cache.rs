@@ -3,19 +3,20 @@ mod support;
 use chrono::Utc;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use doorman_axum::SessionCacheConfig;
-use doorman_core::resolve::SessionResolver;
-use doorman_core::session::{SessionContext, hash_token};
+use doorman_core::memory::InMemoryStorage;
+use doorman_core::session::{SessionContext, SessionManager, hash_token};
 use doorman_core::storage::{AccountStatus, User, UserId};
 use tokio::runtime::Runtime;
 
 struct Scaffold {
-    resolver: SessionResolver,
+    sessions: SessionManager,
     token: String,
     user_id: UserId,
 }
 
 async fn build_scaffold() -> Scaffold {
-    let core = support::in_memory_core(SessionCacheConfig::default());
+    let storage = InMemoryStorage::new().all_stores();
+    let core = support::in_memory_core(storage.clone(), SessionCacheConfig::default());
 
     let now = Utc::now();
     let user = User {
@@ -26,7 +27,7 @@ async fn build_scaffold() -> Scaffold {
         created_at: now,
         updated_at: now,
     };
-    core.storage
+    storage
         .users
         .create_user(user.clone())
         .await
@@ -39,7 +40,7 @@ async fn build_scaffold() -> Scaffold {
         .expect("create session");
 
     Scaffold {
-        resolver: core.resolver,
+        sessions: core.session_manager,
         token: issued.token,
         user_id: user.id,
     }
@@ -48,14 +49,14 @@ async fn build_scaffold() -> Scaffold {
 fn session_cache(c: &mut Criterion) {
     let runtime = Runtime::new().expect("tokio runtime");
     let scaffold = runtime.block_on(build_scaffold());
-    let cache = scaffold.resolver.cache();
+    let cache = scaffold.sessions.cache();
 
     let mut group = c.benchmark_group("session_cache");
 
     let token_hash = hash_token(&scaffold.token);
     runtime.block_on(async {
         scaffold
-            .resolver
+            .sessions
             .resolve(&scaffold.token)
             .await
             .expect("seed resolve");
@@ -76,7 +77,7 @@ fn session_cache(c: &mut Criterion) {
             },
             |_| async {
                 let resolved = scaffold
-                    .resolver
+                    .sessions
                     .resolve(std::hint::black_box(&scaffold.token))
                     .await
                     .expect("resolve");

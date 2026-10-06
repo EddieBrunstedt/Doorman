@@ -2,12 +2,10 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use lru::LruCache;
 
 use crate::clock::Clock;
-use crate::session::SessionInvalidationHook;
 use crate::storage::{Session, SessionId, TokenHash, User, UserId};
 use crate::sync;
 
@@ -131,10 +129,6 @@ impl SessionCache {
         }
     }
 
-    pub(crate) fn invalidator(&self) -> Arc<dyn SessionInvalidationHook> {
-        Arc::new(CacheInvalidator::new(self.clone()))
-    }
-
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.shards
@@ -146,27 +140,6 @@ impl SessionCache {
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-}
-
-struct CacheInvalidator {
-    cache: SessionCache,
-}
-
-impl CacheInvalidator {
-    fn new(cache: SessionCache) -> Self {
-        Self { cache }
-    }
-}
-
-#[async_trait]
-impl SessionInvalidationHook for CacheInvalidator {
-    async fn on_session_invalidated(&self, session_id: SessionId) {
-        self.cache.invalidate_session(session_id);
-    }
-
-    async fn on_user_invalidated(&self, user_id: UserId) {
-        self.cache.invalidate_user(user_id);
     }
 }
 

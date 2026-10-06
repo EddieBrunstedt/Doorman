@@ -91,7 +91,7 @@ impl AuthServiceBuilder {
         .enabled_config();
 
         let layer_state = Arc::new(SessionLayerState {
-            resolver: core.resolver.clone(),
+            sessions: core.session_manager.clone(),
             cookie: cookie_config.clone(),
             csrf: csrf_config,
         });

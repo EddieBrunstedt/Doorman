@@ -20,7 +20,6 @@ pub mod rate_limit;
 pub mod reauth;
 pub mod recovery;
 mod redeem;
-pub mod resolve;
 pub mod session;
 pub mod signup;
 pub mod storage;

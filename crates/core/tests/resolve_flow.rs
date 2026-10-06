@@ -1,5 +1,6 @@
 mod common;
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,7 +51,11 @@ async fn resolves_from_storage_then_serves_from_cache() {
     let h = Harness::fresh();
     let (user, token) = signed_in(&h, "alice@example.com").await;
 
-    let first = h.resolver.resolve(&token).await.expect("first resolve");
+    let first = h
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("first resolve");
     assert_eq!(first.user.id, user.id);
     assert_eq!(first.session.user_id, user.id);
     assert_eq!((hits(&h), misses(&h)), (0, 1), "a cold token misses");
@@ -59,12 +64,16 @@ async fn resolves_from_storage_then_serves_from_cache() {
         .delete_session(first.session.id)
         .await
         .expect("delete session row");
-    let second = h.resolver.resolve(&token).await.expect("warm resolve");
+    let second = h
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("warm resolve");
     assert!(Arc::ptr_eq(&first.session, &second.session));
     assert_eq!((hits(&h), misses(&h)), (1, 1), "a warm token hits");
 
     h.clock.advance(ChronoDuration::seconds(60));
-    let err = h.resolver.resolve(&token).await.err();
+    let err = h.session_manager.resolve(&token).await.err();
     assert!(
         matches!(err, Some(Error::SessionNotFound)),
         "a stale entry re-reads storage, got {err:?}",
@@ -74,7 +83,7 @@ async fn resolves_from_storage_then_serves_from_cache() {
 #[tokio::test]
 async fn unknown_token_is_refused() {
     let h = Harness::fresh();
-    let err = h.resolver.resolve("not-a-session").await.err();
+    let err = h.session_manager.resolve("not-a-session").await.err();
     assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
 }
 
@@ -87,10 +96,13 @@ async fn warm_entry_past_its_session_deadline_is_not_served() {
         })
         .build();
     let (_, token) = signed_in(&h, "alice@example.com").await;
-    h.resolver.resolve(&token).await.expect("warm the cache");
+    h.session_manager
+        .resolve(&token)
+        .await
+        .expect("warm the cache");
 
     h.clock.advance(ChronoDuration::seconds(31));
-    let err = h.resolver.resolve(&token).await.err();
+    let err = h.session_manager.resolve(&token).await.err();
     assert!(matches!(err, Some(Error::SessionExpired)), "got {err:?}");
     assert_eq!(hits(&h), 0, "the expired snapshot was never served");
 }
@@ -99,10 +111,75 @@ async fn warm_entry_past_its_session_deadline_is_not_served() {
 async fn revoke_evicts_the_warm_entry() {
     let h = Harness::fresh();
     let (_, token) = signed_in(&h, "alice@example.com").await;
-    h.resolver.resolve(&token).await.expect("warm the cache");
+    h.session_manager
+        .resolve(&token)
+        .await
+        .expect("warm the cache");
 
     h.session_manager.revoke(&token).await.expect("revoke");
-    let err = h.resolver.resolve(&token).await.err();
+    let err = h.session_manager.resolve(&token).await.err();
+    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
+    assert_eq!(hits(&h), 0);
+}
+
+#[tokio::test]
+async fn revoke_by_id_evicts_the_warm_entry() {
+    let h = Harness::fresh();
+    let (_, token) = signed_in(&h, "alice@example.com").await;
+    let warm = h.session_manager.resolve(&token).await.expect("warm");
+
+    h.session_manager
+        .revoke_by_id(warm.session.id)
+        .await
+        .expect("revoke by id");
+    let err = h.session_manager.resolve(&token).await.err();
+    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
+    assert_eq!(hits(&h), 0);
+}
+
+#[tokio::test]
+async fn revoke_other_sessions_evicts_only_the_others() {
+    let h = Harness::fresh();
+    let (user, current) = signed_in(&h, "carol@example.com").await;
+    let other = h
+        .session_manager
+        .create(user.id, SessionContext::default())
+        .await
+        .expect("other session")
+        .token;
+    let warm = h.session_manager.resolve(&current).await.expect("warm");
+    h.session_manager.resolve(&other).await.expect("warm other");
+
+    let removed = h
+        .account
+        .revoke_other_sessions(&warm.user, &warm.session, None, SessionContext::default())
+        .await
+        .expect("revoke others");
+    assert_eq!(removed, 1);
+    let err = h.session_manager.resolve(&other).await.err();
+    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
+    h.session_manager
+        .resolve(&current)
+        .await
+        .expect("the current session survives");
+}
+
+#[tokio::test]
+async fn session_cap_eviction_evicts_the_warm_entry() {
+    let h = Harness::builder()
+        .session_config(SessionConfig {
+            max_sessions_per_user: NonZeroU32::new(1),
+            ..SessionConfig::default()
+        })
+        .build();
+    let (user, oldest) = signed_in(&h, "dave@example.com").await;
+    h.session_manager.resolve(&oldest).await.expect("warm");
+
+    h.session_manager
+        .create(user.id, SessionContext::default())
+        .await
+        .expect("a session past the cap");
+    let err = h.session_manager.resolve(&oldest).await.err();
     assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
     assert_eq!(hits(&h), 0);
 }
@@ -117,8 +194,11 @@ async fn revoke_all_for_user_evicts_every_warm_entry() {
         .await
         .expect("second session")
         .token;
-    h.resolver.resolve(&first).await.expect("warm first");
-    h.resolver.resolve(&second).await.expect("warm second");
+    h.session_manager.resolve(&first).await.expect("warm first");
+    h.session_manager
+        .resolve(&second)
+        .await
+        .expect("warm second");
 
     let removed = h
         .session_manager
@@ -127,7 +207,7 @@ async fn revoke_all_for_user_evicts_every_warm_entry() {
         .expect("revoke all");
     assert_eq!(removed, 2);
     for token in [&first, &second] {
-        let err = h.resolver.resolve(token).await.err();
+        let err = h.session_manager.resolve(token).await.err();
         assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
     }
     assert_eq!(hits(&h), 0);
@@ -144,7 +224,7 @@ async fn disabled_account_is_refused_and_never_cached() {
         .expect("disable");
 
     for _ in 0..2 {
-        let err = h.resolver.resolve(&token).await.err();
+        let err = h.session_manager.resolve(&token).await.err();
         assert!(matches!(err, Some(Error::AccountDisabled)), "got {err:?}");
     }
     assert_eq!(
@@ -158,12 +238,15 @@ async fn disabled_account_is_refused_and_never_cached() {
 async fn operator_disable_evicts_the_warm_entry() {
     let h = Harness::fresh();
     let (user, token) = signed_in(&h, "locked@example.com").await;
-    h.resolver.resolve(&token).await.expect("warm the cache");
+    h.session_manager
+        .resolve(&token)
+        .await
+        .expect("warm the cache");
 
     let actor = OperatorActor::new("support-agent-7", None, None, None).expect("operator actor");
     h.operator.disable(user.id, actor).await.expect("disable");
 
-    let err = h.resolver.resolve(&token).await.err();
+    let err = h.session_manager.resolve(&token).await.err();
     assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
     assert_eq!(hits(&h), 0);
 }
@@ -172,7 +255,11 @@ async fn operator_disable_evicts_the_warm_entry() {
 async fn email_change_evicts_the_warm_entry() {
     let h = Harness::fresh();
     let (_, token) = signed_in(&h, "old@example.com").await;
-    let warm = h.resolver.resolve(&token).await.expect("warm the cache");
+    let warm = h
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("warm the cache");
 
     h.account
         .request_email_change(
@@ -189,7 +276,7 @@ async fn email_change_evicts_the_warm_entry() {
         .await
         .expect("confirm email change");
 
-    let resolved = h.resolver.resolve(&token).await.expect("resolve");
+    let resolved = h.session_manager.resolve(&token).await.expect("resolve");
     assert_eq!(resolved.user.email.as_deref(), Some("new@example.com"));
     assert_eq!(hits(&h), 0, "the stale snapshot was never served");
 }
@@ -216,7 +303,11 @@ async fn email_verification_evicts_the_warm_entry() {
         .await
         .expect("create session")
         .token;
-    let warm = h.resolver.resolve(&token).await.expect("warm the cache");
+    let warm = h
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("warm the cache");
     assert!(warm.user.email_verified_at.is_none());
 
     h.signup
@@ -238,7 +329,7 @@ async fn email_verification_evicts_the_warm_entry() {
         .await
         .expect("consume signup");
 
-    let resolved = h.resolver.resolve(&token).await.expect("resolve");
+    let resolved = h.session_manager.resolve(&token).await.expect("resolve");
     assert!(resolved.user.email_verified_at.is_some());
     assert_eq!(hits(&h), 0, "the stale snapshot was never served");
 }
@@ -249,7 +340,7 @@ async fn session_whose_owner_is_gone_is_refused() {
     let (user, token) = signed_in(&h, "gone@example.com").await;
     h.users.delete_user(user.id).await.expect("delete user row");
 
-    let err = h.resolver.resolve(&token).await.err();
+    let err = h.session_manager.resolve(&token).await.err();
     assert!(matches!(err, Some(Error::UserNotFound)), "got {err:?}");
 }
 
@@ -260,7 +351,7 @@ async fn miss_after_the_throttle_slides_and_reports_it() {
 
     h.clock.advance(ChronoDuration::seconds(90));
     let now = h.clock.now();
-    let resolved = h.resolver.resolve(&token).await.expect("resolve");
+    let resolved = h.session_manager.resolve(&token).await.expect("resolve");
     assert!(resolved.slid, "the deadline moved");
     assert_eq!(resolved.session.last_used_at, now);
     assert_eq!(
@@ -283,10 +374,10 @@ async fn hit_never_slides() {
     let h = sliding_harness();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     h.clock.advance(ChronoDuration::seconds(90));
-    let slid = h.resolver.resolve(&token).await.expect("slide");
+    let slid = h.session_manager.resolve(&token).await.expect("slide");
 
     h.clock.advance(ChronoDuration::seconds(30));
-    let hit = h.resolver.resolve(&token).await.expect("hit");
+    let hit = h.session_manager.resolve(&token).await.expect("hit");
     assert!(!hit.slid);
     assert_eq!(hit.session.expires_at, slid.session.expires_at);
     assert_eq!(hits(&h), 1);
@@ -297,11 +388,11 @@ async fn miss_within_the_throttle_does_not_slide() {
     let h = sliding_harness();
     let (user, token) = signed_in(&h, "alice@example.com").await;
     h.clock.advance(ChronoDuration::seconds(90));
-    let first = h.resolver.resolve(&token).await.expect("slide");
+    let first = h.session_manager.resolve(&token).await.expect("slide");
 
-    h.resolver.cache().invalidate_user(user.id);
+    h.session_manager.cache().invalidate_user(user.id);
     h.clock.advance(ChronoDuration::seconds(30));
-    let second = h.resolver.resolve(&token).await.expect("miss");
+    let second = h.session_manager.resolve(&token).await.expect("miss");
     assert!(!second.slid);
     assert_eq!(second.session.expires_at, first.session.expires_at);
     assert_eq!(second.session.last_used_at, first.session.last_used_at);
@@ -317,7 +408,7 @@ async fn slide_is_clamped_at_the_absolute_cap() {
     let mut last = None;
     for _ in 0..11 {
         h.clock.advance(ChronoDuration::minutes(5));
-        let resolved = h.resolver.resolve(&token).await.expect("resolve");
+        let resolved = h.session_manager.resolve(&token).await.expect("resolve");
         assert!(resolved.session.expires_at <= cap);
         last = Some(resolved);
     }
@@ -337,7 +428,7 @@ async fn without_an_idle_timeout_nothing_slides() {
         .expect("present");
 
     h.clock.advance(ChronoDuration::minutes(30));
-    let resolved = h.resolver.resolve(&token).await.expect("resolve");
+    let resolved = h.session_manager.resolve(&token).await.expect("resolve");
     assert!(!resolved.slid);
     assert_eq!(resolved.session.expires_at, issued.expires_at);
     assert_eq!(resolved.session.last_used_at, issued.last_used_at);
@@ -354,7 +445,7 @@ async fn disabled_account_is_not_slid() {
         .await
         .expect("disable");
 
-    let err = h.resolver.resolve(&token).await.err();
+    let err = h.session_manager.resolve(&token).await.err();
     assert!(matches!(err, Some(Error::AccountDisabled)), "got {err:?}");
     let stored = h
         .sessions

@@ -4,18 +4,18 @@ use std::time::Duration;
 use doorman_core::account::AccountConfig;
 use doorman_core::assembly::AuthCore;
 use doorman_core::audit::NoopAuditSink;
-use doorman_core::memory::InMemoryStorage;
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::NoopRateLimiter;
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::RecoveryConfig;
 use doorman_core::session::SessionConfig;
 use doorman_core::signup::{SignupConfig, SignupRateLimits};
+use doorman_core::storage::Storage;
 use doorman_test_support::CapturingEmailSender;
 use url::Url;
 
-pub fn in_memory_core() -> AuthCore {
-    AuthCore::builder(InMemoryStorage::new().all_stores())
+pub fn in_memory_core(storage: Storage) -> AuthCore {
+    AuthCore::builder(storage)
         .email(Arc::new(CapturingEmailSender::new()))
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(NoopRateLimiter))

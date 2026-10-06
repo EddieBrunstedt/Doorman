@@ -50,6 +50,6 @@ impl AuthService {
     }
 
     pub fn cache(&self) -> &SessionCache {
-        self.state.core.resolver.cache()
+        self.state.core.session_manager.cache()
     }
 }

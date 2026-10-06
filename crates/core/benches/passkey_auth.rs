@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
+use doorman_core::memory::InMemoryStorage;
 use doorman_core::passkey::PasskeyManager;
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{AccountStatus, Session, User, UserId};
@@ -25,7 +26,8 @@ struct Scaffold {
 }
 
 async fn build_scaffold() -> Scaffold {
-    let core = support::in_memory_core();
+    let storage = InMemoryStorage::new().all_stores();
+    let core = support::in_memory_core(storage.clone());
 
     let now = Utc::now();
     let user = User {
@@ -37,11 +39,7 @@ async fn build_scaffold() -> Scaffold {
         updated_at: now,
     };
     let user_id = user.id;
-    core.storage
-        .users
-        .create_user(user)
-        .await
-        .expect("create user");
+    storage.users.create_user(user).await.expect("create user");
 
     let session = core
         .session_manager

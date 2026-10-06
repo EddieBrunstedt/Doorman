@@ -6,6 +6,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use doorman_axum::{SessionCache, SessionCacheConfig};
+use doorman_core::memory::InMemoryStorage;
 use doorman_core::session::{SessionContext, SessionManager, hash_token};
 use doorman_core::storage::{AccountStatus, TokenHash, User, UserId};
 use tokio::runtime::Builder;
@@ -22,10 +23,14 @@ struct Scaffold {
 }
 
 async fn build_scaffold() -> Scaffold {
-    let core = support::in_memory_core(SessionCacheConfig {
-        capacity: NonZeroUsize::new(POOL * 16).expect("non-zero capacity"),
-        ..SessionCacheConfig::default()
-    });
+    let storage = InMemoryStorage::new().all_stores();
+    let core = support::in_memory_core(
+        storage.clone(),
+        SessionCacheConfig {
+            capacity: NonZeroUsize::new(POOL * 16).expect("non-zero capacity"),
+            ..SessionCacheConfig::default()
+        },
+    );
 
     let now = Utc::now();
     let mut token_hashes = Vec::with_capacity(POOL);
@@ -39,17 +44,13 @@ async fn build_scaffold() -> Scaffold {
             updated_at: now,
         };
         let user_id = user.id;
-        core.storage
-            .users
-            .create_user(user)
-            .await
-            .expect("seed user");
+        storage.users.create_user(user).await.expect("seed user");
         let issued = core
             .session_manager
             .create(user_id, SessionContext::default())
             .await
             .expect("create session");
-        core.resolver
+        core.session_manager
             .resolve(&issued.token)
             .await
             .expect("seed resolve");
@@ -57,8 +58,8 @@ async fn build_scaffold() -> Scaffold {
     }
 
     Scaffold {
+        cache: core.session_manager.cache().clone(),
         session_manager: core.session_manager,
-        cache: core.resolver.cache().clone(),
         token_hashes: Arc::new(token_hashes),
     }
 }

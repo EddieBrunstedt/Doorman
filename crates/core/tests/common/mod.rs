@@ -30,7 +30,6 @@ use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::reauth::{ReauthManager, ReauthPolicy};
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
-use doorman_core::resolve::SessionResolver;
 use doorman_core::session::hash_token;
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
@@ -172,7 +171,6 @@ pub struct Harness {
     pub reauth: ReauthManager,
     pub operator: OperatorManager,
     pub session_manager: SessionManager,
-    pub resolver: SessionResolver,
     pub users: Arc<InMemoryUserStore>,
     pub user_store: Arc<CountingUserStore>,
     pub sessions: Arc<InMemorySessionStore>,
@@ -339,7 +337,6 @@ impl HarnessBuilder {
             reauth: core.reauth,
             operator: core.operator,
             session_manager: core.session_manager,
-            resolver: core.resolver,
             users,
             user_store,
             sessions,

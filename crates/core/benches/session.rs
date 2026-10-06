@@ -1,12 +1,13 @@
 mod support;
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use doorman_core::memory::InMemoryStorage;
 use doorman_core::session::{SessionContext, SessionManager, hash_token};
 use doorman_core::storage::UserId;
 use tokio::runtime::Runtime;
 
 fn session_manager() -> SessionManager {
-    support::in_memory_core().session_manager
+    support::in_memory_core(InMemoryStorage::new().all_stores()).session_manager
 }
 
 fn session(c: &mut Criterion) {

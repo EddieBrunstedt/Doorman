@@ -992,7 +992,7 @@ async fn passkey_registered_during_cooldown_inherits_its_deadline() {
     let outcome = drive_recovery_finish(&h, "alice@example.com").await;
     h.clock.advance(ChronoDuration::minutes(10));
     let resolved = h
-        .resolver
+        .session_manager
         .resolve(&outcome.session.token)
         .await
         .expect("the recovery session is live");
@@ -1027,7 +1027,7 @@ async fn passkey_registered_after_cooldown_is_unrestricted() {
     h.clock
         .advance(ChronoDuration::hours(24) + ChronoDuration::seconds(1));
     let resolved = h
-        .resolver
+        .session_manager
         .resolve(&outcome.session.token)
         .await
         .expect("the recovery session outlives its cool-down");

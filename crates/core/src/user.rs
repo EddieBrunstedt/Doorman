@@ -98,7 +98,7 @@ impl UserRecords {
     pub(crate) async fn mark_email_verified(&self, user: &User) -> Result<()> {
         if user.email_verified_at.is_none() {
             self.users.mark_email_verified(user.id, self.now()).await?;
-            self.sessions.forget_cached_user(user.id).await;
+            self.sessions.user_changed(user.id);
         }
         Ok(())
     }
@@ -106,7 +106,7 @@ impl UserRecords {
     pub(crate) async fn change_email(&self, user_id: UserId, email: &str) -> Result<User> {
         match self.users.set_user_email(user_id, email, self.now()).await {
             Ok(()) => {
-                self.sessions.forget_cached_user(user_id).await;
+                self.sessions.user_changed(user_id);
                 self.find(user_id).await
             }
             Err(e) => Err(match e.kind() {
@@ -122,6 +122,7 @@ impl UserRecords {
         self.users
             .set_user_status(user_id, AccountStatus::Disabled { at: now }, now)
             .await?;
+        self.sessions.user_changed(user_id);
         self.sessions.revoke_all_for_user(user_id).await
     }
 
@@ -129,6 +130,7 @@ impl UserRecords {
         self.users
             .set_user_status(user_id, AccountStatus::Active, self.now())
             .await?;
+        self.sessions.user_changed(user_id);
         Ok(())
     }
 
