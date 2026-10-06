@@ -1,19 +1,17 @@
 use async_trait::async_trait;
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{
-    PasskeyCredentialStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId,
-};
+use doorman_core::storage::{PasskeyStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId};
 use mongodb::bson::spec::BinarySubtype;
 use mongodb::bson::{Binary, Document, doc};
 
 use crate::db::{Coll, err};
 use crate::model::{self, passkey_id};
 
-pub(crate) struct MongoPasskeyCredentialStore {
+pub(crate) struct MongoPasskeyStore {
     coll: Coll,
 }
 
-impl MongoPasskeyCredentialStore {
+impl MongoPasskeyStore {
     pub(crate) fn new(coll: Coll) -> Self {
         Self { coll }
     }
@@ -22,17 +20,17 @@ impl MongoPasskeyCredentialStore {
         let filter = doc! { "_id": passkey_id(credential_id) };
         let result = self.coll.update_one(filter, update).await.map_err(err)?;
         if result.matched_count == 0 {
-            return Err(StorageError::not_found("passkey credential not found"));
+            return Err(StorageError::not_found("passkey not found"));
         }
         Ok(())
     }
 }
 
 #[async_trait]
-impl PasskeyCredentialStore for MongoPasskeyCredentialStore {
-    async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
+impl PasskeyStore for MongoPasskeyStore {
+    async fn add_passkey(&self, passkey: StoredPasskey) -> StorageResult<()> {
         self.coll
-            .insert_one(model::passkey_to_doc(&credential))
+            .insert_one(model::passkey_to_doc(&passkey))
             .await
             .map_err(err)?;
         Ok(())

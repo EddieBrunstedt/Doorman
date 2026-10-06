@@ -73,7 +73,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::UserNotFound => (StatusCode::NOT_FOUND, "user_not_found"),
         Error::InvalidEmail => (StatusCode::BAD_REQUEST, "invalid_email"),
         Error::EmailAlreadyInUse => (StatusCode::CONFLICT, "email_already_in_use"),
-        Error::InvalidVerificationToken => (StatusCode::BAD_REQUEST, "invalid_verification_token"),
+        Error::InvalidEmailLink => (StatusCode::BAD_REQUEST, "invalid_email_link"),
         Error::InvalidPasskeyChallenge => (StatusCode::BAD_REQUEST, "invalid_passkey_challenge"),
         Error::PasskeyNotFound => (StatusCode::NOT_FOUND, "passkey_not_found"),
         Error::PasskeyOwnershipMismatch => (StatusCode::FORBIDDEN, "passkey_ownership_mismatch"),
@@ -85,9 +85,9 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
             (StatusCode::INTERNAL_SERVER_ERROR, "invalid_relying_party")
         }
         Error::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
-        Error::RecoveryCooldownActive => (StatusCode::CONFLICT, "recovery_cooldown_active"),
+        Error::RecoveryCoolDownActive => (StatusCode::CONFLICT, "recovery_cool_down_active"),
         Error::ReauthRequired => (StatusCode::UNAUTHORIZED, "reauth_required"),
-        Error::AccountDisabled => (StatusCode::FORBIDDEN, "account_disabled"),
+        Error::UserDisabled => (StatusCode::FORBIDDEN, "user_disabled"),
         Error::SignupNotAllowed => (StatusCode::FORBIDDEN, "signup_not_allowed"),
         Error::ResourceLimitExceeded { .. } => (StatusCode::CONFLICT, "resource_limit_exceeded"),
         Error::InvalidOperatorActor { .. } => (StatusCode::BAD_REQUEST, "invalid_operator_actor"),
@@ -144,9 +144,9 @@ mod tests {
                 "email_already_in_use",
             ),
             (
-                Error::InvalidVerificationToken,
+                Error::InvalidEmailLink,
                 S::BAD_REQUEST,
-                "invalid_verification_token",
+                "invalid_email_link",
             ),
             (
                 Error::InvalidPasskeyChallenge,
@@ -192,16 +192,16 @@ mod tests {
                 "rate_limited",
             ),
             (
-                Error::RecoveryCooldownActive,
+                Error::RecoveryCoolDownActive,
                 S::CONFLICT,
-                "recovery_cooldown_active",
+                "recovery_cool_down_active",
             ),
             (Error::ReauthRequired, S::UNAUTHORIZED, "reauth_required"),
-            (Error::AccountDisabled, S::FORBIDDEN, "account_disabled"),
+            (Error::UserDisabled, S::FORBIDDEN, "user_disabled"),
             (Error::SignupNotAllowed, S::FORBIDDEN, "signup_not_allowed"),
             (
                 Error::ResourceLimitExceeded {
-                    resource: "credentials",
+                    resource: "passkeys",
                     limit: 5,
                 },
                 S::CONFLICT,
@@ -253,14 +253,14 @@ mod tests {
 
     #[test]
     fn internal_variant_does_not_leak_detail() {
-        let secret = "deserialise credential: unexpected token at byte 0xdeadbeef";
+        let secret = "deserialise passkey: unexpected token at byte 0xdeadbeef";
         let response = error_response(&Error::Internal(secret.to_owned()));
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
         let bytes = body_bytes(response);
         let body = std::str::from_utf8(&bytes).expect("utf8 body");
         assert!(
-            !body.contains("deadbeef") && !body.contains("deserialise credential"),
+            !body.contains("deadbeef") && !body.contains("deserialise passkey"),
             "internal detail leaked into response body: {body}"
         );
         assert!(

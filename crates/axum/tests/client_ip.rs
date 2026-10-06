@@ -45,8 +45,8 @@ fn router(limits: PasskeyRateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAud
             url_template: common::RECOVERY_URL.to_owned(),
             ..Default::default()
         })
-        .account(AccountConfig {
-            url_template: common::ACCOUNT_URL.to_owned(),
+        .user(UserConfig {
+            url_template: common::USER_URL.to_owned(),
             ..Default::default()
         })
         .reauthentication(ReauthPolicy::disabled())
@@ -350,7 +350,7 @@ async fn signup_session_and_audit_record_socket_identity_despite_spoofing() {
     assert!(
         events
             .iter()
-            .any(|event| matches!(event.kind, AuditEventKind::CredentialAdded { .. }))
+            .any(|event| matches!(event.kind, AuditEventKind::PasskeyAdded { .. }))
     );
     for event in events {
         assert!(

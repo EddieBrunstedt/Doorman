@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
+use doorman::core::email_link::TOKEN_PLACEHOLDER;
 use doorman::core::memory::InMemoryRateLimiter;
-use doorman::core::verification::TOKEN_PLACEHOLDER;
 use doorman::prelude::*;
 use url::Url;
 
@@ -19,7 +19,7 @@ async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn 
         .email(Arc::new(TerminalEmailSender))
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
         .reauthentication(ReauthPolicy::required_for([
-            ReauthAction::DeleteAccount,
+            ReauthAction::DeleteUser,
             ReauthAction::RemovePasskey,
         ]))
         .audit(Arc::new(NoopAuditSink))
@@ -32,8 +32,8 @@ async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn 
             url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"),
             ..Default::default()
         })
-        .account(AccountConfig {
-            url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"),
+        .user(UserConfig {
+            url_template: format!("{base}/user/email?token={TOKEN_PLACEHOLDER}"),
             ..Default::default()
         })
         .build()?;

@@ -5,12 +5,12 @@ use doorman_core::Error;
 use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::session::SessionContext;
-use doorman_core::storage::{AccountStatus, Session, SessionId, SessionStore, User, UserStore};
+use doorman_core::storage::{Session, SessionId, SessionStore, User, UserStatus, UserStore};
 
 use common::{
-    ACCOUNT_URL, Harness, SIGNUP_URL, assert_last_redemption_unknown, authenticator, kinds,
-    last_email_change_token, make_user, passkey_count, provision_user, restricted_session_for,
-    session_count, session_for, token_from_email, within_deadline,
+    Harness, SIGNUP_URL, USER_URL, assert_last_redemption_unknown, authenticator, kinds,
+    last_email_change_token, make_user, passkey_count, provision_user, session_count, session_for,
+    session_in_cool_down_for, token_from_email, within_deadline,
 };
 
 #[tokio::test]
@@ -20,7 +20,7 @@ async fn email_change_happy_path() {
     let session = session_for(&h, &user);
     let mail_before = h.email.sent().len();
 
-    h.account
+    h.user
         .request_email_change(&session, "New@Example.com", None, SessionContext::default())
         .await
         .expect("request email change");
@@ -54,9 +54,9 @@ async fn email_change_happy_path() {
         .expect("user present");
     assert_eq!(pre.email.as_deref(), Some("old@example.com"));
 
-    let token = token_from_email(&confirmation.body_text, ACCOUNT_URL);
+    let token = token_from_email(&confirmation.body_text, USER_URL);
     let updated = h
-        .account
+        .user
         .confirm_email_change(&token, SessionContext::default())
         .await
         .expect("confirm email change");
@@ -75,10 +75,10 @@ async fn email_change_happy_path() {
     assert_eq!(stored.email.as_deref(), Some("new@example.com"));
 
     assert!(matches!(
-        h.account
+        h.user
             .confirm_email_change(&token, SessionContext::default())
             .await,
-        Err(Error::InvalidVerificationToken),
+        Err(Error::InvalidEmailLink),
     ));
 
     let audit = kinds(&h.audit.events());
@@ -101,7 +101,7 @@ async fn email_change_confirm_refuses_address_claimed_since_request() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
     let session = session_for(&h, &user);
-    h.account
+    h.user
         .request_email_change(
             &session,
             "wanted@example.com",
@@ -114,7 +114,7 @@ async fn email_change_confirm_refuses_address_claimed_since_request() {
     let holder = make_user(&h, "wanted@example.com").await;
 
     let err = h
-        .account
+        .user
         .confirm_email_change(&token, SessionContext::default())
         .await
         .expect_err("an address claimed since the request is refused");
@@ -133,7 +133,7 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
     let session = session_for(&h, &user);
-    h.account
+    h.user
         .request_email_change(
             &session,
             "wanted@example.com",
@@ -151,7 +151,7 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
                 .request_signup("wanted@example.com", None, SessionContext::default()),
             async {
                 let confirmed = h
-                    .account
+                    .user
                     .confirm_email_change(&token, SessionContext::default())
                     .await;
                 release.wait().await;
@@ -176,7 +176,7 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
         .find_user_by_email("wanted@example.com")
         .await
         .expect("find holder")
-        .expect("the confirmed account holds the address");
+        .expect("the confirmed user holds the address");
     assert_eq!(owner.id, user.id);
 }
 
@@ -189,7 +189,7 @@ async fn email_change_rejects_address_already_in_use() {
     let mail_before = h.email.sent().len();
 
     let err = h
-        .account
+        .user
         .request_email_change(
             &session,
             "taken@example.com",
@@ -207,24 +207,24 @@ async fn email_change_rejects_address_already_in_use() {
 }
 
 #[tokio::test]
-async fn request_email_change_refused_during_recovery_cooldown() {
+async fn request_email_change_refused_during_recovery_cool_down() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
-    let cooldown_until = h.clock.now() + chrono::Duration::hours(24);
-    let restricted = restricted_session_for(&h, &user, cooldown_until);
+    let cool_down_until = h.clock.now() + chrono::Duration::hours(24);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
     let mail_before = h.email.sent().len();
 
     let err = h
-        .account
+        .user
         .request_email_change(
-            &restricted,
+            &in_cool_down,
             "new@example.com",
             None,
             SessionContext::default(),
         )
         .await
         .expect_err("email change must be refused during the cool-down");
-    assert!(matches!(err, Error::RecoveryCooldownActive));
+    assert!(matches!(err, Error::RecoveryCoolDownActive));
     assert_eq!(
         h.email.sent().len(),
         mail_before,
@@ -233,25 +233,25 @@ async fn request_email_change_refused_during_recovery_cooldown() {
 }
 
 #[tokio::test]
-async fn delete_account_refused_during_recovery_cooldown() {
+async fn delete_user_refused_during_recovery_cool_down() {
     let h = Harness::fresh();
     let user = provision_user(&h, "doomed@example.com").await;
-    let cooldown_until = h.clock.now() + chrono::Duration::hours(24);
-    let restricted = restricted_session_for(&h, &user, cooldown_until);
+    let cool_down_until = h.clock.now() + chrono::Duration::hours(24);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
 
     let err = h
-        .account
-        .delete_account(&restricted, None, SessionContext::default())
+        .user
+        .delete_user(&in_cool_down, None, SessionContext::default())
         .await
         .expect_err("deletion must be refused during the cool-down");
-    assert!(matches!(err, Error::RecoveryCooldownActive));
+    assert!(matches!(err, Error::RecoveryCoolDownActive));
     assert!(
         h.users
             .find_user_by_id(user.id)
             .await
             .expect("find user")
             .is_some(),
-        "the account is untouched when the gate trips",
+        "the user is untouched when the gate trips",
     );
     assert_eq!(
         session_count(&h, user.id).await,
@@ -261,29 +261,29 @@ async fn delete_account_refused_during_recovery_cooldown() {
 }
 
 #[tokio::test]
-async fn request_email_change_allowed_once_recovery_cooldown_lapses() {
+async fn request_email_change_allowed_once_recovery_cool_down_lapses() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
-    let cooldown_until = h.clock.now() + chrono::Duration::hours(24);
-    let restricted = restricted_session_for(&h, &user, cooldown_until);
+    let cool_down_until = h.clock.now() + chrono::Duration::hours(24);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
 
     let err = h
-        .account
+        .user
         .request_email_change(
-            &restricted,
+            &in_cool_down,
             "new@example.com",
             None,
             SessionContext::default(),
         )
         .await
         .expect_err("blocked during the cool-down");
-    assert!(matches!(err, Error::RecoveryCooldownActive));
+    assert!(matches!(err, Error::RecoveryCoolDownActive));
 
     h.clock.advance(chrono::Duration::hours(25));
     let mail_before = h.email.sent().len();
-    h.account
+    h.user
         .request_email_change(
-            &restricted,
+            &in_cool_down,
             "new@example.com",
             None,
             SessionContext::default(),
@@ -294,29 +294,29 @@ async fn request_email_change_allowed_once_recovery_cooldown_lapses() {
         h.email.sent().len() > mail_before,
         "the confirmation email is sent after the cool-down lapses",
     );
-    h.account
+    h.user
         .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
         .await
         .expect("the confirmation link issued after the cool-down lapses redeems");
 }
 
 #[tokio::test]
-async fn delete_account_allowed_once_recovery_cooldown_lapses() {
+async fn delete_user_allowed_once_recovery_cool_down_lapses() {
     let h = Harness::fresh();
     let user = provision_user(&h, "doomed@example.com").await;
-    let cooldown_until = h.clock.now() + chrono::Duration::hours(24);
-    let restricted = restricted_session_for(&h, &user, cooldown_until);
+    let cool_down_until = h.clock.now() + chrono::Duration::hours(24);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
 
     let err = h
-        .account
-        .delete_account(&restricted, None, SessionContext::default())
+        .user
+        .delete_user(&in_cool_down, None, SessionContext::default())
         .await
         .expect_err("blocked during the cool-down");
-    assert!(matches!(err, Error::RecoveryCooldownActive));
+    assert!(matches!(err, Error::RecoveryCoolDownActive));
 
     h.clock.advance(chrono::Duration::hours(25));
-    h.account
-        .delete_account(&restricted, None, SessionContext::default())
+    h.user
+        .delete_user(&in_cool_down, None, SessionContext::default())
         .await
         .expect("deletion allowed once the cool-down lapses");
     assert!(
@@ -325,7 +325,7 @@ async fn delete_account_allowed_once_recovery_cooldown_lapses() {
             .await
             .expect("find user")
             .is_none(),
-        "the account is deleted after the cool-down lapses",
+        "the user is deleted after the cool-down lapses",
     );
 }
 
@@ -335,7 +335,7 @@ async fn confirm_rejects_expired_token() {
     let user = provision_user(&h, "old@example.com").await;
     let session = session_for(&h, &user);
 
-    h.account
+    h.user
         .request_email_change(&session, "new@example.com", None, SessionContext::default())
         .await
         .expect("request email change");
@@ -346,16 +346,16 @@ async fn confirm_rejects_expired_token() {
         .rev()
         .find(|e| e.subject == "Confirm your new email address")
         .expect("confirmation email queued");
-    let token = token_from_email(&confirmation.body_text, ACCOUNT_URL);
+    let token = token_from_email(&confirmation.body_text, USER_URL);
 
     h.clock.advance(chrono::Duration::minutes(16));
 
     let err = h
-        .account
+        .user
         .confirm_email_change(&token, SessionContext::default())
         .await
         .expect_err("an expired token must be rejected");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(matches!(err, Error::InvalidEmailLink));
     assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
         k,
         AuditEventKind::RedemptionFailed {
@@ -379,11 +379,11 @@ async fn confirm_rejects_expired_token() {
 }
 
 #[tokio::test]
-async fn confirm_refused_for_disabled_account() {
+async fn confirm_refused_for_disabled_user() {
     let h = Harness::fresh();
     let user = provision_user(&h, "old@example.com").await;
     let session = session_for(&h, &user);
-    h.account
+    h.user
         .request_email_change(&session, "new@example.com", None, SessionContext::default())
         .await
         .expect("request email change");
@@ -394,20 +394,20 @@ async fn confirm_refused_for_disabled_account() {
         .rev()
         .find(|e| e.subject == "Confirm your new email address")
         .expect("confirmation email queued");
-    let token = token_from_email(&confirmation.body_text, ACCOUNT_URL);
+    let token = token_from_email(&confirmation.body_text, USER_URL);
 
     let now = h.clock.now();
     h.users
-        .set_user_status(user.id, AccountStatus::Disabled { at: now }, now)
+        .set_user_status(user.id, UserStatus::Disabled { at: now }, now)
         .await
         .expect("disable user");
 
     let err = h
-        .account
+        .user
         .confirm_email_change(&token, SessionContext::default())
         .await
-        .expect_err("disabled account must be refused");
-    assert!(matches!(err, Error::AccountDisabled));
+        .expect_err("disabled user must be refused");
+    assert!(matches!(err, Error::UserDisabled));
 
     let stored = h
         .users
@@ -428,11 +428,11 @@ async fn confirm_refused_for_disabled_account() {
 async fn confirm_rejects_unknown_token() {
     let h = Harness::fresh();
     let err = h
-        .account
+        .user
         .confirm_email_change("not-a-real-token", SessionContext::default())
         .await
         .expect_err("an unknown token must be rejected");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(matches!(err, Error::InvalidEmailLink));
     assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
         k,
         AuditEventKind::RedemptionFailed {
@@ -448,7 +448,7 @@ async fn email_change_token_cannot_be_redeemed_by_another_flow() {
     let h = Harness::fresh();
     let user = provision_user(&h, "old@example.com").await;
     let session = session_for(&h, &user);
-    h.account
+    h.user
         .request_email_change(&session, "new@example.com", None, SessionContext::default())
         .await
         .expect("request email change");
@@ -456,19 +456,19 @@ async fn email_change_token_cannot_be_redeemed_by_another_flow() {
 
     let err = h
         .signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
         .expect_err("email-change token rejected on signup");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(matches!(err, Error::InvalidEmailLink));
     let err = h
         .recovery
-        .consume_recovery(&token, SessionContext::default())
+        .redeem_recovery_link(&token, SessionContext::default())
         .await
         .expect_err("email-change token rejected on recovery");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(matches!(err, Error::InvalidEmailLink));
 
     let updated = h
-        .account
+        .user
         .confirm_email_change(&token, SessionContext::default())
         .await
         .expect("email-change token still valid on its own flow");
@@ -485,25 +485,25 @@ async fn signup_token_cannot_confirm_an_email_change() {
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
 
     let err = h
-        .account
+        .user
         .confirm_email_change(&token, SessionContext::default())
         .await
         .expect_err("signup token rejected on email change");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(matches!(err, Error::InvalidEmailLink));
 
     h.signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
         .expect("signup token still valid on its own flow");
 }
 
 #[tokio::test]
-async fn delete_account_cascades_all_stores() {
+async fn delete_user_cascades_all_stores() {
     let h = Harness::fresh();
     let user = provision_user(&h, "doomed@example.com").await;
     let session = session_for(&h, &user);
 
-    h.account
+    h.user
         .request_email_change(
             &session,
             "elsewhere@example.com",
@@ -525,16 +525,12 @@ async fn delete_account_cascades_all_stores() {
         1,
         "signup left an active session"
     );
-    assert_eq!(
-        passkey_count(&h, user.id).await,
-        1,
-        "signup left a credential"
-    );
+    assert_eq!(passkey_count(&h, user.id).await, 1, "signup left a passkey");
 
-    h.account
-        .delete_account(&session, None, SessionContext::default())
+    h.user
+        .delete_user(&session, None, SessionContext::default())
         .await
-        .expect("delete account");
+        .expect("delete user");
 
     assert!(
         h.users
@@ -545,22 +541,22 @@ async fn delete_account_cascades_all_stores() {
         "the user row is gone",
     );
     assert_eq!(session_count(&h, user.id).await, 0, "sessions cascaded");
-    assert_eq!(passkey_count(&h, user.id).await, 0, "credentials cascaded");
+    assert_eq!(passkey_count(&h, user.id).await, 0, "passkeys cascaded");
 
     let audit = kinds(&h.audit.events());
     assert!(
         audit
             .iter()
-            .any(|k| matches!(k, AuditEventKind::AccountDeleted { .. })),
+            .any(|k| matches!(k, AuditEventKind::UserDeleted { .. })),
         "deletion emits an audit event",
     );
 
     let err = h
-        .account
+        .user
         .confirm_email_change(&email_change_token, SessionContext::default())
         .await
         .expect_err("the email-change link is gone");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(matches!(err, Error::InvalidEmailLink));
     assert_last_redemption_unknown(&h, SecretKind::EmailChangeLink);
 
     let err = h
@@ -612,7 +608,7 @@ async fn registration_challenge_outliving_its_user_is_refused() {
 async fn stored_session(
     h: &Harness,
     user: &User,
-    cooldown_until: Option<ChronoDuration>,
+    cool_down_until: Option<ChronoDuration>,
 ) -> Session {
     let mut session = h
         .session_manager
@@ -620,7 +616,7 @@ async fn stored_session(
         .await
         .expect("create session")
         .session;
-    session.recovery_cooldown_until = cooldown_until.map(|span| h.clock.now() + span);
+    session.recovery_cool_down_until = cool_down_until.map(|span| h.clock.now() + span);
     session
 }
 
@@ -644,7 +640,7 @@ async fn revoke_other_sessions_keeps_only_the_acting_session_and_notifies() {
     let mail_before = h.email.sent().len();
 
     let removed = h
-        .account
+        .user
         .revoke_other_sessions(&current, None, SessionContext::default())
         .await
         .expect("revoke other sessions");
@@ -674,7 +670,7 @@ async fn revoke_session_notifies_only_for_other_sessions() {
     let other = stored_session(&h, &alice, None).await;
     let mail_before = h.email.sent().len();
 
-    h.account
+    h.user
         .revoke_session(&current, other.id, None, SessionContext::default())
         .await
         .expect("revoke other");
@@ -685,7 +681,7 @@ async fn revoke_session_notifies_only_for_other_sessions() {
         "revoking another session notifies"
     );
 
-    h.account
+    h.user
         .revoke_session(&current, current.id, None, SessionContext::default())
         .await
         .expect("revoke self");
@@ -706,7 +702,7 @@ async fn revoke_session_hides_another_users_session() {
     let bobs = stored_session(&h, &bob, None).await;
 
     let err = h
-        .account
+        .user
         .revoke_session(&current, bobs.id, None, SessionContext::default())
         .await
         .expect_err("alice cannot revoke bob's session");
@@ -715,7 +711,7 @@ async fn revoke_session_hides_another_users_session() {
 }
 
 #[tokio::test]
-async fn revoke_other_sessions_refused_during_recovery_cooldown() {
+async fn revoke_other_sessions_refused_during_recovery_cool_down() {
     let h = Harness::fresh();
     let alice = make_user(&h, "alice@example.com").await;
     let current = stored_session(&h, &alice, Some(ChronoDuration::minutes(10))).await;
@@ -723,17 +719,17 @@ async fn revoke_other_sessions_refused_during_recovery_cooldown() {
     let mail_before = h.email.sent().len();
 
     let err = h
-        .account
+        .user
         .revoke_other_sessions(&current, None, SessionContext::default())
         .await
         .expect_err("refused during the cool-down");
-    assert!(matches!(err, Error::RecoveryCooldownActive), "got: {err:?}");
+    assert!(matches!(err, Error::RecoveryCoolDownActive), "got: {err:?}");
     assert!(session_exists(&h, other.id).await, "nothing is revoked");
     assert_eq!(h.email.sent().len(), mail_before, "no notice");
 
     h.clock.advance(ChronoDuration::minutes(11));
     let removed = h
-        .account
+        .user
         .revoke_other_sessions(&current, None, SessionContext::default())
         .await
         .expect("allowed once the cool-down lapses");
@@ -742,34 +738,39 @@ async fn revoke_other_sessions_refused_during_recovery_cooldown() {
 }
 
 #[tokio::test]
-async fn revoke_session_cooldown_blocks_others_but_allows_self() {
+async fn revoke_session_cool_down_blocks_others_but_allows_self() {
     let h = Harness::fresh();
     let alice = make_user(&h, "alice@example.com").await;
     let current = stored_session(&h, &alice, Some(ChronoDuration::minutes(10))).await;
     let other = stored_session(&h, &alice, None).await;
 
     let err = h
-        .account
+        .user
         .revoke_session(&current, other.id, None, SessionContext::default())
         .await
         .expect_err("revoking another device is refused during the cool-down");
-    assert!(matches!(err, Error::RecoveryCooldownActive), "got: {err:?}");
+    assert!(matches!(err, Error::RecoveryCoolDownActive), "got: {err:?}");
     assert!(
         session_exists(&h, other.id).await,
         "the other device is untouched"
     );
 
     h.clock.advance(ChronoDuration::minutes(11));
-    h.account
+    h.user
         .revoke_session(&current, other.id, None, SessionContext::default())
         .await
         .expect("allowed once the cool-down lapses");
     assert!(!session_exists(&h, other.id).await);
 
-    let restricted = stored_session(&h, &alice, Some(ChronoDuration::minutes(10))).await;
-    h.account
-        .revoke_session(&restricted, restricted.id, None, SessionContext::default())
+    let in_cool_down = stored_session(&h, &alice, Some(ChronoDuration::minutes(10))).await;
+    h.user
+        .revoke_session(
+            &in_cool_down,
+            in_cool_down.id,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("revoking the cool-down session itself stays allowed");
-    assert!(!session_exists(&h, restricted.id).await);
+    assert!(!session_exists(&h, in_cool_down.id).await);
 }

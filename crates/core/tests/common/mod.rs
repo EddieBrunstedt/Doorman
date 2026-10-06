@@ -11,7 +11,6 @@ use async_trait::async_trait;
 use tokio::sync::Barrier;
 
 use chrono::{DateTime, TimeZone, Utc};
-use doorman_core::account::{AccountConfig, AccountManager};
 use doorman_core::assembly::{AssemblyError, AuthCore};
 use doorman_core::audit::{
     AuditEvent, AuditEventKind, AuditSink, RedemptionFailureReason, SecretKind,
@@ -20,11 +19,11 @@ use doorman_core::clock::Clock;
 use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
 use doorman_core::error::StorageResult;
 use doorman_core::memory::{
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemorySessionStore,
-    InMemoryUserStore, InMemoryVerificationTokenStore,
+    InMemoryEmailLinkStore, InMemoryPasskeyChallengeStore, InMemoryPasskeyStore,
+    InMemorySessionStore, InMemoryUserStore,
 };
 use doorman_core::metrics::MetricSink;
-use doorman_core::operator::{NotificationPolicy, OperatorManager};
+use doorman_core::operator::{NoticePolicy, OperatorManager};
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::reauth::{ReauthManager, ReauthPolicy};
@@ -33,9 +32,10 @@ use doorman_core::session::hash_token;
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use doorman_core::storage::{
-    AccountStatus, Session, SessionId, SessionStore, Storage, StoredPasskey, TokenHash, User,
-    UserId, UserStore,
+    Session, SessionId, SessionStore, Storage, StoredPasskey, TokenHash, User, UserId, UserStatus,
+    UserStore,
 };
+use doorman_core::user::{UserConfig, UserManager};
 pub use doorman_test_support::token_from_email;
 use doorman_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
 use url::Url;
@@ -50,7 +50,7 @@ use webauthn_rs_proto::{AllowCredentials, ResidentKeyRequirement};
 
 pub const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 pub const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
-pub const ACCOUNT_URL: &str = "https://app.test/email-change?token={token}";
+pub const USER_URL: &str = "https://app.test/email-change?token={token}";
 pub const RP_ID: &str = "localhost";
 pub const RP_NAME: &str = "doorman tests";
 
@@ -100,7 +100,7 @@ impl CountingUserStore {
         self.reads.load(Ordering::SeqCst)
     }
 
-    pub fn reset(&self) {
+    pub fn clear_reads(&self) {
         self.reads.store(0, Ordering::SeqCst);
     }
 
@@ -154,7 +154,7 @@ impl UserStore for CountingUserStore {
     async fn set_user_status(
         &self,
         id: UserId,
-        status: AccountStatus,
+        status: UserStatus,
         at: DateTime<Utc>,
     ) -> StorageResult<()> {
         self.inner.set_user_status(id, status, at).await
@@ -188,7 +188,7 @@ impl CountingSessionStore {
         self.reads.load(Ordering::SeqCst)
     }
 
-    pub fn reset(&self) {
+    pub fn clear_reads(&self) {
         self.reads.store(0, Ordering::SeqCst);
     }
 
@@ -252,7 +252,7 @@ pub struct Harness {
     pub passkey: PasskeyManager,
     pub signup: SignupManager,
     pub recovery: RecoveryManager,
-    pub account: AccountManager,
+    pub user: UserManager,
     pub reauth: ReauthManager,
     pub operator: OperatorManager,
     pub session_manager: SessionManager,
@@ -260,8 +260,8 @@ pub struct Harness {
     pub user_store: Arc<CountingUserStore>,
     pub sessions: Arc<InMemorySessionStore>,
     pub session_store: Arc<CountingSessionStore>,
-    pub tokens: Arc<InMemoryVerificationTokenStore>,
-    pub credentials: Arc<InMemoryPasskeyCredentialStore>,
+    pub email_links: Arc<InMemoryEmailLinkStore>,
+    pub passkeys: Arc<InMemoryPasskeyStore>,
     pub challenges: Arc<InMemoryPasskeyChallengeStore>,
     pub storage: Storage,
     pub audit: Arc<InMemoryAuditSink>,
@@ -290,9 +290,9 @@ impl Harness {
             .passkey(PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME))
             .signup(signup_config())
             .recovery(recovery_config())
-            .account(AccountConfig {
-                url_template: ACCOUNT_URL.to_string(),
-                ..AccountConfig::default()
+            .user(UserConfig {
+                url_template: USER_URL.to_string(),
+                ..UserConfig::default()
             })
             .reauthentication(ReauthPolicy::disabled())
             .build()
@@ -308,7 +308,7 @@ pub struct HarnessBuilder {
     signup_limiter: Arc<dyn RateLimiter>,
     recovery_limiter: Arc<dyn RateLimiter>,
     emails: Arc<dyn EmailTemplates>,
-    notification_policy: NotificationPolicy,
+    notice_policy: NoticePolicy,
     reauth_policy: ReauthPolicy,
 }
 
@@ -325,7 +325,7 @@ impl HarnessBuilder {
             signup_limiter: Arc::new(NoopRateLimiter),
             recovery_limiter: Arc::new(NoopRateLimiter),
             emails: Arc::new(DefaultEmailTemplates),
-            notification_policy: NotificationPolicy::default(),
+            notice_policy: NoticePolicy::default(),
             reauth_policy: ReauthPolicy::disabled(),
         }
     }
@@ -335,8 +335,8 @@ impl HarnessBuilder {
         self
     }
 
-    pub fn notification_policy(mut self, policy: NotificationPolicy) -> Self {
-        self.notification_policy = policy;
+    pub fn notice_policy(mut self, policy: NoticePolicy) -> Self {
+        self.notice_policy = policy;
         self
     }
 
@@ -382,10 +382,8 @@ impl HarnessBuilder {
     pub fn try_build(self) -> Result<Harness, AssemblyError> {
         let users: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
         let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-        let tokens: Arc<InMemoryVerificationTokenStore> =
-            Arc::new(InMemoryVerificationTokenStore::new());
-        let credentials: Arc<InMemoryPasskeyCredentialStore> =
-            Arc::new(InMemoryPasskeyCredentialStore::new());
+        let email_links: Arc<InMemoryEmailLinkStore> = Arc::new(InMemoryEmailLinkStore::new());
+        let passkeys: Arc<InMemoryPasskeyStore> = Arc::new(InMemoryPasskeyStore::new());
         let challenges: Arc<InMemoryPasskeyChallengeStore> =
             Arc::new(InMemoryPasskeyChallengeStore::new());
         let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
@@ -407,8 +405,8 @@ impl HarnessBuilder {
         let storage = Storage {
             users: user_store.clone(),
             sessions: session_store.clone(),
-            verification_tokens: tokens.clone(),
-            passkey_credentials: credentials.clone(),
+            email_links: email_links.clone(),
+            passkeys: passkeys.clone(),
             passkey_challenges: challenges.clone(),
         };
 
@@ -424,19 +422,19 @@ impl HarnessBuilder {
             .passkey(self.passkey)
             .signup(self.signup)
             .recovery(self.recovery)
-            .account(AccountConfig {
-                url_template: ACCOUNT_URL.to_string(),
-                ..AccountConfig::default()
+            .user(UserConfig {
+                url_template: USER_URL.to_string(),
+                ..UserConfig::default()
             })
             .reauthentication(self.reauth_policy)
-            .notification_policy(self.notification_policy)
+            .notice_policy(self.notice_policy)
             .build()?;
 
         Ok(Harness {
             passkey: core.passkey,
             signup: core.signup,
             recovery: core.recovery,
-            account: core.account,
+            user: core.user,
             reauth: core.reauth,
             operator: core.operator,
             session_manager: core.session_manager,
@@ -444,8 +442,8 @@ impl HarnessBuilder {
             user_store,
             sessions,
             session_store,
-            tokens,
-            credentials,
+            email_links,
+            passkeys,
             challenges,
             storage,
             audit,
@@ -492,7 +490,7 @@ pub fn last_email_change_token(h: &Harness) -> String {
         .rev()
         .find(|e| e.subject == "Confirm your new email address")
         .expect("email-change link queued");
-    token_from_email(&confirmation.body_text, ACCOUNT_URL)
+    token_from_email(&confirmation.body_text, USER_URL)
 }
 
 pub fn assert_last_redemption_unknown(h: &Harness, secret: SecretKind) {
@@ -517,7 +515,7 @@ pub async fn make_user(h: &Harness, email: &str) -> User {
         id: UserId::new(),
         email: Some(email.to_ascii_lowercase()),
         email_verified_at: Some(now),
-        status: AccountStatus::Active,
+        status: UserStatus::Active,
         created_at: now,
         updated_at: now,
     };
@@ -529,11 +527,15 @@ pub fn session_for(h: &Harness, user: &User) -> Session {
     plain_session(h, user.id, None)
 }
 
-pub fn restricted_session_for(h: &Harness, user: &User, cooldown_until: DateTime<Utc>) -> Session {
-    plain_session(h, user.id, Some(cooldown_until))
+pub fn session_in_cool_down_for(
+    h: &Harness,
+    user: &User,
+    cool_down_until: DateTime<Utc>,
+) -> Session {
+    plain_session(h, user.id, Some(cool_down_until))
 }
 
-fn plain_session(h: &Harness, user_id: UserId, cooldown: Option<DateTime<Utc>>) -> Session {
+fn plain_session(h: &Harness, user_id: UserId, cool_down: Option<DateTime<Utc>>) -> Session {
     let now = h.clock.now();
     Session {
         id: SessionId::new(),
@@ -544,7 +546,7 @@ fn plain_session(h: &Harness, user_id: UserId, cooldown: Option<DateTime<Utc>>) 
         expires_at: now + chrono::Duration::hours(1),
         ip: None,
         user_agent: None,
-        recovery_cooldown_until: cooldown,
+        recovery_cool_down_until: cool_down,
     }
 }
 
@@ -581,22 +583,22 @@ pub async fn provision_user(h: &Harness, email: &str) -> User {
         .sent()
         .into_iter()
         .rev()
-        .find(|e| e.subject == "Finish setting up your account")
+        .find(|e| e.subject == "Finish signing up")
         .expect("signup link queued");
     let token = token_from_email(&signup_email.body_text, SIGNUP_URL);
 
-    let consume = h
+    let started = h
         .signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
-        .expect("signup consume");
+        .expect("signup redeem");
 
     let mut wa = ResidentTestAuthenticator::new();
-    let attestation = wa.do_registration(consume.options);
+    let attestation = wa.do_registration(started.options);
     let outcome = h
         .signup
         .finish_signup(
-            consume.challenge_id,
+            started.challenge_id,
             &attestation,
             Some("initial device".into()),
             SessionContext::default(),

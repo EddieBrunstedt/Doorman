@@ -8,8 +8,8 @@ use doorman_core::email::{Email, EmailTemplates};
 use doorman_core::storage::User;
 
 const SIGNUP_SUBJECT: &str = "Acme: finish signing up";
-const RECOVERY_SUBJECT: &str = "Acme: recover your account";
-const SESSION_REVOKED_SUBJECT: &str = "Acme: a session was signed out";
+const RECOVERY_SUBJECT: &str = "Acme: recover your access";
+const SESSION_REVOKED_SUBJECT: &str = "Acme: a session was revoked";
 
 struct AcmeEmails;
 
@@ -32,11 +32,11 @@ impl EmailTemplates for AcmeEmails {
         }
     }
 
-    fn other_session_revoked_notification_email(&self, user: &User) -> Email {
+    fn other_session_revoked_notice_email(&self, user: &User) -> Email {
         Email {
             to: user.email.clone().unwrap_or_default(),
             subject: SESSION_REVOKED_SUBJECT.to_string(),
-            body_text: "A session was signed out.".to_string(),
+            body_text: "A session was revoked.".to_string(),
             body_html: None,
         }
     }

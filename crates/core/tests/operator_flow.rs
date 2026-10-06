@@ -4,11 +4,9 @@ use doorman_core::Error;
 use doorman_core::audit::RecoveryFailureReason;
 use doorman_core::audit::{Actor, AuditEvent, AuditEventKind, OperatorActor, SecretKind};
 use doorman_core::clock::Clock;
-use doorman_core::operator::{NotificationPolicy, OperatorNotice};
+use doorman_core::operator::{NoticePolicy, OperatorNotice};
 use doorman_core::session::SessionContext;
-use doorman_core::storage::{
-    AccountStatus, PasskeyCredentialStore, SessionId, SessionStore, UserId, UserStore,
-};
+use doorman_core::storage::{PasskeyStore, SessionId, SessionStore, UserId, UserStatus, UserStore};
 
 use common::{
     Harness, HarnessBuilder, RECOVERY_URL, assert_last_redemption_unknown, authenticator,
@@ -17,15 +15,15 @@ use common::{
 };
 
 async fn first_credential_id(h: &Harness, user_id: UserId) -> Vec<u8> {
-    let creds = h
-        .credentials
+    let passkeys = h
+        .passkeys
         .list_passkeys_for_user(user_id)
         .await
         .expect("list passkeys");
-    creds
+    passkeys
         .first()
         .map(|c| c.credential_id.clone())
-        .expect("user has a credential")
+        .expect("user has a passkey")
 }
 
 async fn only_session_id(h: &Harness, user_id: UserId) -> SessionId {
@@ -42,7 +40,7 @@ fn operator() -> OperatorActor {
         "support-agent-7",
         Some("authz-log-42".to_string()),
         Some("198.51.100.7".to_string()),
-        Some("admin-console/1.0".to_string()),
+        Some("operator-console/1.0".to_string()),
     )
     .expect("operator actor within bounds")
 }
@@ -53,7 +51,7 @@ async fn operator_delete_cascades_all_stores() {
     let user = provision_user(&h, "doomed@example.com").await;
     let session = session_for(&h, &user);
 
-    h.account
+    h.user
         .request_email_change(&session, "elsewhere@example.com", None, Default::default())
         .await
         .expect("request email change");
@@ -70,14 +68,10 @@ async fn operator_delete_cascades_all_stores() {
         1,
         "signup left an active session"
     );
-    assert_eq!(
-        passkey_count(&h, user.id).await,
-        1,
-        "signup left a credential"
-    );
+    assert_eq!(passkey_count(&h, user.id).await, 1, "signup left a passkey");
 
     h.operator
-        .delete_account(user.id, operator())
+        .delete_user(user.id, operator())
         .await
         .expect("operator delete");
 
@@ -90,14 +84,14 @@ async fn operator_delete_cascades_all_stores() {
         "the user row is gone",
     );
     assert_eq!(session_count(&h, user.id).await, 0, "sessions cascaded");
-    assert_eq!(passkey_count(&h, user.id).await, 0, "credentials cascaded");
+    assert_eq!(passkey_count(&h, user.id).await, 0, "passkeys cascaded");
 
     let err = h
-        .account
+        .user
         .confirm_email_change(&email_change_token, SessionContext::default())
         .await
         .expect_err("the email-change link is gone");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(matches!(err, Error::InvalidEmailLink));
     assert_last_redemption_unknown(&h, SecretKind::EmailChangeLink);
 
     let err = h
@@ -110,12 +104,12 @@ async fn operator_delete_cascades_all_stores() {
 }
 
 #[tokio::test]
-async fn operator_delete_emits_account_deleted_with_operator_actor() {
+async fn operator_delete_emits_user_deleted_with_operator_actor() {
     let h = Harness::fresh();
     let user = provision_user(&h, "doomed@example.com").await;
 
     h.operator
-        .delete_account(user.id, operator())
+        .delete_user(user.id, operator())
         .await
         .expect("operator delete");
 
@@ -123,10 +117,8 @@ async fn operator_delete_emits_account_deleted_with_operator_actor() {
         .audit
         .events()
         .into_iter()
-        .find(
-            |e| matches!(e.kind, AuditEventKind::AccountDeleted { user_id } if user_id == user.id),
-        )
-        .expect("an AccountDeleted event was emitted");
+        .find(|e| matches!(e.kind, AuditEventKind::UserDeleted { user_id } if user_id == user.id))
+        .expect("an UserDeleted event was emitted");
 
     let AuditEvent { actor, .. } = deleted;
     let Actor::Operator(recorded) = actor else {
@@ -135,7 +127,7 @@ async fn operator_delete_emits_account_deleted_with_operator_actor() {
     assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
     assert_eq!(recorded.correlation_id.as_deref(), Some("authz-log-42"));
     assert_eq!(recorded.ip.as_deref(), Some("198.51.100.7"));
-    assert_eq!(recorded.user_agent.as_deref(), Some("admin-console/1.0"));
+    assert_eq!(recorded.user_agent.as_deref(), Some("operator-console/1.0"));
 }
 
 #[tokio::test]
@@ -145,7 +137,7 @@ async fn operator_delete_unknown_user_fails_before_touching_stores() {
 
     let err = h
         .operator
-        .delete_account(UserId::new(), operator())
+        .delete_user(UserId::new(), operator())
         .await
         .expect_err("a missing target must fail loudly");
     assert!(
@@ -169,13 +161,13 @@ async fn operator_delete_unknown_user_fails_before_touching_stores() {
     assert_eq!(
         passkey_count(&h, bystander.id).await,
         1,
-        "bystander credential untouched"
+        "bystander passkey untouched"
     );
     assert!(
         !h.audit
             .events()
             .iter()
-            .any(|e| matches!(e.kind, AuditEventKind::AccountDeleted { .. })),
+            .any(|e| matches!(e.kind, AuditEventKind::UserDeleted { .. })),
         "no deletion event for a missing target",
     );
 }
@@ -194,15 +186,17 @@ async fn operator_remove_passkey_attributes_to_operator_and_sends_operator_copy(
     assert_eq!(
         passkey_count(&h, user.id).await,
         0,
-        "the credential was removed"
+        "the passkey was removed"
     );
 
     let removed = h
         .audit
         .events()
         .into_iter()
-        .find(|e| matches!(e.kind, AuditEventKind::CredentialRemoved { user_id } if user_id == user.id))
-        .expect("a CredentialRemoved event was emitted");
+        .find(
+            |e| matches!(e.kind, AuditEventKind::PasskeyRemoved { user_id } if user_id == user.id),
+        )
+        .expect("a PasskeyRemoved event was emitted");
     let Actor::Operator(recorded) = removed.actor else {
         panic!(
             "operator removal must attribute to Actor::Operator, got {:?}",
@@ -215,7 +209,7 @@ async fn operator_remove_passkey_attributes_to_operator_and_sends_operator_copy(
     assert!(
         notices
             .iter()
-            .any(|e| e.subject == "Security notice: a passkey was removed by an administrator"),
+            .any(|e| e.subject == "Security notice: a passkey was removed by an operator"),
         "operator-aware passkey-removed notice was sent",
     );
     assert!(
@@ -227,30 +221,30 @@ async fn operator_remove_passkey_attributes_to_operator_and_sends_operator_copy(
 }
 
 #[tokio::test]
-async fn operator_remove_passkey_refuses_cross_user_credential() {
+async fn operator_remove_passkey_refuses_cross_user_passkey() {
     let h = Harness::fresh();
     let victim = provision_user(&h, "victim@example.com").await;
     let named = provision_user(&h, "named@example.com").await;
-    let victim_credential = first_credential_id(&h, victim.id).await;
+    let victim_passkey = first_credential_id(&h, victim.id).await;
 
     let before = h.audit.events().len();
     let err = h
         .operator
-        .remove_passkey(named.id, &victim_credential, operator())
+        .remove_passkey(named.id, &victim_passkey, operator())
         .await
-        .expect_err("cross-user credential must be refused");
+        .expect_err("cross-user passkey must be refused");
     assert!(
         matches!(err, Error::PasskeyOwnershipMismatch),
         "expected PasskeyOwnershipMismatch, got {err:?}"
     );
 
     assert!(
-        h.credentials
-            .find_passkey_by_credential_id(&victim_credential)
+        h.passkeys
+            .find_passkey_by_credential_id(&victim_passkey)
             .await
-            .expect("find credential")
+            .expect("find passkey")
             .is_some(),
-        "the victim's credential is untouched",
+        "the victim's passkey is untouched",
     );
     assert_eq!(
         h.audit.events().len(),
@@ -277,16 +271,16 @@ async fn operator_remove_passkey_unknown_user_fails_loudly() {
     assert_eq!(
         passkey_count(&h, victim.id).await,
         1,
-        "no credential was removed for a missing target",
+        "no passkey was removed for a missing target",
     );
 }
 
 #[tokio::test]
 async fn operator_remove_passkey_suppresses_notice_when_policy_off() {
     let h = HarnessBuilder::new()
-        .notification_policy(NotificationPolicy {
+        .notice_policy(NoticePolicy {
             passkey_removed: OperatorNotice::Suppress,
-            ..NotificationPolicy::default()
+            ..NoticePolicy::default()
         })
         .build();
     let user = provision_user(&h, "owner@example.com").await;
@@ -300,12 +294,12 @@ async fn operator_remove_passkey_suppresses_notice_when_policy_off() {
     assert_eq!(
         passkey_count(&h, user.id).await,
         0,
-        "the credential was removed"
+        "the passkey was removed"
     );
     assert!(
         h.audit.events().iter().any(|e| matches!(
             e.kind,
-            AuditEventKind::CredentialRemoved { user_id } if user_id == user.id
+            AuditEventKind::PasskeyRemoved { user_id } if user_id == user.id
         )),
         "the removal is still audited under Suppress",
     );
@@ -424,7 +418,7 @@ async fn operator_revoke_all_clears_sessions_and_suppresses_notice_by_default() 
     assert!(
         !h.email.sent().iter().any(|e| e
             .subject
-            .starts_with("Security notice: your account was signed out")),
+            .starts_with("Security notice: you were logged out")),
         "revoke-all sends no notice under the default Suppress policy",
     );
 }
@@ -432,9 +426,9 @@ async fn operator_revoke_all_clears_sessions_and_suppresses_notice_by_default() 
 #[tokio::test]
 async fn operator_revoke_all_sends_operator_notice_when_opted_in() {
     let h = HarnessBuilder::new()
-        .notification_policy(NotificationPolicy {
+        .notice_policy(NoticePolicy {
             sessions_revoked: OperatorNotice::Send,
-            ..NotificationPolicy::default()
+            ..NoticePolicy::default()
         })
         .build();
     let user = provision_user(&h, "owner@example.com").await;
@@ -447,9 +441,10 @@ async fn operator_revoke_all_sends_operator_notice_when_opted_in() {
     assert_eq!(count, 1);
 
     assert!(
-        h.email.sent().iter().any(
-            |e| e.subject == "Security notice: your account was signed out by an administrator"
-        ),
+        h.email
+            .sent()
+            .iter()
+            .any(|e| e.subject == "Security notice: you were logged out by an operator"),
         "opting in sends the operator-aware revoke-all notice",
     );
 }
@@ -515,7 +510,7 @@ async fn operator_list_passkeys_returns_summaries_and_audits() {
         .list_passkeys(user.id, operator())
         .await
         .expect("operator list passkeys");
-    assert_eq!(summaries.len(), 1, "the provisioned credential is listed");
+    assert_eq!(summaries.len(), 1, "the provisioned passkey is listed");
 
     let listed = h
         .audit
@@ -605,7 +600,7 @@ async fn operator_reads_unknown_user_fail_loudly_and_unaudited() {
     );
 }
 
-async fn status_of(h: &Harness, user_id: UserId) -> AccountStatus {
+async fn status_of(h: &Harness, user_id: UserId) -> UserStatus {
     h.users
         .find_user_by_id(user_id)
         .await
@@ -615,9 +610,9 @@ async fn status_of(h: &Harness, user_id: UserId) -> AccountStatus {
 }
 
 #[tokio::test]
-async fn operator_disable_freezes_account_and_drops_live_sessions() {
+async fn operator_disable_bars_user_and_drops_live_sessions() {
     let h = Harness::fresh();
-    let user = provision_user(&h, "frozen@example.com").await;
+    let user = provision_user(&h, "disabled@example.com").await;
     assert_eq!(
         session_count(&h, user.id).await,
         1,
@@ -630,8 +625,8 @@ async fn operator_disable_freezes_account_and_drops_live_sessions() {
         .expect("operator disable");
 
     assert!(
-        matches!(status_of(&h, user.id).await, AccountStatus::Disabled { .. }),
-        "the account resolves as Disabled",
+        matches!(status_of(&h, user.id).await, UserStatus::Disabled { .. }),
+        "the user resolves as Disabled",
     );
     assert_eq!(
         session_count(&h, user.id).await,
@@ -643,7 +638,7 @@ async fn operator_disable_freezes_account_and_drops_live_sessions() {
 #[tokio::test]
 async fn operator_disable_emits_status_and_revoke_audit_with_operator_actor() {
     let h = Harness::fresh();
-    let user = provision_user(&h, "frozen@example.com").await;
+    let user = provision_user(&h, "disabled@example.com").await;
 
     h.operator
         .disable(user.id, operator())
@@ -657,10 +652,10 @@ async fn operator_disable_emits_status_and_revoke_audit_with_operator_actor() {
         .find(|e| {
             matches!(
                 e.kind,
-                AuditEventKind::OperatorDisabledAccount { user_id } if user_id == user.id
+                AuditEventKind::OperatorDisabledUser { user_id } if user_id == user.id
             )
         })
-        .expect("an OperatorDisabledAccount event was emitted");
+        .expect("an OperatorDisabledUser event was emitted");
     let Actor::Operator(recorded) = disabled.actor else {
         panic!(
             "disable must attribute to Actor::Operator, got {:?}",
@@ -681,7 +676,7 @@ async fn operator_disable_emits_status_and_revoke_audit_with_operator_actor() {
 #[tokio::test]
 async fn operator_disable_suppresses_notice_by_default() {
     let h = Harness::fresh();
-    let user = provision_user(&h, "frozen@example.com").await;
+    let user = provision_user(&h, "disabled@example.com").await;
 
     h.operator
         .disable(user.id, operator())
@@ -691,7 +686,7 @@ async fn operator_disable_suppresses_notice_by_default() {
     assert!(
         !h.email.sent().iter().any(|e| e
             .subject
-            .starts_with("Security notice: your account was disabled")),
+            .starts_with("Security notice: your access was disabled")),
         "disable sends no notice under the default Suppress policy",
     );
 }
@@ -699,12 +694,12 @@ async fn operator_disable_suppresses_notice_by_default() {
 #[tokio::test]
 async fn operator_disable_sends_operator_notice_when_opted_in() {
     let h = HarnessBuilder::new()
-        .notification_policy(NotificationPolicy {
-            account_disabled: OperatorNotice::Send,
-            ..NotificationPolicy::default()
+        .notice_policy(NoticePolicy {
+            user_disabled: OperatorNotice::Send,
+            ..NoticePolicy::default()
         })
         .build();
-    let user = provision_user(&h, "frozen@example.com").await;
+    let user = provision_user(&h, "disabled@example.com").await;
 
     h.operator
         .disable(user.id, operator())
@@ -715,7 +710,7 @@ async fn operator_disable_sends_operator_notice_when_opted_in() {
         h.email
             .sent()
             .iter()
-            .any(|e| e.subject == "Security notice: your account was disabled by an administrator"),
+            .any(|e| e.subject == "Security notice: your access was disabled by an operator"),
         "opting in sends the operator-aware disabled notice",
     );
 }
@@ -723,7 +718,7 @@ async fn operator_disable_sends_operator_notice_when_opted_in() {
 #[tokio::test]
 async fn operator_disable_is_idempotent() {
     let h = Harness::fresh();
-    let user = provision_user(&h, "frozen@example.com").await;
+    let user = provision_user(&h, "disabled@example.com").await;
 
     h.operator
         .disable(user.id, operator())
@@ -735,8 +730,8 @@ async fn operator_disable_is_idempotent() {
         .expect("second disable is idempotent");
 
     assert!(
-        matches!(status_of(&h, user.id).await, AccountStatus::Disabled { .. }),
-        "the account is still Disabled after a redundant disable",
+        matches!(status_of(&h, user.id).await, UserStatus::Disabled { .. }),
+        "the user is still Disabled after a redundant disable",
     );
     assert_eq!(
         session_count(&h, user.id).await,
@@ -760,7 +755,7 @@ async fn operator_disable_unknown_user_fails_loudly() {
         "expected UserNotFound, got {err:?}"
     );
     assert!(
-        matches!(status_of(&h, bystander.id).await, AccountStatus::Active),
+        matches!(status_of(&h, bystander.id).await, UserStatus::Active),
         "bystander stays active",
     );
     assert_eq!(
@@ -772,13 +767,13 @@ async fn operator_disable_unknown_user_fails_loudly() {
         !h.audit
             .events()
             .iter()
-            .any(|e| matches!(e.kind, AuditEventKind::OperatorDisabledAccount { .. })),
+            .any(|e| matches!(e.kind, AuditEventKind::OperatorDisabledUser { .. })),
         "no disable event for a missing target",
     );
 }
 
 #[tokio::test]
-async fn operator_enable_returns_account_to_active_and_audits() {
+async fn operator_enable_returns_user_to_active_and_audits() {
     let h = Harness::fresh();
     let user = provision_user(&h, "thawed@example.com").await;
     h.operator
@@ -787,7 +782,7 @@ async fn operator_enable_returns_account_to_active_and_audits() {
         .expect("disable");
     assert!(matches!(
         status_of(&h, user.id).await,
-        AccountStatus::Disabled { .. }
+        UserStatus::Disabled { .. }
     ));
 
     h.operator
@@ -796,8 +791,8 @@ async fn operator_enable_returns_account_to_active_and_audits() {
         .expect("operator enable");
 
     assert!(
-        matches!(status_of(&h, user.id).await, AccountStatus::Active),
-        "the account is Active again",
+        matches!(status_of(&h, user.id).await, UserStatus::Active),
+        "the user is Active again",
     );
     let enabled = h
         .audit
@@ -806,10 +801,10 @@ async fn operator_enable_returns_account_to_active_and_audits() {
         .find(|e| {
             matches!(
                 e.kind,
-                AuditEventKind::OperatorEnabledAccount { user_id } if user_id == user.id
+                AuditEventKind::OperatorEnabledUser { user_id } if user_id == user.id
             )
         })
-        .expect("an OperatorEnabledAccount event was emitted");
+        .expect("an OperatorEnabledUser event was emitted");
     let Actor::Operator(recorded) = enabled.actor else {
         panic!(
             "enable must attribute to Actor::Operator, got {:?}",
@@ -837,7 +832,7 @@ async fn operator_enable_unknown_user_fails_loudly() {
         !h.audit
             .events()
             .iter()
-            .any(|e| matches!(e.kind, AuditEventKind::OperatorEnabledAccount { .. })),
+            .any(|e| matches!(e.kind, AuditEventKind::OperatorEnabledUser { .. })),
         "no enable event for a missing target",
     );
 }
@@ -856,22 +851,22 @@ async fn disable_blocks_recovery_then_enable_restores_it() {
     h.recovery
         .request_recovery("alice@example.com", SessionContext::default())
         .await
-        .expect("silent ok for a disabled account");
+        .expect("silent ok for a disabled user");
 
     assert_eq!(
         h.email.sent().len(),
         mail_before,
-        "a disabled account gets no recovery link",
+        "a disabled user gets no recovery link",
     );
     assert!(
         h.audit.events().iter().any(|e| matches!(
             e.kind,
             AuditEventKind::RecoveryFailed {
-                reason: RecoveryFailureReason::AccountDisabled,
+                reason: RecoveryFailureReason::UserDisabled,
                 user_id: Some(id),
             } if id == user.id,
         )),
-        "the refusal is audited as AccountDisabled",
+        "the refusal is audited as UserDisabled",
     );
 
     h.operator
@@ -887,13 +882,13 @@ async fn disable_blocks_recovery_then_enable_restores_it() {
         .sent()
         .into_iter()
         .rev()
-        .find(|e| e.subject == "Recover access to your account")
-        .expect("an enabled account is sent a recovery link");
+        .find(|e| e.subject == "Recover access with a new passkey")
+        .expect("an enabled user is sent a recovery link");
     h.recovery
-        .consume_recovery(
+        .redeem_recovery_link(
             &token_from_email(&link.body_text, RECOVERY_URL),
             SessionContext::default(),
         )
         .await
-        .expect("an enabled account can recover again");
+        .expect("an enabled user can recover again");
 }

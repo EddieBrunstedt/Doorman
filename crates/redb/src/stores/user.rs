@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{AccountStatus, User, UserId, UserStore};
+use doorman_core::storage::{User, UserId, UserStatus, UserStore};
 
 use redb::ReadableTable as _;
 
@@ -116,7 +116,7 @@ impl UserStore for RedbUserStore {
     async fn set_user_status(
         &self,
         id: UserId,
-        status: AccountStatus,
+        status: UserStatus,
         at: DateTime<Utc>,
     ) -> StorageResult<()> {
         self.modify(id, move |user, _| {

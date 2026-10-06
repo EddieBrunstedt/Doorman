@@ -75,7 +75,7 @@ async fn remove(
     let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     state
         .core
-        .account
+        .user
         .revoke_session(&auth.session, id, proof, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -90,7 +90,7 @@ async fn remove_others(
     let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     state
         .core
-        .account
+        .user
         .revoke_other_sessions(&auth.session, proof, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)

@@ -124,7 +124,7 @@ async fn same_origin_referer_with_cookie_passes() {
 
     let resp = client
         .delete(app.url(&format!("/auth/sessions/{}", issued.session.id)))
-        .header(header::REFERER, format!("{APP_ORIGIN}/account/settings"))
+        .header(header::REFERER, format!("{APP_ORIGIN}/settings"))
         .send()
         .await
         .expect("delete");
@@ -141,7 +141,7 @@ async fn cross_origin_referer_with_cookie_is_rejected() {
 
     let resp = client
         .delete(app.url(&format!("/auth/sessions/{}", issued.session.id)))
-        .header(header::REFERER, format!("{EVIL_ORIGIN}/account/settings"))
+        .header(header::REFERER, format!("{EVIL_ORIGIN}/settings"))
         .send()
         .await
         .expect("delete");

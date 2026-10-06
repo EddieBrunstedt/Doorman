@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use doorman_core::session::hash_token;
-use doorman_core::storage::{AccountStatus, Session, SessionId, Storage, TokenHash, User, UserId};
+use doorman_core::storage::{Session, SessionId, Storage, TokenHash, User, UserId, UserStatus};
 use tokio::runtime::Runtime;
 
 const SCALE_SIZES: [u32; 3] = [1, 100, 10_000];
@@ -27,7 +27,7 @@ fn make_session(
         expires_at,
         ip: None,
         user_agent: None,
-        recovery_cooldown_until: None,
+        recovery_cool_down_until: None,
     }
 }
 
@@ -37,7 +37,7 @@ async fn seed_user(storage: &Storage) -> UserId {
         id: UserId::new(),
         email: Some("bench@example.com".into()),
         email_verified_at: Some(now),
-        status: AccountStatus::Active,
+        status: UserStatus::Active,
         created_at: now,
         updated_at: now,
     };

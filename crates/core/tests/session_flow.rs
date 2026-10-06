@@ -11,7 +11,7 @@ use doorman_core::error::Error;
 use doorman_core::memory::{InMemorySessionStore, InMemoryUserStore};
 use doorman_core::session::{SessionConfig, SessionContext, hash_token};
 use doorman_core::storage::{
-    AccountStatus, Session, SessionId, SessionStore, StoredPasskey, User, UserId, UserStore,
+    Session, SessionId, SessionStore, StoredPasskey, User, UserId, UserStatus, UserStore,
 };
 use doorman_test_support::CapturingEmailSender;
 
@@ -38,7 +38,7 @@ async fn create_is_refused_for_a_user_who_cannot_log_in() {
     let disabled = new_user(&h).await;
     let now = h.clock.now();
     h.users
-        .set_user_status(disabled, AccountStatus::Disabled { at: now }, now)
+        .set_user_status(disabled, UserStatus::Disabled { at: now }, now)
         .await
         .expect("disable");
 
@@ -47,7 +47,7 @@ async fn create_is_refused_for_a_user_who_cannot_log_in() {
         .create(disabled, SessionContext::default())
         .await
         .err();
-    assert!(matches!(err, Some(Error::AccountDisabled)), "got {err:?}");
+    assert!(matches!(err, Some(Error::UserDisabled)), "got {err:?}");
     let err = h
         .session_manager
         .create(UserId::new(), SessionContext::default())
@@ -65,41 +65,41 @@ async fn create_is_refused_for_a_user_who_cannot_log_in() {
 }
 
 #[test]
-fn session_recovery_cooldown_ignores_expired_deadlines() {
+fn session_recovery_cool_down_ignores_expired_deadlines() {
     let now = ts(2026, 1, 1);
     let active_until = now + ChronoDuration::minutes(10);
     let session = Session {
         id: SessionId::new(),
         user_id: UserId::new(),
-        token_hash: hash_token("cooldown"),
+        token_hash: hash_token("cool-down"),
         created_at: now,
         last_used_at: now,
         expires_at: now + ChronoDuration::hours(1),
         ip: None,
         user_agent: None,
-        recovery_cooldown_until: Some(active_until),
+        recovery_cool_down_until: Some(active_until),
     };
 
-    assert!(session.is_in_recovery_cooldown(now));
+    assert!(session.is_in_recovery_cool_down(now));
 
     let expired = Session {
-        recovery_cooldown_until: Some(now - ChronoDuration::seconds(1)),
+        recovery_cool_down_until: Some(now - ChronoDuration::seconds(1)),
         ..session.clone()
     };
-    assert!(!expired.is_in_recovery_cooldown(now));
+    assert!(!expired.is_in_recovery_cool_down(now));
 
-    let unrestricted = Session {
-        recovery_cooldown_until: None,
+    let outside_cool_down = Session {
+        recovery_cool_down_until: None,
         ..session
     };
-    assert!(!unrestricted.is_in_recovery_cooldown(now));
+    assert!(!outside_cool_down.is_in_recovery_cool_down(now));
 }
 
 #[test]
-fn stored_passkey_cooldown_predicate_mirrors_session() {
+fn stored_passkey_cool_down_predicate_mirrors_session() {
     let now = ts(2026, 1, 1);
     let active_until = now + ChronoDuration::hours(24);
-    let credential = StoredPasskey {
+    let passkey = StoredPasskey {
         credential_id: vec![1, 2, 3],
         user_id: UserId::new(),
         passkey: b"opaque-blob".to_vec(),
@@ -110,17 +110,17 @@ fn stored_passkey_cooldown_predicate_mirrors_session() {
         transports: Vec::new(),
         backup_eligible: false,
         backup_state: false,
-        recovery_cooldown_until: Some(active_until),
+        recovery_cool_down_until: Some(active_until),
     };
 
-    assert!(credential.is_in_recovery_cooldown(now));
-    assert!(!credential.is_in_recovery_cooldown(active_until));
+    assert!(passkey.is_in_recovery_cool_down(now));
+    assert!(!passkey.is_in_recovery_cool_down(active_until));
 
-    let unrestricted = StoredPasskey {
-        recovery_cooldown_until: None,
-        ..credential
+    let outside_cool_down = StoredPasskey {
+        recovery_cool_down_until: None,
+        ..passkey
     };
-    assert!(!unrestricted.is_in_recovery_cooldown(now));
+    assert!(!outside_cool_down.is_in_recovery_cool_down(now));
 }
 
 #[tokio::test]
@@ -443,7 +443,7 @@ async fn user_store_round_trip() {
         id: UserId::new(),
         email: Some("alice@example.com".into()),
         email_verified_at: None,
-        status: AccountStatus::Active,
+        status: UserStatus::Active,
         created_at: ts(2026, 1, 1),
         updated_at: ts(2026, 1, 1),
     };
@@ -470,7 +470,7 @@ async fn user_store_round_trip() {
         id: UserId::new(),
         email: Some("alice@example.com".into()),
         email_verified_at: None,
-        status: AccountStatus::Active,
+        status: UserStatus::Active,
         created_at: user.created_at,
         updated_at: user.updated_at,
     };
@@ -521,7 +521,7 @@ async fn session_store_rejects_id_and_hash_collisions() {
         expires_at: ts(2026, 1, 1) + ChronoDuration::hours(1),
         ip: None,
         user_agent: None,
-        recovery_cooldown_until: None,
+        recovery_cool_down_until: None,
     };
     store.create_session(session.clone()).await.expect("first");
 

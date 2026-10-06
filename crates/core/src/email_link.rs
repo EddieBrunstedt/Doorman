@@ -9,22 +9,21 @@ use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::redeem::{Candidate, Redeemer};
 use crate::session::SessionContext;
-use crate::storage::{
-    User, UserId, VerificationPurpose, VerificationToken, VerificationTokenStore,
-};
+use crate::storage::{EmailLink, EmailLinkPurpose, EmailLinkStore, User, UserId};
 use crate::token::{generate_token, hash_token};
-use crate::verification::TOKEN_PLACEHOLDER;
+
+pub const TOKEN_PLACEHOLDER: &str = "{token}";
 
 const PLACEHOLDER_URL_HOST: &str = "example.invalid";
 
 pub(crate) trait LinkPurpose {
     type Payload;
-    const PURPOSE: VerificationPurpose;
+    const PURPOSE: EmailLinkPurpose;
     const SECRET: SecretKind;
     const FLOW: &'static str;
     const LIFETIME_FIELD: &'static str;
     fn store(payload: Self::Payload) -> Option<String>;
-    fn load(token: &VerificationToken) -> Option<Self::Payload>;
+    fn load(token: &EmailLink) -> Option<Self::Payload>;
 }
 
 pub(crate) enum Signup {}
@@ -35,7 +34,7 @@ pub(crate) enum EmailChange {}
 
 impl LinkPurpose for Signup {
     type Payload = ();
-    const PURPOSE: VerificationPurpose = VerificationPurpose::Signup;
+    const PURPOSE: EmailLinkPurpose = EmailLinkPurpose::Signup;
     const SECRET: SecretKind = SecretKind::SignupLink;
     const FLOW: &'static str = "signup";
     const LIFETIME_FIELD: &'static str = "signup token_lifetime";
@@ -44,14 +43,14 @@ impl LinkPurpose for Signup {
         None
     }
 
-    fn load(_: &VerificationToken) -> Option<()> {
+    fn load(_: &EmailLink) -> Option<()> {
         Some(())
     }
 }
 
 impl LinkPurpose for Recovery {
     type Payload = ();
-    const PURPOSE: VerificationPurpose = VerificationPurpose::Recovery;
+    const PURPOSE: EmailLinkPurpose = EmailLinkPurpose::Recovery;
     const SECRET: SecretKind = SecretKind::RecoveryLink;
     const FLOW: &'static str = "recovery";
     const LIFETIME_FIELD: &'static str = "recovery token_lifetime";
@@ -60,37 +59,37 @@ impl LinkPurpose for Recovery {
         None
     }
 
-    fn load(_: &VerificationToken) -> Option<()> {
+    fn load(_: &EmailLink) -> Option<()> {
         Some(())
     }
 }
 
 impl LinkPurpose for EmailChange {
     type Payload = String;
-    const PURPOSE: VerificationPurpose = VerificationPurpose::EmailChange;
+    const PURPOSE: EmailLinkPurpose = EmailLinkPurpose::EmailChange;
     const SECRET: SecretKind = SecretKind::EmailChangeLink;
-    const FLOW: &'static str = "account email change";
-    const LIFETIME_FIELD: &'static str = "account token_lifetime";
+    const FLOW: &'static str = "email change";
+    const LIFETIME_FIELD: &'static str = "user token_lifetime";
 
     fn store(new_email: String) -> Option<String> {
         Some(new_email)
     }
 
-    fn load(token: &VerificationToken) -> Option<String> {
+    fn load(token: &EmailLink) -> Option<String> {
         token.new_email.clone()
     }
 }
 
-pub(crate) struct EmailedLink<P> {
+pub(crate) struct EmailLinks<P> {
     template: String,
     lifetime: Duration,
-    tokens: Arc<dyn VerificationTokenStore>,
+    tokens: Arc<dyn EmailLinkStore>,
     redeemer: Redeemer,
     clock: Arc<dyn Clock>,
     purpose: PhantomData<fn() -> P>,
 }
 
-impl<P> Clone for EmailedLink<P> {
+impl<P> Clone for EmailLinks<P> {
     fn clone(&self) -> Self {
         Self {
             template: self.template.clone(),
@@ -103,7 +102,7 @@ impl<P> Clone for EmailedLink<P> {
     }
 }
 
-impl<P: LinkPurpose> EmailedLink<P> {
+impl<P: LinkPurpose> EmailLinks<P> {
     pub(crate) fn new(
         deps: &CoreDeps,
         template: &str,
@@ -125,7 +124,7 @@ impl<P: LinkPurpose> EmailedLink<P> {
         Ok(Self {
             template: template.to_owned(),
             lifetime,
-            tokens: deps.verification_tokens.clone(),
+            tokens: deps.email_links.clone(),
             redeemer: Redeemer::from_deps(deps),
             clock: deps.clock.clone(),
             purpose: PhantomData,
@@ -134,14 +133,14 @@ impl<P: LinkPurpose> EmailedLink<P> {
 
     pub(crate) async fn issue(&self, user_id: UserId, payload: P::Payload) -> Result<String> {
         self.tokens
-            .delete_tokens_for_user(user_id, P::PURPOSE)
+            .delete_links_for_user(user_id, P::PURPOSE)
             .await?;
 
         let now = self.clock.now();
         let expires_at = expiry(now, self.lifetime)?;
         let (token, token_hash) = generate_token()?;
         self.tokens
-            .create_token(VerificationToken {
+            .create_link(EmailLink {
                 token_hash,
                 user_id,
                 purpose: P::PURPOSE,
@@ -161,7 +160,7 @@ impl<P: LinkPurpose> EmailedLink<P> {
     ) -> Result<(User, P::Payload)> {
         let record = self
             .tokens
-            .consume_token(&hash_token(token), P::PURPOSE)
+            .redeem_link(&hash_token(token), P::PURPOSE)
             .await?;
         let candidate = record.map(|record| Candidate {
             owner: Some(record.user_id),

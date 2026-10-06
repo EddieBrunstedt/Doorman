@@ -7,15 +7,16 @@ use webauthn_rs::prelude::RegisterPublicKeyCredential;
 use crate::assembly::AssemblyError;
 use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
-use crate::email::SecurityEmailNotifier;
+use crate::email::{self, SecurityNotices};
+use crate::email_link::{self, EmailLinks, TOKEN_PLACEHOLDER};
 use crate::error::{Error, Result};
-use crate::link::{self, EmailedLink};
-use crate::passkey::{EmailLinkRegistration, PasskeyManager, RegistrationOutcome};
+use crate::passkey::{
+    EmailLinkRegistration, PasskeyManager, RegistrationOutcome, StartedRegistration,
+};
 use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, User};
-use crate::user::UserRecords;
-use crate::verification::{self, TOKEN_PLACEHOLDER, VerificationConsumeOutcome};
+use crate::user_records::UserRecords;
 
 #[derive(Debug, Clone)]
 pub enum SignupDecision {
@@ -105,8 +106,8 @@ impl Default for SignupConfig {
 pub struct SignupManager {
     passkeys: PasskeyManager,
     records: UserRecords,
-    link: EmailedLink<link::Signup>,
-    notifier: SecurityEmailNotifier,
+    link: EmailLinks<email_link::Signup>,
+    notices: SecurityNotices,
     rate_limiter: Arc<dyn RateLimiter>,
     audit: AuditDispatch,
     config: SignupConfig,
@@ -121,8 +122,8 @@ impl SignupManager {
         Ok(Self {
             passkeys,
             records: UserRecords::new(deps),
-            link: EmailedLink::new(deps, &config.url_template, config.token_lifetime)?,
-            notifier: deps.notifier.clone(),
+            link: EmailLinks::new(deps, &config.url_template, config.token_lifetime)?,
+            notices: deps.notices.clone(),
             rate_limiter: deps.rate_limiter.clone(),
             audit: deps.audit.clone(),
             config,
@@ -139,8 +140,8 @@ impl SignupManager {
         invite_token: Option<&str>,
         context: SessionContext,
     ) -> Result<()> {
-        let email_normalized = verification::normalize_email(email);
-        verification::validate_email(&email_normalized)?;
+        let email_normalized = email::normalize_email(email);
+        email::validate_email(&email_normalized)?;
 
         rate_limit::enforce_all(
             self.rate_limiter.as_ref(),
@@ -228,7 +229,7 @@ impl SignupManager {
 
     async fn send_link(&self, user: &User, context: &SessionContext) -> Result<()> {
         let url = self.link.issue(user.id, ()).await?;
-        self.notifier
+        self.notices
             .send_best_effort(user, "signup link", |emails| {
                 emails.signup_email(user, &url)
             })
@@ -246,11 +247,11 @@ impl SignupManager {
         skip(self, token, context),
         fields(method = "signup", user_id = tracing::field::Empty),
     )]
-    pub async fn consume_signup(
+    pub async fn redeem_signup_link(
         &self,
         token: &str,
         context: SessionContext,
-    ) -> Result<VerificationConsumeOutcome> {
+    ) -> Result<StartedRegistration> {
         let (user, ()) = self.link.redeem(token, &context).await?;
         self.records.mark_email_verified(&user).await?;
         let (challenge_id, options) = self
@@ -261,11 +262,11 @@ impl SignupManager {
         self.audit
             .emit(
                 &context,
-                AuditEventKind::SignupConsumed { user_id: user.id },
+                AuditEventKind::SignupLinkRedeemed { user_id: user.id },
             )
             .await;
-        tracing::info!(outcome = "consumed", "signup token consumed");
-        Ok(VerificationConsumeOutcome {
+        tracing::info!(outcome = "redeemed", "signup link redeemed");
+        Ok(StartedRegistration {
             challenge_id,
             options,
         })

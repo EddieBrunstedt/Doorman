@@ -37,12 +37,12 @@ impl MongoDb {
         self.db.collection("sessions")
     }
 
-    pub(crate) fn verification_tokens(&self) -> Coll {
-        self.db.collection("verification_tokens")
+    pub(crate) fn email_links(&self) -> Coll {
+        self.db.collection("email_links")
     }
 
-    pub(crate) fn passkey_credentials(&self) -> Coll {
-        self.db.collection("passkey_credentials")
+    pub(crate) fn passkeys(&self) -> Coll {
+        self.db.collection("passkeys")
     }
 
     pub(crate) fn passkey_registrations(&self) -> Coll {
@@ -56,8 +56,8 @@ impl MongoDb {
     pub(crate) async fn ensure_indexes(&self) -> StorageResult<()> {
         self.ensure_user_indexes().await?;
         self.ensure_session_indexes().await?;
-        self.ensure_vtoken_indexes().await?;
-        self.ensure_passkey_cred_indexes().await?;
+        self.ensure_email_link_indexes().await?;
+        self.ensure_passkey_indexes().await?;
         self.ensure_pkreg_indexes().await?;
         self.ensure_pkauth_indexes().await?;
         Ok(())
@@ -117,14 +117,14 @@ impl MongoDb {
         Ok(())
     }
 
-    async fn ensure_vtoken_indexes(&self) -> StorageResult<()> {
-        self.verification_tokens()
+    async fn ensure_email_link_indexes(&self) -> StorageResult<()> {
+        self.email_links()
             .create_indexes(vec![
                 IndexModel::builder()
                     .keys(doc! { "user_id": 1, "purpose": 1 })
                     .options(
                         IndexOptions::builder()
-                            .name("idx_vtokens_user_purpose".to_string())
+                            .name("idx_email_links_user_purpose".to_string())
                             .build(),
                     )
                     .build(),
@@ -132,7 +132,7 @@ impl MongoDb {
                     .keys(doc! { "ttl": 1 })
                     .options(
                         IndexOptions::builder()
-                            .name("idx_vtokens_ttl".to_string())
+                            .name("idx_email_links_ttl".to_string())
                             .expire_after(Duration::ZERO)
                             .build(),
                     )
@@ -143,8 +143,8 @@ impl MongoDb {
         Ok(())
     }
 
-    async fn ensure_passkey_cred_indexes(&self) -> StorageResult<()> {
-        self.passkey_credentials()
+    async fn ensure_passkey_indexes(&self) -> StorageResult<()> {
+        self.passkeys()
             .create_index(
                 IndexModel::builder()
                     .keys(doc! { "user_id": 1 })

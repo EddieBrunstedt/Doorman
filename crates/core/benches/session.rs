@@ -3,7 +3,7 @@ mod support;
 use criterion::{Criterion, criterion_group, criterion_main};
 use doorman_core::memory::InMemoryStorage;
 use doorman_core::session::{SessionContext, SessionManager, hash_token};
-use doorman_core::storage::{AccountStatus, User, UserId};
+use doorman_core::storage::{User, UserId, UserStatus};
 use tokio::runtime::Runtime;
 
 fn session_manager(runtime: &Runtime, user_id: UserId) -> SessionManager {
@@ -14,7 +14,7 @@ fn session_manager(runtime: &Runtime, user_id: UserId) -> SessionManager {
             id: user_id,
             email: Some("bench@example.com".to_owned()),
             email_verified_at: Some(now),
-            status: AccountStatus::Active,
+            status: UserStatus::Active,
             created_at: now,
             updated_at: now,
         }))

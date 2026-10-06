@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use doorman_core::account::AccountManager;
 use doorman_core::assembly::AuthCore;
 use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::PasskeyManager;
@@ -8,6 +7,7 @@ use doorman_core::reauth::ReauthManager;
 use doorman_core::recovery::RecoveryManager;
 use doorman_core::session::SessionManager;
 use doorman_core::signup::SignupManager;
+use doorman_core::user::UserManager;
 
 use crate::config::CookieConfig;
 
@@ -38,8 +38,8 @@ impl AuthState {
         &self.core.recovery
     }
 
-    pub fn account(&self) -> &AccountManager {
-        &self.core.account
+    pub fn user(&self) -> &UserManager {
+        &self.core.user
     }
 
     pub fn reauth(&self) -> &ReauthManager {

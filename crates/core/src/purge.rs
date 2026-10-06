@@ -6,24 +6,24 @@ use crate::storage::Storage;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PurgeSummary {
     pub sessions: u64,
-    pub verification_tokens: u64,
+    pub email_links: u64,
     pub passkey_challenges: u64,
 }
 
 impl PurgeSummary {
     pub fn total(&self) -> u64 {
-        self.sessions + self.verification_tokens + self.passkey_challenges
+        self.sessions + self.email_links + self.passkey_challenges
     }
 }
 
 impl Storage {
     pub async fn purge_all_expired(&self, now: DateTime<Utc>) -> StorageResult<PurgeSummary> {
         let sessions = self.sessions.purge_expired(now).await?;
-        let verification_tokens = self.verification_tokens.purge_expired(now).await?;
+        let email_links = self.email_links.purge_expired(now).await?;
         let passkey_challenges = self.passkey_challenges.purge_expired(now).await?;
         Ok(PurgeSummary {
             sessions,
-            verification_tokens,
+            email_links,
             passkey_challenges,
         })
     }
@@ -44,7 +44,7 @@ pub fn spawn_purge_task(
                 Ok(summary) => {
                     tracing::debug!(
                         sessions = summary.sessions,
-                        verification_tokens = summary.verification_tokens,
+                        email_links = summary.email_links,
                         passkey_challenges = summary.passkey_challenges,
                         total = summary.total(),
                         "purged expired rows",
@@ -63,9 +63,9 @@ mod tests {
     use super::*;
     use crate::memory::InMemoryStorage;
     use crate::storage::{
-        AuthenticationPurpose, PasskeyChallengeId, RegistrationPurpose, Session, SessionId,
-        StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, UserId,
-        VerificationPurpose, VerificationToken,
+        AuthenticationPurpose, EmailLink, EmailLinkPurpose, PasskeyChallengeId,
+        RegistrationPurpose, Session, SessionId, StoredPasskeyAuthentication,
+        StoredPasskeyRegistration, TokenHash, UserId,
     };
 
     fn ts(secs: i64) -> DateTime<Utc> {
@@ -85,7 +85,7 @@ mod tests {
             expires_at,
             ip: None,
             user_agent: None,
-            recovery_cooldown_until: None,
+            recovery_cool_down_until: None,
         };
         storage
             .sessions
@@ -98,22 +98,22 @@ mod tests {
             .await
             .expect("live session");
 
-        let mk_token = |tag: u8, expires_at: DateTime<Utc>| VerificationToken {
+        let mk_token = |tag: u8, expires_at: DateTime<Utc>| EmailLink {
             token_hash: TokenHash([tag; 32]),
             user_id,
-            purpose: VerificationPurpose::Signup,
+            purpose: EmailLinkPurpose::Signup,
             new_email: None,
             created_at: now - chrono::Duration::hours(2),
             expires_at,
         };
         storage
-            .verification_tokens
-            .create_token(mk_token(3, expired))
+            .email_links
+            .create_link(mk_token(3, expired))
             .await
             .expect("expired token");
         storage
-            .verification_tokens
-            .create_token(mk_token(4, live))
+            .email_links
+            .create_link(mk_token(4, live))
             .await
             .expect("live token");
 
@@ -124,7 +124,7 @@ mod tests {
             state: vec![1, 2, 3],
             created_at: now - chrono::Duration::hours(2),
             expires_at,
-            recovery_cooldown_until: None,
+            recovery_cool_down_until: None,
         };
         storage
             .passkey_challenges
@@ -160,7 +160,7 @@ mod tests {
         let summary = storage.purge_all_expired(now).await.expect("purge");
 
         assert_eq!(summary.sessions, 1);
-        assert_eq!(summary.verification_tokens, 1);
+        assert_eq!(summary.email_links, 1);
         assert_eq!(summary.passkey_challenges, 2);
         assert_eq!(summary.total(), 4);
 

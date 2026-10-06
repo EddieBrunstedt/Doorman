@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 
 use crate::audit::RedemptionFailureReason::{
-    AccountDisabled, Expired, Malformed, Unknown, UserNotFound, WrongPurpose,
+    Expired, Malformed, Unknown, UserDisabled, UserNotFound, WrongPurpose,
 };
 use crate::audit::{AuditDispatch, AuditEventKind, RedemptionFailureReason, SecretKind};
 use crate::clock::Clock;
@@ -11,7 +11,7 @@ use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::session::SessionContext;
 use crate::storage::{User, UserId, UserStore};
-use crate::user::find_active_user;
+use crate::user_records::find_active_user;
 
 pub(crate) struct Candidate<T> {
     pub owner: Option<UserId>,
@@ -81,8 +81,8 @@ impl Redeemer {
             Err(Error::UserNotFound) => Err(self
                 .refuse(secret, Some(user_id), UserNotFound, context)
                 .await),
-            Err(Error::AccountDisabled) => Err(self
-                .refuse(secret, Some(user_id), AccountDisabled, context)
+            Err(Error::UserDisabled) => Err(self
+                .refuse(secret, Some(user_id), UserDisabled, context)
                 .await),
             Err(error) => Err(error),
         }
@@ -110,8 +110,8 @@ impl Redeemer {
 }
 
 fn refusal_error(secret: SecretKind, reason: RedemptionFailureReason) -> Error {
-    if reason == AccountDisabled {
-        return Error::AccountDisabled;
+    if reason == UserDisabled {
+        return Error::UserDisabled;
     }
     match secret {
         SecretKind::RegistrationChallenge | SecretKind::LoginChallenge => {
@@ -119,7 +119,7 @@ fn refusal_error(secret: SecretKind, reason: RedemptionFailureReason) -> Error {
         }
         SecretKind::ReauthChallenge => Error::ReauthRequired,
         SecretKind::SignupLink | SecretKind::RecoveryLink | SecretKind::EmailChangeLink => {
-            Error::InvalidVerificationToken
+            Error::InvalidEmailLink
         }
     }
 }

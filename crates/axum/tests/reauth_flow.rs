@@ -3,14 +3,14 @@ mod common;
 use axum::Router;
 use axum::http::StatusCode;
 use common::{SignupClient, TestApp};
-use doorman_axum::dto::{DeleteAccountRequest, RemovePasskeyRequest, RevokeSessionRequest};
+use doorman_axum::dto::{DeleteUserRequest, RemovePasskeyRequest, RevokeSessionRequest};
 use doorman_core::reauth::{ReauthAction, ReauthPolicy};
 use serde_json::Value;
 
 async fn gated_app() -> TestApp {
     TestApp::start_with(Router::new(), false, |b| {
         b.reauthentication(ReauthPolicy::required_for([
-            ReauthAction::DeleteAccount,
+            ReauthAction::DeleteUser,
             ReauthAction::RequestEmailChange,
             ReauthAction::RemovePasskey,
             ReauthAction::RevokeOtherSessions,
@@ -21,14 +21,14 @@ async fn gated_app() -> TestApp {
 }
 
 #[tokio::test]
-async fn delete_account_runs_the_full_reauth_dance() {
+async fn delete_user_runs_the_full_reauth_dance() {
     let app = gated_app().await;
     let client = reqwest::Client::new();
     let mut signup = SignupClient::new(&app);
     let auth = signup.signup(&client, &app, "owner@example.com").await;
 
     let resp = client
-        .delete(app.url("/auth/account"))
+        .delete(app.url("/auth/user"))
         .bearer_auth(&auth.token)
         .send()
         .await
@@ -47,9 +47,9 @@ async fn delete_account_runs_the_full_reauth_dance() {
 
     let proof = signup.reauth(&client, &app, &auth.token).await;
     let resp = client
-        .delete(app.url("/auth/account"))
+        .delete(app.url("/auth/user"))
         .bearer_auth(&auth.token)
-        .json(&DeleteAccountRequest {
+        .json(&DeleteUserRequest {
             reauthentication: Some(proof),
         })
         .send()
@@ -160,7 +160,7 @@ async fn disabled_policy_lets_delete_through_without_proof() {
     let auth = signup.signup(&client, &app, "owner@example.com").await;
 
     let resp = client
-        .delete(app.url("/auth/account"))
+        .delete(app.url("/auth/user"))
         .bearer_auth(&auth.token)
         .send()
         .await

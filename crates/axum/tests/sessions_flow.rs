@@ -5,8 +5,8 @@ use axum::http::StatusCode;
 use common::TestApp;
 use doorman_axum::dto::{AuthResponse, SessionDto};
 
-const OTHER_SESSION_REVOKED_NOTIFICATION_SUBJECT: &str = "Security notice: session revoked";
-const OTHER_SESSIONS_REVOKED_NOTIFICATION_SUBJECT: &str = "Security notice: other sessions revoked";
+const OTHER_SESSION_REVOKED_NOTICE_SUBJECT: &str = "Security notice: session revoked";
+const OTHER_SESSIONS_REVOKED_NOTICE_SUBJECT: &str = "Security notice: other sessions revoked";
 
 async fn login(client: &reqwest::Client, app: &TestApp, email: &str) -> AuthResponse {
     common::login(client, app, email).await
@@ -65,11 +65,8 @@ async fn delete_session_revokes_target_and_leaves_caller_authenticated() {
 
     let sent = app.email.sent();
     let new_mail = &sent[mail_before..];
-    assert_eq!(new_mail.len(), 1, "revocation notification queued");
-    assert_eq!(
-        new_mail[0].subject,
-        OTHER_SESSION_REVOKED_NOTIFICATION_SUBJECT
-    );
+    assert_eq!(new_mail.len(), 1, "revocation notice queued");
+    assert_eq!(new_mail[0].subject, OTHER_SESSION_REVOKED_NOTICE_SUBJECT);
     assert_eq!(new_mail[0].to, "dan@example.com");
 
     let mine = client
@@ -95,7 +92,7 @@ async fn delete_session_revokes_target_and_leaves_caller_authenticated() {
 }
 
 #[tokio::test]
-async fn delete_sessions_revokes_other_sessions_and_sends_notification() {
+async fn delete_sessions_revokes_other_sessions_and_sends_notice() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
@@ -114,11 +111,8 @@ async fn delete_sessions_revokes_other_sessions_and_sends_notification() {
 
     let sent = app.email.sent();
     let new_mail = &sent[mail_before..];
-    assert_eq!(new_mail.len(), 1, "bulk revocation notification queued");
-    assert_eq!(
-        new_mail[0].subject,
-        OTHER_SESSIONS_REVOKED_NOTIFICATION_SUBJECT
-    );
+    assert_eq!(new_mail.len(), 1, "bulk revocation notice queued");
+    assert_eq!(new_mail[0].subject, OTHER_SESSIONS_REVOKED_NOTICE_SUBJECT);
     assert_eq!(new_mail[0].to, "frank@example.com");
 
     let mine = client
@@ -146,7 +140,7 @@ async fn delete_sessions_revokes_other_sessions_and_sends_notification() {
 }
 
 #[tokio::test]
-async fn delete_current_session_does_not_send_notification() {
+async fn delete_current_session_does_not_send_notice() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
@@ -163,7 +157,7 @@ async fn delete_current_session_does_not_send_notification() {
     assert_eq!(
         app.email.sent().len(),
         mail_before,
-        "self-revoke sends no security notification"
+        "self-revoke sends no security notice"
     );
 
     let stale = client
@@ -178,7 +172,7 @@ async fn delete_current_session_does_not_send_notification() {
 }
 
 #[tokio::test]
-async fn session_revocation_notification_failure_does_not_undo_revocation() {
+async fn session_revocation_notice_failure_does_not_undo_revocation() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
@@ -236,7 +230,7 @@ async fn logout_revokes_current_session_and_clears_cookie() {
     assert_eq!(
         app.email.sent().len(),
         mail_before,
-        "self-logout sends no security notification"
+        "self-logout sends no security notice"
     );
 
     let stale = client

@@ -8,20 +8,20 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use doorman_axum::AuthService;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
-use doorman_core::account::AccountConfig;
 use doorman_core::assembly::AuthCore;
 use doorman_core::audit::NoopAuditSink;
 use doorman_core::clock::SystemClock;
 use doorman_core::email::EmailSender;
 use doorman_core::memory::{
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemoryRateLimiter,
-    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
+    InMemoryEmailLinkStore, InMemoryPasskeyChallengeStore, InMemoryPasskeyStore,
+    InMemoryRateLimiter, InMemorySessionStore, InMemoryUserStore,
 };
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::recovery::RecoveryConfig;
 use doorman_core::session::SessionContext;
 use doorman_core::signup::SignupConfig;
-use doorman_core::storage::{AccountStatus, Storage, User, UserId, UserStore};
+use doorman_core::storage::{Storage, User, UserId, UserStatus, UserStore};
+use doorman_core::user::UserConfig;
 use doorman_test_support::CapturingEmailSender;
 use tokio::runtime::Runtime;
 use tower::ServiceExt;
@@ -35,8 +35,8 @@ async fn build_router() -> (Router, String) {
     let storage = Storage {
         users: user_store.clone(),
         sessions: Arc::new(InMemorySessionStore::new()),
-        verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
-        passkey_credentials: Arc::new(InMemoryPasskeyCredentialStore::new()),
+        email_links: Arc::new(InMemoryEmailLinkStore::new()),
+        passkeys: Arc::new(InMemoryPasskeyStore::new()),
         passkey_challenges: Arc::new(InMemoryPasskeyChallengeStore::new()),
     };
 
@@ -59,9 +59,9 @@ async fn build_router() -> (Router, String) {
             url_template: "https://app.test/recovery?token={token}".to_string(),
             ..RecoveryConfig::default()
         })
-        .account(AccountConfig {
+        .user(UserConfig {
             url_template: "https://app.test/email-change?token={token}".to_string(),
-            ..AccountConfig::default()
+            ..UserConfig::default()
         })
         .build()
         .expect("auth core built");
@@ -79,7 +79,7 @@ async fn build_router() -> (Router, String) {
         id: UserId::new(),
         email: Some("bench@example.com".into()),
         email_verified_at: Some(now),
-        status: AccountStatus::Active,
+        status: UserStatus::Active,
         created_at: now,
         updated_at: now,
     };

@@ -84,7 +84,7 @@ async fn rename_passkey_requires_authentication() {
     let client = reqwest::Client::new();
 
     let response = client
-        .patch(app.url("/auth/passkey/some-credential-id"))
+        .patch(app.url("/auth/passkey/some-passkey-id"))
         .json(&serde_json::json!({ "name": "nope" }))
         .send()
         .await

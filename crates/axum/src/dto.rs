@@ -156,7 +156,7 @@ pub struct SignupRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SignupConsumeRequest {
+pub struct SignupRedeemRequest {
     pub token: String,
 }
 
@@ -174,7 +174,7 @@ pub struct RecoveryRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecoveryConsumeRequest {
+pub struct RecoveryRedeemRequest {
     pub token: String,
 }
 
@@ -192,7 +192,7 @@ pub struct EmailChangeRequest {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DeleteAccountRequest {
+pub struct DeleteUserRequest {
     #[serde(default)]
     pub reauthentication: Option<Reauthentication>,
 }
@@ -252,7 +252,7 @@ mod tests {
             expires_at: now,
             ip: None,
             user_agent: ua.map(ToOwned::to_owned),
-            recovery_cooldown_until: None,
+            recovery_cool_down_until: None,
         }
     }
 

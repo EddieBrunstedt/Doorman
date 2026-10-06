@@ -16,8 +16,7 @@ use std::sync::Arc;
 use aws_sdk_dynamodb::types::TransactWriteItem;
 use doorman_core::error::StorageResult;
 use doorman_core::storage::{
-    PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionStore, Storage, UserStore,
-    VerificationTokenStore,
+    EmailLinkStore, PasskeyChallengeStore, PasskeyStore, Session, SessionStore, Storage, UserStore,
 };
 
 use crate::client::DynamoClient;
@@ -46,8 +45,8 @@ impl DynamoDbStorage {
         Storage {
             users: self.user_store(),
             sessions: self.session_store(),
-            verification_tokens: self.verification_token_store(),
-            passkey_credentials: self.passkey_credential_store(),
+            email_links: self.email_link_store(),
+            passkeys: self.passkey_store(),
             passkey_challenges: self.passkey_challenge_store(),
         }
     }
@@ -62,14 +61,14 @@ impl DynamoDbStorage {
         ))
     }
 
-    pub fn verification_token_store(&self) -> Arc<dyn VerificationTokenStore> {
-        Arc::new(stores::verification::DynamoVerificationTokenStore::new(
+    pub fn email_link_store(&self) -> Arc<dyn EmailLinkStore> {
+        Arc::new(stores::email_link::DynamoEmailLinkStore::new(
             self.client.clone(),
         ))
     }
 
-    pub fn passkey_credential_store(&self) -> Arc<dyn PasskeyCredentialStore> {
-        Arc::new(stores::passkey_cred::DynamoPasskeyCredentialStore::new(
+    pub fn passkey_store(&self) -> Arc<dyn PasskeyStore> {
+        Arc::new(stores::passkey::DynamoPasskeyStore::new(
             self.client.clone(),
         ))
     }

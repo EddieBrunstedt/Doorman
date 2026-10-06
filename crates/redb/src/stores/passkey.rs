@@ -1,18 +1,16 @@
 use async_trait::async_trait;
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{
-    PasskeyCredentialStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId,
-};
+use doorman_core::storage::{PasskeyStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId};
 
 use redb::ReadableTable as _;
 
 use crate::db::{self, RedbHandle};
 
-pub(crate) struct RedbPasskeyCredentialStore {
+pub(crate) struct RedbPasskeyStore {
     handle: RedbHandle,
 }
 
-impl RedbPasskeyCredentialStore {
+impl RedbPasskeyStore {
     pub(crate) fn new(handle: RedbHandle) -> Self {
         Self { handle }
     }
@@ -22,21 +20,21 @@ impl RedbPasskeyCredentialStore {
         credential_id: &[u8],
         change: impl FnOnce(&mut StoredPasskey) + Send + 'static,
     ) -> StorageResult<()> {
-        let cred_key = db::hex_bytes(credential_id);
+        let passkey_key = db::hex_bytes(credential_id);
         self.handle
             .write(move |wtxn| {
-                let mut creds = wtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
-                let mut credential = {
-                    let guard = creds
-                        .get(cred_key.as_str())
+                let mut passkeys = wtxn.open_table(db::PASSKEYS).map_err(db::err)?;
+                let mut passkey = {
+                    let guard = passkeys
+                        .get(passkey_key.as_str())
                         .map_err(db::err)?
-                        .ok_or_else(|| StorageError::not_found("credential not found"))?;
+                        .ok_or_else(|| StorageError::not_found("passkey not found"))?;
                     db::decode_passkey(guard.value())?
                 };
-                change(&mut credential);
-                let encoded = db::encode_passkey(&credential)?;
-                creds
-                    .insert(cred_key.as_str(), encoded.as_slice())
+                change(&mut passkey);
+                let encoded = db::encode_passkey(&passkey)?;
+                passkeys
+                    .insert(passkey_key.as_str(), encoded.as_slice())
                     .map_err(db::err)?;
                 Ok(())
             })
@@ -45,23 +43,27 @@ impl RedbPasskeyCredentialStore {
 }
 
 #[async_trait]
-impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
-    async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
+impl PasskeyStore for RedbPasskeyStore {
+    async fn add_passkey(&self, passkey: StoredPasskey) -> StorageResult<()> {
         self.handle
             .write(move |wtxn| {
-                let cred_key = db::hex_bytes(&credential.credential_id);
+                let passkey_key = db::hex_bytes(&passkey.credential_id);
                 let user_idx_key =
-                    db::user_creds_idx_key(credential.user_id, &credential.credential_id);
-                let encoded = db::encode_passkey(&credential)?;
+                    db::user_passkeys_idx_key(passkey.user_id, &passkey.credential_id);
+                let encoded = db::encode_passkey(&passkey)?;
 
-                let mut creds = wtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
-                let mut user_idx = wtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
+                let mut passkeys = wtxn.open_table(db::PASSKEYS).map_err(db::err)?;
+                let mut user_idx = wtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
 
-                if creds.get(cred_key.as_str()).map_err(db::err)?.is_some() {
-                    return Err(StorageError::conflict("credential id already exists"));
+                if passkeys
+                    .get(passkey_key.as_str())
+                    .map_err(db::err)?
+                    .is_some()
+                {
+                    return Err(StorageError::conflict("credential ID already exists"));
                 }
-                creds
-                    .insert(cred_key.as_str(), encoded.as_slice())
+                passkeys
+                    .insert(passkey_key.as_str(), encoded.as_slice())
                     .map_err(db::err)?;
                 user_idx
                     .insert(user_idx_key.as_str(), ())
@@ -76,11 +78,11 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
         credential_id: &[u8],
         used: PasskeyUse,
     ) -> StorageResult<()> {
-        self.modify(credential_id, move |credential| {
-            credential.passkey = used.passkey;
-            credential.backup_eligible = used.backup_eligible;
-            credential.backup_state = used.backup_state;
-            credential.last_used_at = Some(used.used_at);
+        self.modify(credential_id, move |passkey| {
+            passkey.passkey = used.passkey;
+            passkey.backup_eligible = used.backup_eligible;
+            passkey.backup_state = used.backup_state;
+            passkey.last_used_at = Some(used.used_at);
         })
         .await
     }
@@ -91,7 +93,7 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
         name: Option<&str>,
     ) -> StorageResult<()> {
         let name = name.map(str::to_owned);
-        self.modify(credential_id, move |credential| credential.name = name)
+        self.modify(credential_id, move |passkey| passkey.name = name)
             .await
     }
 
@@ -101,8 +103,8 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                 let prefix = db::user_creds_prefix(user_id);
                 let end = db::prefix_end(&prefix);
 
-                let cred_keys: Vec<String> = {
-                    let idx_tbl = rtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
+                let passkey_keys: Vec<String> = {
+                    let idx_tbl = rtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
                     idx_tbl
                         .range(prefix.as_str()..end.as_str())
                         .map_err(db::err)?
@@ -119,9 +121,9 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                         .collect::<StorageResult<_>>()?
                 };
 
-                let creds_tbl = rtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
-                let mut out = Vec::with_capacity(cred_keys.len());
-                for key in &cred_keys {
+                let creds_tbl = rtxn.open_table(db::PASSKEYS).map_err(db::err)?;
+                let mut out = Vec::with_capacity(passkey_keys.len());
+                for key in &passkey_keys {
                     if let Some(guard) = creds_tbl.get(key.as_str()).map_err(db::err)? {
                         out.push(db::decode_passkey(guard.value())?);
                     }
@@ -140,8 +142,8 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                 let prefix = db::user_creds_prefix(user_id);
                 let end = db::prefix_end(&prefix);
 
-                let cred_keys: Vec<String> = {
-                    let idx_tbl = rtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
+                let passkey_keys: Vec<String> = {
+                    let idx_tbl = rtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
                     idx_tbl
                         .range(prefix.as_str()..end.as_str())
                         .map_err(db::err)?
@@ -158,9 +160,9 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                         .collect::<StorageResult<_>>()?
                 };
 
-                let creds_tbl = rtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
-                let mut out = Vec::with_capacity(cred_keys.len());
-                for key in &cred_keys {
+                let creds_tbl = rtxn.open_table(db::PASSKEYS).map_err(db::err)?;
+                let mut out = Vec::with_capacity(passkey_keys.len());
+                for key in &passkey_keys {
                     if let Some(guard) = creds_tbl.get(key.as_str()).map_err(db::err)? {
                         out.push(db::decode_passkey_summary(guard.value())?);
                     }
@@ -176,7 +178,7 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                 let prefix = db::user_creds_prefix(user_id);
                 let end = db::prefix_end(&prefix);
 
-                let idx_tbl = rtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
+                let idx_tbl = rtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
                 let count = idx_tbl
                     .range(prefix.as_str()..end.as_str())
                     .map_err(db::err)?
@@ -193,7 +195,7 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
         let key = db::hex_bytes(credential_id);
         self.handle
             .read(move |rtxn| {
-                let creds_tbl = rtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
+                let creds_tbl = rtxn.open_table(db::PASSKEYS).map_err(db::err)?;
                 match creds_tbl.get(key.as_str()).map_err(db::err)? {
                     Some(guard) => Ok(Some(db::decode_passkey(guard.value())?)),
                     None => Ok(None),
@@ -203,15 +205,16 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
     }
 
     async fn delete_passkey(&self, credential_id: &[u8]) -> StorageResult<()> {
-        let cred_key = db::hex_bytes(credential_id);
+        let passkey_key = db::hex_bytes(credential_id);
         self.handle
             .write(move |wtxn| {
-                let mut creds = wtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
-                let mut user_idx = wtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
+                let mut passkeys = wtxn.open_table(db::PASSKEYS).map_err(db::err)?;
+                let mut user_idx = wtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
 
-                if let Some(guard) = creds.remove(cred_key.as_str()).map_err(db::err)? {
-                    let cred = db::decode_passkey(guard.value())?;
-                    let user_idx_key = db::user_creds_idx_key(cred.user_id, &cred.credential_id);
+                if let Some(guard) = passkeys.remove(passkey_key.as_str()).map_err(db::err)? {
+                    let passkey = db::decode_passkey(guard.value())?;
+                    let user_idx_key =
+                        db::user_passkeys_idx_key(passkey.user_id, &passkey.credential_id);
                     user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
                 Ok(())
@@ -225,8 +228,8 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                 let prefix = db::user_creds_prefix(user_id);
                 let end = db::prefix_end(&prefix);
 
-                let mut creds = wtxn.open_table(db::PASSKEY_CREDS).map_err(db::err)?;
-                let mut user_idx = wtxn.open_table(db::USER_CREDS_IDX).map_err(db::err)?;
+                let mut passkeys = wtxn.open_table(db::PASSKEYS).map_err(db::err)?;
+                let mut user_idx = wtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
 
                 let entries: Vec<(String, String)> = user_idx
                     .range(prefix.as_str()..end.as_str())
@@ -234,18 +237,22 @@ impl PasskeyCredentialStore for RedbPasskeyCredentialStore {
                     .map(|r| {
                         r.map_err(db::err).and_then(|(k, _)| {
                             let idx_key = k.value().to_owned();
-                            let cred_key = idx_key
+                            let passkey_key = idx_key
                                 .split_once('\x00')
                                 .map(|x| x.1.to_owned())
                                 .ok_or_else(|| StorageError::msg("malformed user_creds_idx key"))?;
-                            Ok((idx_key, cred_key))
+                            Ok((idx_key, passkey_key))
                         })
                     })
                     .collect::<StorageResult<_>>()?;
 
                 let mut count = 0u64;
-                for (idx_key, cred_key) in &entries {
-                    if creds.remove(cred_key.as_str()).map_err(db::err)?.is_some() {
+                for (idx_key, passkey_key) in &entries {
+                    if passkeys
+                        .remove(passkey_key.as_str())
+                        .map_err(db::err)?
+                        .is_some()
+                    {
                         count += 1;
                     }
                     user_idx.remove(idx_key.as_str()).map_err(db::err)?;

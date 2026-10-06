@@ -17,13 +17,13 @@ CREATE TABLE sessions (
     expires_at DATETIME(6) NOT NULL,
     ip VARCHAR(45),
     user_agent TEXT,
-    recovery_cooldown_until DATETIME(6),
+    recovery_cool_down_until DATETIME(6),
     CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 
-CREATE TABLE verification_tokens (
+CREATE TABLE email_links (
     token_hash BINARY(32) NOT NULL,
     purpose VARCHAR(32) NOT NULL,
     user_id BINARY(16) NOT NULL,
@@ -31,12 +31,12 @@ CREATE TABLE verification_tokens (
     created_at DATETIME(6) NOT NULL,
     expires_at DATETIME(6) NOT NULL,
     PRIMARY KEY (token_hash, purpose),
-    CONSTRAINT fk_verification_tokens_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    CONSTRAINT fk_email_links_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_verification_tokens_user_id ON verification_tokens(user_id);
-CREATE INDEX idx_verification_tokens_expires_at ON verification_tokens(expires_at);
+CREATE INDEX idx_email_links_user_id ON email_links(user_id);
+CREATE INDEX idx_email_links_expires_at ON email_links(expires_at);
 
-CREATE TABLE passkey_credentials (
+CREATE TABLE passkeys (
     credential_id VARBINARY(1024) PRIMARY KEY,
     user_id BINARY(16) NOT NULL,
     passkey BLOB NOT NULL,
@@ -47,10 +47,10 @@ CREATE TABLE passkey_credentials (
     transports VARCHAR(255) NOT NULL DEFAULT '',
     backup_eligible BOOLEAN NOT NULL DEFAULT FALSE,
     backup_state BOOLEAN NOT NULL DEFAULT FALSE,
-    recovery_cooldown_until DATETIME(6),
-    CONSTRAINT fk_passkey_credentials_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    recovery_cool_down_until DATETIME(6),
+    CONSTRAINT fk_passkeys_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
+CREATE INDEX idx_passkeys_user_id ON passkeys(user_id);
 
 CREATE TABLE passkey_registrations (
     id BINARY(16) PRIMARY KEY,
@@ -59,7 +59,7 @@ CREATE TABLE passkey_registrations (
     state BLOB NOT NULL,
     created_at DATETIME(6) NOT NULL,
     expires_at DATETIME(6) NOT NULL,
-    recovery_cooldown_until DATETIME(6),
+    recovery_cool_down_until DATETIME(6),
     CONSTRAINT fk_passkey_registrations_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_passkey_registrations_user_id ON passkey_registrations(user_id);

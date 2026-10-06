@@ -4,12 +4,11 @@ use std::time::Duration;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
 use doorman_axum::{AuthService, AuthServiceBuilder, BuilderError};
-use doorman_core::account::AccountConfig;
 use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
 use doorman_core::audit::NoopAuditSink;
 use doorman_core::email::EmailSender;
 use doorman_core::memory::InMemoryStorage;
-use doorman_core::operator::{NotificationPolicy, OperatorNotice};
+use doorman_core::operator::{NoticePolicy, OperatorNotice};
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::NoopRateLimiter;
 use doorman_core::reauth::ReauthPolicy;
@@ -17,6 +16,7 @@ use doorman_core::recovery::RecoveryConfig;
 use doorman_core::session::{SessionConfig, SessionContext};
 use doorman_core::signup::SignupConfig;
 use doorman_core::storage::UserId;
+use doorman_core::user::UserConfig;
 use doorman_test_support::CapturingEmailSender;
 
 fn core_builder(email: Arc<dyn EmailSender>) -> AuthCoreBuilder {
@@ -37,9 +37,9 @@ fn core_builder(email: Arc<dyn EmailSender>) -> AuthCoreBuilder {
             url_template: "https://app.test/recovery?token={token}".to_string(),
             ..RecoveryConfig::default()
         })
-        .account(AccountConfig {
+        .user(UserConfig {
             url_template: "https://app.test/email-change?token={token}".to_string(),
-            ..AccountConfig::default()
+            ..UserConfig::default()
         })
         .reauthentication(ReauthPolicy::disabled())
 }
@@ -62,12 +62,12 @@ fn fully_wired_builder_builds() {
 #[tokio::test]
 async fn service_drives_the_managers_the_core_assembled() {
     let email = Arc::new(CapturingEmailSender::new());
-    let policy = NotificationPolicy {
+    let policy = NoticePolicy {
         sessions_revoked: OperatorNotice::Send,
-        ..NotificationPolicy::default()
+        ..NoticePolicy::default()
     };
     let core = core_builder(email.clone() as Arc<dyn EmailSender>)
-        .notification_policy(policy)
+        .notice_policy(policy)
         .build()
         .expect("core");
     let auth = AuthService::builder(core)
@@ -75,7 +75,7 @@ async fn service_drives_the_managers_the_core_assembled() {
         .build()
         .expect("build");
 
-    assert_eq!(*auth.state().operator().notification_policy(), policy);
+    assert_eq!(*auth.state().operator().notice_policy(), policy);
 
     auth.state()
         .signup()

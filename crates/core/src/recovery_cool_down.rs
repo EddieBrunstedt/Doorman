@@ -4,9 +4,9 @@ use crate::error::{Error, Result};
 use crate::storage::{Session, StoredPasskey, StoredPasskeyRegistration};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct RecoveryCooldown(Option<DateTime<Utc>>);
+pub(crate) struct RecoveryCoolDown(Option<DateTime<Utc>>);
 
-impl RecoveryCooldown {
+impl RecoveryCoolDown {
     pub(crate) const NONE: Self = Self(None);
 
     pub(crate) fn start(now: DateTime<Utc>, length: chrono::Duration) -> Self {
@@ -17,15 +17,15 @@ impl RecoveryCooldown {
     }
 
     pub(crate) fn of_session(session: &Session, now: DateTime<Utc>) -> Self {
-        Self(session.recovery_cooldown_until).in_force(now)
+        Self(session.recovery_cool_down_until).in_force(now)
     }
 
     pub(crate) fn of_passkey(passkey: &StoredPasskey, now: DateTime<Utc>) -> Self {
-        Self(passkey.recovery_cooldown_until).in_force(now)
+        Self(passkey.recovery_cool_down_until).in_force(now)
     }
 
     pub(crate) fn of_registration(registration: &StoredPasskeyRegistration) -> Self {
-        Self(registration.recovery_cooldown_until)
+        Self(registration.recovery_cool_down_until)
     }
 
     // A recovery stamps its challenge when the email link is redeemed and starts again when the
@@ -39,8 +39,8 @@ impl RecoveryCooldown {
     }
 
     pub(crate) fn refuse_destructive_action(session: &Session, now: DateTime<Utc>) -> Result<()> {
-        if session.is_in_recovery_cooldown(now) {
-            return Err(Error::RecoveryCooldownActive);
+        if session.is_in_recovery_cool_down(now) {
+            return Err(Error::RecoveryCoolDownActive);
         }
         Ok(())
     }
@@ -51,14 +51,14 @@ impl RecoveryCooldown {
 }
 
 impl Session {
-    pub fn is_in_recovery_cooldown(&self, now: DateTime<Utc>) -> bool {
-        RecoveryCooldown::of_session(self, now) != RecoveryCooldown::NONE
+    pub fn is_in_recovery_cool_down(&self, now: DateTime<Utc>) -> bool {
+        RecoveryCoolDown::of_session(self, now) != RecoveryCoolDown::NONE
     }
 }
 
 impl StoredPasskey {
-    pub fn is_in_recovery_cooldown(&self, now: DateTime<Utc>) -> bool {
-        RecoveryCooldown::of_passkey(self, now) != RecoveryCooldown::NONE
+    pub fn is_in_recovery_cool_down(&self, now: DateTime<Utc>) -> bool {
+        RecoveryCoolDown::of_passkey(self, now) != RecoveryCoolDown::NONE
     }
 }
 
@@ -75,17 +75,17 @@ mod tests {
 
     #[test]
     fn start_saturates_instead_of_overflowing() {
-        let started = RecoveryCooldown::start(DateTime::<Utc>::MAX_UTC, chrono::Duration::hours(1));
+        let started = RecoveryCoolDown::start(DateTime::<Utc>::MAX_UTC, chrono::Duration::hours(1));
         assert_eq!(started.until(), Some(DateTime::<Utc>::MAX_UTC));
     }
 
     #[test]
     fn extended_by_keeps_the_later_deadline() {
-        let earlier = RecoveryCooldown::start(ts(0), chrono::Duration::hours(1));
-        let later = RecoveryCooldown::start(ts(0), chrono::Duration::hours(2));
+        let earlier = RecoveryCoolDown::start(ts(0), chrono::Duration::hours(1));
+        let later = RecoveryCoolDown::start(ts(0), chrono::Duration::hours(2));
         assert_eq!(earlier.extended_by(later), later);
         assert_eq!(later.extended_by(earlier), later);
-        assert_eq!(RecoveryCooldown::NONE.extended_by(earlier), earlier);
-        assert_eq!(earlier.extended_by(RecoveryCooldown::NONE), earlier);
+        assert_eq!(RecoveryCoolDown::NONE.extended_by(earlier), earlier);
+        assert_eq!(earlier.extended_by(RecoveryCoolDown::NONE), earlier);
     }
 }

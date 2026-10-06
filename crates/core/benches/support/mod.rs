@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use doorman_core::account::AccountConfig;
 use doorman_core::assembly::AuthCore;
 use doorman_core::audit::NoopAuditSink;
 use doorman_core::passkey::PasskeyConfig;
@@ -11,6 +10,7 @@ use doorman_core::recovery::RecoveryConfig;
 use doorman_core::session::SessionConfig;
 use doorman_core::signup::{SignupConfig, SignupRateLimits};
 use doorman_core::storage::Storage;
+use doorman_core::user::UserConfig;
 use doorman_test_support::CapturingEmailSender;
 use url::Url;
 
@@ -38,9 +38,9 @@ pub fn in_memory_core(storage: Storage) -> AuthCore {
             url_template: "https://app.test/recovery?token={token}".to_string(),
             ..RecoveryConfig::default()
         })
-        .account(AccountConfig {
+        .user(UserConfig {
             url_template: "https://app.test/email-change?token={token}".to_string(),
-            ..AccountConfig::default()
+            ..UserConfig::default()
         })
         .build()
         .expect("bench core assembles")

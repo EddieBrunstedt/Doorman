@@ -15,12 +15,12 @@ use crate::assertion::PendingAssertion;
 use crate::audit::SecretKind;
 use crate::clock::{Clock, expiry};
 use crate::error::{Error, Result};
-use crate::passkey::{PasskeyConfig, decode_credential};
-use crate::recovery_cooldown::RecoveryCooldown;
+use crate::passkey::{PasskeyConfig, decode_passkey};
+use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::redeem::{Candidate, Redeemer};
 use crate::session::SessionContext;
 use crate::storage::{
-    AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
+    AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore,
     RegistrationPurpose, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
 };
 
@@ -33,13 +33,13 @@ pub(crate) enum Reauth {}
 pub(crate) struct RedeemedRegistration {
     pub user: User,
     pub state: PasskeyRegistration,
-    pub cooldown: RecoveryCooldown,
+    pub cool_down: RecoveryCoolDown,
 }
 
 pub(crate) struct PasskeyChallenge<P> {
     webauthn: Arc<Webauthn>,
     challenges: Arc<dyn PasskeyChallengeStore>,
-    credentials: Arc<dyn PasskeyCredentialStore>,
+    passkeys: Arc<dyn PasskeyStore>,
     redeemer: Redeemer,
     clock: Arc<dyn Clock>,
     lifetime: Duration,
@@ -52,7 +52,7 @@ impl<P> Clone for PasskeyChallenge<P> {
         Self {
             webauthn: self.webauthn.clone(),
             challenges: self.challenges.clone(),
-            credentials: self.credentials.clone(),
+            passkeys: self.passkeys.clone(),
             redeemer: self.redeemer.clone(),
             clock: self.clock.clone(),
             lifetime: self.lifetime,
@@ -67,14 +67,14 @@ impl<P> PasskeyChallenge<P> {
         config: &PasskeyConfig,
         webauthn: Arc<Webauthn>,
         challenges: Arc<dyn PasskeyChallengeStore>,
-        credentials: Arc<dyn PasskeyCredentialStore>,
+        passkeys: Arc<dyn PasskeyStore>,
         redeemer: Redeemer,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             webauthn,
             challenges,
-            credentials,
+            passkeys,
             redeemer,
             clock,
             lifetime: config.challenge_lifetime,
@@ -126,7 +126,7 @@ impl PasskeyChallenge<Registration> {
         &self,
         user: &User,
         purpose: RegistrationPurpose,
-        cooldown: RecoveryCooldown,
+        cool_down: RecoveryCoolDown,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let user_id = user.id;
         if let Some(max) = self.max_pending_registrations {
@@ -144,7 +144,7 @@ impl PasskeyChallenge<Registration> {
         }
 
         let display_name = display_name_for(user);
-        let existing = self.credentials.list_passkeys_for_user(user_id).await?;
+        let existing = self.passkeys.list_passkeys_for_user(user_id).await?;
         let exclude = if existing.is_empty() {
             None
         } else {
@@ -172,7 +172,7 @@ impl PasskeyChallenge<Registration> {
                 state: encode_state(&state)?,
                 created_at: now,
                 expires_at: expiry(now, self.lifetime)?,
-                recovery_cooldown_until: cooldown.until(),
+                recovery_cool_down_until: cool_down.until(),
             })
             .await?;
         Ok((id, ccr))
@@ -193,12 +193,12 @@ impl PasskeyChallenge<Registration> {
             payload: decode_state(&stored.state).map(|state| {
                 (
                     stored.user_id,
-                    RecoveryCooldown::of_registration(&stored),
+                    RecoveryCoolDown::of_registration(&stored),
                     state,
                 )
             }),
         });
-        let (user_id, cooldown, state) = self
+        let (user_id, cool_down, state) = self
             .redeemer
             .check(secret, None, candidate, context)
             .await?;
@@ -206,7 +206,7 @@ impl PasskeyChallenge<Registration> {
         Ok(RedeemedRegistration {
             user,
             state,
-            cooldown,
+            cool_down,
         })
     }
 
@@ -257,14 +257,14 @@ impl PasskeyChallenge<Reauth> {
         &self,
         user_id: UserId,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
-        let stored = self.credentials.list_passkeys_for_user(user_id).await?;
+        let stored = self.passkeys.list_passkeys_for_user(user_id).await?;
         if stored.is_empty() {
-            tracing::warn!(outcome = "no_credentials", "reauth start refused");
+            tracing::warn!(outcome = "no_passkeys", "reauth start refused");
             return Err(Error::PasskeyNotFound);
         }
         let passkeys = stored
             .iter()
-            .map(|c| decode_credential(&c.passkey))
+            .map(|c| decode_passkey(&c.passkey))
             .collect::<Result<Vec<Passkey>>>()?;
 
         let (rcr, state) = self

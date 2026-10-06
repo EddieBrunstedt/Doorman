@@ -93,9 +93,9 @@ fn print_summary(now: DateTime<Utc>, json: bool, summary: &PurgeSummary) {
     let now = now.to_rfc3339();
     if json {
         println!(
-            "{{\"now\":\"{now}\",\"sessions\":{},\"verification_tokens\":{},\"passkey_challenges\":{},\"total\":{}}}",
+            "{{\"now\":\"{now}\",\"sessions\":{},\"email_links\":{},\"passkey_challenges\":{},\"total\":{}}}",
             summary.sessions,
-            summary.verification_tokens,
+            summary.email_links,
             summary.passkey_challenges,
             summary.total(),
         );
@@ -104,7 +104,7 @@ fn print_summary(now: DateTime<Utc>, json: bool, summary: &PurgeSummary) {
 
     println!("doorman purge: swept expired rows as of {now}");
     println!("  sessions            = {}", summary.sessions);
-    println!("  verification_tokens = {}", summary.verification_tokens);
+    println!("  email_links = {}", summary.email_links);
     println!("  passkey_challenges  = {}", summary.passkey_challenges);
     println!("  total               = {}", summary.total());
     if summary.total() == 0 {
@@ -192,7 +192,7 @@ mod tests {
             expires_at,
             ip: None,
             user_agent: None,
-            recovery_cooldown_until: None,
+            recovery_cool_down_until: None,
         };
         storage
             .sessions

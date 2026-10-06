@@ -35,7 +35,7 @@ async fn revoked_session_is_unauthorized_on_the_next_request() {
 }
 
 #[tokio::test]
-async fn operator_deleted_account_is_unauthorized_on_the_next_request() {
+async fn operator_deleted_user_is_unauthorized_on_the_next_request() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
     let auth = login(&client, &app, "doomed@example.com").await;
@@ -44,7 +44,7 @@ async fn operator_deleted_account_is_unauthorized_on_the_next_request() {
     let actor = OperatorActor::new("incident-responder", None, None, None)
         .expect("operator actor within bounds");
     app.operator
-        .delete_account(auth.user.id, actor)
+        .delete_user(auth.user.id, actor)
         .await
         .expect("operator delete");
     assert_eq!(

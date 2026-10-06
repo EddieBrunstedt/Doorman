@@ -38,9 +38,9 @@ async fn request_provisions_user_for_new_email() {
         .await
         .expect("find user")
         .expect("user provisioned");
-    assert!(user.email_verified_at.is_none(), "unverified until consume");
+    assert!(user.email_verified_at.is_none(), "unverified until redeem");
     assert_eq!(h.email.sent().len(), 1, "signup email queued");
-    assert_eq!(h.email.sent()[0].subject, "Finish setting up your account");
+    assert_eq!(h.email.sent()[0].subject, "Finish signing up");
     assert!(matches!(
         kinds(&h.audit.events()).last(),
         Some(AuditEventKind::SignupRequested { .. })
@@ -48,7 +48,7 @@ async fn request_provisions_user_for_new_email() {
 
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
     h.signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
         .expect("token persisted: the emailed link redeems");
 }
@@ -75,13 +75,13 @@ async fn concurrent_requests_for_one_new_email_both_succeed() {
     assert_eq!(sent.len(), 2, "one link per request");
     let token = token_from_email(&sent[1].body_text, SIGNUP_URL);
     h.signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
         .expect("the latest link redeems");
 }
 
 #[tokio::test]
-async fn request_for_credentialed_email_is_silent_and_audited() {
+async fn request_for_email_with_passkeys_is_silent_and_audited() {
     let h = Harness::fresh();
     provision_user(&h, "alice@example.com").await;
     let emails_before = h.email.sent().len();
@@ -127,12 +127,12 @@ async fn request_for_passkeyless_user_reissues_signup_link() {
     assert_ne!(first_token, second_token, "a fresh token was minted");
     let err = h
         .signup
-        .consume_signup(&first_token, SessionContext::default())
+        .redeem_signup_link(&first_token, SessionContext::default())
         .await
         .expect_err("prior token no longer valid");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(matches!(err, Error::InvalidEmailLink));
     h.signup
-        .consume_signup(&second_token, SessionContext::default())
+        .redeem_signup_link(&second_token, SessionContext::default())
         .await
         .expect("the fresh token redeems");
 
@@ -152,7 +152,7 @@ async fn request_for_passkeyless_user_reissues_signup_link() {
 }
 
 #[tokio::test]
-async fn consume_verifies_email_and_starts_passkey_registration() {
+async fn redeem_verifies_email_and_starts_passkey_registration() {
     let h = Harness::fresh();
     h.signup
         .request_signup("user@example.com", None, SessionContext::default())
@@ -162,37 +162,34 @@ async fn consume_verifies_email_and_starts_passkey_registration() {
 
     let outcome = h
         .signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
-        .expect("consume");
+        .expect("redeem");
     let _ = outcome.challenge_id;
     let _ = outcome.options;
 
     let err = h
         .signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
-        .expect_err("token consumed: the link cannot be replayed");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+        .expect_err("token redeemed: the link cannot be replayed");
+    assert!(matches!(err, Error::InvalidEmailLink));
     let user = h
         .users
         .find_user_by_email("user@example.com")
         .await
         .expect("find user")
         .expect("user present");
-    assert!(
-        user.email_verified_at.is_some(),
-        "email verified on consume"
-    );
+    assert!(user.email_verified_at.is_some(), "email verified on redeem");
     assert!(
         kinds(&h.audit.events())
             .iter()
-            .any(|k| matches!(k, AuditEventKind::SignupConsumed { .. })),
+            .any(|k| matches!(k, AuditEventKind::SignupLinkRedeemed { .. })),
     );
 }
 
 #[tokio::test]
-async fn consume_then_finish_registers_passkey_and_issues_session() {
+async fn redeem_then_finish_registers_passkey_and_issues_session() {
     let h = Harness::fresh();
     h.signup
         .request_signup("alice@example.com", None, SessionContext::default())
@@ -200,19 +197,19 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
         .expect("request");
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
 
-    let consume = h
+    let started = h
         .signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
-        .expect("consume");
+        .expect("redeem");
 
     let mail_before_finish = h.email.sent().len();
     let mut wa = authenticator();
-    let attestation = wa.do_registration(consume.options);
+    let attestation = wa.do_registration(started.options);
     let outcome = h
         .signup
         .finish_signup(
-            consume.challenge_id,
+            started.challenge_id,
             &attestation,
             Some("alice device".into()),
             SessionContext::default(),
@@ -234,11 +231,7 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
     );
     let sent = h.email.sent();
     let after_finish = &sent[mail_before_finish..];
-    assert_eq!(
-        after_finish.len(),
-        1,
-        "passkey registration notification sent",
-    );
+    assert_eq!(after_finish.len(), 1, "passkey registration notice sent",);
     assert_eq!(
         after_finish[0].subject,
         "Security notice: passkey registered",
@@ -248,7 +241,7 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
     assert!(
         events
             .iter()
-            .any(|k| matches!(k, AuditEventKind::CredentialAdded { .. }))
+            .any(|k| matches!(k, AuditEventKind::PasskeyAdded { .. }))
     );
     assert!(
         events
@@ -265,18 +258,18 @@ async fn finish_reads_the_user_before_and_after_issuing_its_session() {
         .await
         .expect("request");
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
-    let consume = h
+    let started = h
         .signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
-        .expect("consume");
+        .expect("redeem");
     let mut wa = authenticator();
-    let attestation = wa.do_registration(consume.options);
+    let attestation = wa.do_registration(started.options);
 
-    h.user_store.reset();
+    h.user_store.clear_reads();
     h.signup
         .finish_signup(
-            consume.challenge_id,
+            started.challenge_id,
             &attestation,
             None,
             SessionContext::default(),
@@ -288,30 +281,30 @@ async fn finish_reads_the_user_before_and_after_issuing_its_session() {
 }
 
 #[tokio::test]
-async fn notification_send_failure_does_not_undo_successful_finish() {
+async fn notice_send_failure_does_not_undo_successful_finish() {
     let h = Harness::fresh();
     h.signup
         .request_signup("notify-fails@example.com", None, SessionContext::default())
         .await
         .expect("request");
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
-    let consume = h
+    let started = h
         .signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
-        .expect("consume");
+        .expect("redeem");
 
     let mail_before_finish = h.email.sent().len();
     h.email.fail_after_successful_sends(mail_before_finish);
 
     let mut wa = authenticator();
-    let attestation = wa.do_registration(consume.options);
+    let attestation = wa.do_registration(started.options);
     let outcome = h
         .signup
         .finish_signup(
-            consume.challenge_id,
+            started.challenge_id,
             &attestation,
-            Some("failing notifier device".into()),
+            Some("failing notices device".into()),
             SessionContext::default(),
         )
         .await
@@ -334,12 +327,12 @@ async fn notification_send_failure_does_not_undo_successful_finish() {
     assert_eq!(
         h.email.sent().len(),
         mail_before_finish,
-        "failed notification was not captured",
+        "failed notice was not captured",
     );
 }
 
 #[tokio::test]
-async fn consume_rejects_replayed_token() {
+async fn redeem_rejects_replayed_token() {
     let h = Harness::fresh();
     h.signup
         .request_signup("u@example.com", None, SessionContext::default())
@@ -348,15 +341,15 @@ async fn consume_rejects_replayed_token() {
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
 
     h.signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
-        .expect("first consume");
+        .expect("first redeem");
     let err = h
         .signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
-        .expect_err("second consume");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+        .expect_err("second redeem");
+    assert!(matches!(err, Error::InvalidEmailLink));
     assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
         k,
         AuditEventKind::RedemptionFailed {
@@ -368,7 +361,7 @@ async fn consume_rejects_replayed_token() {
 }
 
 #[tokio::test]
-async fn consume_replaces_unfinished_ceremonies_rather_than_hitting_the_pending_cap() {
+async fn redeem_replaces_unfinished_ceremonies_rather_than_hitting_the_pending_cap() {
     let h = Harness::builder()
         .passkey_config(PasskeyConfig {
             rate_limits: PasskeyRateLimits::disabled(),
@@ -405,9 +398,9 @@ async fn consume_replaces_unfinished_ceremonies_rather_than_hitting_the_pending_
 
     let outcome = h
         .signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
-        .expect("consume starts a ceremony despite the full cap");
+        .expect("redeem starts a ceremony despite the full cap");
 
     let err = h
         .passkey
@@ -436,7 +429,7 @@ async fn consume_replaces_unfinished_ceremonies_rather_than_hitting_the_pending_
 }
 
 #[tokio::test]
-async fn consume_rejects_tampered_token_and_leaves_the_real_one_usable() {
+async fn redeem_rejects_tampered_token_and_leaves_the_real_one_usable() {
     let h = Harness::fresh();
     h.signup
         .request_signup("u@example.com", None, SessionContext::default())
@@ -451,19 +444,19 @@ async fn consume_rejects_tampered_token_and_leaves_the_real_one_usable() {
 
     let err = h
         .signup
-        .consume_signup(&tampered, SessionContext::default())
+        .redeem_signup_link(&tampered, SessionContext::default())
         .await
         .expect_err("tampered token rejected");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(matches!(err, Error::InvalidEmailLink));
 
     h.signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
         .expect("genuine token still redeems after the tamper attempt");
 }
 
 #[tokio::test]
-async fn signup_token_cannot_be_consumed_by_recovery() {
+async fn signup_token_cannot_be_redeemed_by_recovery() {
     let h = Harness::fresh();
     h.signup
         .request_signup("cross@example.com", None, SessionContext::default())
@@ -473,19 +466,19 @@ async fn signup_token_cannot_be_consumed_by_recovery() {
 
     let err = h
         .recovery
-        .consume_recovery(&token, SessionContext::default())
+        .redeem_recovery_link(&token, SessionContext::default())
         .await
         .expect_err("signup token rejected on recovery");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(matches!(err, Error::InvalidEmailLink));
 
     h.signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
         .expect("signup token still valid on its own flow");
 }
 
 #[tokio::test]
-async fn recovery_token_cannot_be_consumed_by_signup() {
+async fn recovery_token_cannot_be_redeemed_by_signup() {
     let h = Harness::fresh();
     provision_user(&h, "cross@example.com").await;
     let mail_before = h.email.sent().len();
@@ -496,25 +489,25 @@ async fn recovery_token_cannot_be_consumed_by_signup() {
     let sent = h.email.sent();
     let link = sent[mail_before..]
         .iter()
-        .find(|e| e.subject == "Recover access to your account")
+        .find(|e| e.subject == "Recover access with a new passkey")
         .expect("recovery link queued");
     let token = token_from_email(&link.body_text, RECOVERY_URL);
 
     let err = h
         .signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
         .expect_err("recovery token rejected on signup");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(matches!(err, Error::InvalidEmailLink));
 
     h.recovery
-        .consume_recovery(&token, SessionContext::default())
+        .redeem_recovery_link(&token, SessionContext::default())
         .await
         .expect("recovery token still valid on its own flow");
 }
 
 #[tokio::test]
-async fn consume_rejects_expired_token() {
+async fn redeem_rejects_expired_token() {
     let h = Harness::builder()
         .signup_config(SignupConfig {
             token_lifetime: Duration::from_secs(60),
@@ -531,10 +524,10 @@ async fn consume_rejects_expired_token() {
 
     let err = h
         .signup
-        .consume_signup(&token, SessionContext::default())
+        .redeem_signup_link(&token, SessionContext::default())
         .await
         .expect_err("expired");
-    assert!(matches!(err, Error::InvalidVerificationToken));
+    assert!(matches!(err, Error::InvalidEmailLink));
 }
 
 #[tokio::test]
@@ -891,7 +884,7 @@ async fn policy_error_propagates_and_provisions_nothing() {
 }
 
 #[tokio::test]
-async fn denied_attempt_still_consumes_rate_limit_budget() {
+async fn denied_attempt_still_spends_rate_limit_budget() {
     let clock_for_limiter = Arc::new(MockClock::new(ts(2026, 1, 1)));
     let limiter = Arc::new(InMemoryRateLimiter::new(
         clock_for_limiter as Arc<dyn Clock>,

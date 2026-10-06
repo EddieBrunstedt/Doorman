@@ -15,18 +15,18 @@ use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
 use doorman_axum::dto::{
     AuthResponse, PasskeyChallenge, PasskeyDto, Reauthentication, RegistrationFinishRequest,
-    SignupConsumeRequest, SignupRequest, UserDto,
+    SignupRedeemRequest, SignupRequest, UserDto,
 };
 use doorman_axum::extractors::AuthUser;
 use doorman_axum::{AuthService, AuthServiceBuilder};
-use doorman_core::account::AccountConfig;
 use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
 use doorman_core::audit::NoopAuditSink;
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::email::EmailSender;
+use doorman_core::email::normalize_email;
 use doorman_core::memory::{
-    InMemoryPasskeyChallengeStore, InMemoryPasskeyCredentialStore, InMemoryRateLimiter,
-    InMemorySessionStore, InMemoryUserStore, InMemoryVerificationTokenStore,
+    InMemoryEmailLinkStore, InMemoryPasskeyChallengeStore, InMemoryPasskeyStore,
+    InMemoryRateLimiter, InMemorySessionStore, InMemoryUserStore,
 };
 use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::PasskeyConfig;
@@ -34,10 +34,8 @@ use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use doorman_core::session::{SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupRateLimits};
-use doorman_core::storage::{
-    AccountStatus, PasskeyCredentialStore, Storage, User, UserId, UserStore,
-};
-use doorman_core::verification::normalize_email;
+use doorman_core::storage::{PasskeyStore, Storage, User, UserId, UserStatus, UserStore};
+use doorman_core::user::UserConfig;
 use doorman_test_support::CapturingEmailSender;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -53,13 +51,13 @@ use webauthn_rs_proto::AllowCredentials;
 
 pub const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 pub const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
-pub const ACCOUNT_URL: &str = "https://app.test/email-change?token={token}";
+pub const USER_URL: &str = "https://app.test/email-change?token={token}";
 
 pub struct TestApp {
     pub addr: SocketAddr,
     pub email: Arc<CapturingEmailSender>,
     pub rp_origin: ServerUrl,
-    pub passkey_credentials: Arc<InMemoryPasskeyCredentialStore>,
+    pub passkeys: Arc<InMemoryPasskeyStore>,
     pub session_manager: SessionManager,
     pub operator: OperatorManager,
     user_store: Arc<InMemoryUserStore>,
@@ -104,10 +102,8 @@ impl TestApp {
         let email = Arc::new(CapturingEmailSender::new());
         let user_store: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
         let session_store: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
-        let token_store: Arc<InMemoryVerificationTokenStore> =
-            Arc::new(InMemoryVerificationTokenStore::new());
-        let passkey_credentials: Arc<InMemoryPasskeyCredentialStore> =
-            Arc::new(InMemoryPasskeyCredentialStore::new());
+        let token_store: Arc<InMemoryEmailLinkStore> = Arc::new(InMemoryEmailLinkStore::new());
+        let passkeys: Arc<InMemoryPasskeyStore> = Arc::new(InMemoryPasskeyStore::new());
         let passkey_challenges: Arc<InMemoryPasskeyChallengeStore> =
             Arc::new(InMemoryPasskeyChallengeStore::new());
 
@@ -115,8 +111,8 @@ impl TestApp {
         let storage = Storage {
             users: user_store.clone(),
             sessions: session_store.clone(),
-            verification_tokens: token_store,
-            passkey_credentials: passkey_credentials.clone(),
+            email_links: token_store,
+            passkeys: passkeys.clone(),
             passkey_challenges,
         };
 
@@ -139,9 +135,9 @@ impl TestApp {
                 rate_limits: RecoveryRateLimits::disabled(),
                 ..RecoveryConfig::default()
             })
-            .account(AccountConfig {
-                url_template: ACCOUNT_URL.to_string(),
-                ..AccountConfig::default()
+            .user(UserConfig {
+                url_template: USER_URL.to_string(),
+                ..UserConfig::default()
             })
             .reauthentication(ReauthPolicy::disabled());
         let core = customise_core(core_builder)
@@ -159,12 +155,12 @@ impl TestApp {
         let session_manager = auth.state().session_manager().clone();
         let operator = auth.state().operator().clone();
 
-        let passkey_credentials_dyn: Arc<dyn PasskeyCredentialStore> = passkey_credentials.clone();
+        let passkeys_dyn: Arc<dyn PasskeyStore> = passkeys.clone();
         let app = Router::new()
             .merge(auth.router())
             .route("/me", get(me_handler))
             .merge(host_routes)
-            .layer(Extension(passkey_credentials_dyn))
+            .layer(Extension(passkeys_dyn))
             .layer(auth.session_layer());
 
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
@@ -189,7 +185,7 @@ impl TestApp {
             addr,
             email,
             rp_origin,
-            passkey_credentials,
+            passkeys,
             session_manager,
             operator,
             user_store,
@@ -202,7 +198,7 @@ impl TestApp {
         format!("http://{}{}", self.addr, path)
     }
 
-    pub async fn set_user_status(&self, user_id: UserId, status: AccountStatus) {
+    pub async fn set_user_status(&self, user_id: UserId, status: UserStatus) {
         self.user_store
             .set_user_status(user_id, status, chrono::Utc::now())
             .await
@@ -231,7 +227,7 @@ pub async fn login(_client: &reqwest::Client, app: &TestApp, email: &str) -> Aut
             id: UserId::new(),
             email: Some(email_normalized),
             email_verified_at: Some(now),
-            status: AccountStatus::Active,
+            status: UserStatus::Active,
             created_at: now,
             updated_at: now,
         };
@@ -283,15 +279,15 @@ impl SignupClient {
         let sent = app.email.sent();
         let token = token_from_email(&sent.last().expect("signup email queued").body_text.clone());
 
-        let consume = client
-            .post(app.url("/auth/signup/consume"))
-            .json(&SignupConsumeRequest { token })
+        let redeem = client
+            .post(app.url("/auth/signup/redeem"))
+            .json(&SignupRedeemRequest { token })
             .send()
             .await
-            .expect("signup consume");
-        assert_eq!(consume.status(), StatusCode::OK);
+            .expect("signup redeem");
+        assert_eq!(redeem.status(), StatusCode::OK);
         let challenge: PasskeyChallenge<CreationChallengeResponse> =
-            consume.json().await.expect("consume body");
+            redeem.json().await.expect("redeem body");
 
         let mut options = challenge.options;
         let selection = options
@@ -446,7 +442,7 @@ impl ResidentHttpAuthenticator {
         let resident = self
             .resident_credentials
             .iter()
-            .find(|credential| credential.credential_id == credential_id)
+            .find(|passkey| passkey.credential_id == credential_id)
             .cloned()
             .expect("credential is resident on test authenticator");
 
@@ -475,12 +471,9 @@ pub fn token_from_email_with(body: &str, template: &str) -> String {
 
 async fn me_handler(
     AuthUser(user): AuthUser,
-    Extension(passkey_credentials): Extension<Arc<dyn PasskeyCredentialStore>>,
+    Extension(passkeys): Extension<Arc<dyn PasskeyStore>>,
 ) -> Response {
-    let passkey_count = passkey_credentials
-        .count_passkeys_for_user(user.id)
-        .await
-        .unwrap_or(0);
+    let passkey_count = passkeys.count_passkeys_for_user(user.id).await.unwrap_or(0);
     (
         StatusCode::OK,
         Json(UserDto::from_user(&user, passkey_count)),

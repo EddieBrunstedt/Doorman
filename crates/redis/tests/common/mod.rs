@@ -76,9 +76,9 @@ pub async fn storage_with_raw(
     let mem = InMemoryStorage::new();
     let storage = Storage {
         users: mem.user_store(),
-        passkey_credentials: mem.passkey_credential_store(),
+        passkeys: mem.passkey_store(),
         sessions: redis.session_store(),
-        verification_tokens: redis.verification_token_store(),
+        email_links: redis.email_link_store(),
         passkey_challenges: redis.passkey_challenge_store(),
     };
     (guard, storage, raw, prefix)

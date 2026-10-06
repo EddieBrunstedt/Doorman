@@ -1,50 +1,48 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::StorageResult;
-use doorman_core::storage::{
-    TokenHash, UserId, VerificationPurpose, VerificationToken, VerificationTokenStore,
-};
+use doorman_core::storage::{EmailLink, EmailLinkPurpose, EmailLinkStore, TokenHash, UserId};
 use mongodb::bson::doc;
 
 use crate::db::{Coll, err};
-use crate::model::{self, purpose_str, to_bson_dt, vtoken_id};
+use crate::model::{self, email_link_id, purpose_str, to_bson_dt};
 
-pub(crate) struct MongoVerificationTokenStore {
+pub(crate) struct MongoEmailLinkStore {
     coll: Coll,
 }
 
-impl MongoVerificationTokenStore {
+impl MongoEmailLinkStore {
     pub(crate) fn new(coll: Coll) -> Self {
         Self { coll }
     }
 }
 
 #[async_trait]
-impl VerificationTokenStore for MongoVerificationTokenStore {
-    async fn create_token(&self, token: VerificationToken) -> StorageResult<()> {
+impl EmailLinkStore for MongoEmailLinkStore {
+    async fn create_link(&self, token: EmailLink) -> StorageResult<()> {
         self.coll
-            .insert_one(model::vtoken_to_doc(&token))
+            .insert_one(model::email_link_to_doc(&token))
             .await
             .map_err(err)?;
         Ok(())
     }
 
-    async fn consume_token(
+    async fn redeem_link(
         &self,
         hash: &TokenHash,
-        purpose: VerificationPurpose,
-    ) -> StorageResult<Option<VerificationToken>> {
-        let filter = doc! { "_id": vtoken_id(purpose, hash) };
+        purpose: EmailLinkPurpose,
+    ) -> StorageResult<Option<EmailLink>> {
+        let filter = doc! { "_id": email_link_id(purpose, hash) };
         match self.coll.find_one_and_delete(filter).await.map_err(err)? {
-            Some(doc) => Ok(Some(model::vtoken_from_doc(&doc)?)),
+            Some(doc) => Ok(Some(model::email_link_from_doc(&doc)?)),
             None => Ok(None),
         }
     }
 
-    async fn delete_tokens_for_user(
+    async fn delete_links_for_user(
         &self,
         user_id: UserId,
-        purpose: VerificationPurpose,
+        purpose: EmailLinkPurpose,
     ) -> StorageResult<u64> {
         let filter = doc! {
             "user_id": user_id.0.to_string(),

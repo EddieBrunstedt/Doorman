@@ -2,10 +2,9 @@ use axum::Json;
 use axum::Router;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use doorman_core::passkey::RegistrationOutcome;
+use doorman_core::passkey::{RegistrationOutcome, StartedRegistration};
 use doorman_core::reauth::ReauthProof;
 use doorman_core::storage::PasskeyChallengeId;
-use doorman_core::verification::VerificationConsumeOutcome;
 use uuid::Uuid;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
@@ -15,12 +14,12 @@ use crate::dto::{AuthResponse, PasskeyChallenge, Reauthentication};
 use crate::error::ErrorResponse;
 use crate::state::AuthState;
 
-pub(crate) mod account;
 pub(crate) mod passkey;
 pub(crate) mod reauth;
 pub(crate) mod recovery;
 pub(crate) mod sessions;
 pub(crate) mod signup;
+pub(crate) mod user;
 
 pub(crate) fn auth_success(
     status: StatusCode,
@@ -61,8 +60,8 @@ pub(crate) fn reauth_proof(
         .transpose()
 }
 
-pub(crate) fn consume_response(
-    outcome: VerificationConsumeOutcome,
+pub(crate) fn redeem_response(
+    outcome: StartedRegistration,
 ) -> Json<PasskeyChallenge<CreationChallengeResponse>> {
     Json(PasskeyChallenge {
         challenge_id: outcome.challenge_id.0.to_string(),
@@ -89,6 +88,6 @@ pub(crate) fn router(state: AuthState) -> Router {
         .merge(signup::routes())
         .merge(recovery::routes())
         .merge(sessions::routes())
-        .merge(account::routes())
+        .merge(user::routes())
         .with_state(state)
 }

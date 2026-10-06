@@ -8,10 +8,10 @@ use crate::clock::Clock;
 use crate::error::{StorageError, StorageResult};
 use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::storage::{
-    AccountStatus, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
-    PasskeySummary, PasskeyUse, Session, SessionId, SessionStore, Storage, StoredPasskey,
-    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
-    VerificationPurpose, VerificationToken, VerificationTokenStore,
+    EmailLink, EmailLinkPurpose, EmailLinkStore, PasskeyChallengeId, PasskeyChallengeStore,
+    PasskeyStore, PasskeySummary, PasskeyUse, Session, SessionId, SessionStore, Storage,
+    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
+    UserStatus, UserStore,
 };
 use crate::sync;
 
@@ -19,8 +19,8 @@ use crate::sync;
 pub struct InMemoryStorage {
     users: Arc<InMemoryUserStore>,
     sessions: Arc<InMemorySessionStore>,
-    verification_tokens: Arc<InMemoryVerificationTokenStore>,
-    passkey_credentials: Arc<InMemoryPasskeyCredentialStore>,
+    email_links: Arc<InMemoryEmailLinkStore>,
+    passkeys: Arc<InMemoryPasskeyStore>,
     passkey_challenges: Arc<InMemoryPasskeyChallengeStore>,
 }
 
@@ -29,8 +29,8 @@ impl InMemoryStorage {
         Self {
             users: Arc::new(InMemoryUserStore::new()),
             sessions: Arc::new(InMemorySessionStore::new()),
-            verification_tokens: Arc::new(InMemoryVerificationTokenStore::new()),
-            passkey_credentials: Arc::new(InMemoryPasskeyCredentialStore::new()),
+            email_links: Arc::new(InMemoryEmailLinkStore::new()),
+            passkeys: Arc::new(InMemoryPasskeyStore::new()),
             passkey_challenges: Arc::new(InMemoryPasskeyChallengeStore::new()),
         }
     }
@@ -43,12 +43,12 @@ impl InMemoryStorage {
         self.sessions.clone()
     }
 
-    pub fn verification_token_store(&self) -> Arc<dyn VerificationTokenStore> {
-        self.verification_tokens.clone()
+    pub fn email_link_store(&self) -> Arc<dyn EmailLinkStore> {
+        self.email_links.clone()
     }
 
-    pub fn passkey_credential_store(&self) -> Arc<dyn PasskeyCredentialStore> {
-        self.passkey_credentials.clone()
+    pub fn passkey_store(&self) -> Arc<dyn PasskeyStore> {
+        self.passkeys.clone()
     }
 
     pub fn passkey_challenge_store(&self) -> Arc<dyn PasskeyChallengeStore> {
@@ -59,8 +59,8 @@ impl InMemoryStorage {
         Storage {
             users: self.user_store(),
             sessions: self.session_store(),
-            verification_tokens: self.verification_token_store(),
-            passkey_credentials: self.passkey_credential_store(),
+            email_links: self.email_link_store(),
+            passkeys: self.passkey_store(),
             passkey_challenges: self.passkey_challenge_store(),
         }
     }
@@ -133,7 +133,7 @@ impl UserStore for InMemoryUserStore {
     async fn set_user_status(
         &self,
         id: UserId,
-        status: AccountStatus,
+        status: UserStatus,
         at: DateTime<Utc>,
     ) -> StorageResult<()> {
         let mut state = self.write();
@@ -323,16 +323,16 @@ impl SessionStore for InMemorySessionStore {
 }
 
 #[derive(Debug, Default)]
-pub struct InMemoryVerificationTokenStore {
-    inner: Mutex<Vec<VerificationToken>>,
+pub struct InMemoryEmailLinkStore {
+    inner: Mutex<Vec<EmailLink>>,
 }
 
-impl InMemoryVerificationTokenStore {
+impl InMemoryEmailLinkStore {
     pub fn new() -> Self {
         Self::default()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<VerificationToken>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<EmailLink>> {
         sync::lock(&self.inner)
     }
 
@@ -346,24 +346,24 @@ impl InMemoryVerificationTokenStore {
 }
 
 #[async_trait]
-impl VerificationTokenStore for InMemoryVerificationTokenStore {
-    async fn create_token(&self, token: VerificationToken) -> StorageResult<()> {
+impl EmailLinkStore for InMemoryEmailLinkStore {
+    async fn create_link(&self, token: EmailLink) -> StorageResult<()> {
         let mut state = self.lock();
         if state
             .iter()
             .any(|t| t.token_hash == token.token_hash && t.purpose == token.purpose)
         {
-            return Err(StorageError::conflict("verification token hash collision"));
+            return Err(StorageError::conflict("email link token hash collision"));
         }
         state.push(token);
         Ok(())
     }
 
-    async fn consume_token(
+    async fn redeem_link(
         &self,
         hash: &TokenHash,
-        purpose: VerificationPurpose,
-    ) -> StorageResult<Option<VerificationToken>> {
+        purpose: EmailLinkPurpose,
+    ) -> StorageResult<Option<EmailLink>> {
         let mut state = self.lock();
         let pos = state
             .iter()
@@ -371,10 +371,10 @@ impl VerificationTokenStore for InMemoryVerificationTokenStore {
         Ok(pos.map(|i| state.remove(i)))
     }
 
-    async fn delete_tokens_for_user(
+    async fn delete_links_for_user(
         &self,
         user_id: UserId,
-        purpose: VerificationPurpose,
+        purpose: EmailLinkPurpose,
     ) -> StorageResult<u64> {
         let mut state = self.lock();
         let before = state.len();
@@ -391,11 +391,11 @@ impl VerificationTokenStore for InMemoryVerificationTokenStore {
 }
 
 #[derive(Debug, Default)]
-pub struct InMemoryPasskeyCredentialStore {
+pub struct InMemoryPasskeyStore {
     inner: Mutex<Vec<StoredPasskey>>,
 }
 
-impl InMemoryPasskeyCredentialStore {
+impl InMemoryPasskeyStore {
     pub fn new() -> Self {
         Self::default()
     }
@@ -414,18 +414,16 @@ impl InMemoryPasskeyCredentialStore {
 }
 
 #[async_trait]
-impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
-    async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
+impl PasskeyStore for InMemoryPasskeyStore {
+    async fn add_passkey(&self, stored: StoredPasskey) -> StorageResult<()> {
         let mut state = self.lock();
         if state
             .iter()
-            .any(|c| c.credential_id == credential.credential_id)
+            .any(|c| c.credential_id == stored.credential_id)
         {
-            return Err(StorageError::conflict(
-                "passkey credential id already registered",
-            ));
+            return Err(StorageError::conflict("credential ID already registered"));
         }
-        state.push(credential);
+        state.push(stored);
         Ok(())
     }
 
@@ -435,13 +433,13 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
         used: PasskeyUse,
     ) -> StorageResult<()> {
         let mut state = self.lock();
-        let Some(credential) = state.iter_mut().find(|c| c.credential_id == credential_id) else {
-            return Err(StorageError::not_found("passkey credential not found"));
+        let Some(stored) = state.iter_mut().find(|c| c.credential_id == credential_id) else {
+            return Err(StorageError::not_found("passkey not found"));
         };
-        credential.passkey = used.passkey;
-        credential.backup_eligible = used.backup_eligible;
-        credential.backup_state = used.backup_state;
-        credential.last_used_at = Some(used.used_at);
+        stored.passkey = used.passkey;
+        stored.backup_eligible = used.backup_eligible;
+        stored.backup_state = used.backup_state;
+        stored.last_used_at = Some(used.used_at);
         Ok(())
     }
 
@@ -451,10 +449,10 @@ impl PasskeyCredentialStore for InMemoryPasskeyCredentialStore {
         name: Option<&str>,
     ) -> StorageResult<()> {
         let mut state = self.lock();
-        let Some(credential) = state.iter_mut().find(|c| c.credential_id == credential_id) else {
-            return Err(StorageError::not_found("passkey credential not found"));
+        let Some(stored) = state.iter_mut().find(|c| c.credential_id == credential_id) else {
+            return Err(StorageError::not_found("passkey not found"));
         };
-        credential.name = name.map(str::to_owned);
+        stored.name = name.map(str::to_owned);
         Ok(())
     }
 
@@ -664,7 +662,7 @@ impl RateLimiter for InMemoryRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::AccountStatus;
+    use crate::storage::UserStatus;
 
     #[tokio::test]
     async fn in_memory_composite_wires_every_store() {
@@ -675,7 +673,7 @@ mod tests {
             id: UserId::new(),
             email: Some("composite@example.com".into()),
             email_verified_at: None,
-            status: AccountStatus::Active,
+            status: UserStatus::Active,
             created_at: now,
             updated_at: now,
         };
@@ -703,18 +701,18 @@ mod tests {
         );
         assert!(
             storage
-                .verification_tokens
-                .consume_token(&TokenHash([0u8; 32]), VerificationPurpose::Signup)
+                .email_links
+                .redeem_link(&TokenHash([0u8; 32]), EmailLinkPurpose::Signup)
                 .await
-                .expect("verification token store wired")
+                .expect("email link store wired")
                 .is_none()
         );
         assert!(
             storage
-                .passkey_credentials
+                .passkeys
                 .list_passkey_summaries_for_user(user.id)
                 .await
-                .expect("passkey credential store wired")
+                .expect("passkey store wired")
                 .is_empty()
         );
         assert!(
@@ -735,7 +733,7 @@ mod tests {
             id: UserId::new(),
             email: Some("shared@example.com".into()),
             email_verified_at: None,
-            status: AccountStatus::Active,
+            status: UserStatus::Active,
             created_at: now,
             updated_at: now,
         };

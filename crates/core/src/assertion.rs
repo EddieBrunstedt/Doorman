@@ -9,9 +9,9 @@ use webauthn_rs::prelude::{
 use crate::audit::AuthFailureReason;
 use crate::clock::Clock;
 use crate::error::{Error, Result};
-use crate::passkey::{PasskeyMetadata, decode_credential, encode_credential};
-use crate::storage::{PasskeyCredentialStore, PasskeyUse, StoredPasskey, User, UserId, UserStore};
-use crate::user::find_active_user;
+use crate::passkey::{PasskeyMetadata, decode_passkey, encode_passkey};
+use crate::storage::{PasskeyStore, PasskeyUse, StoredPasskey, User, UserId, UserStore};
+use crate::user_records::find_active_user;
 
 pub(crate) enum PendingAssertion {
     Login(DiscoverableAuthentication),
@@ -36,7 +36,7 @@ pub(crate) struct AssertionRefusal {
 pub(crate) struct AssertionVerifier {
     webauthn: Arc<Webauthn>,
     users: Arc<dyn UserStore>,
-    credentials: Arc<dyn PasskeyCredentialStore>,
+    passkeys: Arc<dyn PasskeyStore>,
     clock: Arc<dyn Clock>,
 }
 
@@ -44,13 +44,13 @@ impl AssertionVerifier {
     pub(crate) fn new(
         webauthn: Arc<Webauthn>,
         users: Arc<dyn UserStore>,
-        credentials: Arc<dyn PasskeyCredentialStore>,
+        passkeys: Arc<dyn PasskeyStore>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             webauthn,
             users,
-            credentials,
+            passkeys,
             clock,
         }
     }
@@ -65,7 +65,7 @@ impl AssertionVerifier {
             PendingAssertion::Reauth { user_id, .. } => Some(*user_id),
         };
         let stored = self
-            .credentials
+            .passkeys
             .find_passkey_by_credential_id(response.raw_id.as_ref())
             .await?;
         let stored = match (stored, expected_user) {
@@ -81,7 +81,7 @@ impl AssertionVerifier {
             (None, None) => {
                 return Ok(Err(refuse(
                     None,
-                    AuthFailureReason::UnknownCredential,
+                    AuthFailureReason::UnknownPasskey,
                     Error::PasskeyNotFound,
                 )));
             }
@@ -95,7 +95,7 @@ impl AssertionVerifier {
         };
         let user_id = stored.user_id;
 
-        let mut passkey = decode_credential(&stored.passkey)?;
+        let mut passkey = decode_passkey(&stored.passkey)?;
         let result = match self.finish(pending, response, &passkey) {
             Ok(result) => result,
             Err(WebauthnError::CredentialPossibleCompromise) => {
@@ -125,8 +125,8 @@ impl AssertionVerifier {
             Ok(user) => user,
             Err(error) => {
                 let reason = match error {
-                    Error::UserNotFound => AuthFailureReason::UnknownCredential,
-                    Error::AccountDisabled => AuthFailureReason::AccountDisabled,
+                    Error::UserNotFound => AuthFailureReason::UnknownPasskey,
+                    Error::UserDisabled => AuthFailureReason::UserDisabled,
                     _ => return Err(error),
                 };
                 return Ok(Err(refuse(Some(user_id), reason, error)));
@@ -135,11 +135,11 @@ impl AssertionVerifier {
 
         passkey.update_credential(&result);
         let refreshed = PasskeyMetadata::from_passkey(&passkey);
-        self.credentials
+        self.passkeys
             .record_passkey_use(
                 &stored.credential_id,
                 PasskeyUse {
-                    passkey: encode_credential(&passkey)?,
+                    passkey: encode_passkey(&passkey)?,
                     backup_eligible: refreshed.backup_eligible,
                     backup_state: refreshed.backup_state,
                     used_at: self.clock.now(),

@@ -37,18 +37,18 @@ async fn start(
                 .expect("signup request");
             let email = h.email.sent().pop().expect("signup link queued");
             let token = token_from_email(&email.body_text, SIGNUP_URL);
-            let consume = h
+            let started = h
                 .signup
-                .consume_signup(&token, SessionContext::default())
+                .redeem_signup_link(&token, SessionContext::default())
                 .await
-                .expect("signup consume");
+                .expect("signup redeem");
             let user = h
                 .users
                 .find_user_by_email("new@example.com")
                 .await
                 .expect("find user")
                 .expect("signup provisioned the user");
-            (user, consume.challenge_id, consume.options)
+            (user, started.challenge_id, started.options)
         }
         Started::Recovery => {
             let user = provision_user(h, "alice@example.com").await;
@@ -61,15 +61,15 @@ async fn start(
                 .sent()
                 .into_iter()
                 .rev()
-                .find(|e| e.subject == "Recover access to your account")
+                .find(|e| e.subject == "Recover access with a new passkey")
                 .expect("recovery link queued");
             let token = token_from_email(&email.body_text, RECOVERY_URL);
-            let consume = h
+            let started = h
                 .recovery
-                .consume_recovery(&token, SessionContext::default())
+                .redeem_recovery_link(&token, SessionContext::default())
                 .await
-                .expect("recovery consume");
-            (user, consume.challenge_id, consume.options)
+                .expect("recovery redeem");
+            (user, started.challenge_id, started.options)
         }
         Started::AddPasskey => {
             let user = provision_user(h, "alice@example.com").await;

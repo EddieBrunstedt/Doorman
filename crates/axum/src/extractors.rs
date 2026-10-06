@@ -29,8 +29,8 @@ impl std::fmt::Debug for AuthSession {
 }
 
 impl AuthSession {
-    pub fn is_in_recovery_cooldown(&self) -> bool {
-        self.session.is_in_recovery_cooldown(self.clock.now())
+    pub fn is_in_recovery_cool_down(&self) -> bool {
+        self.session.is_in_recovery_cool_down(self.clock.now())
     }
 }
 
@@ -123,9 +123,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auth_session_cooldown_answers_through_injected_clock() {
+    fn auth_session_cool_down_answers_through_injected_clock() {
         use chrono::{Duration, TimeZone, Utc};
-        use doorman_core::storage::{AccountStatus, Session, SessionId, UserId};
+        use doorman_core::storage::{Session, SessionId, UserId, UserStatus};
         use doorman_core::token::hash_token;
         use doorman_test_support::MockClock;
 
@@ -134,42 +134,42 @@ mod tests {
             .single()
             .expect("valid timestamp");
         let clock = Arc::new(MockClock::new(start));
-        let cooldown_until = start + Duration::hours(24);
+        let cool_down_until = start + Duration::hours(24);
 
         let user = User {
             id: UserId::new(),
             email: Some("alice@example.com".into()),
             email_verified_at: Some(start),
-            status: AccountStatus::Active,
+            status: UserStatus::Active,
             created_at: start,
             updated_at: start,
         };
         let session = Session {
             id: SessionId::new(),
             user_id: user.id,
-            token_hash: hash_token("cooldown-token"),
+            token_hash: hash_token("cool-down-token"),
             created_at: start,
             last_used_at: start,
             expires_at: start + Duration::days(30),
             ip: None,
             user_agent: None,
-            recovery_cooldown_until: Some(cooldown_until),
+            recovery_cool_down_until: Some(cool_down_until),
         };
         let auth = AuthSession {
             session,
-            token: "cooldown-token".into(),
+            token: "cool-down-token".into(),
             clock: clock.clone(),
         };
 
-        assert!(auth.is_in_recovery_cooldown());
+        assert!(auth.is_in_recovery_cool_down());
         clock.advance(Duration::hours(24) + Duration::seconds(1));
-        assert!(!auth.is_in_recovery_cooldown());
+        assert!(!auth.is_in_recovery_cool_down());
     }
 
     #[test]
     fn auth_session_debug_redacts_token() {
         use chrono::{Duration, TimeZone, Utc};
-        use doorman_core::storage::{AccountStatus, Session, SessionId, UserId};
+        use doorman_core::storage::{Session, SessionId, UserId, UserStatus};
         use doorman_core::token::hash_token;
         use doorman_test_support::MockClock;
 
@@ -181,7 +181,7 @@ mod tests {
             id: UserId::new(),
             email: Some("alice@example.com".into()),
             email_verified_at: Some(start),
-            status: AccountStatus::Active,
+            status: UserStatus::Active,
             created_at: start,
             updated_at: start,
         };
@@ -194,7 +194,7 @@ mod tests {
             expires_at: start + Duration::days(30),
             ip: None,
             user_agent: None,
-            recovery_cooldown_until: None,
+            recovery_cool_down_until: None,
         };
         let auth = AuthSession {
             session,

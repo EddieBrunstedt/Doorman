@@ -71,7 +71,7 @@ async fn email_change_request_confirm_updates_address() {
     let mail_before = app.email.sent().len();
 
     let resp = client
-        .post(app.url("/auth/account/email"))
+        .post(app.url("/auth/user/email"))
         .bearer_auth(&session.token)
         .json(&serde_json::json!({ "new_email": "after@example.com" }))
         .send()
@@ -89,7 +89,7 @@ async fn email_change_request_confirm_updates_address() {
     let token = token_from_email_with(&confirmation.body_text, EMAIL_CHANGE_URL);
 
     let confirm = client
-        .post(app.url("/auth/account/email/confirm"))
+        .post(app.url("/auth/user/email/confirm"))
         .json(&serde_json::json!({ "token": token }))
         .send()
         .await
@@ -111,7 +111,7 @@ async fn email_change_to_taken_address_conflicts() {
     let _ = login(&client, &app, "occupied@example.com").await;
 
     let resp = client
-        .post(app.url("/auth/account/email"))
+        .post(app.url("/auth/user/email"))
         .bearer_auth(&session.token)
         .json(&serde_json::json!({ "new_email": "occupied@example.com" }))
         .send()
@@ -130,7 +130,7 @@ async fn email_change_request_requires_authentication() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(app.url("/auth/account/email"))
+        .post(app.url("/auth/user/email"))
         .json(&serde_json::json!({ "new_email": "x@example.com" }))
         .send()
         .await
@@ -141,18 +141,18 @@ async fn email_change_request_requires_authentication() {
 }
 
 #[tokio::test]
-async fn delete_account_revokes_session_and_clears_cookie() {
+async fn delete_user_revokes_session_and_clears_cookie() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
     let session = login(&client, &app, "gone@example.com").await;
 
     let resp = client
-        .delete(app.url("/auth/account"))
+        .delete(app.url("/auth/user"))
         .bearer_auth(&session.token)
         .send()
         .await
-        .expect("delete account");
+        .expect("delete user");
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     let set_cookie = resp
         .headers()
@@ -174,12 +174,12 @@ async fn delete_account_revokes_session_and_clears_cookie() {
 }
 
 #[tokio::test]
-async fn delete_account_requires_authentication() {
+async fn delete_user_requires_authentication() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
     let resp = client
-        .delete(app.url("/auth/account"))
+        .delete(app.url("/auth/user"))
         .send()
         .await
         .expect("delete anon");

@@ -58,7 +58,7 @@ mod tests {
         let metrics: Arc<dyn MetricSink> = Arc::new(sink.clone());
         metrics.record(MetricEvent::LoginSucceeded);
         metrics.record(MetricEvent::AuthFailed {
-            reason: AuthFailureReason::UnknownCredential,
+            reason: AuthFailureReason::UnknownPasskey,
         });
         metrics.record(MetricEvent::AuthLatency(Duration::from_millis(7)));
 
@@ -67,7 +67,7 @@ mod tests {
             vec![
                 MetricEvent::LoginSucceeded,
                 MetricEvent::AuthFailed {
-                    reason: AuthFailureReason::UnknownCredential,
+                    reason: AuthFailureReason::UnknownPasskey,
                 },
                 MetricEvent::AuthLatency(Duration::from_millis(7)),
             ]

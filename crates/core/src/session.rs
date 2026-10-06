@@ -9,13 +9,13 @@ use crate::assembly::AssemblyError;
 use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
-use crate::recovery_cooldown::RecoveryCooldown;
+use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::storage::{
     Session, SessionId, SessionStore, SessionSummary, TokenHash, User, UserId, UserStore,
 };
 use crate::token::generate_token;
 pub use crate::token::hash_token;
-use crate::user::find_active_user;
+use crate::user_records::find_active_user;
 
 #[derive(Clone)]
 pub struct IssuedSession {
@@ -134,14 +134,14 @@ impl SessionManager {
 
     #[tracing::instrument(skip(self, context), fields(user_id = %user_id))]
     pub async fn create(&self, user_id: UserId, context: SessionContext) -> Result<IssuedSession> {
-        self.issue(user_id, context, RecoveryCooldown::NONE).await
+        self.issue(user_id, context, RecoveryCoolDown::NONE).await
     }
 
     pub(crate) async fn issue(
         &self,
         user_id: UserId,
         context: SessionContext,
-        cooldown: RecoveryCooldown,
+        cool_down: RecoveryCoolDown,
     ) -> Result<IssuedSession> {
         if let Some(max) = self.config.max_sessions_per_user {
             self.enforce_session_cap(user_id, max.get()).await?;
@@ -159,7 +159,7 @@ impl SessionManager {
             expires_at: self.deadline(now, now),
             ip: context.ip.clone(),
             user_agent: context.user_agent.clone(),
-            recovery_cooldown_until: cooldown.until(),
+            recovery_cool_down_until: cool_down.until(),
         };
 
         self.sessions.create_session(session.clone()).await?;
@@ -382,7 +382,7 @@ impl From<Session> for SessionSummary {
             expires_at: value.expires_at,
             ip: value.ip,
             user_agent: value.user_agent,
-            recovery_cooldown_until: value.recovery_cooldown_until,
+            recovery_cool_down_until: value.recovery_cool_down_until,
         }
     }
 }
@@ -397,7 +397,7 @@ impl From<&Session> for SessionSummary {
             expires_at: value.expires_at,
             ip: value.ip.clone(),
             user_agent: value.user_agent.clone(),
-            recovery_cooldown_until: value.recovery_cooldown_until,
+            recovery_cool_down_until: value.recovery_cool_down_until,
         }
     }
 }
@@ -419,7 +419,7 @@ mod tests {
         let created_at = Utc.timestamp_opt(1_000, 0).single().expect("ts");
         let last_used_at = Utc.timestamp_opt(1_200, 0).single().expect("ts");
         let expires_at = Utc.timestamp_opt(2_000, 0).single().expect("ts");
-        let cooldown = Utc.timestamp_opt(1_500, 0).single().expect("ts");
+        let cool_down = Utc.timestamp_opt(1_500, 0).single().expect("ts");
         let session = Session {
             id: SessionId::new(),
             user_id: UserId::new(),
@@ -429,7 +429,7 @@ mod tests {
             expires_at,
             ip: Some("203.0.113.7".to_string()),
             user_agent: Some("doorman-test/1.0".to_string()),
-            recovery_cooldown_until: Some(cooldown),
+            recovery_cool_down_until: Some(cool_down),
         };
 
         let summary = SessionSummary::from(&session);
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(summary.expires_at, expires_at);
         assert_eq!(summary.ip, session.ip);
         assert_eq!(summary.user_agent, session.user_agent);
-        assert_eq!(summary.recovery_cooldown_until, Some(cooldown));
+        assert_eq!(summary.recovery_cool_down_until, Some(cool_down));
 
         assert_eq!(SessionSummary::from(session.clone()), summary);
     }
@@ -459,7 +459,7 @@ mod tests {
             expires_at: now,
             ip: None,
             user_agent: None,
-            recovery_cooldown_until: None,
+            recovery_cool_down_until: None,
         };
         let issued = IssuedSession {
             session,

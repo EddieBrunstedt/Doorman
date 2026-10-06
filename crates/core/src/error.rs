@@ -27,19 +27,19 @@ pub enum Error {
     #[error("invalid email address")]
     InvalidEmail,
 
-    #[error("email address is already in use by another account")]
+    #[error("email address is already in use by another user")]
     EmailAlreadyInUse,
 
-    #[error("verification token is invalid or expired")]
-    InvalidVerificationToken,
+    #[error("email link is invalid or expired")]
+    InvalidEmailLink,
 
     #[error("passkey ceremony is invalid or has expired")]
     InvalidPasskeyChallenge,
 
-    #[error("passkey credential is not registered")]
+    #[error("passkey is not registered")]
     PasskeyNotFound,
 
-    #[error("passkey credential does not belong to the expected user")]
+    #[error("passkey does not belong to the expected user")]
     PasskeyOwnershipMismatch,
 
     #[error(
@@ -62,16 +62,14 @@ pub enum Error {
     #[error("rate limit exceeded; retry after {} ms", retry_after.as_millis())]
     RateLimited { retry_after: Duration },
 
-    #[error(
-        "the action is blocked because the session is within the post-recovery cool-down window"
-    )]
-    RecoveryCooldownActive,
+    #[error("the action is refused because the session is in its recovery cool-down")]
+    RecoveryCoolDownActive,
 
     #[error("the action requires a fresh passkey re-authentication")]
     ReauthRequired,
 
-    #[error("account is disabled")]
-    AccountDisabled,
+    #[error("user is disabled")]
+    UserDisabled,
 
     #[error("signup is not allowed")]
     SignupNotAllowed,

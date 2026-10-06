@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Update};
 use chrono::{DateTime, Utc};
-use doorman_core::encoding::account_status_to_str;
+use doorman_core::encoding::user_status_to_str;
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{AccountStatus, User, UserId, UserStore};
+use doorman_core::storage::{User, UserId, UserStatus, UserStore};
 
 use crate::client::{self, DynamoClient, Item, PK};
 use crate::model;
@@ -122,11 +122,11 @@ impl UserStore for DynamoUserStore {
     async fn set_user_status(
         &self,
         id: UserId,
-        status: AccountStatus,
+        status: UserStatus,
         at: DateTime<Utc>,
     ) -> StorageResult<()> {
         let mut values = vec![
-            (":status", client::s(account_status_to_str(&status))),
+            (":status", client::s(user_status_to_str(&status))),
             (":updated_at", client::s(client::fmt_ts(at))),
         ];
         let expression = match status.disabled_at() {

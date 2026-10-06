@@ -9,7 +9,7 @@ use chrono::{DateTime, Duration, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
-    AccountStatus, Session, SessionId, SessionStore, Storage, TokenHash, User, UserId,
+    Session, SessionId, SessionStore, Storage, TokenHash, User, UserId, UserStatus,
 };
 use doorman_dynamodb::{DynamoDbStorage, create_session_writes};
 use testcontainers_modules::dynamodb_local::DynamoDb;
@@ -123,7 +123,7 @@ async fn override_create_session_reuses_bundled_reads() {
             id: user_id,
             email: Some("audited@example.com".to_string()),
             email_verified_at: None,
-            status: AccountStatus::Active,
+            status: UserStatus::Active,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })
@@ -140,7 +140,7 @@ async fn override_create_session_reuses_bundled_reads() {
         expires_at: now + Duration::hours(1),
         ip: None,
         user_agent: None,
-        recovery_cooldown_until: None,
+        recovery_cool_down_until: None,
     };
 
     composite

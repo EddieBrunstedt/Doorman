@@ -46,7 +46,7 @@
 
       .status { padding: .7rem 1rem; border: 1px solid var(--border); background: var(--panel); color: var(--dim); font-size: .85rem; }
       .status .who { color: var(--text); font-weight: 600; }
-      .status .cooldown { color: var(--warn); }
+      .status .cool-down { color: var(--warn); }
 
       .group { display: flex; flex-direction: column; gap: .75rem; padding: 1rem; border: 1px solid var(--border); background: var(--panel); }
       .group h2 { font-size: .9rem; font-weight: 600; }
@@ -198,7 +198,7 @@
           <div id="status" class="status" role="status" aria-live="polite">Checking session…</div>
 
           <div class="group guest-only">
-            <button id="signin" class="btn primary block">Sign in with a passkey</button>
+            <button id="login" class="btn primary block">Log in with a passkey</button>
             <hr />
             <div class="field">
               <label for="email">Email</label>
@@ -227,8 +227,8 @@
             </div>
             <ul id="sessions" class="list" aria-label="Active sessions"></ul>
             <div class="field">
-              <label id="signout-label">Sign out</label>
-              <div class="row" role="group" aria-labelledby="signout-label">
+              <label id="logout-label">Log out</label>
+              <div class="row" role="group" aria-labelledby="logout-label">
                 <button id="logout" class="btn">This device</button>
                 <button id="revoke-others" class="btn">Other devices</button>
                 <button id="logout-all" class="btn danger">Everywhere</button>
@@ -237,14 +237,14 @@
           </div>
 
           <div class="group auth-only">
-            <h2>Account</h2>
+            <h2>User</h2>
             <div class="field">
               <label for="new-email">Change email</label>
               <input id="new-email" type="email" placeholder="new@example.com" autocomplete="email" />
             </div>
             <button id="change-email" class="btn block">Send confirmation link</button>
             <hr />
-            <button id="delete-account" class="btn danger block">Delete account</button>
+            <button id="delete-user" class="btn danger block">Delete user</button>
           </div>
         </div>
 
@@ -292,22 +292,22 @@
       }
 
       const ERROR_GUIDANCE = {
-        recovery_cooldown_active: "Recovery cooldown is active — destructive actions are blocked for now.",
+        recovery_cool_down_active: "Recovery cool-down is active — destructive actions are blocked for now.",
         csrf_origin_mismatch: "Origin check failed. Open the app from its configured public origin.",
-        session_not_found: "You are signed out. Sign in with a passkey to continue.",
-        session_expired: "Your session expired. Sign in again.",
-        email_already_in_use: "That email already belongs to an account.",
+        session_not_found: "You are logged out. Log in with a passkey to continue.",
+        session_expired: "Your session expired. Log in again.",
+        email_already_in_use: "That email already belongs to another user.",
         invalid_email: "Enter a valid email address.",
-        invalid_verification_token: "This link is invalid or already used. Request a new one.",
+        invalid_email_link: "This link is invalid or already used. Request a new one.",
         invalid_passkey_challenge: "The passkey challenge expired. Try again.",
         passkey_not_found: "The server has no record of this passkey.",
-        passkey_ownership_mismatch: "That passkey belongs to another account.",
+        passkey_ownership_mismatch: "That passkey belongs to another user.",
         passkey_possible_compromise: "This authenticator may be cloned. Use another passkey.",
-        reauth_required: "Fresh passkey verification required. Approve the browser prompt.",
+        reauth_required: "Re-authentication required. Approve the browser prompt.",
         rate_limited: "Too many attempts. Try again later.",
         resource_limit_exceeded: "This resource has reached its limit.",
         webauthn_error: "The passkey ceremony failed. Try again or use another authenticator.",
-        user_not_found: "No matching account.",
+        user_not_found: "No matching user.",
       };
       const guidanceFor = (code, status) =>
         (code && ERROR_GUIDANCE[code]) ||
@@ -315,28 +315,28 @@
         "Something went wrong. Check the server log and try again.";
 
       const REQUEST_NOTES = {
-        "POST /auth/signup/request": "Mints a single-use token and emails the link. No account yet.",
-        "POST /auth/signup/consume": "Token valid — returns passkey-creation options.",
-        "POST /auth/signup/finish": "Verifies the new passkey, writes the account, opens a session.",
-        "POST /auth/recovery/request": "Emails a link if the account exists — the reply is identical either way.",
-        "POST /auth/recovery/consume": "Token valid — returns options to enroll a fresh passkey.",
-        "POST /auth/recovery/finish": "New passkey stored, session opened, recovery cooldown begins.",
-        "POST /auth/passkey/register/start": "Returns creation options bound to your account.",
+        "POST /auth/signup/request": "Creates the user and emails a signup link. No passkey yet.",
+        "POST /auth/signup/redeem": "Token valid — returns passkey-creation options.",
+        "POST /auth/signup/finish": "Verifies the new passkey, stores it, opens a session.",
+        "POST /auth/recovery/request": "Emails a link if the user exists — the reply is identical either way.",
+        "POST /auth/recovery/redeem": "Redeems the link and returns options to register a new passkey.",
+        "POST /auth/recovery/finish": "New passkey stored, session opened, recovery cool-down begins.",
+        "POST /auth/passkey/register/start": "Returns creation options bound to you.",
         "POST /auth/passkey/register/finish": "Verifies the attestation, stores the new public key.",
         "POST /auth/passkey/authenticate/start": "Returns a single-use challenge for the authenticator to sign.",
         "POST /auth/passkey/authenticate/finish": "Checks the signature, finds the owner, opens a session.",
         "GET /auth/passkey": "Lists your stored passkeys.",
-        "PATCH /auth/passkey/{id}": "Renames one stored credential.",
-        "DELETE /auth/passkey/{id}": "Deletes one credential (needs a fresh passkey).",
+        "PATCH /auth/passkey/{id}": "Renames one passkey.",
+        "DELETE /auth/passkey/{id}": "Deletes one passkey (needs re-authentication).",
         "GET /auth/sessions": "Lists your active sessions.",
         "DELETE /auth/sessions": "Revokes every session except this one.",
         "DELETE /auth/sessions/{id}": "Revokes one session.",
         "POST /auth/logout": "Drops this session and clears the cookie.",
-        "POST /auth/logout-all": "Drops every session for the account.",
-        "POST /auth/reauth/start": "Issues a step-up challenge before a sensitive action.",
-        "POST /auth/account/email": "Emails a confirmation link to the new address (needs a fresh passkey).",
-        "POST /auth/account/email/confirm": "Token valid — swaps the account's email address.",
-        "DELETE /auth/account": "Erases the account, passkeys, and sessions (needs a fresh passkey).",
+        "POST /auth/logout-all": "Revokes every one of your sessions.",
+        "POST /auth/reauth/start": "Issues a re-authentication challenge before a destructive action.",
+        "POST /auth/user/email": "Emails a confirmation link to the new address (needs a fresh passkey).",
+        "POST /auth/user/email/confirm": "Redeems the email change link and swaps in the new address.",
+        "DELETE /auth/user": "Deletes the user, their passkeys and sessions (needs re-authentication).",
       };
       const CEREMONY_NOTES = {
         "navigator.credentials.create()": "The authenticator generates a key pair; the private key never leaves the device.",
@@ -472,7 +472,7 @@
           if (cancelled) e.cancelled = true;
           throw e;
         }
-        step("browser ok", "browser", escapeHtml(title), "verified", cap, jsonPart("credential", cred.id));
+        step("browser ok", "browser", escapeHtml(title), "verified", cap, jsonPart("credential_id", cred.id));
         return cred;
       }
 
@@ -513,11 +513,11 @@
         return parsed;
       }
 
-      async function signIn() {
+      async function logIn() {
         const start = await api("/auth/passkey/authenticate/start", "POST");
         const cred = await ceremony("navigator.credentials.get()", () => navigator.credentials.get(decodeRequestOptions(start.options)));
         await api("/auth/passkey/authenticate/finish", "POST", { challenge_id: start.challenge_id, response: encodeAssertion(cred) });
-        note("Signed in.");
+        note("Logged in.");
         await refresh();
       }
       async function addPasskey() {
@@ -531,10 +531,10 @@
         await refresh();
       }
       async function finishEmailFlow(kind, token) {
-        const start = await api(`/auth/${kind}/consume`, "POST", { token });
+        const start = await api(`/auth/${kind}/redeem`, "POST", { token });
         const cred = await ceremony("navigator.credentials.create()", () => navigator.credentials.create(decodeCreationOptions(start.options)));
         await api(`/auth/${kind}/finish`, "POST", { challenge_id: start.challenge_id, response: encodeAttestation(cred), name: `${kind} passkey` });
-        note(kind === "signup" ? "Account created — signed in." : "Recovery complete — new passkey registered.");
+        note(kind === "signup" ? "Signed up — logged in." : "Recovery complete — new passkey registered.");
         await refresh();
       }
       async function withReauth(send) {
@@ -542,7 +542,7 @@
           return await send(undefined);
         } catch (err) {
           if (err.code !== "reauth_required") throw err;
-          progress("Step-up required — verifying a passkey before this action.");
+          progress("Re-authentication required — verifying a passkey before this action.");
           const start = await api("/auth/reauth/start", "POST");
           const cred = await ceremony("navigator.credentials.get()", () => navigator.credentials.get(decodeRequestOptions(start.options)));
           return await send({ challenge_id: start.challenge_id, assertion: encodeAssertion(cred) });
@@ -554,8 +554,8 @@
           const me = await api("/api/me");
           document.body.classList.add("signed-in");
           const count = me.user.passkey_count;
-          const cooldown = me.recovery_cooldown_active ? ` · <span class="cooldown">recovery cooldown active</span>` : "";
-          statusEl.innerHTML = `<span class="who">${escapeHtml(me.user.email)}</span> · ${count} passkey${count === 1 ? "" : "s"}${cooldown}`;
+          const coolDown = me.recovery_cool_down_active ? ` · <span class="cool-down">recovery cool-down active</span>` : "";
+          statusEl.innerHTML = `<span class="who">${escapeHtml(me.user.email)}</span> · ${count} passkey${count === 1 ? "" : "s"}${coolDown}`;
 
           const passkeys = await api("/auth/passkey");
           passkeysEl.innerHTML = passkeys.length ? passkeys.map((p) => {
@@ -578,7 +578,7 @@
           }).join("") : `<li class="empty">No active sessions.</li>`;
         } catch (_) {
           document.body.classList.remove("signed-in");
-          statusEl.textContent = "Not signed in.";
+          statusEl.textContent = "Not logged in.";
           passkeysEl.innerHTML = "";
           sessionsEl.innerHTML = "";
         }
@@ -586,7 +586,7 @@
 
       const emailValue = (id) => document.querySelector(id).value;
 
-      document.querySelector("#signin").addEventListener("click", () => run("Sign in", signIn));
+      document.querySelector("#login").addEventListener("click", () => run("Log in", logIn));
       document.querySelector("#add-passkey").addEventListener("click", () => run("Register a passkey", addPasskey));
       document.querySelector("#refresh").addEventListener("click", () => run("Refresh state", refresh));
       document.querySelector("#clear").addEventListener("click", () => { timelineEl.innerHTML = ""; errorEl.textContent = ""; });
@@ -597,29 +597,29 @@
       }));
       document.querySelector("#recover").addEventListener("click", () => run("Request recovery link", async () => {
         await api("/auth/recovery/request", "POST", { email: emailValue("#email") });
-        note("If the account exists, a recovery link was sent — check the terminal.");
+        note("If the user exists, a recovery link was sent — check the terminal.");
       }));
 
-      document.querySelector("#logout").addEventListener("click", () => run("Sign out", async () => {
-        await api("/auth/logout", "POST"); note("Signed out of this session."); await refresh();
+      document.querySelector("#logout").addEventListener("click", () => run("Log out", async () => {
+        await api("/auth/logout", "POST"); note("Logged out of this session."); await refresh();
       }));
-      document.querySelector("#revoke-others").addEventListener("click", () => run("Sign out other sessions", async () => {
+      document.querySelector("#revoke-others").addEventListener("click", () => run("Log out other sessions", async () => {
         await api("/auth/sessions", "DELETE"); note("Other sessions revoked."); await refresh();
       }));
-      document.querySelector("#logout-all").addEventListener("click", () => run("Sign out everywhere", async () => {
-        await api("/auth/logout-all", "POST"); note("Signed out of every session."); await refresh();
+      document.querySelector("#logout-all").addEventListener("click", () => run("Log out everywhere", async () => {
+        await api("/auth/logout-all", "POST"); note("Logged out of every session."); await refresh();
       }));
 
       document.querySelector("#change-email").addEventListener("click", () => run("Change email", async () => {
         const newEmail = emailValue("#new-email");
-        await withReauth((reauthentication) => api("/auth/account/email", "POST", { new_email: newEmail, reauthentication }));
+        await withReauth((reauthentication) => api("/auth/user/email", "POST", { new_email: newEmail, reauthentication }));
         note("Email-change link sent — check the terminal.");
       }));
-      document.querySelector("#delete-account").addEventListener("click", () => {
-        if (!window.confirm("Permanently delete this account, including all passkeys and sessions?")) return;
-        run("Delete account", async () => {
-          await withReauth((reauthentication) => api("/auth/account", "DELETE", reauthentication ? { reauthentication } : undefined));
-          note("Account deleted.");
+      document.querySelector("#delete-user").addEventListener("click", () => {
+        if (!window.confirm("Permanently delete this user, including all passkeys and sessions?")) return;
+        run("Delete user", async () => {
+          await withReauth((reauthentication) => api("/auth/user", "DELETE", reauthentication ? { reauthentication } : undefined));
+          note("User deleted.");
           await refresh();
         });
       });
@@ -666,7 +666,7 @@
         }
         if (emailChangeToken) {
           await run("Confirm email change", async () => {
-            await api("/auth/account/email/confirm", "POST", { token: emailChangeToken });
+            await api("/auth/user/email/confirm", "POST", { token: emailChangeToken });
             note("New email address confirmed.");
             await refresh();
           });

@@ -34,7 +34,7 @@ fn session(user_id: UserId, token: &str, now: DateTime<Utc>) -> Session {
         expires_at: now + Duration::hours(1),
         ip: None,
         user_agent: None,
-        recovery_cooldown_until: None,
+        recovery_cool_down_until: None,
     }
 }
 

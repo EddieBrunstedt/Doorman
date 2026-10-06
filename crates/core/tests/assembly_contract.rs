@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use doorman_core::account::AccountConfig;
 use doorman_core::assembly::{AssemblyError, AuthCore, AuthCoreBuilder};
 use doorman_core::audit::{AuditSink, NoopAuditSink};
 use doorman_core::clock::SystemClock;
@@ -14,6 +13,7 @@ use doorman_core::recovery::RecoveryConfig;
 use doorman_core::session::SessionConfig;
 use doorman_core::signup::SignupConfig;
 use doorman_core::storage::Storage;
+use doorman_core::user::UserConfig;
 use doorman_test_support::CapturingEmailSender;
 
 fn fresh_storage() -> Storage {
@@ -42,7 +42,7 @@ fn passkey_config() -> PasskeyConfig {
 
 const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
-const ACCOUNT_URL: &str = "https://app.test/email-change?token={token}";
+const USER_URL: &str = "https://app.test/email-change?token={token}";
 
 fn real_signup() -> SignupConfig {
     SignupConfig {
@@ -58,10 +58,10 @@ fn real_recovery() -> RecoveryConfig {
     }
 }
 
-fn real_account() -> AccountConfig {
-    AccountConfig {
-        url_template: ACCOUNT_URL.to_string(),
-        ..AccountConfig::default()
+fn real_user() -> UserConfig {
+    UserConfig {
+        url_template: USER_URL.to_string(),
+        ..UserConfig::default()
     }
 }
 
@@ -73,7 +73,7 @@ fn valid_builder() -> AuthCoreBuilder {
         .limiter(in_memory_limiter())
         .signup(real_signup())
         .recovery(real_recovery())
-        .account(real_account())
+        .user(real_user())
         .reauthentication(ReauthPolicy::disabled())
 }
 
@@ -111,7 +111,7 @@ fn missing_audit_sink_returns_build_error() {
         .limiter(in_memory_limiter())
         .signup(real_signup())
         .recovery(real_recovery())
-        .account(real_account())
+        .user(real_user())
         .build()
         .err();
     assert!(
@@ -128,7 +128,7 @@ fn missing_rate_limiter_returns_build_error() {
         .audit(noop_audit())
         .signup(real_signup())
         .recovery(real_recovery())
-        .account(real_account())
+        .user(real_user())
         .build()
         .err();
     assert!(
@@ -159,7 +159,7 @@ fn reauth_decision_required_when_policy_not_set() {
         .limiter(in_memory_limiter())
         .signup(real_signup())
         .recovery(real_recovery())
-        .account(real_account())
+        .user(real_user())
         .build()
         .err();
     assert!(
@@ -202,20 +202,17 @@ fn default_recovery_template_is_rejected_as_placeholder() {
 }
 
 #[test]
-fn default_account_template_is_rejected_as_placeholder() {
-    let err = valid_builder()
-        .account(AccountConfig::default())
-        .build()
-        .err();
+fn default_email_change_template_is_rejected_as_placeholder() {
+    let err = valid_builder().user(UserConfig::default()).build().err();
     assert!(
         matches!(
             err,
             Some(AssemblyError::PlaceholderUrlTemplate {
-                flow: "account email change",
+                flow: "email change",
                 ..
             })
         ),
-        "expected PlaceholderUrlTemplate for account, got: {err:?}"
+        "expected PlaceholderUrlTemplate for email change, got: {err:?}"
     );
 }
 
@@ -259,17 +256,17 @@ fn recovery_url_template_without_token_is_rejected() {
 }
 
 #[test]
-fn subfloor_recovery_cooldown_is_rejected() {
+fn subfloor_recovery_cool_down_is_rejected() {
     let err = valid_builder()
         .recovery(RecoveryConfig {
-            cooldown: Duration::from_secs(60),
+            cool_down: Duration::from_secs(60),
             ..real_recovery()
         })
         .build()
         .err();
     assert!(
-        matches!(err, Some(AssemblyError::RecoveryCooldown(_))),
-        "expected RecoveryCooldown, got: {err:?}"
+        matches!(err, Some(AssemblyError::RecoveryCoolDown(_))),
+        "expected RecoveryCoolDown, got: {err:?}"
     );
 }
 

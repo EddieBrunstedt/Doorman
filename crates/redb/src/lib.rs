@@ -15,8 +15,7 @@ use std::sync::Arc;
 
 use doorman_core::error::StorageResult;
 use doorman_core::storage::{
-    PasskeyChallengeStore, PasskeyCredentialStore, Session, SessionStore, Storage, UserStore,
-    VerificationTokenStore,
+    EmailLinkStore, PasskeyChallengeStore, PasskeyStore, Session, SessionStore, Storage, UserStore,
 };
 use redb::{Database, WriteTransaction};
 
@@ -46,8 +45,8 @@ impl RedbStorage {
         Storage {
             users: self.user_store(),
             sessions: self.session_store(),
-            verification_tokens: self.verification_token_store(),
-            passkey_credentials: self.passkey_credential_store(),
+            email_links: self.email_link_store(),
+            passkeys: self.passkey_store(),
             passkey_challenges: self.passkey_challenge_store(),
         }
     }
@@ -60,16 +59,14 @@ impl RedbStorage {
         Arc::new(stores::session::RedbSessionStore::new(self.handle.clone()))
     }
 
-    pub fn verification_token_store(&self) -> Arc<dyn VerificationTokenStore> {
-        Arc::new(stores::verification::RedbVerificationTokenStore::new(
+    pub fn email_link_store(&self) -> Arc<dyn EmailLinkStore> {
+        Arc::new(stores::email_link::RedbEmailLinkStore::new(
             self.handle.clone(),
         ))
     }
 
-    pub fn passkey_credential_store(&self) -> Arc<dyn PasskeyCredentialStore> {
-        Arc::new(stores::passkey_cred::RedbPasskeyCredentialStore::new(
-            self.handle.clone(),
-        ))
+    pub fn passkey_store(&self) -> Arc<dyn PasskeyStore> {
+        Arc::new(stores::passkey::RedbPasskeyStore::new(self.handle.clone()))
     }
 
     pub fn passkey_challenge_store(&self) -> Arc<dyn PasskeyChallengeStore> {

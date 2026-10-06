@@ -116,26 +116,26 @@ pub enum AuditEventKind {
         user_id: Option<UserId>,
         reason: AuthFailureReason,
     },
-    CredentialAdded {
+    PasskeyAdded {
         user_id: UserId,
     },
-    CredentialRemoved {
+    PasskeyRemoved {
         user_id: UserId,
     },
-    CredentialRenamed {
+    PasskeyRenamed {
         user_id: UserId,
     },
     SignupRequested {
         user_id: UserId,
     },
     SignupDenied,
-    SignupConsumed {
+    SignupLinkRedeemed {
         user_id: UserId,
     },
     RecoveryRequested {
         user_id: Option<UserId>,
     },
-    RecoveryConsumed {
+    RecoveryLinkRedeemed {
         user_id: UserId,
     },
     RecoveryFailed {
@@ -148,7 +148,7 @@ pub enum AuditEventKind {
     EmailChangeCompleted {
         user_id: UserId,
     },
-    AccountDeleted {
+    UserDeleted {
         user_id: UserId,
     },
     ReauthSucceeded {
@@ -162,10 +162,10 @@ pub enum AuditEventKind {
         user_id: UserId,
         revoked_count: u64,
     },
-    OperatorDisabledAccount {
+    OperatorDisabledUser {
         user_id: UserId,
     },
-    OperatorEnabledAccount {
+    OperatorEnabledUser {
         user_id: UserId,
     },
     OperatorListedPasskeys {
@@ -194,20 +194,20 @@ impl AuditEventKind {
             | Self::SessionRevoked { user_id, .. }
             | Self::SessionExpired { user_id, .. }
             | Self::LoginSucceeded { user_id }
-            | Self::CredentialAdded { user_id }
-            | Self::CredentialRemoved { user_id }
-            | Self::CredentialRenamed { user_id }
+            | Self::PasskeyAdded { user_id }
+            | Self::PasskeyRemoved { user_id }
+            | Self::PasskeyRenamed { user_id }
             | Self::SignupRequested { user_id }
-            | Self::SignupConsumed { user_id }
-            | Self::RecoveryConsumed { user_id }
+            | Self::SignupLinkRedeemed { user_id }
+            | Self::RecoveryLinkRedeemed { user_id }
             | Self::EmailChangeRequested { user_id }
             | Self::EmailChangeCompleted { user_id }
-            | Self::AccountDeleted { user_id }
+            | Self::UserDeleted { user_id }
             | Self::ReauthSucceeded { user_id }
             | Self::ReauthFailed { user_id, .. }
             | Self::OperatorRevokedAllSessions { user_id, .. }
-            | Self::OperatorDisabledAccount { user_id }
-            | Self::OperatorEnabledAccount { user_id }
+            | Self::OperatorDisabledUser { user_id }
+            | Self::OperatorEnabledUser { user_id }
             | Self::OperatorListedPasskeys { user_id }
             | Self::OperatorListedSessions { user_id } => Some(*user_id),
             Self::AuthenticationFailed { user_id, .. }
@@ -235,13 +235,13 @@ impl AuditEventKind {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AuthFailureReason {
-    UnknownCredential,
+    UnknownPasskey,
     UserHandleMismatch,
     OwnershipMismatch,
     CounterRegression,
     UserVerificationMissing,
     BadAssertion,
-    AccountDisabled,
+    UserDisabled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,7 +250,7 @@ pub enum AuthFailureReason {
 pub enum RecoveryFailureReason {
     UnknownEmail,
     RateLimited,
-    AccountDisabled,
+    UserDisabled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,7 +274,7 @@ pub enum RedemptionFailureReason {
     Expired,
     Malformed,
     UserNotFound,
-    AccountDisabled,
+    UserDisabled,
 }
 
 #[async_trait]

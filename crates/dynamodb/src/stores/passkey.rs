@@ -1,18 +1,16 @@
 use async_trait::async_trait;
 use aws_sdk_dynamodb::types::AttributeValue;
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{
-    PasskeyCredentialStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId,
-};
+use doorman_core::storage::{PasskeyStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId};
 
 use crate::client::{self, DynamoClient, PK};
 use crate::model;
 
-pub(crate) struct DynamoPasskeyCredentialStore {
+pub(crate) struct DynamoPasskeyStore {
     client: DynamoClient,
 }
 
-impl DynamoPasskeyCredentialStore {
+impl DynamoPasskeyStore {
     pub(crate) fn new(client: DynamoClient) -> Self {
         Self { client }
     }
@@ -40,29 +38,27 @@ impl DynamoPasskeyCredentialStore {
             request = request.expression_attribute_values(name, value);
         }
         request.send().await.map_err(|e| {
-            client::condition_err(e, || {
-                StorageError::not_found("passkey credential not found")
-            })
+            client::condition_err(e, || StorageError::not_found("passkey not found"))
         })?;
         Ok(())
     }
 }
 
 #[async_trait]
-impl PasskeyCredentialStore for DynamoPasskeyCredentialStore {
-    async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()> {
+impl PasskeyStore for DynamoPasskeyStore {
+    async fn add_passkey(&self, passkey: StoredPasskey) -> StorageResult<()> {
         self.client
             .inner()
             .put_item()
             .table_name(self.client.table())
-            .set_item(Some(model::passkey_item(&credential)))
+            .set_item(Some(model::passkey_item(&passkey)))
             .condition_expression("attribute_not_exists(#pk)")
             .expression_attribute_names("#pk", PK)
             .send()
             .await
             .map_err(|e| {
                 client::condition_err(e, || {
-                    StorageError::conflict("passkey credential id already registered")
+                    StorageError::conflict("passkey id already registered")
                 })
             })?;
         Ok(())

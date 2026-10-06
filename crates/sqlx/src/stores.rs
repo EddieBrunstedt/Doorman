@@ -12,8 +12,8 @@ macro_rules! sqlx_stores {
                 $crate::stores::__reexport::Storage {
                     users: self.user_store(),
                     sessions: self.session_store(),
-                    verification_tokens: self.verification_token_store(),
-                    passkey_credentials: self.passkey_credential_store(),
+                    email_links: self.email_link_store(),
+                    passkeys: self.passkey_store(),
                     passkey_challenges: self.passkey_challenge_store(),
                 }
             }
@@ -34,18 +34,18 @@ macro_rules! sqlx_stores {
                 })
             }
 
-            pub fn verification_token_store(
+            pub fn email_link_store(
                 &self,
-            ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::VerificationTokenStore> {
-                ::std::sync::Arc::new(VerificationTokenStoreImpl {
+            ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::EmailLinkStore> {
+                ::std::sync::Arc::new(EmailLinkStoreImpl {
                     pool: self.pool.clone(),
                 })
             }
 
-            pub fn passkey_credential_store(
+            pub fn passkey_store(
                 &self,
-            ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::PasskeyCredentialStore> {
-                ::std::sync::Arc::new(PasskeyCredentialStoreImpl {
+            ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::PasskeyStore> {
+                ::std::sync::Arc::new(PasskeyStoreImpl {
                     pool: self.pool.clone(),
                 })
             }
@@ -77,7 +77,7 @@ macro_rules! sqlx_stores {
                     .bind($crate::common::uuid_to_bytes(user.id.0))
                     .bind(&user.email)
                     .bind($ts(user.email_verified_at))
-                    .bind($crate::stores::__reexport::account_status_to_str(&user.status))
+                    .bind($crate::stores::__reexport::user_status_to_str(&user.status))
                     .bind($ts(user.status.disabled_at()))
                     .bind($ts(user.created_at))
                     .bind($ts(user.updated_at))
@@ -126,14 +126,14 @@ macro_rules! sqlx_stores {
             async fn set_user_status(
                 &self,
                 id: $crate::stores::__reexport::UserId,
-                status: $crate::stores::__reexport::AccountStatus,
+                status: $crate::stores::__reexport::UserStatus,
                 at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
                     "UPDATE users SET status = ?, disabled_at = ?, updated_at = ? WHERE id = ?",
                 );
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind($crate::stores::__reexport::account_status_to_str(&status))
+                    .bind($crate::stores::__reexport::user_status_to_str(&status))
                     .bind($ts(status.disabled_at()))
                     .bind($ts(at))
                     .bind($crate::common::uuid_to_bytes(id.0))
@@ -217,7 +217,7 @@ macro_rules! sqlx_stores {
                 email_verified_at: row
                     .try_get("email_verified_at")
                     .map_err($crate::common::storage_err)?,
-                status: $crate::stores::__reexport::account_status_from_parts(
+                status: $crate::stores::__reexport::user_status_from_parts(
                     &status_str,
                     disabled_at,
                 )?,
@@ -237,7 +237,7 @@ macro_rules! sqlx_stores {
                 session: $crate::stores::__reexport::Session,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "INSERT INTO sessions (id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cooldown_until)
+                    "INSERT INTO sessions (id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -249,7 +249,7 @@ macro_rules! sqlx_stores {
                     .bind($ts(session.expires_at))
                     .bind(&session.ip)
                     .bind(&session.user_agent)
-                    .bind($ts(session.recovery_cooldown_until))
+                    .bind($ts(session.recovery_cool_down_until))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage_err)?;
@@ -282,7 +282,7 @@ macro_rules! sqlx_stores {
                 Option<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
-                    "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cooldown_until
+                    "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
                      FROM sessions WHERE token_hash = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -300,7 +300,7 @@ macro_rules! sqlx_stores {
                 Option<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
-                    "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cooldown_until
+                    "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
                      FROM sessions WHERE id = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -319,7 +319,7 @@ macro_rules! sqlx_stores {
                 Vec<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
-                    "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cooldown_until
+                    "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
                      FROM sessions WHERE user_id = ? AND expires_at > ?",
                 );
                 let rows = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -405,24 +405,24 @@ macro_rules! sqlx_stores {
                 expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,
                 ip: row.try_get("ip").map_err($crate::common::storage_err)?,
                 user_agent: row.try_get("user_agent").map_err($crate::common::storage_err)?,
-                recovery_cooldown_until: row
-                    .try_get("recovery_cooldown_until")
+                recovery_cool_down_until: row
+                    .try_get("recovery_cool_down_until")
                     .map_err($crate::common::storage_err)?,
             })
         }
 
-        struct VerificationTokenStoreImpl {
+        struct EmailLinkStoreImpl {
             pool: $pool,
         }
 
         #[::async_trait::async_trait]
-        impl $crate::stores::__reexport::VerificationTokenStore for VerificationTokenStoreImpl {
-            async fn create_token(
+        impl $crate::stores::__reexport::EmailLinkStore for EmailLinkStoreImpl {
+            async fn create_link(
                 &self,
-                token: $crate::stores::__reexport::VerificationToken,
+                token: $crate::stores::__reexport::EmailLink,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "INSERT INTO verification_tokens (token_hash, purpose, user_id, new_email, created_at, expires_at)
+                    "INSERT INTO email_links (token_hash, purpose, user_id, new_email, created_at, expires_at)
                      VALUES (?, ?, ?, ?, ?, ?)",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -438,35 +438,35 @@ macro_rules! sqlx_stores {
                 Ok(())
             }
 
-            async fn consume_token(
+            async fn redeem_link(
                 &self,
                 hash: &$crate::stores::__reexport::TokenHash,
-                purpose: $crate::stores::__reexport::VerificationPurpose,
+                purpose: $crate::stores::__reexport::EmailLinkPurpose,
             ) -> $crate::stores::__reexport::StorageResult<
-                Option<$crate::stores::__reexport::VerificationToken>,
+                Option<$crate::stores::__reexport::EmailLink>,
             > {
                 $crate::stores::sqlx_take! {
                     $take,
                     pool: self.pool,
                     ph: $ph,
-                    table: "verification_tokens",
+                    table: "email_links",
                     cols: "token_hash, purpose, user_id, new_email, created_at, expires_at",
                     filter: "token_hash = ? AND purpose = ?",
                     binds: [
                         $crate::common::token_hash_bytes(hash),
                         $crate::common::purpose_to_str(purpose),
                     ],
-                    map: row_to_verification_token,
+                    map: row_to_email_link,
                 }
             }
 
-            async fn delete_tokens_for_user(
+            async fn delete_links_for_user(
                 &self,
                 user_id: $crate::stores::__reexport::UserId,
-                purpose: $crate::stores::__reexport::VerificationPurpose,
+                purpose: $crate::stores::__reexport::EmailLinkPurpose,
             ) -> $crate::stores::__reexport::StorageResult<u64> {
                 let sql =
-                    $ph("DELETE FROM verification_tokens WHERE user_id = ? AND purpose = ?");
+                    $ph("DELETE FROM email_links WHERE user_id = ? AND purpose = ?");
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(user_id.0))
                     .bind($crate::common::purpose_to_str(purpose))
@@ -480,7 +480,7 @@ macro_rules! sqlx_stores {
                 &self,
                 now: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
             ) -> $crate::stores::__reexport::StorageResult<u64> {
-                let sql = $ph("DELETE FROM verification_tokens WHERE expires_at <= ?");
+                let sql = $ph("DELETE FROM email_links WHERE expires_at <= ?");
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($ts(now))
                     .execute(&self.pool)
@@ -490,16 +490,16 @@ macro_rules! sqlx_stores {
             }
         }
 
-        fn row_to_verification_token(
+        fn row_to_email_link(
             row: $row,
         ) -> $crate::stores::__reexport::StorageResult<
-            $crate::stores::__reexport::VerificationToken,
+            $crate::stores::__reexport::EmailLink,
         > {
             use ::sqlx::Row as _;
             let hash_bytes: Vec<u8> = row.try_get("token_hash").map_err($crate::common::storage_err)?;
             let purpose_str: String = row.try_get("purpose").map_err($crate::common::storage_err)?;
             let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage_err)?;
-            Ok($crate::stores::__reexport::VerificationToken {
+            Ok($crate::stores::__reexport::EmailLink {
                 token_hash: $crate::common::token_hash_from_bytes(&hash_bytes)?,
                 purpose: $crate::common::purpose_from_str(&purpose_str)?,
                 user_id: $crate::stores::__reexport::UserId(
@@ -511,34 +511,34 @@ macro_rules! sqlx_stores {
             })
         }
 
-        struct PasskeyCredentialStoreImpl {
+        struct PasskeyStoreImpl {
             pool: $pool,
         }
 
         #[::async_trait::async_trait]
-        impl $crate::stores::__reexport::PasskeyCredentialStore for PasskeyCredentialStoreImpl {
+        impl $crate::stores::__reexport::PasskeyStore for PasskeyStoreImpl {
             async fn add_passkey(
                 &self,
-                credential: $crate::stores::__reexport::StoredPasskey,
+                passkey: $crate::stores::__reexport::StoredPasskey,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "INSERT INTO passkey_credentials
+                    "INSERT INTO passkeys
                      (credential_id, user_id, passkey, name, created_at, last_used_at,
-                      aaguid, transports, backup_eligible, backup_state, recovery_cooldown_until)
+                      aaguid, transports, backup_eligible, backup_state, recovery_cool_down_until)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind(&credential.credential_id)
-                    .bind($crate::common::uuid_to_bytes(credential.user_id.0))
-                    .bind(&credential.passkey)
-                    .bind(&credential.name)
-                    .bind($ts(credential.created_at))
-                    .bind($ts(credential.last_used_at))
-                    .bind($crate::common::aaguid_to_str(credential.aaguid))
-                    .bind($crate::common::transports_to_str(&credential.transports))
-                    .bind(credential.backup_eligible)
-                    .bind(credential.backup_state)
-                    .bind($ts(credential.recovery_cooldown_until))
+                    .bind(&passkey.credential_id)
+                    .bind($crate::common::uuid_to_bytes(passkey.user_id.0))
+                    .bind(&passkey.passkey)
+                    .bind(&passkey.name)
+                    .bind($ts(passkey.created_at))
+                    .bind($ts(passkey.last_used_at))
+                    .bind($crate::common::aaguid_to_str(passkey.aaguid))
+                    .bind($crate::common::transports_to_str(&passkey.transports))
+                    .bind(passkey.backup_eligible)
+                    .bind(passkey.backup_state)
+                    .bind($ts(passkey.recovery_cool_down_until))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage_err)?;
@@ -551,7 +551,7 @@ macro_rules! sqlx_stores {
                 used: $crate::stores::__reexport::PasskeyUse,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "UPDATE passkey_credentials
+                    "UPDATE passkeys
                      SET passkey = ?, backup_eligible = ?, backup_state = ?, last_used_at = ?
                      WHERE credential_id = ?",
                 );
@@ -566,7 +566,7 @@ macro_rules! sqlx_stores {
                     .map_err($crate::common::storage_err)?;
                 if result.rows_affected() == 0 {
                     return Err($crate::stores::__reexport::StorageError::not_found(
-                        "passkey credential not found",
+                        "passkey not found",
                     ));
                 }
                 Ok(())
@@ -577,7 +577,7 @@ macro_rules! sqlx_stores {
                 credential_id: &[u8],
                 name: Option<&str>,
             ) -> $crate::stores::__reexport::StorageResult<()> {
-                let sql = $ph("UPDATE passkey_credentials SET name = ? WHERE credential_id = ?");
+                let sql = $ph("UPDATE passkeys SET name = ? WHERE credential_id = ?");
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind(name)
                     .bind(credential_id)
@@ -586,7 +586,7 @@ macro_rules! sqlx_stores {
                     .map_err($crate::common::storage_err)?;
                 if result.rows_affected() == 0 {
                     return Err($crate::stores::__reexport::StorageError::not_found(
-                        "passkey credential not found",
+                        "passkey not found",
                     ));
                 }
                 Ok(())
@@ -600,8 +600,8 @@ macro_rules! sqlx_stores {
             > {
                 let sql = $ph(
                     "SELECT credential_id, user_id, passkey, name, created_at, last_used_at,
-                            aaguid, transports, backup_eligible, backup_state, recovery_cooldown_until
-                     FROM passkey_credentials WHERE user_id = ?",
+                            aaguid, transports, backup_eligible, backup_state, recovery_cool_down_until
+                     FROM passkeys WHERE user_id = ?",
                 );
                 let rows = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(user_id.0))
@@ -619,8 +619,8 @@ macro_rules! sqlx_stores {
             > {
                 let sql = $ph(
                     "SELECT credential_id, user_id, name, created_at, last_used_at,
-                            aaguid, transports, backup_eligible, backup_state, recovery_cooldown_until
-                     FROM passkey_credentials WHERE user_id = ?",
+                            aaguid, transports, backup_eligible, backup_state, recovery_cool_down_until
+                     FROM passkeys WHERE user_id = ?",
                 );
                 let rows = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(user_id.0))
@@ -634,7 +634,7 @@ macro_rules! sqlx_stores {
                 &self,
                 user_id: $crate::stores::__reexport::UserId,
             ) -> $crate::stores::__reexport::StorageResult<u64> {
-                let sql = $ph("SELECT COUNT(*) FROM passkey_credentials WHERE user_id = ?");
+                let sql = $ph("SELECT COUNT(*) FROM passkeys WHERE user_id = ?");
                 let count: i64 = ::sqlx::query_scalar(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(user_id.0))
                     .fetch_one(&self.pool)
@@ -651,8 +651,8 @@ macro_rules! sqlx_stores {
             > {
                 let sql = $ph(
                     "SELECT credential_id, user_id, passkey, name, created_at, last_used_at,
-                            aaguid, transports, backup_eligible, backup_state, recovery_cooldown_until
-                     FROM passkey_credentials WHERE credential_id = ?",
+                            aaguid, transports, backup_eligible, backup_state, recovery_cool_down_until
+                     FROM passkeys WHERE credential_id = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind(credential_id)
@@ -666,7 +666,7 @@ macro_rules! sqlx_stores {
                 &self,
                 credential_id: &[u8],
             ) -> $crate::stores::__reexport::StorageResult<()> {
-                let sql = $ph("DELETE FROM passkey_credentials WHERE credential_id = ?");
+                let sql = $ph("DELETE FROM passkeys WHERE credential_id = ?");
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind(credential_id)
                     .execute(&self.pool)
@@ -679,7 +679,7 @@ macro_rules! sqlx_stores {
                 &self,
                 user_id: $crate::stores::__reexport::UserId,
             ) -> $crate::stores::__reexport::StorageResult<u64> {
-                let sql = $ph("DELETE FROM passkey_credentials WHERE user_id = ?");
+                let sql = $ph("DELETE FROM passkeys WHERE user_id = ?");
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(user_id.0))
                     .execute(&self.pool)
@@ -714,8 +714,8 @@ macro_rules! sqlx_stores {
                     .try_get("backup_eligible")
                     .map_err($crate::common::storage_err)?,
                 backup_state: row.try_get("backup_state").map_err($crate::common::storage_err)?,
-                recovery_cooldown_until: row
-                    .try_get("recovery_cooldown_until")
+                recovery_cool_down_until: row
+                    .try_get("recovery_cool_down_until")
                     .map_err($crate::common::storage_err)?,
             })
         }
@@ -737,7 +737,7 @@ macro_rules! sqlx_stores {
                 transports: meta.transports,
                 backup_eligible: meta.backup_eligible,
                 backup_state: meta.backup_state,
-                recovery_cooldown_until: meta.recovery_cooldown_until,
+                recovery_cool_down_until: meta.recovery_cool_down_until,
             })
         }
 
@@ -752,7 +752,7 @@ macro_rules! sqlx_stores {
                 value: $crate::stores::__reexport::StoredPasskeyRegistration,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "INSERT INTO passkey_registrations (id, purpose, user_id, state, created_at, expires_at, recovery_cooldown_until)
+                    "INSERT INTO passkey_registrations (id, purpose, user_id, state, created_at, expires_at, recovery_cool_down_until)
                      VALUES (?, ?, ?, ?, ?, ?, ?)",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -762,7 +762,7 @@ macro_rules! sqlx_stores {
                     .bind(&value.state)
                     .bind($ts(value.created_at))
                     .bind($ts(value.expires_at))
-                    .bind($ts(value.recovery_cooldown_until))
+                    .bind($ts(value.recovery_cool_down_until))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage_err)?;
@@ -780,7 +780,7 @@ macro_rules! sqlx_stores {
                     pool: self.pool,
                     ph: $ph,
                     table: "passkey_registrations",
-                    cols: "id, purpose, user_id, state, created_at, expires_at, recovery_cooldown_until",
+                    cols: "id, purpose, user_id, state, created_at, expires_at, recovery_cool_down_until",
                     filter: "id = ?",
                     binds: [$crate::common::uuid_to_bytes(id.0)],
                     map: row_to_registration,
@@ -895,8 +895,8 @@ macro_rules! sqlx_stores {
                 state,
                 created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
                 expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,
-                recovery_cooldown_until: row
-                    .try_get("recovery_cooldown_until")
+                recovery_cool_down_until: row
+                    .try_get("recovery_cool_down_until")
                     .map_err($crate::common::storage_err)?,
             })
         }
@@ -985,12 +985,12 @@ pub(crate) use sqlx_take;
 
 pub(crate) mod __reexport {
     pub use chrono::{DateTime, Utc};
-    pub use doorman_core::encoding::{account_status_from_parts, account_status_to_str};
+    pub use doorman_core::encoding::{user_status_from_parts, user_status_to_str};
     pub use doorman_core::error::{StorageError, StorageResult};
     pub use doorman_core::storage::{
-        AccountStatus, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
-        PasskeySummary, PasskeyUse, Session, SessionId, SessionStore, Storage, StoredPasskey,
-        StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
-        VerificationPurpose, VerificationToken, VerificationTokenStore,
+        EmailLink, EmailLinkPurpose, EmailLinkStore, PasskeyChallengeId, PasskeyChallengeStore,
+        PasskeyStore, PasskeySummary, PasskeyUse, Session, SessionId, SessionStore, Storage,
+        StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User,
+        UserId, UserStatus, UserStore,
     };
 }

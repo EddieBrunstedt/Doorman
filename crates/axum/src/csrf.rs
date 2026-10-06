@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn referer_is_used_when_origin_is_absent() {
-        let headers = headers(true, None, Some("https://app.test/account/settings"));
+        let headers = headers(true, None, Some("https://app.test/settings"));
         assert!(!should_reject(
             &Method::DELETE,
             &headers,
@@ -159,7 +159,7 @@ mod tests {
         let headers = headers(
             true,
             Some("https://evil.test"),
-            Some("https://app.test/account/settings"),
+            Some("https://app.test/settings"),
         );
         assert!(should_reject(
             &Method::POST,

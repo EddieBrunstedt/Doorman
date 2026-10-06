@@ -18,7 +18,7 @@ use std::sync::Arc;
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::error::StorageResult;
 use doorman_core::rate_limit::RateLimiter;
-use doorman_core::storage::{PasskeyChallengeStore, SessionStore, VerificationTokenStore};
+use doorman_core::storage::{EmailLinkStore, PasskeyChallengeStore, SessionStore};
 use redis::aio::ConnectionManager;
 
 use crate::client::RedisClient;
@@ -68,8 +68,8 @@ impl RedisStorage {
         Arc::new(stores::session::RedisSessionStore::new(self.client.clone()))
     }
 
-    pub fn verification_token_store(&self) -> Arc<dyn VerificationTokenStore> {
-        Arc::new(stores::verification::RedisVerificationTokenStore::new(
+    pub fn email_link_store(&self) -> Arc<dyn EmailLinkStore> {
+        Arc::new(stores::email_link::RedisEmailLinkStore::new(
             self.client.clone(),
         ))
     }

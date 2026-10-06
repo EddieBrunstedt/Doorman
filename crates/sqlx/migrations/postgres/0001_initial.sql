@@ -17,12 +17,12 @@ CREATE TABLE sessions (
     expires_at TIMESTAMPTZ NOT NULL,
     ip TEXT,
     user_agent TEXT,
-    recovery_cooldown_until TIMESTAMPTZ
+    recovery_cool_down_until TIMESTAMPTZ
 );
 CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 
-CREATE TABLE verification_tokens (
+CREATE TABLE email_links (
     token_hash BYTEA NOT NULL,
     purpose TEXT NOT NULL,
     user_id BYTEA NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -31,10 +31,10 @@ CREATE TABLE verification_tokens (
     expires_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (token_hash, purpose)
 );
-CREATE INDEX idx_verification_tokens_user_id ON verification_tokens(user_id);
-CREATE INDEX idx_verification_tokens_expires_at ON verification_tokens(expires_at);
+CREATE INDEX idx_email_links_user_id ON email_links(user_id);
+CREATE INDEX idx_email_links_expires_at ON email_links(expires_at);
 
-CREATE TABLE passkey_credentials (
+CREATE TABLE passkeys (
     credential_id BYTEA PRIMARY KEY,
     user_id BYTEA NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     passkey BYTEA NOT NULL,
@@ -45,9 +45,9 @@ CREATE TABLE passkey_credentials (
     transports TEXT NOT NULL DEFAULT '',
     backup_eligible BOOLEAN NOT NULL DEFAULT FALSE,
     backup_state BOOLEAN NOT NULL DEFAULT FALSE,
-    recovery_cooldown_until TIMESTAMPTZ
+    recovery_cool_down_until TIMESTAMPTZ
 );
-CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
+CREATE INDEX idx_passkeys_user_id ON passkeys(user_id);
 
 CREATE TABLE passkey_registrations (
     id BYTEA PRIMARY KEY,
@@ -56,7 +56,7 @@ CREATE TABLE passkey_registrations (
     state BYTEA NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
-    recovery_cooldown_until TIMESTAMPTZ
+    recovery_cool_down_until TIMESTAMPTZ
 );
 CREATE INDEX idx_passkey_registrations_user_id ON passkey_registrations(user_id);
 CREATE INDEX idx_passkey_registrations_expires_at ON passkey_registrations(expires_at);

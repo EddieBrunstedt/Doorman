@@ -17,12 +17,12 @@ CREATE TABLE sessions (
     expires_at TEXT NOT NULL,
     ip TEXT,
     user_agent TEXT,
-    recovery_cooldown_until TEXT
+    recovery_cool_down_until TEXT
 );
 CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 
-CREATE TABLE verification_tokens (
+CREATE TABLE email_links (
     token_hash BLOB NOT NULL,
     purpose TEXT NOT NULL,
     user_id BLOB NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -31,10 +31,10 @@ CREATE TABLE verification_tokens (
     expires_at TEXT NOT NULL,
     PRIMARY KEY (token_hash, purpose)
 );
-CREATE INDEX idx_verification_tokens_user_id ON verification_tokens(user_id);
-CREATE INDEX idx_verification_tokens_expires_at ON verification_tokens(expires_at);
+CREATE INDEX idx_email_links_user_id ON email_links(user_id);
+CREATE INDEX idx_email_links_expires_at ON email_links(expires_at);
 
-CREATE TABLE passkey_credentials (
+CREATE TABLE passkeys (
     credential_id BLOB PRIMARY KEY,
     user_id BLOB NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     passkey BLOB NOT NULL,
@@ -45,9 +45,9 @@ CREATE TABLE passkey_credentials (
     transports TEXT NOT NULL DEFAULT '',
     backup_eligible INTEGER NOT NULL DEFAULT 0,
     backup_state INTEGER NOT NULL DEFAULT 0,
-    recovery_cooldown_until TEXT
+    recovery_cool_down_until TEXT
 );
-CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
+CREATE INDEX idx_passkeys_user_id ON passkeys(user_id);
 
 CREATE TABLE passkey_registrations (
     id BLOB PRIMARY KEY,
@@ -56,7 +56,7 @@ CREATE TABLE passkey_registrations (
     state BLOB NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
-    recovery_cooldown_until TEXT
+    recovery_cool_down_until TEXT
 );
 CREATE INDEX idx_passkey_registrations_user_id ON passkey_registrations(user_id);
 CREATE INDEX idx_passkey_registrations_expires_at ON passkey_registrations(expires_at);

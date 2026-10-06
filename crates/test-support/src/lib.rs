@@ -6,9 +6,9 @@ use chrono::{DateTime, Duration, Utc};
 use doorman_core::audit::{AuditEvent, AuditSink};
 use doorman_core::clock::Clock;
 use doorman_core::email::{Email, EmailSender};
+use doorman_core::email_link::TOKEN_PLACEHOLDER;
 use doorman_core::error::{EmailError, EmailResult};
 use doorman_core::metrics::{MetricEvent, MetricSink};
-use doorman_core::verification::TOKEN_PLACEHOLDER;
 
 pub fn token_from_email(body: &str, template: &str) -> String {
     let prefix = template

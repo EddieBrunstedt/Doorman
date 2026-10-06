@@ -152,10 +152,10 @@ mod tests {
     fn key_canonical_renders_operation_and_dimensions_in_order() {
         let key = RateLimitKey::new("passkey/authenticate/finish")
             .with("ip", "1.2.3.4")
-            .with("credential", "abc");
+            .with("passkey", "abc");
         assert_eq!(
             key.canonical(),
-            "passkey/authenticate/finish|ip=1.2.3.4|credential=abc"
+            "passkey/authenticate/finish|ip=1.2.3.4|passkey=abc"
         );
         assert_eq!(key.operation(), "passkey/authenticate/finish");
         assert_eq!(key.dimensions().len(), 2);
@@ -164,8 +164,8 @@ mod tests {
     #[test]
     fn distinct_dimensions_do_not_collide() {
         let ip = RateLimitKey::new("op").with("ip", "v");
-        let account = RateLimitKey::new("op").with("account", "v");
-        assert_ne!(ip.canonical(), account.canonical());
-        assert_ne!(ip, account);
+        let user = RateLimitKey::new("op").with("user", "v");
+        assert_ne!(ip.canonical(), user.canonical());
+        assert_ne!(ip, user);
     }
 }

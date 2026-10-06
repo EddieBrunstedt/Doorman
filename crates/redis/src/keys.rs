@@ -1,6 +1,4 @@
-use doorman_core::storage::{
-    PasskeyChallengeId, SessionId, TokenHash, UserId, VerificationPurpose,
-};
+use doorman_core::storage::{EmailLinkPurpose, PasskeyChallengeId, SessionId, TokenHash, UserId};
 
 #[derive(Clone, Debug)]
 pub(crate) struct KeySchema {
@@ -36,30 +34,30 @@ impl KeySchema {
         format!("{}user:*:sessions", self.prefix)
     }
 
-    pub(crate) fn vtoken(&self, purpose: VerificationPurpose, hash: &TokenHash) -> String {
-        self.vtoken_key_for(purpose, &token_hash_hex(hash))
+    pub(crate) fn email_link(&self, purpose: EmailLinkPurpose, hash: &TokenHash) -> String {
+        self.email_link_key_for(purpose, &token_hash_hex(hash))
     }
 
-    pub(crate) fn vtoken_key_for(&self, purpose: VerificationPurpose, hex_hash: &str) -> String {
+    pub(crate) fn email_link_key_for(&self, purpose: EmailLinkPurpose, hex_hash: &str) -> String {
         format!(
-            "{}vtoken:{}:{}",
+            "{}email_link:{}:{}",
             self.prefix,
             purpose_str(purpose),
             hex_hash
         )
     }
 
-    pub(crate) fn user_vtokens(&self, user_id: UserId, purpose: VerificationPurpose) -> String {
+    pub(crate) fn user_email_links(&self, user_id: UserId, purpose: EmailLinkPurpose) -> String {
         format!(
-            "{}user:{}:vtokens:{}",
+            "{}user:{}:email_links:{}",
             self.prefix,
             user_id.0,
             purpose_str(purpose)
         )
     }
 
-    pub(crate) fn user_vtokens_pattern(&self, purpose: VerificationPurpose) -> String {
-        format!("{}user:*:vtokens:{}", self.prefix, purpose_str(purpose))
+    pub(crate) fn user_email_links_pattern(&self, purpose: EmailLinkPurpose) -> String {
+        format!("{}user:*:email_links:{}", self.prefix, purpose_str(purpose))
     }
 
     pub(crate) fn pkreg(&self, id: PasskeyChallengeId) -> String {
@@ -91,10 +89,10 @@ impl KeySchema {
     }
 }
 
-pub(crate) const ALL_PURPOSES: [VerificationPurpose; 3] = [
-    VerificationPurpose::Signup,
-    VerificationPurpose::Recovery,
-    VerificationPurpose::EmailChange,
+pub(crate) const ALL_PURPOSES: [EmailLinkPurpose; 3] = [
+    EmailLinkPurpose::Signup,
+    EmailLinkPurpose::Recovery,
+    EmailLinkPurpose::EmailChange,
 ];
 
 pub(crate) use doorman_core::encoding::purpose_to_str as purpose_str;
@@ -120,14 +118,14 @@ mod tests {
         );
         assert_eq!(keys.prefix(), "doorman:");
 
-        let signup = keys.vtoken(VerificationPurpose::Signup, &hash);
-        let recovery = keys.vtoken(VerificationPurpose::Recovery, &hash);
+        let signup = keys.email_link(EmailLinkPurpose::Signup, &hash);
+        let recovery = keys.email_link(EmailLinkPurpose::Recovery, &hash);
         assert_ne!(signup, recovery);
         assert!(signup.ends_with(&token_hash_hex(&hash)));
 
         assert_eq!(
-            keys.user_vtokens(user, VerificationPurpose::EmailChange),
-            format!("doorman:user:{}:vtokens:email_change", user.0)
+            keys.user_email_links(user, EmailLinkPurpose::EmailChange),
+            format!("doorman:user:{}:email_links:email_change", user.0)
         );
     }
 

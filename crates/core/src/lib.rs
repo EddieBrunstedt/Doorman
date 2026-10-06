@@ -7,7 +7,6 @@
     clippy::unwrap_used
 )]
 
-pub mod account;
 pub mod assembly;
 mod assertion;
 pub mod audit;
@@ -15,9 +14,9 @@ mod challenge;
 pub mod clock;
 mod context;
 pub mod email;
+pub mod email_link;
 pub mod encoding;
 pub mod error;
-mod link;
 pub mod memory;
 pub mod metrics;
 pub mod operator;
@@ -27,14 +26,14 @@ pub mod purge;
 pub mod rate_limit;
 pub mod reauth;
 pub mod recovery;
-mod recovery_cooldown;
+mod recovery_cool_down;
 mod redeem;
 pub mod session;
 pub mod signup;
 pub mod storage;
 mod sync;
 pub mod token;
-mod user;
-pub mod verification;
+pub mod user;
+mod user_records;
 
 pub use error::*;

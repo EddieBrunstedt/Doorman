@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use common::{ResidentHttpAuthenticator, TestApp, login};
 use doorman_axum::dto::PasskeyChallenge;
 use doorman_core::audit::OperatorActor;
-use doorman_core::storage::AccountStatus;
+use doorman_core::storage::UserStatus;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 fn operator() -> OperatorActor {
@@ -30,7 +30,7 @@ async fn a_status_written_outside_doorman_leaves_the_session() {
     let auth = login(&client, &app, "disabled@example.com").await;
     app.set_user_status(
         auth.user.id,
-        AccountStatus::Disabled {
+        UserStatus::Disabled {
             at: chrono::Utc::now(),
         },
     )
@@ -58,8 +58,7 @@ async fn active_user_is_unaffected() {
         "an active user still authenticates"
     );
 
-    app.set_user_status(auth.user.id, AccountStatus::Active)
-        .await;
+    app.set_user_status(auth.user.id, UserStatus::Active).await;
     assert_eq!(me(&client, &app, &auth.token).await, StatusCode::OK);
 
     app.shutdown().await;
@@ -70,7 +69,7 @@ async fn operator_disable_locks_out_live_session_then_enable_restores() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
-    let auth = login(&client, &app, "locked@example.com").await;
+    let auth = login(&client, &app, "disabled@example.com").await;
 
     assert_eq!(
         me(&client, &app, &auth.token).await,
@@ -94,11 +93,11 @@ async fn operator_disable_locks_out_live_session_then_enable_restores() {
         .await
         .expect("operator enable");
 
-    let reauth = login(&client, &app, "locked@example.com").await;
+    let reauth = login(&client, &app, "disabled@example.com").await;
     assert_eq!(
         me(&client, &app, &reauth.token).await,
         StatusCode::OK,
-        "a re-enabled account can authenticate a fresh session",
+        "a re-enabled user can authenticate a fresh session",
     );
 
     app.shutdown().await;
@@ -110,7 +109,7 @@ async fn disabled_user_cannot_log_in() {
     let client = reqwest::Client::new();
     let mut authenticator = ResidentHttpAuthenticator::new(&app.rp_origin);
 
-    let auth = login(&client, &app, "frozen@example.com").await;
+    let auth = login(&client, &app, "disabled@example.com").await;
 
     let start = client
         .post(app.url("/auth/passkey/register/start"))
@@ -137,7 +136,7 @@ async fn disabled_user_cannot_log_in() {
 
     app.set_user_status(
         auth.user.id,
-        AccountStatus::Disabled {
+        UserStatus::Disabled {
             at: chrono::Utc::now(),
         },
     )
@@ -171,7 +170,7 @@ async fn disabled_user_cannot_log_in() {
         "a refused login sets no session cookie"
     );
     let body: serde_json::Value = response.json().await.expect("json body");
-    assert_eq!(body["error"]["code"], "account_disabled");
+    assert_eq!(body["error"]["code"], "user_disabled");
 
     app.shutdown().await;
 }

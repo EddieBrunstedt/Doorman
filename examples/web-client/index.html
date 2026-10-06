@@ -22,9 +22,9 @@
       <button id="finish-signup">Finish signup</button>
     </section>
 
-    <section aria-labelledby="signin-h">
-      <h2 id="signin-h">Sign in</h2>
-      <button id="authenticate">Sign in with discoverable passkey</button>
+    <section aria-labelledby="login-h">
+      <h2 id="login-h">Log in</h2>
+      <button id="authenticate">Log in with a discoverable passkey</button>
     </section>
 
     <section aria-labelledby="recovery-h">
@@ -48,20 +48,20 @@
     <section aria-labelledby="sessions-h">
       <h2 id="sessions-h">Sessions</h2>
       <button id="list-sessions">List sessions</button>
-      <button id="revoke-others">Sign out everywhere else</button>
-      <button id="logout">Sign out (this session)</button>
-      <button id="logout-all">Sign out everywhere</button>
+      <button id="revoke-others">Log out everywhere else</button>
+      <button id="logout">Log out (this session)</button>
+      <button id="logout-all">Log out everywhere</button>
     </section>
 
-    <section aria-labelledby="account-h">
-      <h2 id="account-h">Account</h2>
+    <section aria-labelledby="user-h">
+      <h2 id="user-h">User</h2>
       <label for="new-email">New email</label>
       <input id="new-email" type="email" value="bob@example.com" autocomplete="email" />
       <button id="request-email-change">Request email change</button>
       <label for="email-change-token">Email-change token from email</label>
       <input id="email-change-token" placeholder="token from email" />
       <button id="confirm-email-change">Confirm email change</button>
-      <button id="delete-account">Delete account</button>
+      <button id="delete-user">Delete user</button>
     </section>
 
     <p id="error" role="alert" aria-live="assertive"></p>
@@ -71,7 +71,7 @@
       import {
         authenticatePasskey,
         confirmEmailChange,
-        deleteAccount,
+        deleteUser,
         finishRecovery,
         finishSignup,
         listPasskeys,
@@ -121,20 +121,20 @@
       }));
       document.getElementById("logout").addEventListener("click", run("logout", async () => {
         await logout();
-        return "signed out of this session";
+        return "logged out of this session";
       }));
       document.getElementById("logout-all").addEventListener("click", run("logout all", async () => {
         await logoutEverywhere();
-        return "signed out everywhere";
+        return "logged out everywhere";
       }));
       document.getElementById("request-email-change").addEventListener("click", run("email change request", async () => {
         await requestEmailChange(value("new-email"));
         return "email-change confirmation requested";
       }));
       document.getElementById("confirm-email-change").addEventListener("click", run("email change confirm", () => confirmEmailChange(value("email-change-token"))));
-      document.getElementById("delete-account").addEventListener("click", run("delete account", async () => {
-        await deleteAccount();
-        return "account deleted";
+      document.getElementById("delete-user").addEventListener("click", run("delete user", async () => {
+        await deleteUser();
+        return "user deleted";
       }));
     </script>
   </body>

@@ -8,20 +8,20 @@ use common::{
     token_from_email_with,
 };
 use doorman_axum::dto::{
-    AuthResponse, PasskeyChallenge, RecoveryConsumeRequest, RecoveryRequest,
+    AuthResponse, PasskeyChallenge, RecoveryRedeemRequest, RecoveryRequest,
     RegistrationFinishRequest, SignupRequest,
 };
-use doorman_core::storage::PasskeyCredentialStore;
+use doorman_core::storage::PasskeyStore;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::prelude::Url as AuthUrl;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
-const RECOVERY_LINK_SUBJECT: &str = "Recover access to your account";
-const RECOVERY_REQUESTED_NOTIFICATION_SUBJECT: &str = "Security notice: account recovery requested";
-const RECOVERY_COMPLETED_NOTIFICATION_SUBJECT: &str = "Security notice: account recovery completed";
-const PASSKEY_REGISTERED_NOTIFICATION_SUBJECT: &str = "Security notice: passkey registered";
-const PASSKEY_REMOVED_NOTIFICATION_SUBJECT: &str = "Security notice: passkey removed";
+const RECOVERY_LINK_SUBJECT: &str = "Recover access with a new passkey";
+const RECOVERY_REQUESTED_NOTICE_SUBJECT: &str = "Security notice: recovery requested";
+const RECOVERY_COMPLETED_NOTICE_SUBJECT: &str = "Security notice: recovery completed";
+const PASSKEY_REGISTERED_NOTICE_SUBJECT: &str = "Security notice: passkey registered";
+const PASSKEY_REMOVED_NOTICE_SUBJECT: &str = "Security notice: passkey removed";
 
 #[tokio::test]
 async fn full_recovery_round_trip() {
@@ -48,7 +48,7 @@ async fn full_recovery_round_trip() {
     assert_eq!(req.status(), StatusCode::NO_CONTENT);
 
     let new_mail = &app.email.sent()[mail_before..];
-    assert_eq!(new_mail.len(), 2, "link + notification");
+    assert_eq!(new_mail.len(), 2, "link + notice");
     let link_email = new_mail
         .iter()
         .find(|e| e.subject == RECOVERY_LINK_SUBJECT)
@@ -56,22 +56,22 @@ async fn full_recovery_round_trip() {
     assert!(
         new_mail
             .iter()
-            .any(|e| e.subject == RECOVERY_REQUESTED_NOTIFICATION_SUBJECT),
-        "requested notification queued",
+            .any(|e| e.subject == RECOVERY_REQUESTED_NOTICE_SUBJECT),
+        "requested notice queued",
     );
     let token = token_from_email_with(&link_email.body_text, RECOVERY_URL);
 
-    let consume = cookie_client
-        .post(app.url("/auth/recovery/consume"))
-        .json(&RecoveryConsumeRequest {
+    let redeem = cookie_client
+        .post(app.url("/auth/recovery/redeem"))
+        .json(&RecoveryRedeemRequest {
             token: token.clone(),
         })
         .send()
         .await
-        .expect("recovery consume");
-    assert_eq!(consume.status(), StatusCode::OK);
+        .expect("recovery redeem");
+    assert_eq!(redeem.status(), StatusCode::OK);
     let challenge: PasskeyChallenge<CreationChallengeResponse> =
-        consume.json().await.expect("consume body");
+        redeem.json().await.expect("redeem body");
 
     let mut sp = WebauthnAuthenticator::new(SoftPasskey::new(true));
     let auth_origin = AuthUrl::parse(app.rp_origin.as_str()).expect("rp origin");
@@ -106,19 +106,15 @@ async fn full_recovery_round_trip() {
 
     let sent = app.email.sent();
     let after_finish = &sent[mail_before_finish..];
-    assert_eq!(
-        after_finish.len(),
-        2,
-        "passkey + completed notifications queued",
-    );
+    assert_eq!(after_finish.len(), 2, "passkey + completed notices queued",);
     let subjects: Vec<&str> = after_finish.iter().map(|e| e.subject.as_str()).collect();
     assert!(
-        subjects.contains(&PASSKEY_REGISTERED_NOTIFICATION_SUBJECT),
-        "passkey notification queued ({subjects:?})",
+        subjects.contains(&PASSKEY_REGISTERED_NOTICE_SUBJECT),
+        "passkey notice queued ({subjects:?})",
     );
     assert!(
-        subjects.contains(&RECOVERY_COMPLETED_NOTIFICATION_SUBJECT),
-        "completed notification queued ({subjects:?})",
+        subjects.contains(&RECOVERY_COMPLETED_NOTICE_SUBJECT),
+        "completed notice queued ({subjects:?})",
     );
 
     let me = cookie_client
@@ -158,7 +154,7 @@ async fn recovery_request_for_unknown_email_is_silent() {
 }
 
 #[tokio::test]
-async fn recovery_request_for_registered_email_sends_link_and_notification() {
+async fn recovery_request_for_registered_email_sends_link_and_notice() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -185,33 +181,33 @@ async fn recovery_request_for_registered_email_sends_link_and_notification() {
     assert_eq!(new_mail.len(), 2);
     let subjects: Vec<&str> = new_mail.iter().map(|e| e.subject.as_str()).collect();
     assert!(subjects.contains(&RECOVERY_LINK_SUBJECT));
-    assert!(subjects.contains(&RECOVERY_REQUESTED_NOTIFICATION_SUBJECT));
+    assert!(subjects.contains(&RECOVERY_REQUESTED_NOTICE_SUBJECT));
 
     app.shutdown().await;
 }
 
 #[tokio::test]
-async fn recovery_consume_with_invalid_token_returns_400() {
+async fn recovery_redeem_with_invalid_token_returns_400() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(app.url("/auth/recovery/consume"))
-        .json(&RecoveryConsumeRequest {
+        .post(app.url("/auth/recovery/redeem"))
+        .json(&RecoveryRedeemRequest {
             token: "not-a-real-token".into(),
         })
         .send()
         .await
-        .expect("consume");
+        .expect("redeem");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body: serde_json::Value = resp.json().await.expect("json");
-    assert_eq!(body["error"]["code"], "invalid_verification_token");
+    assert_eq!(body["error"]["code"], "invalid_email_link");
 
     app.shutdown().await;
 }
 
 #[tokio::test]
-async fn recovery_consume_replay_is_rejected() {
+async fn recovery_redeem_replay_is_rejected() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -240,24 +236,24 @@ async fn recovery_consume_replay_is_rejected() {
     let token = token_from_email_with(&link_email.body_text, RECOVERY_URL);
 
     let first = plain
-        .post(app.url("/auth/recovery/consume"))
-        .json(&RecoveryConsumeRequest {
+        .post(app.url("/auth/recovery/redeem"))
+        .json(&RecoveryRedeemRequest {
             token: token.clone(),
         })
         .send()
         .await
-        .expect("first consume");
+        .expect("first redeem");
     assert_eq!(first.status(), StatusCode::OK);
 
     let second = plain
-        .post(app.url("/auth/recovery/consume"))
-        .json(&RecoveryConsumeRequest { token })
+        .post(app.url("/auth/recovery/redeem"))
+        .json(&RecoveryRedeemRequest { token })
         .send()
         .await
-        .expect("second consume");
+        .expect("second redeem");
     assert_eq!(second.status(), StatusCode::BAD_REQUEST);
     let body: serde_json::Value = second.json().await.expect("body");
-    assert_eq!(body["error"]["code"], "invalid_verification_token");
+    assert_eq!(body["error"]["code"], "invalid_email_link");
 
     app.shutdown().await;
 }
@@ -320,15 +316,15 @@ async fn provision_recovery_session_with_authenticator(
         .clone();
     let token = token_from_email_with(&link_email.body_text, RECOVERY_URL);
 
-    let consume = cookie_client
-        .post(app.url("/auth/recovery/consume"))
-        .json(&RecoveryConsumeRequest { token })
+    let redeem = cookie_client
+        .post(app.url("/auth/recovery/redeem"))
+        .json(&RecoveryRedeemRequest { token })
         .send()
         .await
-        .expect("recovery consume");
-    assert_eq!(consume.status(), StatusCode::OK);
+        .expect("recovery redeem");
+    assert_eq!(redeem.status(), StatusCode::OK);
     let challenge: PasskeyChallenge<CreationChallengeResponse> =
-        consume.json().await.expect("consume body");
+        redeem.json().await.expect("redeem body");
 
     let attestation = authenticator.do_registration(challenge.options);
     let credential_id = attestation.raw_id.as_ref().to_vec();
@@ -411,7 +407,7 @@ async fn register_additional_passkey(
 }
 
 #[tokio::test]
-async fn delete_passkey_during_cooldown_returns_409() {
+async fn delete_passkey_during_cool_down_returns_409() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -439,25 +435,25 @@ async fn delete_passkey_during_cooldown_returns_409() {
         .expect("delete passkey");
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json().await.expect("body");
-    assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+    assert_eq!(body["error"]["code"], "recovery_cool_down_active");
     let sent = app.email.sent();
     assert_eq!(
         sent.len(),
         mail_before_delete,
-        "cooldown block sent no mail"
+        "cool-down block sent no mail"
     );
     assert!(
         !sent[mail_before_delete..]
             .iter()
-            .any(|email| email.subject == PASSKEY_REMOVED_NOTIFICATION_SUBJECT),
-        "cooldown-blocked removal sent no passkey removal notification"
+            .any(|email| email.subject == PASSKEY_REMOVED_NOTICE_SUBJECT),
+        "cool-down-blocked removal sent no passkey removal notice"
     );
 
     app.shutdown().await;
 }
 
 #[tokio::test]
-async fn delete_other_session_during_cooldown_returns_409() {
+async fn delete_other_session_during_cool_down_returns_409() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -476,18 +472,18 @@ async fn delete_other_session_during_cooldown_returns_409() {
         .expect("delete other session");
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json().await.expect("body");
-    assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+    assert_eq!(body["error"]["code"], "recovery_cool_down_active");
     assert_eq!(
         app.email.sent().len(),
         mail_before_revoke,
-        "cooldown-blocked session revoke sent no mail"
+        "cool-down-blocked session revoke sent no mail"
     );
 
     app.shutdown().await;
 }
 
 #[tokio::test]
-async fn revoke_others_during_cooldown_returns_409() {
+async fn revoke_others_during_cool_down_returns_409() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -506,18 +502,18 @@ async fn revoke_others_during_cooldown_returns_409() {
         .expect("delete /auth/sessions");
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json().await.expect("body");
-    assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+    assert_eq!(body["error"]["code"], "recovery_cool_down_active");
     assert_eq!(
         app.email.sent().len(),
         mail_before_revoke,
-        "cooldown-blocked sign-out-everywhere sent no mail"
+        "cool-down-blocked revoke-other-sessions sent no mail"
     );
 
     app.shutdown().await;
 }
 
 #[tokio::test]
-async fn change_email_during_cooldown_returns_409() {
+async fn change_email_during_cool_down_returns_409() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -528,7 +524,7 @@ async fn change_email_during_cooldown_returns_409() {
 
     let mail_before = app.email.sent().len();
     let resp = cookie_client
-        .post(app.url("/auth/account/email"))
+        .post(app.url("/auth/user/email"))
         .bearer_auth(&auth.token)
         .json(&doorman_axum::dto::EmailChangeRequest {
             new_email: "new@example.com".into(),
@@ -539,13 +535,13 @@ async fn change_email_during_cooldown_returns_409() {
         .expect("request email change");
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json().await.expect("body");
-    assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+    assert_eq!(body["error"]["code"], "recovery_cool_down_active");
 
     let sent = app.email.sent();
     assert_eq!(
         sent.len(),
         mail_before,
-        "cooldown-blocked email change sent no mail"
+        "cool-down-blocked email change sent no mail"
     );
     assert!(
         !sent[mail_before..]
@@ -558,7 +554,7 @@ async fn change_email_during_cooldown_returns_409() {
 }
 
 #[tokio::test]
-async fn delete_account_during_cooldown_returns_409() {
+async fn delete_user_during_cool_down_returns_409() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -569,18 +565,18 @@ async fn delete_account_during_cooldown_returns_409() {
 
     let mail_before = app.email.sent().len();
     let resp = cookie_client
-        .delete(app.url("/auth/account"))
+        .delete(app.url("/auth/user"))
         .bearer_auth(&auth.token)
         .send()
         .await
-        .expect("delete account");
+        .expect("delete user");
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json().await.expect("body");
-    assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+    assert_eq!(body["error"]["code"], "recovery_cool_down_active");
     assert_eq!(
         app.email.sent().len(),
         mail_before,
-        "cooldown-blocked account deletion sent no mail"
+        "cool-down-blocked user deletion sent no mail"
     );
 
     let still_alive = cookie_client
@@ -592,14 +588,14 @@ async fn delete_account_during_cooldown_returns_409() {
     assert_eq!(
         still_alive.status(),
         StatusCode::OK,
-        "the account survived the cooldown-blocked deletion"
+        "the user survived the cool-down-blocked deletion"
     );
 
     app.shutdown().await;
 }
 
 #[tokio::test]
-async fn recovery_passkey_login_during_cooldown_cannot_delete_passkeys_or_revoke_others() {
+async fn recovery_passkey_login_during_cool_down_cannot_delete_passkeys_or_revoke_others() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -642,7 +638,7 @@ async fn recovery_passkey_login_during_cooldown_cannot_delete_passkeys_or_revoke
         .expect("delete passkey");
     assert_eq!(delete_passkey.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = delete_passkey.json().await.expect("body");
-    assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+    assert_eq!(body["error"]["code"], "recovery_cool_down_active");
 
     let other = common::login(&plain, &app, "alice@example.com").await;
     let revoke_other = plain
@@ -653,13 +649,13 @@ async fn recovery_passkey_login_during_cooldown_cannot_delete_passkeys_or_revoke
         .expect("delete other session");
     assert_eq!(revoke_other.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = revoke_other.json().await.expect("body");
-    assert_eq!(body["error"]["code"], "recovery_cooldown_active");
+    assert_eq!(body["error"]["code"], "recovery_cool_down_active");
 
     app.shutdown().await;
 }
 
 #[tokio::test]
-async fn register_start_during_cooldown_is_allowed() {
+async fn register_start_during_cool_down_is_allowed() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -680,7 +676,7 @@ async fn register_start_during_cooldown_is_allowed() {
 }
 
 #[tokio::test]
-async fn passkey_added_during_cooldown_inherits_cooldown() {
+async fn passkey_added_during_cool_down_inherits_cool_down() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -694,21 +690,21 @@ async fn passkey_added_during_cooldown_inherits_cooldown() {
         .validate(&auth.token)
         .await
         .expect("validate recovery session");
-    let cooldown_until = recovery_session
-        .recovery_cooldown_until
-        .expect("recovery session restricted");
+    let cool_down_until = recovery_session
+        .recovery_cool_down_until
+        .expect("recovery session in cool-down");
 
     let mut backup_authenticator = ResidentHttpAuthenticator::new(&app.rp_origin);
     let backup_credential_id =
         register_additional_passkey(&app, &plain, &auth.token, &mut backup_authenticator).await;
 
     let stored = app
-        .passkey_credentials
+        .passkeys
         .find_passkey_by_credential_id(&backup_credential_id)
         .await
         .expect("find backup passkey")
         .expect("backup passkey stored");
-    assert_eq!(stored.recovery_cooldown_until, Some(cooldown_until));
+    assert_eq!(stored.recovery_cool_down_until, Some(cool_down_until));
 
     let backup_auth = authenticate_passkey(
         &app,
@@ -717,32 +713,32 @@ async fn passkey_added_during_cooldown_inherits_cooldown() {
         &backup_credential_id,
     )
     .await;
-    let restricted_session = app
+    let cool_down_session = app
         .session_manager
         .validate(&backup_auth.token)
         .await
         .expect("validate backup session");
     assert_eq!(
-        restricted_session.recovery_cooldown_until,
-        Some(cooldown_until),
+        cool_down_session.recovery_cool_down_until,
+        Some(cool_down_until),
     );
 
     let mut stored_after_auth = app
-        .passkey_credentials
+        .passkeys
         .find_passkey_by_credential_id(&backup_credential_id)
         .await
         .expect("find backup passkey after auth")
         .expect("backup passkey stored after auth");
-    stored_after_auth.recovery_cooldown_until =
+    stored_after_auth.recovery_cool_down_until =
         Some(chrono::Utc::now() - ChronoDuration::seconds(1));
-    app.passkey_credentials
+    app.passkeys
         .delete_passkey(&backup_credential_id)
         .await
         .expect("remove backup passkey");
-    app.passkey_credentials
+    app.passkeys
         .add_passkey(stored_after_auth)
         .await
-        .expect("expire backup passkey cooldown");
+        .expect("expire backup passkey cool-down");
 
     let after_expiry_auth = authenticate_passkey(
         &app,
@@ -751,18 +747,18 @@ async fn passkey_added_during_cooldown_inherits_cooldown() {
         &backup_credential_id,
     )
     .await;
-    let unrestricted_session = app
+    let ordinary_session = app
         .session_manager
         .validate(&after_expiry_auth.token)
         .await
-        .expect("validate unrestricted session");
-    assert_eq!(unrestricted_session.recovery_cooldown_until, None);
+        .expect("validate ordinary session");
+    assert_eq!(ordinary_session.recovery_cool_down_until, None);
 
     app.shutdown().await;
 }
 
 #[tokio::test]
-async fn deleting_own_recovery_session_is_allowed_during_cooldown() {
+async fn deleting_own_recovery_session_is_allowed_during_cool_down() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -783,7 +779,7 @@ async fn deleting_own_recovery_session_is_allowed_during_cooldown() {
 }
 
 #[tokio::test]
-async fn signup_token_is_not_accepted_at_recovery_consume() {
+async fn signup_token_is_not_accepted_at_recovery_redeem() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
@@ -800,14 +796,14 @@ async fn signup_token_is_not_accepted_at_recovery_consume() {
     let token = token_from_email(&app.email.sent()[0].body_text);
 
     let resp = client
-        .post(app.url("/auth/recovery/consume"))
-        .json(&RecoveryConsumeRequest { token })
+        .post(app.url("/auth/recovery/redeem"))
+        .json(&RecoveryRedeemRequest { token })
         .send()
         .await
-        .expect("recovery consume");
+        .expect("recovery redeem");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body: serde_json::Value = resp.json().await.expect("body");
-    assert_eq!(body["error"]["code"], "invalid_verification_token");
+    assert_eq!(body["error"]["code"], "invalid_email_link");
 
     app.shutdown().await;
 }

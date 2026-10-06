@@ -36,9 +36,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             url_template: format!("{base}/?recovery_token={TOKEN_PLACEHOLDER}"),
             ..RecoveryConfig::default()
         })
-        .account(AccountConfig {
+        .user(UserConfig {
             url_template: format!("{base}/?email_change_token={TOKEN_PLACEHOLDER}"),
-            ..AccountConfig::default()
+            ..UserConfig::default()
         })
         .build()?;
     let auth = AuthService::builder(core)

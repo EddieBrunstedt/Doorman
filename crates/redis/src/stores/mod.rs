@@ -1,10 +1,10 @@
+pub(crate) mod email_link;
 pub(crate) mod passkey_chal;
 pub(crate) mod session;
-pub(crate) mod verification;
 
 use chrono::{DateTime, Utc};
 use doorman_core::error::StorageResult;
-use doorman_core::storage::{Session, StoredPasskeyRegistration, VerificationToken};
+use doorman_core::storage::{EmailLink, Session, StoredPasskeyRegistration};
 use redis::aio::ConnectionManager;
 use serde::de::DeserializeOwned;
 
@@ -29,7 +29,7 @@ impl IndexedRow for Session {
     }
 }
 
-impl IndexedRow for VerificationToken {
+impl IndexedRow for EmailLink {
     fn expires_at(&self) -> DateTime<Utc> {
         self.expires_at
     }

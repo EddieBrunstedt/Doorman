@@ -8,14 +8,14 @@ use crate::challenge::{PasskeyChallenge, Reauth};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::passkey::PasskeyConfig;
-use crate::recovery_cooldown::RecoveryCooldown;
+use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::redeem::Redeemer;
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, Session, Storage, UserId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReauthAction {
-    DeleteAccount,
+    DeleteUser,
     RequestEmailChange,
     RemovePasskey,
     RevokeOtherSessions,
@@ -24,7 +24,7 @@ pub enum ReauthAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReauthPolicy {
-    delete_account: bool,
+    delete_user: bool,
     request_email_change: bool,
     remove_passkey: bool,
     revoke_other_sessions: bool,
@@ -36,7 +36,7 @@ impl ReauthPolicy {
         let mut policy = Self::disabled();
         for action in actions {
             match action {
-                ReauthAction::DeleteAccount => policy.delete_account = true,
+                ReauthAction::DeleteUser => policy.delete_user = true,
                 ReauthAction::RequestEmailChange => policy.request_email_change = true,
                 ReauthAction::RemovePasskey => policy.remove_passkey = true,
                 ReauthAction::RevokeOtherSessions => policy.revoke_other_sessions = true,
@@ -48,7 +48,7 @@ impl ReauthPolicy {
 
     pub const fn disabled() -> Self {
         Self {
-            delete_account: false,
+            delete_user: false,
             request_email_change: false,
             remove_passkey: false,
             revoke_other_sessions: false,
@@ -58,7 +58,7 @@ impl ReauthPolicy {
 
     pub const fn requires(&self, action: ReauthAction) -> bool {
         match action {
-            ReauthAction::DeleteAccount => self.delete_account,
+            ReauthAction::DeleteUser => self.delete_user,
             ReauthAction::RequestEmailChange => self.request_email_change,
             ReauthAction::RemovePasskey => self.remove_passkey,
             ReauthAction::RevokeOtherSessions => self.revoke_other_sessions,
@@ -96,14 +96,14 @@ impl ReauthManager {
                 config,
                 webauthn.clone(),
                 storage.passkey_challenges.clone(),
-                storage.passkey_credentials.clone(),
+                storage.passkeys.clone(),
                 Redeemer::new(storage.users.clone(), clock.clone(), audit.clone()),
                 clock.clone(),
             ),
             assertions: AssertionVerifier::new(
                 webauthn,
                 storage.users.clone(),
-                storage.passkey_credentials.clone(),
+                storage.passkeys.clone(),
                 clock.clone(),
             ),
             clock,
@@ -134,7 +134,7 @@ impl ReauthManager {
         proof: Option<&ReauthProof>,
         context: &SessionContext,
     ) -> Result<()> {
-        RecoveryCooldown::refuse_destructive_action(session, self.clock.now())?;
+        RecoveryCoolDown::refuse_destructive_action(session, self.clock.now())?;
         if !self.policy.requires(action) {
             return Ok(());
         }
@@ -175,8 +175,8 @@ mod tests {
     #[test]
     fn required_for_gates_only_listed_actions() {
         let policy =
-            ReauthPolicy::required_for([ReauthAction::DeleteAccount, ReauthAction::RemovePasskey]);
-        assert!(policy.requires(ReauthAction::DeleteAccount));
+            ReauthPolicy::required_for([ReauthAction::DeleteUser, ReauthAction::RemovePasskey]);
+        assert!(policy.requires(ReauthAction::DeleteUser));
         assert!(policy.requires(ReauthAction::RemovePasskey));
         assert!(!policy.requires(ReauthAction::RequestEmailChange));
     }
@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn disabled_gates_nothing() {
         let policy = ReauthPolicy::disabled();
-        assert!(!policy.requires(ReauthAction::DeleteAccount));
+        assert!(!policy.requires(ReauthAction::DeleteUser));
         assert!(!policy.requires(ReauthAction::RequestEmailChange));
         assert!(!policy.requires(ReauthAction::RemovePasskey));
     }

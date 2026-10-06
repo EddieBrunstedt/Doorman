@@ -8,7 +8,7 @@ use doorman_core::assembly::AssemblyError;
 use doorman_core::audit::{AuditEventKind, OperatorActor};
 use doorman_core::clock::Clock;
 use doorman_core::session::{SessionConfig, SessionContext, hash_token};
-use doorman_core::storage::{AccountStatus, SessionStore, User, UserId, UserStore};
+use doorman_core::storage::{SessionStore, User, UserId, UserStatus, UserStore};
 
 use common::{
     Harness, authenticator, last_email_change_token, make_user, register_passkey, session_count,
@@ -44,8 +44,8 @@ async fn a_request_reads_its_session_row_and_nothing_else() {
 
     for advance in [0, 90] {
         h.clock.advance(ChronoDuration::seconds(advance));
-        h.session_store.reset();
-        h.user_store.reset();
+        h.session_store.clear_reads();
+        h.user_store.clear_reads();
         let resolved = h.session_manager.resolve(&token).await.expect("resolve");
         assert_eq!(resolved.session.user_id, user.id);
         assert_eq!(resolved.slid, advance > 0);
@@ -124,7 +124,7 @@ async fn a_delete_reaches_another_process_at_once() {
         .expect("resolve");
 
     h.operator
-        .delete_account(user.id, operator())
+        .delete_user(user.id, operator())
         .await
         .expect("delete");
     let err = other.session_manager.resolve(&token).await.err();
@@ -137,7 +137,7 @@ async fn access_is_the_session_row_whatever_the_user_row_says() {
     let (user, token) = signed_in(&h, "alice@example.com").await;
     let now = h.clock.now();
     h.users
-        .set_user_status(user.id, AccountStatus::Disabled { at: now }, now)
+        .set_user_status(user.id, UserStatus::Disabled { at: now }, now)
         .await
         .expect("disable outside doorman");
 
@@ -165,11 +165,11 @@ async fn the_user_read_is_fresh_in_every_process() {
         .expect("find user");
     assert_eq!(found.email.as_deref(), Some("old@example.com"));
 
-    h.account
+    h.user
         .request_email_change(&session, "new@example.com", None, SessionContext::default())
         .await
         .expect("request email change");
-    h.account
+    h.user
         .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
         .await
         .expect("confirm email change");
@@ -199,17 +199,17 @@ async fn a_security_notice_goes_to_the_address_changed_in_another_process() {
         .expect("resolve")
         .session;
 
-    h.account
+    h.user
         .request_email_change(&session, "new@example.com", None, SessionContext::default())
         .await
         .expect("request email change");
-    h.account
+    h.user
         .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
         .await
         .expect("confirm email change");
 
     other
-        .account
+        .user
         .revoke_other_sessions(&session, None, SessionContext::default())
         .await
         .expect("revoke other sessions");
@@ -372,10 +372,7 @@ async fn a_login_racing_a_disable_leaves_no_session() {
     })
     .await;
 
-    assert!(
-        matches!(login, Err(Error::AccountDisabled)),
-        "got {login:?}"
-    );
+    assert!(matches!(login, Err(Error::UserDisabled)), "got {login:?}");
     assert_eq!(session_count(&h, user_id).await, 0);
     assert!(
         !h.audit
@@ -393,7 +390,7 @@ async fn a_login_racing_a_delete_leaves_no_session() {
     let (user_id, login) = login_racing(&h, "racer@example.com", async |user_id| {
         other
             .operator
-            .delete_account(user_id, operator())
+            .delete_user(user_id, operator())
             .await
             .expect("delete");
     })

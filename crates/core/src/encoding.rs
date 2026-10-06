@@ -4,25 +4,23 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::error::{StorageError, StorageResult};
-use crate::storage::{
-    AccountStatus, AuthenticationPurpose, RegistrationPurpose, VerificationPurpose,
-};
+use crate::storage::{AuthenticationPurpose, EmailLinkPurpose, RegistrationPurpose, UserStatus};
 
-pub fn purpose_to_str(purpose: VerificationPurpose) -> &'static str {
+pub fn purpose_to_str(purpose: EmailLinkPurpose) -> &'static str {
     match purpose {
-        VerificationPurpose::Signup => "signup",
-        VerificationPurpose::Recovery => "recovery",
-        VerificationPurpose::EmailChange => "email_change",
+        EmailLinkPurpose::Signup => "signup",
+        EmailLinkPurpose::Recovery => "recovery",
+        EmailLinkPurpose::EmailChange => "email_change",
     }
 }
 
-pub fn purpose_from_str(raw: &str) -> StorageResult<VerificationPurpose> {
+pub fn purpose_from_str(raw: &str) -> StorageResult<EmailLinkPurpose> {
     match raw {
-        "signup" => Ok(VerificationPurpose::Signup),
-        "recovery" => Ok(VerificationPurpose::Recovery),
-        "email_change" => Ok(VerificationPurpose::EmailChange),
+        "signup" => Ok(EmailLinkPurpose::Signup),
+        "recovery" => Ok(EmailLinkPurpose::Recovery),
+        "email_change" => Ok(EmailLinkPurpose::EmailChange),
         other => Err(StorageError::msg(format!(
-            "unknown verification purpose `{other}` in storage"
+            "unknown email link purpose `{other}` in storage"
         ))),
     }
 }
@@ -63,29 +61,27 @@ pub fn registration_purpose_from_str(raw: &str) -> StorageResult<RegistrationPur
     }
 }
 
-pub fn account_status_to_str(status: &AccountStatus) -> &'static str {
+pub fn user_status_to_str(status: &UserStatus) -> &'static str {
     match status {
-        AccountStatus::Active => "active",
-        AccountStatus::Disabled { .. } => "disabled",
+        UserStatus::Active => "active",
+        UserStatus::Disabled { .. } => "disabled",
     }
 }
 
-pub fn account_status_from_parts(
+pub fn user_status_from_parts(
     discriminant: &str,
     disabled_at: Option<DateTime<Utc>>,
-) -> StorageResult<AccountStatus> {
+) -> StorageResult<UserStatus> {
     match discriminant {
-        "active" => Ok(AccountStatus::Active),
+        "active" => Ok(UserStatus::Active),
         "disabled" => {
             let at = disabled_at.ok_or_else(|| {
-                StorageError::msg(
-                    "disabled account status missing disabled_at timestamp in storage",
-                )
+                StorageError::msg("disabled user status missing disabled_at timestamp in storage")
             })?;
-            Ok(AccountStatus::Disabled { at })
+            Ok(UserStatus::Disabled { at })
         }
         other => Err(StorageError::msg(format!(
-            "unknown account status `{other}` in storage"
+            "unknown user status `{other}` in storage"
         ))),
     }
 }
@@ -125,10 +121,10 @@ mod tests {
 
     #[test]
     fn purpose_strings_are_stable() {
-        assert_eq!(purpose_to_str(VerificationPurpose::Signup), "signup");
-        assert_eq!(purpose_to_str(VerificationPurpose::Recovery), "recovery");
+        assert_eq!(purpose_to_str(EmailLinkPurpose::Signup), "signup");
+        assert_eq!(purpose_to_str(EmailLinkPurpose::Recovery), "recovery");
         assert_eq!(
-            purpose_to_str(VerificationPurpose::EmailChange),
+            purpose_to_str(EmailLinkPurpose::EmailChange),
             "email_change"
         );
     }
@@ -136,9 +132,9 @@ mod tests {
     #[test]
     fn purpose_round_trips() {
         for p in [
-            VerificationPurpose::Signup,
-            VerificationPurpose::Recovery,
-            VerificationPurpose::EmailChange,
+            EmailLinkPurpose::Signup,
+            EmailLinkPurpose::Recovery,
+            EmailLinkPurpose::EmailChange,
         ] {
             assert_eq!(purpose_from_str(purpose_to_str(p)).unwrap(), p);
         }
@@ -152,9 +148,9 @@ mod tests {
     #[test]
     fn purpose_str_matches_serde_rename() {
         for p in [
-            VerificationPurpose::Signup,
-            VerificationPurpose::Recovery,
-            VerificationPurpose::EmailChange,
+            EmailLinkPurpose::Signup,
+            EmailLinkPurpose::Recovery,
+            EmailLinkPurpose::EmailChange,
         ] {
             let serde_form = serde_json::to_value(p).unwrap();
             assert_eq!(
@@ -195,22 +191,22 @@ mod tests {
     }
 
     #[test]
-    fn account_status_round_trips() {
+    fn user_status_round_trips() {
         let at = Utc
             .with_ymd_and_hms(2026, 2, 15, 0, 0, 0)
             .single()
             .expect("valid timestamp");
-        for status in [AccountStatus::Active, AccountStatus::Disabled { at }] {
-            let disc = account_status_to_str(&status);
-            let rebuilt = account_status_from_parts(disc, status.disabled_at()).unwrap();
+        for status in [UserStatus::Active, UserStatus::Disabled { at }] {
+            let disc = user_status_to_str(&status);
+            let rebuilt = user_status_from_parts(disc, status.disabled_at()).unwrap();
             assert_eq!(rebuilt, status);
         }
     }
 
     #[test]
-    fn account_status_from_parts_rejects_bad_input() {
-        assert!(account_status_from_parts("banned", None).is_err());
-        assert!(account_status_from_parts("disabled", None).is_err());
+    fn user_status_from_parts_rejects_bad_input() {
+        assert!(user_status_from_parts("banned", None).is_err());
+        assert!(user_status_from_parts("disabled", None).is_err());
     }
 
     #[test]

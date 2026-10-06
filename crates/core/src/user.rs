@@ -1,177 +1,205 @@
 use std::sync::Arc;
+use std::time::Duration;
 
-use chrono::{DateTime, Utc};
-
+use crate::assembly::AssemblyError;
 use crate::audit::{Actor, AuditDispatch, AuditEventKind};
-use crate::clock::Clock;
 use crate::context::CoreDeps;
-use crate::error::{Error, Result, StorageErrorKind};
-use crate::session::SessionManager;
-use crate::storage::{
-    AccountStatus, PasskeyChallengeStore, PasskeyCredentialStore, User, UserId, UserStore,
-    VerificationPurpose, VerificationTokenStore,
-};
+use crate::email::{self, EmailSender, EmailTemplates, SecurityNotices};
+use crate::email_link::{EmailChange, EmailLinks, TOKEN_PLACEHOLDER};
+use crate::error::{Error, Result};
+use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
+use crate::session::{SessionContext, SessionManager};
+use crate::storage::{Session, SessionId, User};
+use crate::user_records::UserRecords;
 
-const ALL_TOKEN_PURPOSES: [VerificationPurpose; 3] = [
-    VerificationPurpose::Signup,
-    VerificationPurpose::Recovery,
-    VerificationPurpose::EmailChange,
-];
-
-pub(crate) fn ensure_active(user: &User) -> Result<()> {
-    if user.status.is_active() {
-        Ok(())
-    } else {
-        Err(Error::AccountDisabled)
-    }
+#[derive(Clone)]
+pub struct UserConfig {
+    pub token_lifetime: Duration,
+    pub url_template: String,
 }
 
-pub(crate) async fn find_active_user(users: &dyn UserStore, user_id: UserId) -> Result<User> {
-    let user = users
-        .find_user_by_id(user_id)
-        .await?
-        .ok_or(Error::UserNotFound)?;
-    ensure_active(&user)?;
-    Ok(user)
+impl UserConfig {
+    pub const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(60 * 15);
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        Self {
+            token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
+            url_template: format!("https://example.invalid/email-change?token={TOKEN_PLACEHOLDER}"),
+        }
+    }
 }
 
 #[derive(Clone)]
-pub(crate) struct UserRecords {
-    users: Arc<dyn UserStore>,
+pub struct UserManager {
+    records: UserRecords,
     sessions: SessionManager,
-    credentials: Arc<dyn PasskeyCredentialStore>,
-    tokens: Arc<dyn VerificationTokenStore>,
-    challenges: Arc<dyn PasskeyChallengeStore>,
-    clock: Arc<dyn Clock>,
+    link: EmailLinks<EmailChange>,
+    reauth: ReauthManager,
     audit: AuditDispatch,
+    email: Arc<dyn EmailSender>,
+    emails: Arc<dyn EmailTemplates>,
+    notices: SecurityNotices,
 }
 
-impl UserRecords {
-    pub(crate) fn new(deps: &CoreDeps) -> Self {
-        Self {
-            users: deps.users.clone(),
+impl UserManager {
+    pub(crate) fn new(
+        deps: &CoreDeps,
+        config: UserConfig,
+    ) -> std::result::Result<Self, AssemblyError> {
+        let link = EmailLinks::new(deps, &config.url_template, config.token_lifetime)?;
+        Ok(Self {
+            records: UserRecords::new(deps),
             sessions: deps.sessions.clone(),
-            credentials: deps.passkey_credentials.clone(),
-            tokens: deps.verification_tokens.clone(),
-            challenges: deps.passkey_challenges.clone(),
-            clock: deps.clock.clone(),
+            link,
+            reauth: deps.reauth.clone(),
             audit: deps.audit.clone(),
-        }
+            email: deps.email.clone(),
+            emails: deps.emails.clone(),
+            notices: deps.notices.clone(),
+        })
     }
 
-    fn now(&self) -> DateTime<Utc> {
-        self.clock.now()
-    }
-
-    pub(crate) async fn find(&self, user_id: UserId) -> Result<User> {
-        self.users
-            .find_user_by_id(user_id)
-            .await?
-            .ok_or(Error::UserNotFound)
-    }
-
-    pub(crate) async fn find_for_notification(
+    #[tracing::instrument(skip(self, session, new_email, reauth, context), fields(user_id = %session.user_id))]
+    pub async fn request_email_change(
         &self,
-        user_id: UserId,
-        what: &'static str,
-    ) -> Option<User> {
-        match self.find(user_id).await {
-            Ok(user) => Some(user),
-            Err(Error::UserNotFound) => {
-                tracing::warn!(
-                    %user_id,
-                    "{what} notification skipped because user was not found"
-                );
-                None
-            }
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    %user_id,
-                    "{what} notification skipped because user lookup failed"
-                );
-                None
-            }
-        }
-    }
-
-    pub(crate) async fn find_active(&self, user_id: UserId) -> Result<User> {
-        find_active_user(self.users.as_ref(), user_id).await
-    }
-
-    pub(crate) async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
-        Ok(self.users.find_user_by_email(email).await?)
-    }
-
-    pub(crate) async fn create_unverified(&self, email: &str) -> Result<Option<User>> {
-        let now = self.now();
-        let user = User {
-            id: UserId::new(),
-            email: Some(email.to_owned()),
-            email_verified_at: None,
-            status: AccountStatus::Active,
-            created_at: now,
-            updated_at: now,
-        };
-        match self.users.create_user(user.clone()).await {
-            Ok(()) => Ok(Some(user)),
-            Err(e) if e.kind() == StorageErrorKind::Conflict => Ok(None),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    pub(crate) async fn mark_email_verified(&self, user: &User) -> Result<()> {
-        if user.email_verified_at.is_none() {
-            self.users.mark_email_verified(user.id, self.now()).await?;
-        }
-        Ok(())
-    }
-
-    pub(crate) async fn change_email(&self, user_id: UserId, email: &str) -> Result<User> {
-        match self.users.set_user_email(user_id, email, self.now()).await {
-            Ok(()) => self.find(user_id).await,
-            Err(e) => Err(match e.kind() {
-                StorageErrorKind::Conflict => Error::EmailAlreadyInUse,
-                StorageErrorKind::NotFound => Error::UserNotFound,
-                _ => e.into(),
-            }),
-        }
-    }
-
-    pub(crate) async fn disable(&self, user_id: UserId) -> Result<u64> {
-        let now = self.now();
-        // The status goes before the sessions; `SessionManager::issue` relies on that order.
-        self.users
-            .set_user_status(user_id, AccountStatus::Disabled { at: now }, now)
+        session: &Session,
+        new_email: &str,
+        reauth: Option<ReauthProof>,
+        context: SessionContext,
+    ) -> Result<()> {
+        self.reauth
+            .ensure(
+                ReauthAction::RequestEmailChange,
+                session,
+                reauth.as_ref(),
+                &context,
+            )
             .await?;
-        self.sessions.revoke_all_for_user(user_id).await
-    }
+        let normalized = email::normalize_email(new_email);
+        email::validate_email(&normalized)?;
 
-    pub(crate) async fn enable(&self, user_id: UserId) -> Result<()> {
-        self.users
-            .set_user_status(user_id, AccountStatus::Active, self.now())
-            .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn delete(&self, user_id: UserId, actor: Actor) -> Result<()> {
-        self.find(user_id).await?;
-
-        // Disabling first makes a racing login refuse its own session (see `SessionManager::issue`),
-        // and leaves a delete that fails partway with a user who cannot log in.
-        self.disable(user_id).await?;
-        self.credentials.delete_passkeys_for_user(user_id).await?;
-        for purpose in ALL_TOKEN_PURPOSES {
-            self.tokens.delete_tokens_for_user(user_id, purpose).await?;
+        if self.records.find_by_email(&normalized).await?.is_some() {
+            tracing::warn!(outcome = "email_in_use", "email change rejected");
+            return Err(Error::EmailAlreadyInUse);
         }
-        self.challenges
-            .delete_registrations_for_user(user_id)
-            .await?;
-        self.users.delete_user(user_id).await?;
+
+        let user = self.records.find(session.user_id).await?;
+        let url = self.link.issue(user.id, normalized.clone()).await?;
+
+        let confirmation = self
+            .emails
+            .email_change_confirmation_email(&user, &normalized, &url);
+        self.email.send(confirmation).await?;
+
+        self.notices
+            .email_change_requested(&user, &normalized)
+            .await;
 
         self.audit
-            .emit(actor, AuditEventKind::AccountDeleted { user_id })
+            .emit(
+                &context,
+                AuditEventKind::EmailChangeRequested { user_id: user.id },
+            )
             .await;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self, token, context), fields(user_id = tracing::field::Empty))]
+    pub async fn confirm_email_change(&self, token: &str, context: SessionContext) -> Result<User> {
+        let (user, new_email) = self.link.redeem(token, &context).await?;
+        let user_id = user.id;
+
+        let user = match self.records.change_email(user_id, &new_email).await {
+            Ok(user) => user,
+            Err(error) => {
+                tracing::warn!(%error, "email change confirm failed");
+                return Err(error);
+            }
+        };
+
+        self.audit
+            .emit(&context, AuditEventKind::EmailChangeCompleted { user_id })
+            .await;
+        Ok(user)
+    }
+
+    #[tracing::instrument(skip(self, reauth, context), fields(user_id = %session.user_id))]
+    pub async fn delete_user(
+        &self,
+        session: &Session,
+        reauth: Option<ReauthProof>,
+        context: SessionContext,
+    ) -> Result<()> {
+        self.reauth
+            .ensure(ReauthAction::DeleteUser, session, reauth.as_ref(), &context)
+            .await?;
+        self.records
+            .delete(session.user_id, Actor::from(&context))
+            .await
+    }
+
+    #[tracing::instrument(skip(self, session, reauth, context), fields(user_id = %session.user_id, session_id = %session.id))]
+    pub async fn revoke_other_sessions(
+        &self,
+        session: &Session,
+        reauth: Option<ReauthProof>,
+        context: SessionContext,
+    ) -> Result<u64> {
+        self.reauth
+            .ensure(
+                ReauthAction::RevokeOtherSessions,
+                session,
+                reauth.as_ref(),
+                &context,
+            )
+            .await?;
+        let count = self
+            .sessions
+            .revoke_others(session.user_id, session.id)
+            .await?;
+        if count > 0
+            && let Some(user) = self
+                .records
+                .find_for_notice(session.user_id, "other-sessions revoked")
+                .await
+        {
+            self.notices.other_sessions_revoked(&user).await;
+        }
+        Ok(count)
+    }
+
+    #[tracing::instrument(skip(self, session, reauth, context), fields(user_id = %session.user_id, session_id = %target))]
+    pub async fn revoke_session(
+        &self,
+        session: &Session,
+        target: SessionId,
+        reauth: Option<ReauthProof>,
+        context: SessionContext,
+    ) -> Result<()> {
+        let is_current = target == session.id;
+        if !is_current {
+            self.reauth
+                .ensure(
+                    ReauthAction::RevokeSession,
+                    session,
+                    reauth.as_ref(),
+                    &context,
+                )
+                .await?;
+        }
+        self.sessions
+            .revoke_session_for_target(session.user_id, target, Actor::of_session(session))
+            .await?;
+        if !is_current
+            && let Some(user) = self
+                .records
+                .find_for_notice(session.user_id, "other-session revoked")
+                .await
+        {
+            self.notices.other_session_revoked(&user).await;
+        }
         Ok(())
     }
 }

@@ -6,38 +6,35 @@ use webauthn_rs::prelude::RegisterPublicKeyCredential;
 use crate::assembly::{AssemblyError, MAX_LIFETIME};
 use crate::audit::{AuditDispatch, AuditEventKind, RecoveryFailureReason};
 use crate::context::CoreDeps;
-use crate::email::SecurityEmailNotifier;
+use crate::email::{self, SecurityNotices};
+use crate::email_link::{self, EmailLinks, TOKEN_PLACEHOLDER};
 use crate::error::Result;
-use crate::link::{self, EmailedLink};
-use crate::passkey::{EmailLinkRegistration, PasskeyManager, RegistrationOutcome};
+use crate::passkey::{
+    EmailLinkRegistration, PasskeyManager, RegistrationOutcome, StartedRegistration,
+};
 use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
 use crate::session::SessionContext;
 use crate::storage::PasskeyChallengeId;
-use crate::user::{self, UserRecords};
-use crate::verification::{self, TOKEN_PLACEHOLDER, VerificationConsumeOutcome};
+use crate::user_records::{self, UserRecords};
 
 #[derive(Clone)]
 pub struct RecoveryConfig {
     pub token_lifetime: Duration,
     pub url_template: String,
     pub rate_limits: RecoveryRateLimits,
-    pub cooldown: Duration,
-    pub danger_allow_cooldown_below_floor: bool,
+    pub cool_down: Duration,
+    pub danger_allow_cool_down_below_floor: bool,
 }
-
-pub const MIN_COOLDOWN: Duration = Duration::from_secs(60 * 60);
-
-pub const MAX_COOLDOWN: Duration = MAX_LIFETIME;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RecoveryConfigError {
-    #[error("recovery cooldown ({configured:?}) is below the floor of {minimum:?}")]
-    CooldownTooShort {
+    #[error("recovery cool-down ({configured:?}) is below the floor of {minimum:?}")]
+    CoolDownTooShort {
         configured: Duration,
         minimum: Duration,
     },
-    #[error("recovery cooldown ({configured:?}) is above the ceiling of {maximum:?}")]
-    CooldownTooLong {
+    #[error("recovery cool-down ({configured:?}) is above the ceiling of {maximum:?}")]
+    CoolDownTooLong {
         configured: Duration,
         maximum: Duration,
     },
@@ -82,7 +79,9 @@ impl Default for RecoveryRateLimits {
 
 impl RecoveryConfig {
     pub const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(60 * 15);
-    pub const DEFAULT_COOLDOWN: Duration = Duration::from_secs(60 * 60 * 24);
+    pub const DEFAULT_COOL_DOWN: Duration = Duration::from_secs(60 * 60 * 24);
+    pub const MIN_COOL_DOWN: Duration = Duration::from_secs(60 * 60);
+    pub const MAX_COOL_DOWN: Duration = MAX_LIFETIME;
 }
 
 impl Default for RecoveryConfig {
@@ -91,8 +90,8 @@ impl Default for RecoveryConfig {
             token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
             url_template: format!("https://example.invalid/recovery?token={TOKEN_PLACEHOLDER}"),
             rate_limits: RecoveryRateLimits::default(),
-            cooldown: Self::DEFAULT_COOLDOWN,
-            danger_allow_cooldown_below_floor: false,
+            cool_down: Self::DEFAULT_COOL_DOWN,
+            danger_allow_cool_down_below_floor: false,
         }
     }
 }
@@ -101,8 +100,8 @@ impl Default for RecoveryConfig {
 pub struct RecoveryManager {
     passkeys: PasskeyManager,
     records: UserRecords,
-    link: EmailedLink<link::Recovery>,
-    notifier: SecurityEmailNotifier,
+    link: EmailLinks<email_link::Recovery>,
+    notices: SecurityNotices,
     rate_limiter: Arc<dyn RateLimiter>,
     audit: AuditDispatch,
     config: RecoveryConfig,
@@ -115,30 +114,32 @@ impl RecoveryManager {
         passkeys: PasskeyManager,
         config: RecoveryConfig,
     ) -> std::result::Result<Self, AssemblyError> {
-        let too_long = RecoveryConfigError::CooldownTooLong {
-            configured: config.cooldown,
-            maximum: MAX_COOLDOWN,
+        let too_long = RecoveryConfigError::CoolDownTooLong {
+            configured: config.cool_down,
+            maximum: RecoveryConfig::MAX_COOL_DOWN,
         };
-        if config.cooldown > MAX_COOLDOWN {
+        if config.cool_down > RecoveryConfig::MAX_COOL_DOWN {
             return Err(too_long.into());
         }
-        if config.cooldown < MIN_COOLDOWN && !config.danger_allow_cooldown_below_floor {
-            return Err(RecoveryConfigError::CooldownTooShort {
-                configured: config.cooldown,
-                minimum: MIN_COOLDOWN,
+        if config.cool_down < RecoveryConfig::MIN_COOL_DOWN
+            && !config.danger_allow_cool_down_below_floor
+        {
+            return Err(RecoveryConfigError::CoolDownTooShort {
+                configured: config.cool_down,
+                minimum: RecoveryConfig::MIN_COOL_DOWN,
             }
             .into());
         }
-        let cooldown = chrono::Duration::from_std(config.cooldown).map_err(|_| too_long)?;
+        let cool_down = chrono::Duration::from_std(config.cool_down).map_err(|_| too_long)?;
         Ok(Self {
             passkeys,
             records: UserRecords::new(deps),
-            link: EmailedLink::new(deps, &config.url_template, config.token_lifetime)?,
-            notifier: deps.notifier.clone(),
+            link: EmailLinks::new(deps, &config.url_template, config.token_lifetime)?,
+            notices: deps.notices.clone(),
             rate_limiter: deps.rate_limiter.clone(),
             audit: deps.audit.clone(),
             config,
-            registration: EmailLinkRegistration::Recovery { cooldown },
+            registration: EmailLinkRegistration::Recovery { cool_down },
         })
     }
 
@@ -147,8 +148,8 @@ impl RecoveryManager {
         fields(method = "recovery", user_id = tracing::field::Empty),
     )]
     pub async fn request_recovery(&self, email: &str, context: SessionContext) -> Result<()> {
-        let email_normalized = verification::normalize_email(email);
-        verification::validate_email(&email_normalized)?;
+        let email_normalized = email::normalize_email(email);
+        email::validate_email(&email_normalized)?;
 
         let rate_limits = &self.config.rate_limits;
         rate_limit::enforce_all(
@@ -213,13 +214,13 @@ impl RecoveryManager {
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
-        if user::ensure_active(&user).is_err() {
+        if user_records::ensure_active(&user).is_err() {
             self.audit
                 .emit(
                     &context,
                     AuditEventKind::RecoveryFailed {
                         user_id: Some(user.id),
-                        reason: RecoveryFailureReason::AccountDisabled,
+                        reason: RecoveryFailureReason::UserDisabled,
                     },
                 )
                 .await;
@@ -227,12 +228,12 @@ impl RecoveryManager {
         }
 
         let url = self.link.issue(user.id, ()).await?;
-        self.notifier
+        self.notices
             .send_best_effort(&user, "recovery link", |emails| {
                 emails.recovery_email(&user, &url)
             })
             .await;
-        self.notifier.recovery_requested(&user).await;
+        self.notices.recovery_requested(&user).await;
 
         self.audit
             .emit(
@@ -249,11 +250,11 @@ impl RecoveryManager {
         skip(self, token, context),
         fields(method = "recovery", user_id = tracing::field::Empty),
     )]
-    pub async fn consume_recovery(
+    pub async fn redeem_recovery_link(
         &self,
         token: &str,
         context: SessionContext,
-    ) -> Result<VerificationConsumeOutcome> {
+    ) -> Result<StartedRegistration> {
         let (user, ()) = self.link.redeem(token, &context).await?;
         let (challenge_id, options) = self
             .passkeys
@@ -263,11 +264,11 @@ impl RecoveryManager {
         self.audit
             .emit(
                 &context,
-                AuditEventKind::RecoveryConsumed { user_id: user.id },
+                AuditEventKind::RecoveryLinkRedeemed { user_id: user.id },
             )
             .await;
-        tracing::info!(outcome = "consumed", "recovery token consumed");
-        Ok(VerificationConsumeOutcome {
+        tracing::info!(outcome = "redeemed", "recovery link redeemed");
+        Ok(StartedRegistration {
             challenge_id,
             options,
         })
@@ -291,7 +292,7 @@ impl RecoveryManager {
             )
             .await?;
 
-        self.notifier.recovery_completed(&outcome.user).await;
+        self.notices.recovery_completed(&outcome.user).await;
 
         tracing::info!(outcome = "succeeded", "recovery finished");
         Ok(outcome)

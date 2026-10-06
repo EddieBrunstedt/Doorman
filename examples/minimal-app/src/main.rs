@@ -2,8 +2,8 @@ use std::{env, io::IsTerminal, net::SocketAddr, sync::Arc};
 
 use axum::{Json, Router, extract::State, response::Html, routing::get};
 use doorman_axum::prelude::*;
+use doorman_core::email_link::TOKEN_PLACEHOLDER;
 use doorman_core::memory::InMemoryRateLimiter;
-use doorman_core::verification::TOKEN_PLACEHOLDER;
 use doorman_sqlx::SqliteStorage;
 use url::Url;
 
@@ -47,7 +47,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .email(Arc::new(TerminalEmailSender))
         .passkey(passkey_config)
         .reauthentication(ReauthPolicy::required_for([
-            ReauthAction::DeleteAccount,
+            ReauthAction::DeleteUser,
             ReauthAction::RequestEmailChange,
             ReauthAction::RemovePasskey,
         ]))
@@ -61,9 +61,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             url_template: format!("{base}/?recovery_token={TOKEN_PLACEHOLDER}"),
             ..RecoveryConfig::default()
         })
-        .account(AccountConfig {
+        .user(UserConfig {
             url_template: format!("{base}/?email_change_token={TOKEN_PLACEHOLDER}"),
-            ..AccountConfig::default()
+            ..UserConfig::default()
         })
         .build()?;
     let auth = AuthService::builder(core)
@@ -101,7 +101,7 @@ async fn me(
     auth: AuthSession,
     AuthUser(user): AuthUser,
 ) -> std::result::Result<Json<serde_json::Value>, axum::http::StatusCode> {
-    let cooldown = auth.is_in_recovery_cooldown();
+    let cool_down = auth.is_in_recovery_cool_down();
     let passkey_count = state
         .auth
         .passkey()
@@ -111,6 +111,6 @@ async fn me(
     Ok(Json(serde_json::json!({
         "user": UserDto::from_user(&user, passkey_count),
         "session": SessionDto::from_session(&auth.session, true),
-        "recovery_cooldown_active": cooldown,
+        "recovery_cool_down_active": cool_down,
     })))
 }

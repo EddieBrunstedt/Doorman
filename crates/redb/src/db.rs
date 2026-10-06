@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, SecondsFormat, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{
-    PasskeySummary, Session, StoredPasskey, TokenHash, UserId, VerificationPurpose,
+    EmailLinkPurpose, PasskeySummary, Session, StoredPasskey, TokenHash, UserId,
 };
 use redb::{Database, ReadTransaction, ReadableDatabase as _, TableDefinition, WriteTransaction};
 use serde::{Deserialize, Serialize};
@@ -16,12 +16,12 @@ pub(crate) const SESSION_HASH_IDX: TableDefinition<&str, &str> =
     TableDefinition::new("session_hash_idx");
 pub(crate) const USER_SESSIONS_IDX: TableDefinition<&str, ()> =
     TableDefinition::new("user_sessions_idx");
-pub(crate) const VTOKENS: TableDefinition<&str, &[u8]> = TableDefinition::new("vtokens");
-pub(crate) const USER_VTOKENS_IDX: TableDefinition<&str, ()> =
-    TableDefinition::new("user_vtokens_idx");
-pub(crate) const PASSKEY_CREDS: TableDefinition<&str, &[u8]> =
-    TableDefinition::new("passkey_creds");
-pub(crate) const USER_CREDS_IDX: TableDefinition<&str, ()> = TableDefinition::new("user_creds_idx");
+pub(crate) const EMAIL_LINKS: TableDefinition<&str, &[u8]> = TableDefinition::new("email_links");
+pub(crate) const USER_EMAIL_LINKS_IDX: TableDefinition<&str, ()> =
+    TableDefinition::new("user_email_links_idx");
+pub(crate) const PASSKEYS: TableDefinition<&str, &[u8]> = TableDefinition::new("passkeys");
+pub(crate) const USER_PASSKEYS_IDX: TableDefinition<&str, ()> =
+    TableDefinition::new("user_passkeys_idx");
 pub(crate) const PKREGS: TableDefinition<&str, &[u8]> = TableDefinition::new("pkregs");
 pub(crate) const USER_PKREGS_IDX: TableDefinition<&str, ()> =
     TableDefinition::new("user_pkregs_idx");
@@ -37,11 +37,11 @@ pub(crate) fn hex_bytes(bytes: &[u8]) -> String {
     doorman_core::encoding::hex(bytes)
 }
 
-pub(crate) fn vtoken_key(purpose: VerificationPurpose, hash: &TokenHash) -> String {
+pub(crate) fn email_link_key(purpose: EmailLinkPurpose, hash: &TokenHash) -> String {
     format!("{}{SEP}{}", purpose_str(purpose), token_hash_hex(hash))
 }
 
-pub(crate) fn vtoken_key_raw(purpose: VerificationPurpose, hash_hex: &str) -> String {
+pub(crate) fn email_link_key_raw(purpose: EmailLinkPurpose, hash_hex: &str) -> String {
     format!("{}{SEP}{}", purpose_str(purpose), hash_hex)
 }
 
@@ -56,9 +56,9 @@ pub(crate) fn user_sessions_prefix(user_id: UserId) -> String {
     format!("{}{SEP}", user_id.0)
 }
 
-pub(crate) fn user_vtokens_idx_key(
+pub(crate) fn user_email_links_idx_key(
     user_id: UserId,
-    purpose: VerificationPurpose,
+    purpose: EmailLinkPurpose,
     hash: &TokenHash,
 ) -> String {
     format!(
@@ -69,11 +69,11 @@ pub(crate) fn user_vtokens_idx_key(
     )
 }
 
-pub(crate) fn user_vtokens_prefix(user_id: UserId, purpose: VerificationPurpose) -> String {
+pub(crate) fn user_email_links_prefix(user_id: UserId, purpose: EmailLinkPurpose) -> String {
     format!("{}{SEP}{}{SEP}", user_id.0, purpose_str(purpose))
 }
 
-pub(crate) fn user_creds_idx_key(user_id: UserId, credential_id: &[u8]) -> String {
+pub(crate) fn user_passkeys_idx_key(user_id: UserId, credential_id: &[u8]) -> String {
     format!("{}{SEP}{}", user_id.0, hex_bytes(credential_id))
 }
 
@@ -130,22 +130,22 @@ pub(crate) struct PasskeyRow {
     pub transports: Vec<String>,
     pub backup_eligible: bool,
     pub backup_state: bool,
-    pub recovery_cooldown_until: Option<String>,
+    pub recovery_cool_down_until: Option<String>,
 }
 
-pub(crate) fn encode_passkey(cred: &StoredPasskey) -> StorageResult<Vec<u8>> {
+pub(crate) fn encode_passkey(passkey: &StoredPasskey) -> StorageResult<Vec<u8>> {
     let row = PasskeyRow {
-        credential_id_hex: hex_bytes(&cred.credential_id),
-        user_id: cred.user_id.0.to_string(),
-        passkey: cred.passkey.clone(),
-        name: cred.name.clone(),
-        created_at: fmt_ts(cred.created_at),
-        last_used_at: cred.last_used_at.map(fmt_ts),
-        aaguid: cred.aaguid.map(|u| u.to_string()),
-        transports: cred.transports.clone(),
-        backup_eligible: cred.backup_eligible,
-        backup_state: cred.backup_state,
-        recovery_cooldown_until: cred.recovery_cooldown_until.map(fmt_ts),
+        credential_id_hex: hex_bytes(&passkey.credential_id),
+        user_id: passkey.user_id.0.to_string(),
+        passkey: passkey.passkey.clone(),
+        name: passkey.name.clone(),
+        created_at: fmt_ts(passkey.created_at),
+        last_used_at: passkey.last_used_at.map(fmt_ts),
+        aaguid: passkey.aaguid.map(|u| u.to_string()),
+        transports: passkey.transports.clone(),
+        backup_eligible: passkey.backup_eligible,
+        backup_state: passkey.backup_state,
+        recovery_cool_down_until: passkey.recovery_cool_down_until.map(fmt_ts),
     };
     serde_json::to_vec(&row).map_err(err)
 }
@@ -166,8 +166,8 @@ fn row_to_passkey(row: PasskeyRow) -> StorageResult<StoredPasskey> {
         transports: row.transports,
         backup_eligible: row.backup_eligible,
         backup_state: row.backup_state,
-        recovery_cooldown_until: row
-            .recovery_cooldown_until
+        recovery_cool_down_until: row
+            .recovery_cool_down_until
             .as_deref()
             .map(parse_ts)
             .transpose()?,
@@ -270,10 +270,10 @@ pub(crate) fn ensure_tables(db: &Database) -> Result<(), redb::Error> {
     wtxn.open_table(SESSIONS)?;
     wtxn.open_table(SESSION_HASH_IDX)?;
     wtxn.open_table(USER_SESSIONS_IDX)?;
-    wtxn.open_table(VTOKENS)?;
-    wtxn.open_table(USER_VTOKENS_IDX)?;
-    wtxn.open_table(PASSKEY_CREDS)?;
-    wtxn.open_table(USER_CREDS_IDX)?;
+    wtxn.open_table(EMAIL_LINKS)?;
+    wtxn.open_table(USER_EMAIL_LINKS_IDX)?;
+    wtxn.open_table(PASSKEYS)?;
+    wtxn.open_table(USER_PASSKEYS_IDX)?;
     wtxn.open_table(PKREGS)?;
     wtxn.open_table(USER_PKREGS_IDX)?;
     wtxn.open_table(PKAUTHS)?;

@@ -147,24 +147,24 @@ export class AuthError extends Error {
 }
 
 export const ERROR_GUIDANCE: Record<string, string> = {
-  recovery_cooldown_active:
-    "This action is blocked during the 24-hour recovery cool-down. You can still add a passkey and sign out of this session.",
+  recovery_cool_down_active:
+    "This action is blocked during the 24-hour recovery cool-down. You can still add a passkey and log out of this session.",
   csrf_origin_mismatch:
     "The request was blocked by the cross-origin check. Make sure you are using the app's real address.",
-  session_not_found: "You are signed out. Sign in with a passkey to continue.",
-  session_expired: "Your session expired. Sign in with a passkey again.",
-  email_already_in_use: "That email is already linked to an account.",
+  session_not_found: "You are logged out. Log in with a passkey to continue.",
+  session_expired: "Your session expired. Log in with a passkey again.",
+  email_already_in_use: "That email already belongs to another user.",
   invalid_email: "That does not look like a valid email address.",
-  invalid_verification_token: "This link is invalid or has already been used. Request a new one.",
+  invalid_email_link: "This link is invalid or has already been used. Request a new one.",
   invalid_passkey_challenge: "The passkey step timed out. Try again.",
   passkey_not_found: "That passkey is no longer registered.",
-  passkey_ownership_mismatch: "That passkey does not belong to this account.",
+  passkey_ownership_mismatch: "That passkey belongs to another user.",
   passkey_possible_compromise:
-    "Sign-in was blocked because this authenticator may have been cloned. Use another passkey and review your account.",
+    "Login was blocked because this passkey may have been cloned. Use another passkey and review your passkeys.",
   rate_limited: "Too many attempts. Wait a little while and try again.",
   resource_limit_exceeded: "You have reached the limit for this resource.",
   webauthn_error: "The passkey step failed. Try again, or use a different authenticator.",
-  user_not_found: "No matching account.",
+  user_not_found: "No matching user.",
 };
 
 export function guidanceFor(code: string | null, status: number): string {
@@ -224,7 +224,7 @@ export async function requestSignup(email: string): Promise<void> {
 }
 
 export async function finishSignup(token: string, passkeyName?: string): Promise<AuthResponse> {
-  const start = await postJson<Challenge<ServerCreationOptions>>("/auth/signup/consume", { token });
+  const start = await postJson<Challenge<ServerCreationOptions>>("/auth/signup/redeem", { token });
   return finishRegistration<AuthResponse>(start, "/auth/signup/finish", passkeyName);
 }
 
@@ -233,7 +233,7 @@ export async function requestRecovery(email: string): Promise<void> {
 }
 
 export async function finishRecovery(token: string, passkeyName?: string): Promise<AuthResponse> {
-  const start = await postJson<Challenge<ServerCreationOptions>>("/auth/recovery/consume", { token });
+  const start = await postJson<Challenge<ServerCreationOptions>>("/auth/recovery/redeem", { token });
   return finishRegistration<AuthResponse>(start, "/auth/recovery/finish", passkeyName);
 }
 
@@ -283,13 +283,13 @@ export async function logoutEverywhere(): Promise<void> {
 }
 
 export async function requestEmailChange(newEmail: string): Promise<void> {
-  await postJson<void>("/auth/account/email", { new_email: newEmail });
+  await postJson<void>("/auth/user/email", { new_email: newEmail });
 }
 
 export async function confirmEmailChange(token: string): Promise<UserDto> {
-  return postJson<UserDto>("/auth/account/email/confirm", { token });
+  return postJson<UserDto>("/auth/user/email/confirm", { token });
 }
 
-export async function deleteAccount(): Promise<void> {
-  await deleteJson("/auth/account");
+export async function deleteUser(): Promise<void> {
+  await deleteJson("/auth/user");
 }

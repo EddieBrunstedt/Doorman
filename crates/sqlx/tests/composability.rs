@@ -7,7 +7,7 @@ use chrono::{DateTime, Duration, Utc};
 use doorman_core::error::StorageResult;
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
-    AccountStatus, Session, SessionId, SessionStore, Storage, TokenHash, User, UserId,
+    Session, SessionId, SessionStore, Storage, TokenHash, User, UserId, UserStatus,
 };
 use doorman_sqlx::SqliteStorage;
 use sqlx::SqlitePool;
@@ -22,7 +22,7 @@ impl SessionStore for AuditedSessions {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cooldown_until)
+            "INSERT INTO sessions (id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.0.as_bytes().to_vec())
@@ -33,7 +33,7 @@ impl SessionStore for AuditedSessions {
         .bind(session.expires_at)
         .bind(&session.ip)
         .bind(&session.user_agent)
-        .bind(session.recovery_cooldown_until)
+        .bind(session.recovery_cool_down_until)
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
@@ -120,7 +120,7 @@ async fn override_create_session_reuses_bundled_reads() {
             id: user_id,
             email: Some("audited@example.com".to_string()),
             email_verified_at: None,
-            status: AccountStatus::Active,
+            status: UserStatus::Active,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })
@@ -137,7 +137,7 @@ async fn override_create_session_reuses_bundled_reads() {
         expires_at: now + Duration::hours(1),
         ip: None,
         user_agent: None,
-        recovery_cooldown_until: None,
+        recovery_cool_down_until: None,
     };
 
     composite

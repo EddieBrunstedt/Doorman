@@ -1,13 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::account::{AccountConfig, AccountManager};
 use crate::audit::{AuditDispatch, AuditSink};
 use crate::clock::{Clock, SystemClock};
 use crate::context::CoreDeps;
-use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityEmailNotifier};
+use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityNotices};
 use crate::metrics::{MetricSink, NoopMetricSink};
-use crate::operator::{NotificationPolicy, OperatorManager};
+use crate::operator::{NoticePolicy, OperatorManager};
 use crate::passkey::{PasskeyConfig, PasskeyManager, build_webauthn};
 use crate::rate_limit::RateLimiter;
 use crate::reauth::{ReauthManager, ReauthPolicy};
@@ -15,6 +14,7 @@ use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
 use crate::session::{SessionConfig, SessionManager};
 use crate::signup::{SignupConfig, SignupManager};
 use crate::storage::Storage;
+use crate::user::{UserConfig, UserManager};
 
 pub(crate) const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 10);
 
@@ -50,8 +50,8 @@ pub enum AssemblyError {
         flow: &'static str,
         placeholder_host: &'static str,
     },
-    #[error("recovery cooldown is misconfigured: {0}")]
-    RecoveryCooldown(#[from] RecoveryConfigError),
+    #[error("recovery cool-down is misconfigured: {0}")]
+    RecoveryCoolDown(#[from] RecoveryConfigError),
     #[error("{field} ({value:?}) must be greater than zero and at most {max:?}")]
     InvalidLifetime {
         field: &'static str,
@@ -101,7 +101,7 @@ pub struct AuthCore {
     pub passkey: PasskeyManager,
     pub signup: SignupManager,
     pub recovery: RecoveryManager,
-    pub account: AccountManager,
+    pub user: UserManager,
     pub reauth: ReauthManager,
     pub operator: OperatorManager,
 }
@@ -125,9 +125,9 @@ pub struct AuthCoreBuilder {
     passkey: Option<PasskeyConfig>,
     signup: Option<SignupConfig>,
     recovery: Option<RecoveryConfig>,
-    account: Option<AccountConfig>,
+    user: Option<UserConfig>,
     reauth: Option<ReauthPolicy>,
-    notification_policy: Option<NotificationPolicy>,
+    notice_policy: Option<NoticePolicy>,
 }
 
 impl AuthCoreBuilder {
@@ -145,9 +145,9 @@ impl AuthCoreBuilder {
             passkey: None,
             signup: None,
             recovery: None,
-            account: None,
+            user: None,
             reauth: None,
-            notification_policy: None,
+            notice_policy: None,
         }
     }
 
@@ -206,8 +206,8 @@ impl AuthCoreBuilder {
         self
     }
 
-    pub fn account(mut self, config: AccountConfig) -> Self {
-        self.account = Some(config);
+    pub fn user(mut self, config: UserConfig) -> Self {
+        self.user = Some(config);
         self
     }
 
@@ -216,8 +216,8 @@ impl AuthCoreBuilder {
         self
     }
 
-    pub fn notification_policy(mut self, policy: NotificationPolicy) -> Self {
-        self.notification_policy = Some(policy);
+    pub fn notice_policy(mut self, policy: NoticePolicy) -> Self {
+        self.notice_policy = Some(policy);
         self
     }
 
@@ -239,7 +239,7 @@ impl AuthCoreBuilder {
             .unwrap_or_else(|| Arc::new(DefaultEmailTemplates));
         let signup_config = self.signup.unwrap_or_default();
         let recovery_config = self.recovery.unwrap_or_default();
-        let account_config = self.account.unwrap_or_default();
+        let user_config = self.user.unwrap_or_default();
 
         validate_lifetime(
             "session absolute_lifetime",
@@ -254,7 +254,7 @@ impl AuthCoreBuilder {
             validate_idle_timeout(idle_timeout, session_config.absolute_lifetime)?;
         }
 
-        let notifier = SecurityEmailNotifier::new(email.clone(), emails.clone());
+        let notices = SecurityNotices::new(email.clone(), emails.clone());
 
         let session_manager = SessionManager::new(
             self.storage.sessions.clone(),
@@ -282,7 +282,7 @@ impl AuthCoreBuilder {
             audit,
             email,
             emails,
-            notifier,
+            notices,
             limiter,
             session_manager.clone(),
             reauth.clone(),
@@ -303,12 +303,12 @@ impl AuthCoreBuilder {
         };
         let recovery = RecoveryManager::new(&recovery_deps, passkey.clone(), recovery_config)?;
 
-        let account = AccountManager::new(&deps, account_config)?;
+        let user = UserManager::new(&deps, user_config)?;
 
         let operator = OperatorManager::new(
             &deps,
             passkey.clone(),
-            self.notification_policy.unwrap_or_default(),
+            self.notice_policy.unwrap_or_default(),
         );
 
         Ok(AuthCore {
@@ -316,7 +316,7 @@ impl AuthCoreBuilder {
             passkey,
             signup,
             recovery,
-            account,
+            user,
             reauth,
             operator,
         })

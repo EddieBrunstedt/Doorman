@@ -7,18 +7,16 @@ use axum::routing::post;
 use doorman_core::signup::SignupManager;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
-use crate::dto::{
-    PasskeyChallenge, RegistrationFinishRequest, SignupConsumeRequest, SignupRequest,
-};
+use crate::dto::{PasskeyChallenge, RegistrationFinishRequest, SignupRedeemRequest, SignupRequest};
 use crate::error::ErrorResponse;
 use crate::extractors::RequestContext;
-use crate::routes::{consume_response, parse_challenge_id, registration_success};
+use crate::routes::{parse_challenge_id, redeem_response, registration_success};
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
     Router::new()
         .route("/signup/request", post(request))
-        .route("/signup/consume", post(consume))
+        .route("/signup/redeem", post(redeem))
         .route("/signup/finish", post(finish))
 }
 
@@ -37,13 +35,15 @@ async fn request(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn consume(
+async fn redeem(
     State(state): State<AuthState>,
     RequestContext(context): RequestContext,
-    Json(body): Json<SignupConsumeRequest>,
+    Json(body): Json<SignupRedeemRequest>,
 ) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ErrorResponse> {
-    let outcome = manager(&state).consume_signup(&body.token, context).await?;
-    Ok(consume_response(outcome))
+    let outcome = manager(&state)
+        .redeem_signup_link(&body.token, context)
+        .await?;
+    Ok(redeem_response(outcome))
 }
 
 async fn finish(

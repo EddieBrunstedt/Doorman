@@ -15,8 +15,8 @@ pub use crate::token::TokenHash;
 pub struct Storage {
     pub users: Arc<dyn UserStore>,
     pub sessions: Arc<dyn SessionStore>,
-    pub verification_tokens: Arc<dyn VerificationTokenStore>,
-    pub passkey_credentials: Arc<dyn PasskeyCredentialStore>,
+    pub email_links: Arc<dyn EmailLinkStore>,
+    pub passkeys: Arc<dyn PasskeyStore>,
     pub passkey_challenges: Arc<dyn PasskeyChallengeStore>,
 }
 
@@ -66,7 +66,7 @@ impl fmt::Display for SessionId {
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AccountStatus {
+pub enum UserStatus {
     #[default]
     Active,
     Disabled {
@@ -74,15 +74,15 @@ pub enum AccountStatus {
     },
 }
 
-impl AccountStatus {
+impl UserStatus {
     pub fn is_active(&self) -> bool {
-        matches!(self, AccountStatus::Active)
+        matches!(self, UserStatus::Active)
     }
 
     pub fn disabled_at(&self) -> Option<DateTime<Utc>> {
         match self {
-            AccountStatus::Disabled { at } => Some(*at),
-            AccountStatus::Active => None,
+            UserStatus::Disabled { at } => Some(*at),
+            UserStatus::Active => None,
         }
     }
 }
@@ -92,7 +92,7 @@ pub struct User {
     pub id: UserId,
     pub email: Option<String>,
     pub email_verified_at: Option<DateTime<Utc>>,
-    pub status: AccountStatus,
+    pub status: UserStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -107,7 +107,7 @@ pub struct Session {
     pub expires_at: DateTime<Utc>,
     pub ip: Option<String>,
     pub user_agent: Option<String>,
-    pub recovery_cooldown_until: Option<DateTime<Utc>>,
+    pub recovery_cool_down_until: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,7 +119,7 @@ pub struct SessionSummary {
     pub expires_at: DateTime<Utc>,
     pub ip: Option<String>,
     pub user_agent: Option<String>,
-    pub recovery_cooldown_until: Option<DateTime<Utc>>,
+    pub recovery_cool_down_until: Option<DateTime<Utc>>,
 }
 
 #[async_trait]
@@ -133,7 +133,7 @@ pub trait UserStore: Send + Sync {
     async fn set_user_status(
         &self,
         id: UserId,
-        status: AccountStatus,
+        status: UserStatus,
         at: DateTime<Utc>,
     ) -> StorageResult<()>;
 
@@ -211,7 +211,7 @@ pub struct StoredPasskey {
     pub transports: Vec<String>,
     pub backup_eligible: bool,
     pub backup_state: bool,
-    pub recovery_cooldown_until: Option<DateTime<Utc>>,
+    pub recovery_cool_down_until: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,7 +225,7 @@ pub struct PasskeySummary {
     pub transports: Vec<String>,
     pub backup_eligible: bool,
     pub backup_state: bool,
-    pub recovery_cooldown_until: Option<DateTime<Utc>>,
+    pub recovery_cool_down_until: Option<DateTime<Utc>>,
 }
 
 impl From<StoredPasskey> for PasskeySummary {
@@ -240,7 +240,7 @@ impl From<StoredPasskey> for PasskeySummary {
             transports: value.transports,
             backup_eligible: value.backup_eligible,
             backup_state: value.backup_state,
-            recovery_cooldown_until: value.recovery_cooldown_until,
+            recovery_cool_down_until: value.recovery_cool_down_until,
         }
     }
 }
@@ -257,7 +257,7 @@ impl From<&StoredPasskey> for PasskeySummary {
             transports: value.transports.clone(),
             backup_eligible: value.backup_eligible,
             backup_state: value.backup_state,
-            recovery_cooldown_until: value.recovery_cooldown_until,
+            recovery_cool_down_until: value.recovery_cool_down_until,
         }
     }
 }
@@ -278,7 +278,7 @@ pub struct StoredPasskeyRegistration {
     pub state: Vec<u8>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
-    pub recovery_cooldown_until: Option<DateTime<Utc>>,
+    pub recovery_cool_down_until: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -306,8 +306,8 @@ pub struct PasskeyUse {
 }
 
 #[async_trait]
-pub trait PasskeyCredentialStore: Send + Sync {
-    async fn add_passkey(&self, credential: StoredPasskey) -> StorageResult<()>;
+pub trait PasskeyStore: Send + Sync {
+    async fn add_passkey(&self, passkey: StoredPasskey) -> StorageResult<()>;
 
     async fn record_passkey_use(&self, credential_id: &[u8], used: PasskeyUse)
     -> StorageResult<()>;
@@ -359,36 +359,36 @@ pub trait PasskeyChallengeStore: Send + Sync {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum VerificationPurpose {
+pub enum EmailLinkPurpose {
     Signup,
     Recovery,
     EmailChange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VerificationToken {
+pub struct EmailLink {
     pub token_hash: TokenHash,
     pub user_id: UserId,
-    pub purpose: VerificationPurpose,
+    pub purpose: EmailLinkPurpose,
     pub new_email: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
 
 #[async_trait]
-pub trait VerificationTokenStore: Send + Sync {
-    async fn create_token(&self, token: VerificationToken) -> StorageResult<()>;
+pub trait EmailLinkStore: Send + Sync {
+    async fn create_link(&self, token: EmailLink) -> StorageResult<()>;
 
-    async fn consume_token(
+    async fn redeem_link(
         &self,
         hash: &TokenHash,
-        purpose: VerificationPurpose,
-    ) -> StorageResult<Option<VerificationToken>>;
+        purpose: EmailLinkPurpose,
+    ) -> StorageResult<Option<EmailLink>>;
 
-    async fn delete_tokens_for_user(
+    async fn delete_links_for_user(
         &self,
         user_id: UserId,
-        purpose: VerificationPurpose,
+        purpose: EmailLinkPurpose,
     ) -> StorageResult<u64>;
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
@@ -417,7 +417,7 @@ mod tests {
             expires_at: ts(2_000),
             ip: Some("203.0.113.7".to_string()),
             user_agent: Some("doorman-test/1.0".to_string()),
-            recovery_cooldown_until: Some(ts(1_500)),
+            recovery_cool_down_until: Some(ts(1_500)),
         };
         let json = serde_json::to_string(&session).expect("serialize session");
         let back: Session = serde_json::from_str(&json).expect("deserialize session");
@@ -425,17 +425,17 @@ mod tests {
     }
 
     #[test]
-    fn verification_token_json_round_trips() {
-        let token = VerificationToken {
-            token_hash: hash_token("a-verification-token"),
+    fn email_link_json_round_trips() {
+        let token = EmailLink {
+            token_hash: hash_token("an-email-link-token"),
             user_id: UserId::new(),
-            purpose: VerificationPurpose::EmailChange,
+            purpose: EmailLinkPurpose::EmailChange,
             new_email: Some("new@example.com".to_string()),
             created_at: ts(1_000),
             expires_at: ts(2_000),
         };
         let json = serde_json::to_string(&token).expect("serialize token");
-        let back: VerificationToken = serde_json::from_str(&json).expect("deserialize token");
+        let back: EmailLink = serde_json::from_str(&json).expect("deserialize token");
         assert_eq!(token, back);
     }
 
@@ -448,7 +448,7 @@ mod tests {
             state: vec![0x00, 0x01, 0xfe, 0xff],
             created_at: ts(1_000),
             expires_at: ts(2_000),
-            recovery_cooldown_until: None,
+            recovery_cool_down_until: None,
         };
         let json = serde_json::to_string(&reg).expect("serialize registration");
         let back: StoredPasskeyRegistration =
@@ -459,7 +459,7 @@ mod tests {
         assert_eq!(reg.state, back.state);
         assert_eq!(reg.created_at, back.created_at);
         assert_eq!(reg.expires_at, back.expires_at);
-        assert_eq!(reg.recovery_cooldown_until, back.recovery_cooldown_until);
+        assert_eq!(reg.recovery_cool_down_until, back.recovery_cool_down_until);
     }
 
     #[test]

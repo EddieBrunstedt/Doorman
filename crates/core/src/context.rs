@@ -2,14 +2,12 @@ use std::sync::Arc;
 
 use crate::audit::AuditDispatch;
 use crate::clock::Clock;
-use crate::email::{EmailSender, EmailTemplates, SecurityEmailNotifier};
+use crate::email::{EmailSender, EmailTemplates, SecurityNotices};
 use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::rate_limit::RateLimiter;
 use crate::reauth::ReauthManager;
 use crate::session::SessionManager;
-use crate::storage::{
-    PasskeyChallengeStore, PasskeyCredentialStore, Storage, UserStore, VerificationTokenStore,
-};
+use crate::storage::{EmailLinkStore, PasskeyChallengeStore, PasskeyStore, Storage, UserStore};
 
 #[derive(Clone)]
 pub(crate) struct CoreDeps {
@@ -17,14 +15,14 @@ pub(crate) struct CoreDeps {
     pub(crate) audit: AuditDispatch,
     pub(crate) email: Arc<dyn EmailSender>,
     pub(crate) emails: Arc<dyn EmailTemplates>,
-    pub(crate) notifier: SecurityEmailNotifier,
+    pub(crate) notices: SecurityNotices,
     pub(crate) rate_limiter: Arc<dyn RateLimiter>,
     pub(crate) metrics: Arc<dyn MetricSink>,
     pub(crate) sessions: SessionManager,
     pub(crate) reauth: ReauthManager,
     pub(crate) users: Arc<dyn UserStore>,
-    pub(crate) verification_tokens: Arc<dyn VerificationTokenStore>,
-    pub(crate) passkey_credentials: Arc<dyn PasskeyCredentialStore>,
+    pub(crate) email_links: Arc<dyn EmailLinkStore>,
+    pub(crate) passkeys: Arc<dyn PasskeyStore>,
     pub(crate) passkey_challenges: Arc<dyn PasskeyChallengeStore>,
 }
 
@@ -38,7 +36,7 @@ impl CoreDeps {
         audit: AuditDispatch,
         email: Arc<dyn EmailSender>,
         emails: Arc<dyn EmailTemplates>,
-        notifier: SecurityEmailNotifier,
+        notices: SecurityNotices,
         rate_limiter: Arc<dyn RateLimiter>,
         sessions: SessionManager,
         reauth: ReauthManager,
@@ -49,14 +47,14 @@ impl CoreDeps {
             audit,
             email,
             emails,
-            notifier,
+            notices,
             rate_limiter,
             metrics: Arc::new(NoopMetricSink),
             sessions,
             reauth,
             users: storage.users,
-            verification_tokens: storage.verification_tokens,
-            passkey_credentials: storage.passkey_credentials,
+            email_links: storage.email_links,
+            passkeys: storage.passkeys,
             passkey_challenges: storage.passkey_challenges,
         }
     }

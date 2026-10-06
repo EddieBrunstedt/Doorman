@@ -7,12 +7,12 @@ use axum::http::StatusCode;
 use axum::{Router, routing::get};
 use common::ResidentHttpAuthenticator;
 use doorman_axum::dto::{
-    AuthResponse, PasskeyChallenge, RecoveryConsumeRequest, RecoveryRequest,
-    RegistrationFinishRequest, SignupConsumeRequest, SignupRequest,
+    AuthResponse, PasskeyChallenge, RecoveryRedeemRequest, RecoveryRequest,
+    RegistrationFinishRequest, SignupRedeemRequest, SignupRequest,
 };
 use doorman_axum::prelude::*;
+use doorman_core::email_link::TOKEN_PLACEHOLDER;
 use doorman_core::memory::InMemoryRateLimiter;
-use doorman_core::verification::TOKEN_PLACEHOLDER;
 use doorman_sqlx::SqliteStorage;
 use doorman_test_support::CapturingEmailSender;
 use tokio::net::TcpListener;
@@ -51,8 +51,8 @@ async fn signup_login_recovery_round_trip() {
             url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"),
             ..Default::default()
         })
-        .account(AccountConfig {
-            url_template: format!("{base}/account/email?token={TOKEN_PLACEHOLDER}"),
+        .user(UserConfig {
+            url_template: format!("{base}/user/email?token={TOKEN_PLACEHOLDER}"),
             ..Default::default()
         })
         .build()
@@ -106,17 +106,17 @@ async fn signup_login_recovery_round_trip() {
         doorman_test_support::token_from_email(body, SIGNUP_TEMPLATE)
     };
 
-    let consume = client
-        .post(url("/auth/signup/consume"))
-        .json(&SignupConsumeRequest {
+    let redeem = client
+        .post(url("/auth/signup/redeem"))
+        .json(&SignupRedeemRequest {
             token: signup_token,
         })
         .send()
         .await
-        .expect("signup consume");
-    assert_eq!(consume.status(), StatusCode::OK);
+        .expect("signup redeem");
+    assert_eq!(redeem.status(), StatusCode::OK);
     let challenge: PasskeyChallenge<CreationChallengeResponse> =
-        consume.json().await.expect("consume body");
+        redeem.json().await.expect("redeem body");
 
     let attestation = authenticator.do_registration(challenge.options);
     let login_credential_id = attestation.raw_id.as_ref().to_vec();
@@ -154,7 +154,7 @@ async fn signup_login_recovery_round_trip() {
         .expect("authenticate finish");
     assert_eq!(finish.status(), StatusCode::OK);
     let logged_in: AuthResponse = finish.json().await.expect("authenticate finish body");
-    assert_eq!(logged_in.user.id, signed_up.user.id, "same account");
+    assert_eq!(logged_in.user.id, signed_up.user.id, "same user");
 
     let me = client
         .get(url("/api/me"))
@@ -180,24 +180,24 @@ async fn signup_login_recovery_round_trip() {
         let body = sent
             .iter()
             .rev()
-            .find(|m| m.subject == "Recover access to your account")
+            .find(|m| m.subject == "Recover access with a new passkey")
             .expect("recovery link queued")
             .body_text
             .clone();
         doorman_test_support::token_from_email(&body, RECOVERY_TEMPLATE)
     };
 
-    let consume = client
-        .post(url("/auth/recovery/consume"))
-        .json(&RecoveryConsumeRequest {
+    let redeem = client
+        .post(url("/auth/recovery/redeem"))
+        .json(&RecoveryRedeemRequest {
             token: recovery_token,
         })
         .send()
         .await
-        .expect("recovery consume");
-    assert_eq!(consume.status(), StatusCode::OK);
+        .expect("recovery redeem");
+    assert_eq!(redeem.status(), StatusCode::OK);
     let challenge: PasskeyChallenge<CreationChallengeResponse> =
-        consume.json().await.expect("recovery consume body");
+        redeem.json().await.expect("recovery redeem body");
 
     let attestation = authenticator.do_registration(challenge.options);
     let finish = client
@@ -214,7 +214,7 @@ async fn signup_login_recovery_round_trip() {
     let recovered: AuthResponse = finish.json().await.expect("recovery finish body");
     assert_eq!(
         recovered.user.id, signed_up.user.id,
-        "recovered same account"
+        "recovered the same user"
     );
 
     let me = client

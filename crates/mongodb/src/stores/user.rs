@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{AccountStatus, User, UserId, UserStore};
+use doorman_core::storage::{User, UserId, UserStatus, UserStore};
 use mongodb::bson::{Document, doc};
 
 use crate::db::{Coll, err};
@@ -55,11 +55,11 @@ impl UserStore for MongoUserStore {
     async fn set_user_status(
         &self,
         id: UserId,
-        status: AccountStatus,
+        status: UserStatus,
         at: DateTime<Utc>,
     ) -> StorageResult<()> {
         let mut set = doc! {
-            "status": model::account_status_to_str(&status),
+            "status": model::user_status_to_str(&status),
             "updated_at": model::to_bson_dt(at),
         };
         let update = match status.disabled_at() {

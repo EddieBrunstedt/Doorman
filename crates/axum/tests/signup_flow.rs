@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::http::StatusCode;
 use common::{SIGNUP_URL, SignupClient, TestApp, token_from_email};
-use doorman_axum::dto::{AuthResponse, SignupConsumeRequest, SignupRequest};
+use doorman_axum::dto::{AuthResponse, SignupRedeemRequest, SignupRequest};
 use doorman_core::error::Result;
 use doorman_core::session::SessionContext;
 use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy, SignupRateLimits};
@@ -25,22 +25,22 @@ async fn full_signup_round_trip_cookie_path() {
         .await;
 
     let sent = app.email.sent();
-    assert_eq!(sent.len(), 2, "signup link + passkey notification queued");
+    assert_eq!(sent.len(), 2, "signup link + passkey notice queued");
     let subjects: Vec<&str> = sent.iter().map(|e| e.subject.as_str()).collect();
     let signup_email = sent
         .iter()
-        .find(|e| e.subject == "Finish setting up your account")
+        .find(|e| e.subject == "Finish signing up")
         .expect("signup email queued");
-    let passkey_notification = sent
+    let passkey_notice = sent
         .iter()
         .find(|e| e.subject == "Security notice: passkey registered")
-        .expect("passkey notification queued");
+        .expect("passkey notice queued");
     assert!(
-        subjects.contains(&"Finish setting up your account")
+        subjects.contains(&"Finish signing up")
             && subjects.contains(&"Security notice: passkey registered")
     );
     assert_eq!(signup_email.to, "alice@example.com");
-    assert!(passkey_notification.body_text.contains("test device"));
+    assert!(passkey_notice.body_text.contains("test device"));
 
     assert_eq!(auth.user.email.as_deref(), Some("alice@example.com"));
     assert!(auth.user.email_verified);
@@ -73,7 +73,7 @@ async fn full_signup_round_trip_cookie_path() {
 }
 
 #[tokio::test]
-async fn signup_request_for_credentialed_email_is_silent() {
+async fn signup_request_for_email_with_passkeys_is_silent() {
     let app = TestApp::start(Router::new(), false).await;
     let cookie_client = reqwest::Client::builder()
         .cookie_store(true)
@@ -102,7 +102,7 @@ async fn signup_request_for_credentialed_email_is_silent() {
     assert_eq!(
         app.email.sent().len(),
         emails_before,
-        "no email queued for an already-credentialed email",
+        "no email queued for an email that already has passkeys",
     );
 
     app.shutdown().await;
@@ -145,21 +145,21 @@ async fn signup_request_for_passkeyless_user_reissues_link() {
 }
 
 #[tokio::test]
-async fn consume_with_invalid_token_returns_400_with_code() {
+async fn redeem_with_invalid_token_returns_400_with_code() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(app.url("/auth/signup/consume"))
-        .json(&SignupConsumeRequest {
+        .post(app.url("/auth/signup/redeem"))
+        .json(&SignupRedeemRequest {
             token: "not-a-real-token".into(),
         })
         .send()
         .await
-        .expect("consume");
+        .expect("redeem");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body: serde_json::Value = resp.json().await.expect("json");
-    assert_eq!(body["error"]["code"], "invalid_verification_token");
+    assert_eq!(body["error"]["code"], "invalid_email_link");
 
     app.shutdown().await;
 }
@@ -186,7 +186,7 @@ async fn request_rejects_invalid_email_with_code() {
 }
 
 #[tokio::test]
-async fn consume_replay_is_rejected() {
+async fn redeem_replay_is_rejected() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
@@ -203,24 +203,24 @@ async fn consume_replay_is_rejected() {
     let token = token_from_email(&app.email.sent()[0].body_text);
 
     let first = client
-        .post(app.url("/auth/signup/consume"))
-        .json(&SignupConsumeRequest {
+        .post(app.url("/auth/signup/redeem"))
+        .json(&SignupRedeemRequest {
             token: token.clone(),
         })
         .send()
         .await
-        .expect("first consume");
+        .expect("first redeem");
     assert_eq!(first.status(), StatusCode::OK);
 
     let second = client
-        .post(app.url("/auth/signup/consume"))
-        .json(&SignupConsumeRequest { token })
+        .post(app.url("/auth/signup/redeem"))
+        .json(&SignupRedeemRequest { token })
         .send()
         .await
-        .expect("second consume");
+        .expect("second redeem");
     assert_eq!(second.status(), StatusCode::BAD_REQUEST);
     let body: serde_json::Value = second.json().await.expect("body");
-    assert_eq!(body["error"]["code"], "invalid_verification_token");
+    assert_eq!(body["error"]["code"], "invalid_email_link");
 
     app.shutdown().await;
 }
@@ -255,7 +255,7 @@ async fn passkey_count_reflects_register_and_delete() {
         .await;
     let sent = app.email.sent();
     let backup_mail = &sent[mail_before_backup..];
-    assert_eq!(backup_mail.len(), 1, "backup passkey notification queued");
+    assert_eq!(backup_mail.len(), 1, "backup passkey notice queued");
     assert_eq!(
         backup_mail[0].subject,
         "Security notice: passkey registered"

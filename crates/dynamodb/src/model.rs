@@ -1,14 +1,13 @@
 use chrono::{DateTime, Utc};
 use doorman_core::encoding::{
-    account_status_from_parts, account_status_to_str, authentication_purpose_from_str,
-    authentication_purpose_to_str, hex, purpose_from_str, purpose_to_str as purpose_str,
-    registration_purpose_from_str, registration_purpose_to_str,
+    authentication_purpose_from_str, authentication_purpose_to_str, hex, purpose_from_str,
+    purpose_to_str as purpose_str, registration_purpose_from_str, registration_purpose_to_str,
+    user_status_from_parts, user_status_to_str,
 };
 use doorman_core::error::StorageResult;
 use doorman_core::storage::{
-    PasskeyChallengeId, PasskeySummary, Session, SessionId, StoredPasskey,
-    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
-    VerificationPurpose, VerificationToken,
+    EmailLink, EmailLinkPurpose, PasskeyChallengeId, PasskeySummary, Session, SessionId,
+    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
 };
 use uuid::Uuid;
 
@@ -18,7 +17,7 @@ pub(crate) const ENTITY_USER: &str = "user";
 pub(crate) const ENTITY_EMAIL: &str = "email";
 pub(crate) const ENTITY_SESSION: &str = "session";
 pub(crate) const ENTITY_SESSION_INDEX: &str = "usess";
-pub(crate) const ENTITY_VTOKEN: &str = "vtoken";
+pub(crate) const ENTITY_EMAIL_LINK: &str = "email_link";
 pub(crate) const ENTITY_PASSKEY: &str = "passkey";
 pub(crate) const ENTITY_PKREG: &str = "pkreg";
 pub(crate) const ENTITY_PKAUTH: &str = "pkauth";
@@ -49,11 +48,11 @@ pub(crate) fn session_index_pk(user_id: UserId) -> String {
 
 pub(crate) const SESSION_IDS: &str = "session_ids";
 
-pub(crate) fn vtoken_pk(purpose: VerificationPurpose, hash: &TokenHash) -> String {
-    format!("vtoken#{}#{}", purpose_str(purpose), hex(&hash.0))
+pub(crate) fn email_link_pk(purpose: EmailLinkPurpose, hash: &TokenHash) -> String {
+    format!("email_link#{}#{}", purpose_str(purpose), hex(&hash.0))
 }
 
-pub(crate) fn user_vtokens_key(user_id: UserId, purpose: VerificationPurpose) -> String {
+pub(crate) fn user_email_links_key(user_id: UserId, purpose: EmailLinkPurpose) -> String {
     format!("uvtok#{}#{}", user_id.0, purpose_str(purpose))
 }
 
@@ -113,7 +112,7 @@ pub(crate) fn user_item(user: &User) -> Item {
     put_opt_ts(&mut item, "email_verified_at", user.email_verified_at);
     item.insert(
         "status".to_string(),
-        client::s(account_status_to_str(&user.status)),
+        client::s(user_status_to_str(&user.status)),
     );
     put_opt_ts(&mut item, "disabled_at", user.status.disabled_at());
     put_ts(&mut item, "created_at", user.created_at);
@@ -122,7 +121,7 @@ pub(crate) fn user_item(user: &User) -> Item {
 }
 
 pub(crate) fn user_from_item(item: &Item) -> StorageResult<User> {
-    let status = account_status_from_parts(
+    let status = user_status_from_parts(
         &client::get_s(item, "status")?,
         client::get_opt_ts(item, "disabled_at")?,
     )?;
@@ -165,8 +164,8 @@ pub(crate) fn session_item(session: &Session) -> Item {
     put_opt_s(&mut item, "user_agent", session.user_agent.as_deref());
     put_opt_ts(
         &mut item,
-        "recovery_cooldown_until",
-        session.recovery_cooldown_until,
+        "recovery_cool_down_until",
+        session.recovery_cool_down_until,
     );
     item.insert(
         GSI1PK.to_string(),
@@ -186,12 +185,15 @@ pub(crate) fn session_from_item(item: &Item) -> StorageResult<Session> {
         expires_at: client::get_ts(item, client::EXPIRES_AT)?,
         ip: client::get_opt_s(item, "ip")?,
         user_agent: client::get_opt_s(item, "user_agent")?,
-        recovery_cooldown_until: client::get_opt_ts(item, "recovery_cooldown_until")?,
+        recovery_cool_down_until: client::get_opt_ts(item, "recovery_cool_down_until")?,
     })
 }
 
-pub(crate) fn vtoken_item(token: &VerificationToken) -> Item {
-    let mut item = base(ENTITY_VTOKEN, vtoken_pk(token.purpose, &token.token_hash));
+pub(crate) fn email_link_item(token: &EmailLink) -> Item {
+    let mut item = base(
+        ENTITY_EMAIL_LINK,
+        email_link_pk(token.purpose, &token.token_hash),
+    );
     item.insert(
         "token_hash".to_string(),
         client::b(token.token_hash.0.to_vec()),
@@ -206,14 +208,14 @@ pub(crate) fn vtoken_item(token: &VerificationToken) -> Item {
     put_ts(&mut item, client::EXPIRES_AT, token.expires_at);
     item.insert(
         GSI2PK.to_string(),
-        client::s(user_vtokens_key(token.user_id, token.purpose)),
+        client::s(user_email_links_key(token.user_id, token.purpose)),
     );
     put_ttl(&mut item, token.expires_at);
     item
 }
 
-pub(crate) fn vtoken_from_item(item: &Item) -> StorageResult<VerificationToken> {
-    Ok(VerificationToken {
+pub(crate) fn email_link_from_item(item: &Item) -> StorageResult<EmailLink> {
+    Ok(EmailLink {
         token_hash: client::get_token_hash(item, "token_hash")?,
         user_id: UserId(client::get_uuid(item, "user_id")?),
         purpose: purpose_from_str(&client::get_s(item, "purpose")?)?,
@@ -223,42 +225,42 @@ pub(crate) fn vtoken_from_item(item: &Item) -> StorageResult<VerificationToken> 
     })
 }
 
-pub(crate) fn passkey_item(credential: &StoredPasskey) -> Item {
-    let mut item = base(ENTITY_PASSKEY, passkey_pk(&credential.credential_id));
+pub(crate) fn passkey_item(passkey: &StoredPasskey) -> Item {
+    let mut item = base(ENTITY_PASSKEY, passkey_pk(&passkey.credential_id));
     item.insert(
         "credential_id".to_string(),
-        client::b(credential.credential_id.clone()),
+        client::b(passkey.credential_id.clone()),
     );
     item.insert(
         "user_id".to_string(),
-        client::s(credential.user_id.0.to_string()),
+        client::s(passkey.user_id.0.to_string()),
     );
-    item.insert("passkey".to_string(), client::b(credential.passkey.clone()));
-    put_opt_s(&mut item, "name", credential.name.as_deref());
-    put_ts(&mut item, "created_at", credential.created_at);
-    put_opt_ts(&mut item, "last_used_at", credential.last_used_at);
-    let aaguid = credential.aaguid.map(|u| u.to_string());
+    item.insert("passkey".to_string(), client::b(passkey.passkey.clone()));
+    put_opt_s(&mut item, "name", passkey.name.as_deref());
+    put_ts(&mut item, "created_at", passkey.created_at);
+    put_opt_ts(&mut item, "last_used_at", passkey.last_used_at);
+    let aaguid = passkey.aaguid.map(|u| u.to_string());
     put_opt_s(&mut item, "aaguid", aaguid.as_deref());
     item.insert(
         "transports".to_string(),
-        client::list_s(credential.transports.iter().cloned()),
+        client::list_s(passkey.transports.iter().cloned()),
     );
     item.insert(
         "backup_eligible".to_string(),
-        client::boolean(credential.backup_eligible),
+        client::boolean(passkey.backup_eligible),
     );
     item.insert(
         "backup_state".to_string(),
-        client::boolean(credential.backup_state),
+        client::boolean(passkey.backup_state),
     );
     put_opt_ts(
         &mut item,
-        "recovery_cooldown_until",
-        credential.recovery_cooldown_until,
+        "recovery_cool_down_until",
+        passkey.recovery_cool_down_until,
     );
     item.insert(
         GSI2PK.to_string(),
-        client::s(user_passkeys_key(credential.user_id)),
+        client::s(user_passkeys_key(passkey.user_id)),
     );
     item
 }
@@ -274,7 +276,7 @@ fn passkey_meta_from_item(item: &Item) -> StorageResult<PasskeySummary> {
         transports: client::get_list_s(item, "transports")?,
         backup_eligible: client::get_bool(item, "backup_eligible")?,
         backup_state: client::get_bool(item, "backup_state")?,
-        recovery_cooldown_until: client::get_opt_ts(item, "recovery_cooldown_until")?,
+        recovery_cool_down_until: client::get_opt_ts(item, "recovery_cool_down_until")?,
     })
 }
 
@@ -291,7 +293,7 @@ pub(crate) fn passkey_from_item(item: &Item) -> StorageResult<StoredPasskey> {
         transports: meta.transports,
         backup_eligible: meta.backup_eligible,
         backup_state: meta.backup_state,
-        recovery_cooldown_until: meta.recovery_cooldown_until,
+        recovery_cool_down_until: meta.recovery_cool_down_until,
     })
 }
 
@@ -322,8 +324,8 @@ pub(crate) fn pkreg_item(value: &StoredPasskeyRegistration) -> Item {
     put_ts(&mut item, client::EXPIRES_AT, value.expires_at);
     put_opt_ts(
         &mut item,
-        "recovery_cooldown_until",
-        value.recovery_cooldown_until,
+        "recovery_cool_down_until",
+        value.recovery_cool_down_until,
     );
     item.insert(
         GSI2PK.to_string(),
@@ -341,7 +343,7 @@ pub(crate) fn pkreg_from_item(item: &Item) -> StorageResult<StoredPasskeyRegistr
         state: client::get_b(item, "state")?,
         created_at: client::get_ts(item, "created_at")?,
         expires_at: client::get_ts(item, client::EXPIRES_AT)?,
-        recovery_cooldown_until: client::get_opt_ts(item, "recovery_cooldown_until")?,
+        recovery_cool_down_until: client::get_opt_ts(item, "recovery_cool_down_until")?,
     })
 }
 

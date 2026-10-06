@@ -87,10 +87,10 @@ async fn list(
     State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Json<Vec<PasskeyDto>>, ErrorResponse> {
-    let creds = manager(&state)
+    let passkeys = manager(&state)
         .list_passkey_summaries(auth.session.user_id)
         .await?;
-    Ok(Json(creds.into_iter().map(PasskeyDto::from).collect()))
+    Ok(Json(passkeys.into_iter().map(PasskeyDto::from).collect()))
 }
 
 async fn remove(

@@ -8,7 +8,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use doorman_core::memory::InMemoryStorage;
 use doorman_core::passkey::PasskeyManager;
 use doorman_core::session::SessionContext;
-use doorman_core::storage::{AccountStatus, Session, User, UserId};
+use doorman_core::storage::{Session, User, UserId, UserStatus};
 use tokio::runtime::Runtime;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::prelude::Url as AuthUrl;
@@ -34,7 +34,7 @@ async fn build_scaffold() -> Scaffold {
         id: UserId::new(),
         email: Some("bench@example.com".into()),
         email_verified_at: Some(now),
-        status: AccountStatus::Active,
+        status: UserStatus::Active,
         created_at: now,
         updated_at: now,
     };

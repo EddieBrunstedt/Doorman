@@ -13,14 +13,14 @@ use doorman_core::passkey::{PasskeyConfig, PasskeyRateLimits};
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{
-    AccountStatus, PasskeyChallengeStore, PasskeyCredentialStore, PasskeyUse, UserStore,
+    PasskeyChallengeStore, PasskeyStore, PasskeyUse, UserStatus, UserStore,
 };
 use doorman_test_support::MockClock;
 
 use common::{
     Harness, RP_ID, RP_NAME, assert_discoverable_request_options,
     assert_resident_registration_options, authenticator, kinds, make_user, passkey_count,
-    register_passkey, restricted_session_for, rp_origin, session_count, session_for, ts,
+    register_passkey, rp_origin, session_count, session_for, session_in_cool_down_for, ts,
 };
 
 fn base_passkey_config() -> PasskeyConfig {
@@ -42,7 +42,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);
-    let credential = h
+    let passkey = h
         .passkey
         .finish_registration(
             challenge_id,
@@ -52,18 +52,18 @@ async fn register_then_discoverable_authenticate_round_trip() {
         )
         .await
         .expect("finish_registration");
-    assert_eq!(credential.user_id, user.id);
-    assert_eq!(credential.name.as_deref(), Some("Alice's Mac"));
-    assert_eq!(credential.recovery_cooldown_until, None);
+    assert_eq!(passkey.user_id, user.id);
+    assert_eq!(passkey.name.as_deref(), Some("Alice's Mac"));
+    assert_eq!(passkey.recovery_cool_down_until, None);
     assert_eq!(passkey_count(&h, user.id).await, 1);
     let err = h
         .passkey
         .finish_registration(challenge_id, &response, None, SessionContext::default())
         .await
-        .expect_err("challenge consumed: the ceremony cannot be replayed");
+        .expect_err("challenge redeemed: the ceremony cannot be replayed");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
     let sent = h.email.sent();
-    assert_eq!(sent.len(), 1, "passkey registration notification sent");
+    assert_eq!(sent.len(), 1, "passkey registration notice sent");
     assert_eq!(sent[0].subject, "Security notice: passkey registered");
     assert!(sent[0].body_text.contains("Alice's Mac"));
 
@@ -73,7 +73,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
         .await
         .expect("start_authentication");
     assert_discoverable_request_options(&rcr);
-    let assertion = wa.do_authentication(rcr, &credential.credential_id);
+    let assertion = wa.do_authentication(rcr, &passkey.credential_id);
 
     let issued = h
         .passkey
@@ -96,19 +96,19 @@ async fn register_then_discoverable_authenticate_round_trip() {
     assert_eq!(session_count(&h, user.id).await, 1);
 
     let stored = h
-        .credentials
-        .find_passkey_by_credential_id(&credential.credential_id)
+        .passkeys
+        .find_passkey_by_credential_id(&passkey.credential_id)
         .await
-        .expect("find credential")
-        .expect("credential persisted");
+        .expect("find passkey")
+        .expect("passkey persisted");
     assert!(stored.last_used_at.is_some(), "last_used_at advanced");
-    assert_eq!(stored.recovery_cooldown_until, None);
+    assert_eq!(stored.recovery_cool_down_until, None);
 
     let events = kinds(&h.audit.events());
     assert!(
         events
             .iter()
-            .any(|k| matches!(k, AuditEventKind::CredentialAdded { .. }))
+            .any(|k| matches!(k, AuditEventKind::PasskeyAdded { .. }))
     );
     assert!(
         events
@@ -123,9 +123,9 @@ async fn registration_captures_device_metadata_and_surfaces_it_in_summary() {
     let user = make_user(&h, "metadata@example.com").await;
     let mut wa = authenticator();
 
-    let credential = register_passkey(&h, user.id, &mut wa, Some("Alice's Mac")).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, Some("Alice's Mac")).await;
 
-    assert_eq!(credential.aaguid, None, "passkey flow yields no AAGUID");
+    assert_eq!(passkey.aaguid, None, "passkey flow yields no AAGUID");
 
     let summaries = h
         .passkey
@@ -135,10 +135,10 @@ async fn registration_captures_device_metadata_and_surfaces_it_in_summary() {
     assert_eq!(summaries.len(), 1);
     let summary = &summaries[0];
 
-    assert_eq!(summary.aaguid, credential.aaguid);
-    assert_eq!(summary.transports, credential.transports);
-    assert_eq!(summary.backup_eligible, credential.backup_eligible);
-    assert_eq!(summary.backup_state, credential.backup_state);
+    assert_eq!(summary.aaguid, passkey.aaguid);
+    assert_eq!(summary.transports, passkey.transports);
+    assert_eq!(summary.backup_eligible, passkey.backup_eligible);
+    assert_eq!(summary.backup_state, passkey.backup_state);
 }
 
 #[tokio::test]
@@ -148,15 +148,15 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
     let bob = make_user(&h, "bob@example.com").await;
     let mut wa = authenticator();
 
-    let alice_credential = register_passkey(&h, alice.id, &mut wa, Some("alice device")).await;
-    let bob_credential = register_passkey(&h, bob.id, &mut wa, Some("bob device")).await;
+    let alice_passkey = register_passkey(&h, alice.id, &mut wa, Some("alice device")).await;
+    let bob_passkey = register_passkey(&h, bob.id, &mut wa, Some("bob device")).await;
 
     let (bob_challenge, bob_options) = h
         .passkey
         .start_authentication(SessionContext::default())
         .await
         .expect("start bob");
-    let bob_assertion = wa.do_authentication(bob_options, &bob_credential.credential_id);
+    let bob_assertion = wa.do_authentication(bob_options, &bob_passkey.credential_id);
     let bob_issued = h
         .passkey
         .finish_authentication(bob_challenge, &bob_assertion, SessionContext::default())
@@ -170,7 +170,7 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
         .start_authentication(SessionContext::default())
         .await
         .expect("start alice");
-    let alice_assertion = wa.do_authentication(alice_options, &alice_credential.credential_id);
+    let alice_assertion = wa.do_authentication(alice_options, &alice_passkey.credential_id);
     let alice_issued = h
         .passkey
         .finish_authentication(alice_challenge, &alice_assertion, SessionContext::default())
@@ -185,14 +185,14 @@ async fn authentication_without_user_handle_is_rejected() {
     let h = Harness::fresh();
     let user = make_user(&h, "fallback@example.com").await;
     let mut wa = authenticator();
-    let credential = register_passkey(&h, user.id, &mut wa, None).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, None).await;
 
     let (auth_id, options) = h
         .passkey
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth");
-    let assertion = wa.do_authentication_without_user_handle(options, &credential.credential_id);
+    let assertion = wa.do_authentication_without_user_handle(options, &passkey.credential_id);
 
     let err = h
         .passkey
@@ -221,16 +221,16 @@ async fn registration_links_passkey_to_existing_user() {
     let user = make_user(&h, "linker@example.com").await;
     let mut wa = authenticator();
 
-    let cred = register_passkey(&h, user.id, &mut wa, None).await;
-    assert_eq!(cred.user_id, user.id, "passkey linked to same user");
+    let passkey = register_passkey(&h, user.id, &mut wa, None).await;
+    assert_eq!(passkey.user_id, user.id, "passkey linked to same user");
 
     let listed = h.passkey.list_passkeys(user.id).await.expect("list");
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].credential_id, cred.credential_id);
+    assert_eq!(listed[0].credential_id, passkey.credential_id);
 }
 
 #[tokio::test]
-async fn second_registration_excludes_existing_credentials() {
+async fn second_registration_excludes_existing_passkeys() {
     let h = Harness::fresh();
     let user = make_user(&h, "two@example.com").await;
     let mut wa = authenticator();
@@ -246,8 +246,8 @@ async fn second_registration_excludes_existing_credentials() {
     let excludes = ccr2
         .public_key
         .exclude_credentials
-        .expect("previous credential excluded");
-    assert_eq!(excludes.len(), 1, "previous credential excluded");
+        .expect("previous passkey excluded");
+    assert_eq!(excludes.len(), 1, "previous passkey excluded");
 }
 
 #[tokio::test]
@@ -344,7 +344,7 @@ async fn finish_registration_rejects_malformed_challenge() {
 }
 
 #[tokio::test]
-async fn finish_registration_against_deleted_user_writes_no_orphan_credential() {
+async fn finish_registration_against_deleted_user_writes_no_orphan_passkey() {
     let h = Harness::fresh();
     let user = make_user(&h, "vanishing@example.com").await;
     let mut wa = authenticator();
@@ -370,7 +370,7 @@ async fn finish_registration_against_deleted_user_writes_no_orphan_credential() 
     assert_eq!(
         passkey_count(&h, user.id).await,
         0,
-        "no credential written against the deleted user"
+        "no passkey written against the deleted user"
     );
     assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
         k,
@@ -383,29 +383,29 @@ async fn finish_registration_against_deleted_user_writes_no_orphan_credential() 
 }
 
 #[tokio::test]
-async fn finish_authentication_rejects_unknown_credential() {
+async fn finish_authentication_rejects_unknown_passkey() {
     let h = Harness::fresh();
     let user = make_user(&h, "vanish@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, None).await;
 
     let (auth_id, rcr) = h
         .passkey
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth");
-    let assertion = wa.do_authentication(rcr, &cred.credential_id);
+    let assertion = wa.do_authentication(rcr, &passkey.credential_id);
 
-    h.credentials
-        .delete_passkey(&cred.credential_id)
+    h.passkeys
+        .delete_passkey(&passkey.credential_id)
         .await
-        .expect("delete credential");
+        .expect("delete passkey");
 
     let err = h
         .passkey
         .finish_authentication(auth_id, &assertion, SessionContext::default())
         .await
-        .expect_err("missing credential");
+        .expect_err("missing passkey");
     assert!(matches!(err, Error::PasskeyNotFound));
 }
 
@@ -415,14 +415,14 @@ async fn finish_authentication_rejects_mismatched_user_handle() {
     let alice = make_user(&h, "alice@example.com").await;
     let bob = make_user(&h, "bob@example.com").await;
     let mut wa = authenticator();
-    let alice_credential = register_passkey(&h, alice.id, &mut wa, None).await;
+    let alice_passkey = register_passkey(&h, alice.id, &mut wa, None).await;
 
     let (auth_id, rcr) = h
         .passkey
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth");
-    let mut assertion = wa.do_authentication(rcr, &alice_credential.credential_id);
+    let mut assertion = wa.do_authentication(rcr, &alice_passkey.credential_id);
     assertion.response.user_handle = Some(bob.id.0.as_bytes().as_slice().into());
 
     let err = h
@@ -448,7 +448,7 @@ async fn finish_authentication_rejects_mismatched_user_handle() {
                 reason: AuthFailureReason::UserHandleMismatch,
             } if *uid == alice.id
         )),
-        "mismatch audited against the credential owner"
+        "mismatch audited against the passkey owner"
     );
 }
 
@@ -457,14 +457,14 @@ async fn finish_authentication_rejects_tampered_signature() {
     let h = Harness::fresh();
     let user = make_user(&h, "tamper@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, None).await;
 
     let (auth_id, rcr) = h
         .passkey
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth");
-    let mut assertion = wa.do_authentication(rcr, &cred.credential_id);
+    let mut assertion = wa.do_authentication(rcr, &passkey.credential_id);
 
     let mut signature = assertion.response.signature.as_ref().to_vec();
     signature[0] ^= 0x01;
@@ -527,7 +527,7 @@ async fn finish_registration_rejects_tampered_attestation() {
     assert_eq!(
         passkey_count(&h, user.id).await,
         0,
-        "no credential written for a tampered attestation"
+        "no passkey written for a tampered attestation"
     );
 }
 
@@ -536,20 +536,20 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
     let h = Harness::fresh();
     let user = make_user(&h, "cloned@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, None).await;
 
     let stored = h
-        .credentials
-        .find_passkey_by_credential_id(&cred.credential_id)
+        .passkeys
+        .find_passkey_by_credential_id(&passkey.credential_id)
         .await
-        .expect("find credential")
-        .expect("credential persisted");
+        .expect("find passkey")
+        .expect("passkey persisted");
     let mut blob: serde_json::Value =
         serde_json::from_slice(&stored.passkey).expect("blob is json");
     blob["cred"]["counter"] = serde_json::json!(1_000_000u32);
-    h.credentials
+    h.passkeys
         .record_passkey_use(
-            &cred.credential_id,
+            &passkey.credential_id,
             PasskeyUse {
                 passkey: serde_json::to_vec(&blob).expect("reserialise blob"),
                 backup_eligible: stored.backup_eligible,
@@ -565,7 +565,7 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth");
-    let assertion = wa.do_authentication(rcr, &cred.credential_id);
+    let assertion = wa.do_authentication(rcr, &passkey.credential_id);
 
     let err = h
         .passkey
@@ -599,15 +599,15 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
 }
 
 #[tokio::test]
-async fn finish_authentication_refuses_disabled_account() {
+async fn finish_authentication_refuses_disabled_user() {
     let h = Harness::fresh();
-    let user = make_user(&h, "frozen@example.com").await;
+    let user = make_user(&h, "disabled@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, None).await;
 
     let now = h.clock.now();
     h.users
-        .set_user_status(user.id, AccountStatus::Disabled { at: now }, now)
+        .set_user_status(user.id, UserStatus::Disabled { at: now }, now)
         .await
         .expect("disable user");
 
@@ -616,30 +616,27 @@ async fn finish_authentication_refuses_disabled_account() {
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth");
-    let assertion = wa.do_authentication(rcr, &cred.credential_id);
+    let assertion = wa.do_authentication(rcr, &passkey.credential_id);
 
     let err = h
         .passkey
         .finish_authentication(auth_id, &assertion, SessionContext::default())
         .await
-        .expect_err("disabled account must be refused");
-    assert!(matches!(err, Error::AccountDisabled));
+        .expect_err("disabled user must be refused");
+    assert!(matches!(err, Error::UserDisabled));
     assert_eq!(
         session_count(&h, user.id).await,
         0,
-        "no session minted for a disabled account"
+        "no session minted for a disabled user"
     );
 
     let stored = h
-        .credentials
-        .find_passkey_by_credential_id(&cred.credential_id)
+        .passkeys
+        .find_passkey_by_credential_id(&passkey.credential_id)
         .await
-        .expect("find credential")
-        .expect("credential persisted");
-    assert_eq!(
-        stored.last_used_at, None,
-        "credential not updated on refusal"
-    );
+        .expect("find passkey")
+        .expect("passkey persisted");
+    assert_eq!(stored.last_used_at, None, "passkey not updated on refusal");
 
     let events = kinds(&h.audit.events());
     assert!(
@@ -647,49 +644,49 @@ async fn finish_authentication_refuses_disabled_account() {
             k,
             AuditEventKind::AuthenticationFailed {
                 user_id: Some(uid),
-                reason: AuthFailureReason::AccountDisabled,
+                reason: AuthFailureReason::UserDisabled,
             } if *uid == user.id
         )),
-        "refusal emits an account-disabled audit event"
+        "refusal emits a user-disabled audit event"
     );
     assert!(
         !events
             .iter()
             .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. })),
-        "no login-succeeded event for a disabled account"
+        "no login-succeeded event for a disabled user"
     );
 
     let err = h
         .passkey
         .finish_authentication(auth_id, &assertion, SessionContext::default())
         .await
-        .expect_err("challenge consumed: the refused login cannot be replayed");
+        .expect_err("challenge redeemed: the refused login cannot be replayed");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
 }
 
 #[tokio::test]
-async fn finish_authentication_audits_unknown_credential_failure() {
+async fn finish_authentication_audits_unknown_passkey_failure() {
     let h = Harness::fresh();
     let user = make_user(&h, "gone@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, None).await;
 
     let (auth_id, rcr) = h
         .passkey
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth");
-    let assertion = wa.do_authentication(rcr, &cred.credential_id);
-    h.credentials
-        .delete_passkey(&cred.credential_id)
+    let assertion = wa.do_authentication(rcr, &passkey.credential_id);
+    h.passkeys
+        .delete_passkey(&passkey.credential_id)
         .await
-        .expect("delete credential");
+        .expect("delete passkey");
 
     let err = h
         .passkey
         .finish_authentication(auth_id, &assertion, SessionContext::default())
         .await
-        .expect_err("missing credential");
+        .expect_err("missing passkey");
     assert!(matches!(err, Error::PasskeyNotFound));
 
     let events = kinds(&h.audit.events());
@@ -697,7 +694,7 @@ async fn finish_authentication_audits_unknown_credential_failure() {
         k,
         AuditEventKind::AuthenticationFailed {
             user_id: None,
-            reason: AuthFailureReason::UnknownCredential,
+            reason: AuthFailureReason::UnknownPasskey,
         }
     )));
 }
@@ -707,14 +704,14 @@ async fn finish_authentication_audits_expired_challenge_failure() {
     let h = Harness::fresh();
     let user = make_user(&h, "stale@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, None).await;
 
     let (auth_id, rcr) = h
         .passkey
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth");
-    let assertion = wa.do_authentication(rcr, &cred.credential_id);
+    let assertion = wa.do_authentication(rcr, &passkey.credential_id);
     h.clock.advance(ChronoDuration::seconds(301));
 
     let err = h
@@ -740,14 +737,14 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
     let h = Harness::fresh();
     let user = make_user(&h, "noghost@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, None).await;
 
     let (auth_id, rcr) = h
         .passkey
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth");
-    let assertion = wa.do_authentication(rcr, &cred.credential_id);
+    let assertion = wa.do_authentication(rcr, &passkey.credential_id);
     h.passkey
         .finish_authentication(auth_id, &assertion, SessionContext::default())
         .await
@@ -759,7 +756,7 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth 2");
-    let assertion2 = wa.do_authentication(rcr2, &cred.credential_id);
+    let assertion2 = wa.do_authentication(rcr2, &passkey.credential_id);
     h.challenges
         .take_authentication(auth_id2)
         .await
@@ -798,7 +795,7 @@ async fn finish_authentication_rejects_a_reauth_challenge() {
         .passkey
         .finish_authentication(reauth_id, &assertion, SessionContext::default())
         .await
-        .expect_err("a re-authentication challenge cannot sign in");
+        .expect_err("a re-authentication challenge cannot log in");
     assert!(
         matches!(err, Error::InvalidPasskeyChallenge),
         "got: {err:?}"
@@ -837,14 +834,14 @@ async fn finish_authentication_rejects_expired_challenge() {
     let h = Harness::fresh();
     let user = make_user(&h, "slow-auth@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, None).await;
 
     let (auth_id, rcr) = h
         .passkey
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth");
-    let assertion = wa.do_authentication(rcr, &cred.credential_id);
+    let assertion = wa.do_authentication(rcr, &passkey.credential_id);
     h.clock.advance(ChronoDuration::seconds(301));
 
     let err = h
@@ -856,18 +853,18 @@ async fn finish_authentication_rejects_expired_challenge() {
 }
 
 #[tokio::test]
-async fn remove_passkey_emits_audit_sends_notification_and_blocks_login() {
+async fn remove_passkey_emits_audit_sends_notice_and_blocks_login() {
     let h = Harness::fresh();
     let user = make_user(&h, "remover@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
     let session = session_for(&h, &user);
     let mail_before = h.email.sent().len();
 
     h.passkey
         .remove_passkey(
             &session,
-            &cred.credential_id,
+            &passkey.credential_id,
             None,
             SessionContext::default(),
         )
@@ -876,7 +873,7 @@ async fn remove_passkey_emits_audit_sends_notification_and_blocks_login() {
     assert_eq!(passkey_count(&h, user.id).await, 0);
     let sent = h.email.sent();
     let removal_mail = &sent[mail_before..];
-    assert_eq!(removal_mail.len(), 1, "passkey removal notification sent");
+    assert_eq!(removal_mail.len(), 1, "passkey removal notice sent");
     assert_eq!(removal_mail[0].subject, "Security notice: passkey removed");
     assert!(removal_mail[0].body_text.contains("old phone"));
     assert!(removal_mail[0].body_text.contains("If this was not you"));
@@ -885,17 +882,17 @@ async fn remove_passkey_emits_audit_sends_notification_and_blocks_login() {
     assert!(
         events
             .iter()
-            .any(|k| matches!(k, AuditEventKind::CredentialRemoved { .. }))
+            .any(|k| matches!(k, AuditEventKind::PasskeyRemoved { .. }))
     );
 }
 
 #[tokio::test]
-async fn remove_passkey_refuses_other_users_credential_without_notification() {
+async fn remove_passkey_refuses_other_users_passkey_without_notice() {
     let h = Harness::fresh();
     let alice = make_user(&h, "a@example.com").await;
     let bob = make_user(&h, "b@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, alice.id, &mut wa, None).await;
+    let passkey = register_passkey(&h, alice.id, &mut wa, None).await;
     let bob_session = session_for(&h, &bob);
     let mail_before = h.email.sent().len();
 
@@ -903,7 +900,7 @@ async fn remove_passkey_refuses_other_users_credential_without_notification() {
         .passkey
         .remove_passkey(
             &bob_session,
-            &cred.credential_id,
+            &passkey.credential_id,
             None,
             SessionContext::default(),
         )
@@ -919,7 +916,7 @@ async fn remove_passkey_refuses_other_users_credential_without_notification() {
 }
 
 #[tokio::test]
-async fn remove_missing_passkey_sends_no_notification() {
+async fn remove_missing_passkey_sends_no_notice() {
     let h = Harness::fresh();
     let user = make_user(&h, "missing@example.com").await;
     let session = session_for(&h, &user);
@@ -928,22 +925,22 @@ async fn remove_missing_passkey_sends_no_notification() {
         .passkey
         .remove_passkey(
             &session,
-            b"missing credential",
+            b"missing passkey",
             None,
             SessionContext::default(),
         )
         .await
-        .expect_err("missing credential");
+        .expect_err("missing passkey");
     assert!(matches!(err, Error::PasskeyNotFound));
     assert_eq!(h.email.sent().len(), 0, "no removal email sent");
 }
 
 #[tokio::test]
-async fn remove_passkey_notification_failure_does_not_undo_removal() {
+async fn remove_passkey_notice_failure_does_not_undo_removal() {
     let h = Harness::fresh();
     let user = make_user(&h, "remove-failure@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
     let session = session_for(&h, &user);
     let mail_before = h.email.sent().len();
     h.email.fail_after_successful_sends(mail_before);
@@ -951,49 +948,49 @@ async fn remove_passkey_notification_failure_does_not_undo_removal() {
     h.passkey
         .remove_passkey(
             &session,
-            &cred.credential_id,
+            &passkey.credential_id,
             None,
             SessionContext::default(),
         )
         .await
-        .expect("remove succeeds despite notification failure");
+        .expect("remove succeeds despite notice failure");
 
     assert!(
-        h.credentials
-            .find_passkey_by_credential_id(&cred.credential_id)
+        h.passkeys
+            .find_passkey_by_credential_id(&passkey.credential_id)
             .await
-            .expect("find credential")
+            .expect("find passkey")
             .is_none(),
-        "credential was still removed"
+        "passkey was still removed"
     );
     assert_eq!(
         h.email.sent().len(),
         mail_before,
-        "failed notification was not captured"
+        "failed notice was not captured"
     );
 }
 
 #[tokio::test]
-async fn remove_passkey_refused_during_recovery_cooldown() {
+async fn remove_passkey_refused_during_recovery_cool_down() {
     let h = Harness::fresh();
-    let user = make_user(&h, "locked@example.com").await;
+    let user = make_user(&h, "cool-down@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, Some("only key")).await;
-    let cooldown_until = h.clock.now() + ChronoDuration::hours(24);
-    let restricted = restricted_session_for(&h, &user, cooldown_until);
+    let passkey = register_passkey(&h, user.id, &mut wa, Some("only key")).await;
+    let cool_down_until = h.clock.now() + ChronoDuration::hours(24);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
     let mail_before = h.email.sent().len();
 
     let err = h
         .passkey
         .remove_passkey(
-            &restricted,
-            &cred.credential_id,
+            &in_cool_down,
+            &passkey.credential_id,
             None,
             SessionContext::default(),
         )
         .await
         .expect_err("removal must be refused during the cool-down");
-    assert!(matches!(err, Error::RecoveryCooldownActive));
+    assert!(matches!(err, Error::RecoveryCoolDownActive));
     assert_eq!(
         passkey_count(&h, user.id).await,
         1,
@@ -1002,14 +999,14 @@ async fn remove_passkey_refused_during_recovery_cooldown() {
     assert_eq!(
         h.email.sent().len(),
         mail_before,
-        "no removal notification is sent when the gate trips",
+        "no removal notice is sent when the gate trips",
     );
 
     h.clock.advance(ChronoDuration::hours(25));
     h.passkey
         .remove_passkey(
-            &restricted,
-            &cred.credential_id,
+            &in_cool_down,
+            &passkey.credential_id,
             None,
             SessionContext::default(),
         )
@@ -1019,11 +1016,11 @@ async fn remove_passkey_refused_during_recovery_cooldown() {
 }
 
 #[tokio::test]
-async fn rename_passkey_updates_name_emits_audit_and_sends_no_notification() {
+async fn rename_passkey_updates_name_emits_audit_and_sends_no_notice() {
     let h = Harness::fresh();
     let user = make_user(&h, "renamer@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
     let session = session_for(&h, &user);
     let mail_before = h.email.sent().len();
 
@@ -1031,7 +1028,7 @@ async fn rename_passkey_updates_name_emits_audit_and_sends_no_notification() {
         .passkey
         .rename_passkey(
             &session,
-            &cred.credential_id,
+            &passkey.credential_id,
             Some("new phone".into()),
             SessionContext::default(),
         )
@@ -1040,22 +1037,24 @@ async fn rename_passkey_updates_name_emits_audit_and_sends_no_notification() {
     assert_eq!(updated.name.as_deref(), Some("new phone"));
 
     let stored = h
-        .credentials
-        .find_passkey_by_credential_id(&cred.credential_id)
+        .passkeys
+        .find_passkey_by_credential_id(&passkey.credential_id)
         .await
-        .expect("find credential")
-        .expect("credential persisted");
+        .expect("find passkey")
+        .expect("passkey persisted");
     assert_eq!(stored.name.as_deref(), Some("new phone"), "name persisted");
     assert_eq!(
         h.email.sent().len(),
         mail_before,
-        "renaming is cosmetic and sends no notification",
+        "renaming is cosmetic and sends no notice",
     );
 
     let events = kinds(&h.audit.events());
-    assert!(events.iter().any(
-        |k| matches!(k, AuditEventKind::CredentialRenamed { user_id } if *user_id == user.id)
-    ));
+    assert!(
+        events.iter().any(
+            |k| matches!(k, AuditEventKind::PasskeyRenamed { user_id } if *user_id == user.id)
+        )
+    );
 }
 
 #[tokio::test]
@@ -1063,14 +1062,14 @@ async fn rename_passkey_clears_name_with_none() {
     let h = Harness::fresh();
     let user = make_user(&h, "clearer@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, Some("labelled")).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, Some("labelled")).await;
     let session = session_for(&h, &user);
 
     let updated = h
         .passkey
         .rename_passkey(
             &session,
-            &cred.credential_id,
+            &passkey.credential_id,
             None,
             SessionContext::default(),
         )
@@ -1080,19 +1079,19 @@ async fn rename_passkey_clears_name_with_none() {
 }
 
 #[tokio::test]
-async fn rename_passkey_refuses_other_users_credential() {
+async fn rename_passkey_refuses_other_users_passkey() {
     let h = Harness::fresh();
     let alice = make_user(&h, "a-rename@example.com").await;
     let bob = make_user(&h, "b-rename@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, alice.id, &mut wa, Some("alice key")).await;
+    let passkey = register_passkey(&h, alice.id, &mut wa, Some("alice key")).await;
     let bob_session = session_for(&h, &bob);
 
     let err = h
         .passkey
         .rename_passkey(
             &bob_session,
-            &cred.credential_id,
+            &passkey.credential_id,
             Some("pwned".into()),
             SessionContext::default(),
         )
@@ -1101,11 +1100,11 @@ async fn rename_passkey_refuses_other_users_credential() {
     assert!(matches!(err, Error::PasskeyOwnershipMismatch));
 
     let stored = h
-        .credentials
-        .find_passkey_by_credential_id(&cred.credential_id)
+        .passkeys
+        .find_passkey_by_credential_id(&passkey.credential_id)
         .await
-        .expect("find credential")
-        .expect("credential persisted");
+        .expect("find passkey")
+        .expect("passkey persisted");
     assert_eq!(stored.name.as_deref(), Some("alice key"), "name untouched");
 }
 
@@ -1119,39 +1118,39 @@ async fn rename_missing_passkey_fails() {
         .passkey
         .rename_passkey(
             &session,
-            b"missing credential",
+            b"missing passkey",
             Some("ghost".into()),
             SessionContext::default(),
         )
         .await
-        .expect_err("missing credential");
+        .expect_err("missing passkey");
     assert!(matches!(err, Error::PasskeyNotFound));
 }
 
 #[tokio::test]
-async fn rename_passkey_allowed_during_recovery_cooldown() {
+async fn rename_passkey_allowed_during_recovery_cool_down() {
     let h = Harness::fresh();
-    let user = make_user(&h, "cooldown-rename@example.com").await;
+    let user = make_user(&h, "cool-down-rename@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, Some("only key")).await;
-    let cooldown_until = h.clock.now() + ChronoDuration::hours(24);
-    let restricted = restricted_session_for(&h, &user, cooldown_until);
+    let passkey = register_passkey(&h, user.id, &mut wa, Some("only key")).await;
+    let cool_down_until = h.clock.now() + ChronoDuration::hours(24);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
 
     let updated = h
         .passkey
         .rename_passkey(
-            &restricted,
-            &cred.credential_id,
-            Some("renamed during cooldown".into()),
+            &in_cool_down,
+            &passkey.credential_id,
+            Some("renamed during cool-down".into()),
             SessionContext::default(),
         )
         .await
         .expect("rename allowed during the cool-down");
-    assert_eq!(updated.name.as_deref(), Some("renamed during cooldown"));
+    assert_eq!(updated.name.as_deref(), Some("renamed during cool-down"));
 }
 
 #[tokio::test]
-async fn start_registration_from_ordinary_session_is_unrestricted() {
+async fn start_registration_from_ordinary_session_carries_no_cool_down() {
     let h = Harness::fresh();
     let user = make_user(&h, "ordinary@example.com").await;
     let mut wa = authenticator();
@@ -1163,13 +1162,13 @@ async fn start_registration_from_ordinary_session_is_unrestricted() {
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);
-    let credential = h
+    let passkey = h
         .passkey
         .finish_registration(challenge_id, &response, None, SessionContext::default())
         .await
         .expect("finish_registration");
 
-    assert_eq!(credential.recovery_cooldown_until, None);
+    assert_eq!(passkey.recovery_cool_down_until, None);
 }
 
 #[tokio::test]
@@ -1186,17 +1185,17 @@ async fn start_registration_for_deleted_user_errors() {
 }
 
 #[tokio::test]
-async fn start_registration_refuses_disabled_account() {
+async fn start_registration_refuses_disabled_user() {
     let h = Harness::builder()
         .passkey_config(PasskeyConfig {
             max_pending_registrations_per_user: NonZeroU32::new(1),
             ..base_passkey_config()
         })
         .build();
-    let user = make_user(&h, "frozen@example.com").await;
+    let user = make_user(&h, "disabled@example.com").await;
     let now = h.clock.now();
     h.users
-        .set_user_status(user.id, AccountStatus::Disabled { at: now }, now)
+        .set_user_status(user.id, UserStatus::Disabled { at: now }, now)
         .await
         .expect("disable user");
 
@@ -1204,12 +1203,12 @@ async fn start_registration_refuses_disabled_account() {
         .passkey
         .start_registration(&session_for(&h, &user))
         .await
-        .expect_err("disabled account must be refused");
-    assert!(matches!(err, Error::AccountDisabled));
+        .expect_err("disabled user must be refused");
+    assert!(matches!(err, Error::UserDisabled));
 
     let now = h.clock.now();
     h.users
-        .set_user_status(user.id, AccountStatus::Active, now)
+        .set_user_status(user.id, UserStatus::Active, now)
         .await
         .expect("re-enable user");
     h.passkey
@@ -1247,10 +1246,10 @@ async fn challenge_store_purges_expired_entries() {
 }
 
 #[tokio::test]
-async fn registration_is_rejected_once_credential_cap_is_reached() {
+async fn registration_is_rejected_once_passkey_cap_is_reached() {
     let h = Harness::builder()
         .passkey_config(PasskeyConfig {
-            max_credentials_per_user: NonZeroU32::new(1),
+            max_passkeys_per_user: NonZeroU32::new(1),
             ..base_passkey_config()
         })
         .build();
@@ -1275,19 +1274,15 @@ async fn registration_is_rejected_once_credential_cap_is_reached() {
             SessionContext::default(),
         )
         .await
-        .expect_err("credential cap rejects the second registration");
+        .expect_err("passkey cap rejects the second registration");
     assert!(matches!(
         err,
         Error::ResourceLimitExceeded {
-            resource: "credentials",
+            resource: "passkeys",
             limit: 1
         }
     ));
-    assert_eq!(
-        passkey_count(&h, user.id).await,
-        1,
-        "no credential was stored"
-    );
+    assert_eq!(passkey_count(&h, user.id).await, 1, "no passkey was stored");
 }
 
 #[tokio::test]
@@ -1381,7 +1376,7 @@ async fn authenticate_start_is_rate_limited_per_ip() {
 }
 
 #[tokio::test]
-async fn authenticate_finish_is_rate_limited_per_credential() {
+async fn authenticate_finish_is_rate_limited_per_passkey() {
     let limiter = Arc::new(InMemoryRateLimiter::new(
         Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
     )) as Arc<dyn RateLimiter>;
@@ -1389,7 +1384,7 @@ async fn authenticate_finish_is_rate_limited_per_credential() {
         .signup_limiter(limiter)
         .passkey_config(PasskeyConfig {
             rate_limits: PasskeyRateLimits {
-                authenticate_finish_per_credential: Some(RateLimitPolicy::new(
+                authenticate_finish_per_passkey: Some(RateLimitPolicy::new(
                     1,
                     Duration::from_secs(60 * 60),
                 )),
@@ -1400,14 +1395,14 @@ async fn authenticate_finish_is_rate_limited_per_credential() {
         .build();
     let user = make_user(&h, "finish-rl@example.com").await;
     let mut wa = authenticator();
-    let credential = register_passkey(&h, user.id, &mut wa, Some("device")).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, Some("device")).await;
 
     let (id, rcr) = h
         .passkey
         .start_authentication(SessionContext::default())
         .await
         .expect("start one");
-    let assertion = wa.do_authentication(rcr, &credential.credential_id);
+    let assertion = wa.do_authentication(rcr, &passkey.credential_id);
     h.passkey
         .finish_authentication(id, &assertion, SessionContext::default())
         .await
@@ -1418,12 +1413,12 @@ async fn authenticate_finish_is_rate_limited_per_credential() {
         .start_authentication(SessionContext::default())
         .await
         .expect("start two");
-    let assertion2 = wa.do_authentication(rcr2, &credential.credential_id);
+    let assertion2 = wa.do_authentication(rcr2, &passkey.credential_id);
     let err = h
         .passkey
         .finish_authentication(id2, &assertion2, SessionContext::default())
         .await
-        .expect_err("second finish for the same credential is limited");
+        .expect_err("second finish for the same passkey is limited");
     assert!(matches!(err, Error::RateLimited { .. }));
 }
 
@@ -1434,14 +1429,14 @@ async fn successful_login_records_login_and_latency_metrics() {
     let h = Harness::fresh();
     let user = make_user(&h, "metrics@example.com").await;
     let mut wa = authenticator();
-    let credential = register_passkey(&h, user.id, &mut wa, None).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, None).await;
 
     let (auth_id, rcr) = h
         .passkey
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth");
-    let assertion = wa.do_authentication(rcr, &credential.credential_id);
+    let assertion = wa.do_authentication(rcr, &passkey.credential_id);
     h.passkey
         .finish_authentication(auth_id, &assertion, SessionContext::default())
         .await
@@ -1472,30 +1467,30 @@ async fn failed_login_records_auth_failure_and_latency_metrics() {
     let h = Harness::fresh();
     let user = make_user(&h, "gone@example.com").await;
     let mut wa = authenticator();
-    let cred = register_passkey(&h, user.id, &mut wa, None).await;
+    let passkey = register_passkey(&h, user.id, &mut wa, None).await;
 
     let (auth_id, rcr) = h
         .passkey
         .start_authentication(SessionContext::default())
         .await
         .expect("start auth");
-    let assertion = wa.do_authentication(rcr, &cred.credential_id);
-    h.credentials
-        .delete_passkey(&cred.credential_id)
+    let assertion = wa.do_authentication(rcr, &passkey.credential_id);
+    h.passkeys
+        .delete_passkey(&passkey.credential_id)
         .await
-        .expect("delete credential");
+        .expect("delete passkey");
 
     h.passkey
         .finish_authentication(auth_id, &assertion, SessionContext::default())
         .await
-        .expect_err("missing credential");
+        .expect_err("missing passkey");
 
     assert_eq!(
         h.metrics.count(MetricEvent::AuthFailed {
-            reason: AuthFailureReason::UnknownCredential,
+            reason: AuthFailureReason::UnknownPasskey,
         }),
         1,
-        "the unknown-credential rejection is counted"
+        "the unknown-passkey rejection is counted"
     );
     assert_eq!(
         h.metrics.count(MetricEvent::LoginSucceeded),
