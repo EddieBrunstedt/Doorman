@@ -70,6 +70,31 @@ impl UserRecords {
             .ok_or(Error::UserNotFound)
     }
 
+    pub(crate) async fn find_for_notification(
+        &self,
+        user_id: UserId,
+        what: &'static str,
+    ) -> Option<User> {
+        match self.find(user_id).await {
+            Ok(user) => Some(user),
+            Err(Error::UserNotFound) => {
+                tracing::warn!(
+                    %user_id,
+                    "{what} notification skipped because user was not found"
+                );
+                None
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    %user_id,
+                    "{what} notification skipped because user lookup failed"
+                );
+                None
+            }
+        }
+    }
+
     pub(crate) async fn find_active(&self, user_id: UserId) -> Result<User> {
         find_active_user(self.users.as_ref(), user_id).await
     }
@@ -98,17 +123,13 @@ impl UserRecords {
     pub(crate) async fn mark_email_verified(&self, user: &User) -> Result<()> {
         if user.email_verified_at.is_none() {
             self.users.mark_email_verified(user.id, self.now()).await?;
-            self.sessions.user_changed(user.id);
         }
         Ok(())
     }
 
     pub(crate) async fn change_email(&self, user_id: UserId, email: &str) -> Result<User> {
         match self.users.set_user_email(user_id, email, self.now()).await {
-            Ok(()) => {
-                self.sessions.user_changed(user_id);
-                self.find(user_id).await
-            }
+            Ok(()) => self.find(user_id).await,
             Err(e) => Err(match e.kind() {
                 StorageErrorKind::Conflict => Error::EmailAlreadyInUse,
                 StorageErrorKind::NotFound => Error::UserNotFound,
@@ -119,10 +140,10 @@ impl UserRecords {
 
     pub(crate) async fn disable(&self, user_id: UserId) -> Result<u64> {
         let now = self.now();
+        // The status goes before the sessions; `SessionManager::issue` relies on that order.
         self.users
             .set_user_status(user_id, AccountStatus::Disabled { at: now }, now)
             .await?;
-        self.sessions.user_changed(user_id);
         self.sessions.revoke_all_for_user(user_id).await
     }
 
@@ -130,14 +151,15 @@ impl UserRecords {
         self.users
             .set_user_status(user_id, AccountStatus::Active, self.now())
             .await?;
-        self.sessions.user_changed(user_id);
         Ok(())
     }
 
     pub(crate) async fn delete(&self, user_id: UserId, actor: Actor) -> Result<()> {
         self.find(user_id).await?;
 
-        self.sessions.revoke_all_for_user(user_id).await?;
+        // Disabling first makes a racing login refuse its own session (see `SessionManager::issue`),
+        // and leaves a delete that fails partway with a user who cannot log in.
+        self.disable(user_id).await?;
         self.credentials.delete_passkeys_for_user(user_id).await?;
         for purpose in ALL_TOKEN_PURPOSES {
             self.tokens.delete_tokens_for_user(user_id, purpose).await?;

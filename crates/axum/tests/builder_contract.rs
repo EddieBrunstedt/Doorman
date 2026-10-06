@@ -7,7 +7,6 @@ use doorman_axum::{AuthService, AuthServiceBuilder, BuilderError};
 use doorman_core::account::AccountConfig;
 use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
 use doorman_core::audit::NoopAuditSink;
-use doorman_core::cache::{SessionCacheConfig, SessionCachePolicy};
 use doorman_core::email::EmailSender;
 use doorman_core::memory::InMemoryStorage;
 use doorman_core::operator::{NotificationPolicy, OperatorNotice};
@@ -42,7 +41,6 @@ fn core_builder(email: Arc<dyn EmailSender>) -> AuthCoreBuilder {
             url_template: "https://app.test/email-change?token={token}".to_string(),
             ..AccountConfig::default()
         })
-        .session_cache(SessionCachePolicy::users_only(SessionCacheConfig::default()))
         .reauthentication(ReauthPolicy::disabled())
 }
 

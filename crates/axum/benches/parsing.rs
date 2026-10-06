@@ -48,9 +48,6 @@ async fn build_router() -> (Router, String) {
             rp_origin.clone(),
             "doorman bench",
         ))
-        .session_cache(doorman_core::cache::SessionCachePolicy::users_only(
-            doorman_core::cache::SessionCacheConfig::default(),
-        ))
         .reauthentication(doorman_core::reauth::ReauthPolicy::disabled())
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))

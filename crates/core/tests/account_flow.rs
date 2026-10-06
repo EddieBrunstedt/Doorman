@@ -21,13 +21,7 @@ async fn email_change_happy_path() {
     let mail_before = h.email.sent().len();
 
     h.account
-        .request_email_change(
-            &user,
-            &session,
-            "New@Example.com",
-            None,
-            SessionContext::default(),
-        )
+        .request_email_change(&session, "New@Example.com", None, SessionContext::default())
         .await
         .expect("request email change");
 
@@ -109,7 +103,6 @@ async fn email_change_confirm_refuses_address_claimed_since_request() {
     let session = session_for(&h, &user);
     h.account
         .request_email_change(
-            &user,
             &session,
             "wanted@example.com",
             None,
@@ -142,7 +135,6 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
     let session = session_for(&h, &user);
     h.account
         .request_email_change(
-            &user,
             &session,
             "wanted@example.com",
             None,
@@ -199,7 +191,6 @@ async fn email_change_rejects_address_already_in_use() {
     let err = h
         .account
         .request_email_change(
-            &user,
             &session,
             "taken@example.com",
             None,
@@ -226,7 +217,6 @@ async fn request_email_change_refused_during_recovery_cooldown() {
     let err = h
         .account
         .request_email_change(
-            &user,
             &restricted,
             "new@example.com",
             None,
@@ -280,7 +270,6 @@ async fn request_email_change_allowed_once_recovery_cooldown_lapses() {
     let err = h
         .account
         .request_email_change(
-            &user,
             &restricted,
             "new@example.com",
             None,
@@ -294,7 +283,6 @@ async fn request_email_change_allowed_once_recovery_cooldown_lapses() {
     let mail_before = h.email.sent().len();
     h.account
         .request_email_change(
-            &user,
             &restricted,
             "new@example.com",
             None,
@@ -348,13 +336,7 @@ async fn confirm_rejects_expired_token() {
     let session = session_for(&h, &user);
 
     h.account
-        .request_email_change(
-            &user,
-            &session,
-            "new@example.com",
-            None,
-            SessionContext::default(),
-        )
+        .request_email_change(&session, "new@example.com", None, SessionContext::default())
         .await
         .expect("request email change");
     let confirmation = h
@@ -402,13 +384,7 @@ async fn confirm_refused_for_disabled_account() {
     let user = provision_user(&h, "old@example.com").await;
     let session = session_for(&h, &user);
     h.account
-        .request_email_change(
-            &user,
-            &session,
-            "new@example.com",
-            None,
-            SessionContext::default(),
-        )
+        .request_email_change(&session, "new@example.com", None, SessionContext::default())
         .await
         .expect("request email change");
     let confirmation = h
@@ -473,13 +449,7 @@ async fn email_change_token_cannot_be_redeemed_by_another_flow() {
     let user = provision_user(&h, "old@example.com").await;
     let session = session_for(&h, &user);
     h.account
-        .request_email_change(
-            &user,
-            &session,
-            "new@example.com",
-            None,
-            SessionContext::default(),
-        )
+        .request_email_change(&session, "new@example.com", None, SessionContext::default())
         .await
         .expect("request email change");
     let token = last_email_change_token(&h);
@@ -535,7 +505,6 @@ async fn delete_account_cascades_all_stores() {
 
     h.account
         .request_email_change(
-            &user,
             &session,
             "elsewhere@example.com",
             None,
@@ -639,7 +608,7 @@ async fn revoke_other_sessions_keeps_only_the_acting_session_and_notifies() {
 
     let removed = h
         .account
-        .revoke_other_sessions(&alice, &current, None, SessionContext::default())
+        .revoke_other_sessions(&current, None, SessionContext::default())
         .await
         .expect("revoke other sessions");
 
@@ -669,7 +638,7 @@ async fn revoke_session_notifies_only_for_other_sessions() {
     let mail_before = h.email.sent().len();
 
     h.account
-        .revoke_session(&alice, &current, other.id, None, SessionContext::default())
+        .revoke_session(&current, other.id, None, SessionContext::default())
         .await
         .expect("revoke other");
     assert!(!session_exists(&h, other.id).await);
@@ -680,13 +649,7 @@ async fn revoke_session_notifies_only_for_other_sessions() {
     );
 
     h.account
-        .revoke_session(
-            &alice,
-            &current,
-            current.id,
-            None,
-            SessionContext::default(),
-        )
+        .revoke_session(&current, current.id, None, SessionContext::default())
         .await
         .expect("revoke self");
     assert!(!session_exists(&h, current.id).await);
@@ -707,7 +670,7 @@ async fn revoke_session_hides_another_users_session() {
 
     let err = h
         .account
-        .revoke_session(&alice, &current, bobs.id, None, SessionContext::default())
+        .revoke_session(&current, bobs.id, None, SessionContext::default())
         .await
         .expect_err("alice cannot revoke bob's session");
     assert!(matches!(err, Error::SessionNotFound), "got: {err:?}");
@@ -724,7 +687,7 @@ async fn revoke_other_sessions_refused_during_recovery_cooldown() {
 
     let err = h
         .account
-        .revoke_other_sessions(&alice, &current, None, SessionContext::default())
+        .revoke_other_sessions(&current, None, SessionContext::default())
         .await
         .expect_err("refused during the cool-down");
     assert!(matches!(err, Error::RecoveryCooldownActive), "got: {err:?}");
@@ -734,7 +697,7 @@ async fn revoke_other_sessions_refused_during_recovery_cooldown() {
     h.clock.advance(ChronoDuration::minutes(11));
     let removed = h
         .account
-        .revoke_other_sessions(&alice, &current, None, SessionContext::default())
+        .revoke_other_sessions(&current, None, SessionContext::default())
         .await
         .expect("allowed once the cool-down lapses");
     assert_eq!(removed, 1);
@@ -750,7 +713,7 @@ async fn revoke_session_cooldown_blocks_others_but_allows_self() {
 
     let err = h
         .account
-        .revoke_session(&alice, &current, other.id, None, SessionContext::default())
+        .revoke_session(&current, other.id, None, SessionContext::default())
         .await
         .expect_err("revoking another device is refused during the cool-down");
     assert!(matches!(err, Error::RecoveryCooldownActive), "got: {err:?}");
@@ -761,20 +724,14 @@ async fn revoke_session_cooldown_blocks_others_but_allows_self() {
 
     h.clock.advance(ChronoDuration::minutes(11));
     h.account
-        .revoke_session(&alice, &current, other.id, None, SessionContext::default())
+        .revoke_session(&current, other.id, None, SessionContext::default())
         .await
         .expect("allowed once the cool-down lapses");
     assert!(!session_exists(&h, other.id).await);
 
     let restricted = stored_session(&h, &alice, Some(ChronoDuration::minutes(10))).await;
     h.account
-        .revoke_session(
-            &alice,
-            &restricted,
-            restricted.id,
-            None,
-            SessionContext::default(),
-        )
+        .revoke_session(&restricted, restricted.id, None, SessionContext::default())
         .await
         .expect("revoking the cool-down session itself stays allowed");
     assert!(!session_exists(&h, restricted.id).await);

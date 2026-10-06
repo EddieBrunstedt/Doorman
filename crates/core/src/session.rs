@@ -7,10 +7,8 @@ use chrono::{DateTime, Utc};
 
 use crate::assembly::AssemblyError;
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, AuditSink};
-use crate::cache::{MAX_CACHE_TTL, SessionCache, SessionCachePolicy};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
-use crate::metrics::{MetricEvent, MetricSink};
 use crate::recovery_cooldown::RecoveryCooldown;
 use crate::storage::{
     Session, SessionId, SessionStore, SessionSummary, TokenHash, User, UserId, UserStore,
@@ -63,10 +61,9 @@ pub struct SessionContext {
     pub user_agent: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ResolvedSession {
-    pub user: Arc<User>,
-    pub session: Arc<Session>,
+    pub session: Session,
     pub slid: bool,
 }
 
@@ -74,10 +71,8 @@ pub struct ResolvedSession {
 pub struct SessionManager {
     sessions: Arc<dyn SessionStore>,
     users: Arc<dyn UserStore>,
-    cache: SessionCache,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
-    metrics: Arc<dyn MetricSink>,
     config: SessionConfig,
 }
 
@@ -87,9 +82,7 @@ impl SessionManager {
         users: Arc<dyn UserStore>,
         clock: Arc<dyn Clock>,
         audit: Arc<dyn AuditSink>,
-        metrics: Arc<dyn MetricSink>,
         config: SessionConfig,
-        cache: SessionCachePolicy,
     ) -> std::result::Result<Self, AssemblyError> {
         if let Some(idle_timeout) = config.idle_timeout
             && config.slide_interval >= idle_timeout
@@ -99,21 +92,11 @@ impl SessionManager {
                 reason: "must be strictly greater than the slide interval so an active session slides before it idles out",
             });
         }
-        let ttl = cache.config().ttl;
-        if ttl.is_zero() || ttl > MAX_CACHE_TTL {
-            return Err(AssemblyError::InvalidLifetime {
-                field: "session cache ttl",
-                value: ttl,
-                max: MAX_CACHE_TTL,
-            });
-        }
         Ok(Self {
             sessions,
             users,
-            cache: SessionCache::new(cache, clock.clone()),
             clock,
             audit: AuditDispatch::new(audit),
-            metrics,
             config,
         })
     }
@@ -128,82 +111,25 @@ impl SessionManager {
         &self.clock
     }
 
-    pub fn cache(&self) -> &SessionCache {
-        &self.cache
-    }
-
-    pub(crate) fn user_changed(&self, user_id: UserId) {
-        self.cache.invalidate_user(user_id);
-    }
-
     #[tracing::instrument(
         skip_all,
         fields(session_id = tracing::field::Empty, user_id = tracing::field::Empty),
     )]
     pub async fn resolve(&self, token: &str) -> Result<ResolvedSession> {
-        let token_hash = hash_token(token);
-        let now = self.clock.now();
+        let session = self.validate_by_hash(&hash_token(token)).await?;
         let span = tracing::Span::current();
-
-        // A hit never slides, so a session due to slide goes to storage.
-        let cached = self
-            .cache
-            .session(&token_hash)
-            .filter(|session| session.expires_at > now && !self.slide_due(session, now));
-        if let Some(session) = cached {
-            span.record("session_id", tracing::field::display(session.id));
-            span.record("user_id", tracing::field::display(session.user_id));
-            let user = self.cache.user(session.user_id);
-            self.record_cache(user.is_some());
-            let user = match user {
-                Some(user) => user,
-                None => self.read_user(session.user_id).await?,
-            };
-            return Ok(ResolvedSession {
-                user,
-                session,
-                slid: false,
-            });
-        }
-        let caches_sessions = self.cache.caches_sessions();
-        if caches_sessions {
-            self.record_cache(false);
-        }
-
-        let session = self.validate_by_hash(&token_hash).await?;
         span.record("session_id", tracing::field::display(session.id));
         span.record("user_id", tracing::field::display(session.user_id));
-        let user = self.cache.user(session.user_id);
-        if !caches_sessions {
-            self.record_cache(user.is_some());
-        }
-        let user = match user {
-            Some(user) => user,
-            None => self.read_user(session.user_id).await?,
-        };
-        let (session, slid) = self.slide(session, now).await;
-
-        let session = Arc::new(session);
-        self.cache.insert_session(token_hash, session.clone());
-        Ok(ResolvedSession {
-            user,
-            session,
-            slid,
-        })
+        let (session, slid) = self.slide(session, self.clock.now()).await;
+        Ok(ResolvedSession { session, slid })
     }
 
-    fn record_cache(&self, hit: bool) {
-        self.metrics.record(if hit {
-            MetricEvent::CacheHit
-        } else {
-            MetricEvent::CacheMiss
-        });
-    }
-
-    async fn read_user(&self, user_id: UserId) -> Result<Arc<User>> {
-        let user = Arc::new(find_active_user(self.users.as_ref(), user_id).await?);
-        self.cache.insert_user(user.clone());
-        Ok(user)
+    #[tracing::instrument(skip_all, fields(user_id = %session.user_id))]
+    pub async fn find_user(&self, session: &Session) -> Result<User> {
+        self.users
+            .find_user_by_id(session.user_id)
+            .await?
+            .ok_or(Error::UserNotFound)
     }
 
     #[tracing::instrument(skip(self, context), fields(user_id = %user_id))]
@@ -237,6 +163,18 @@ impl SessionManager {
         };
 
         self.sessions.create_session(session.clone()).await?;
+        // Disable and delete change the user before deleting their sessions, so if that delete
+        // missed this session, this read sees the change. The token is handed out only after it.
+        if let Err(error) = find_active_user(self.users.as_ref(), user_id).await {
+            if let Err(cleanup) = self.sessions.delete_session(session.id).await {
+                tracing::warn!(
+                    session_id = %session.id,
+                    error = %cleanup,
+                    "refused session left behind; its token was never handed out",
+                );
+            }
+            return Err(error);
+        }
 
         self.audit
             .emit(AuditEvent {
@@ -390,9 +328,6 @@ impl SessionManager {
             .sessions
             .delete_sessions_for_user(user_id, None)
             .await?;
-        if count > 0 {
-            self.cache.invalidate_user(user_id);
-        }
         tracing::info!(count, outcome = "revoked_all", "user sessions revoked");
         Ok(count)
     }
@@ -414,9 +349,6 @@ impl SessionManager {
             .sessions
             .delete_sessions_for_user(user_id, Some(keep))
             .await?;
-        if count > 0 {
-            self.cache.invalidate_user(user_id);
-        }
         tracing::info!(
             count,
             outcome = "revoked_others",
@@ -444,7 +376,6 @@ impl SessionManager {
 
     async fn revoke_session(&self, session: Session, actor: Actor) -> Result<()> {
         self.sessions.delete_session(session.id).await?;
-        self.cache.invalidate_session(session.id);
         self.audit
             .emit(AuditEvent {
                 timestamp: self.clock.now(),

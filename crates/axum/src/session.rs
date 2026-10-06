@@ -6,10 +6,9 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Request, header};
 use axum::response::Response;
-use doorman_core::Error;
 use doorman_core::clock::Clock;
 use doorman_core::session::SessionManager;
-use doorman_core::storage::{Session, User};
+use doorman_core::storage::Session;
 use tower_layer::Layer;
 use tower_service::Service;
 use tracing::Instrument;
@@ -17,14 +16,14 @@ use tracing::Instrument;
 use crate::config::CookieConfig;
 use crate::cookies::{bearer_token, read_cookie, session_cookie_with_max_age};
 use crate::csrf::{self, CsrfConfig};
-use crate::error::{csrf_rejection_response, error_response};
+use crate::error::csrf_rejection_response;
 
 #[derive(Clone)]
 pub struct AuthContext {
-    pub user: Arc<User>,
-    pub session: Arc<Session>,
+    pub session: Session,
     pub token: String,
     pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) sessions: SessionManager,
 }
 
 pub(crate) struct SessionLayerState {
@@ -93,37 +92,30 @@ where
                 }
 
                 let mut cookie_refresh: Option<HeaderValue> = None;
-                if let Some((token, source)) = extract_token(req.headers(), cookie_name) {
-                    match state.sessions.resolve(&token).await {
-                        Ok(resolved) => {
-                            let span = tracing::Span::current();
-                            span.record("session_id", tracing::field::display(resolved.session.id));
-                            span.record("user_id", tracing::field::display(resolved.user.id));
-                            if resolved.slid && source == TokenSource::Cookie {
-                                let remaining = (resolved.session.expires_at
-                                    - state.sessions.clock().now())
-                                .to_std()
-                                .unwrap_or(Duration::ZERO);
-                                match session_cookie_with_max_age(&state.cookie, &token, remaining)
-                                {
-                                    Ok(cookie) => cookie_refresh = Some(cookie),
-                                    Err(err) => {
-                                        tracing::error!(error = %err, "session cookie refresh skipped");
-                                    }
-                                }
+                if let Some((token, source)) = extract_token(req.headers(), cookie_name)
+                    && let Ok(resolved) = state.sessions.resolve(&token).await
+                {
+                    let span = tracing::Span::current();
+                    span.record("session_id", tracing::field::display(resolved.session.id));
+                    span.record("user_id", tracing::field::display(resolved.session.user_id));
+                    if resolved.slid && source == TokenSource::Cookie {
+                        let remaining = (resolved.session.expires_at
+                            - state.sessions.clock().now())
+                        .to_std()
+                        .unwrap_or(Duration::ZERO);
+                        match session_cookie_with_max_age(&state.cookie, &token, remaining) {
+                            Ok(cookie) => cookie_refresh = Some(cookie),
+                            Err(err) => {
+                                tracing::error!(error = %err, "session cookie refresh skipped");
                             }
-                            req.extensions_mut().insert(AuthContext {
-                                user: resolved.user,
-                                session: resolved.session,
-                                token,
-                                clock: state.sessions.clock().clone(),
-                            });
                         }
-                        Err(error @ Error::AccountDisabled) => {
-                            return Ok(error_response(&error));
-                        }
-                        Err(_) => {}
                     }
+                    req.extensions_mut().insert(AuthContext {
+                        session: resolved.session,
+                        token,
+                        clock: state.sessions.clock().clone(),
+                        sessions: state.sessions.clone(),
+                    });
                 }
                 let mut response = inner.call(req).await?;
                 if let Some(cookie) = cookie_refresh {

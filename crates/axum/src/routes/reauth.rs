@@ -17,7 +17,7 @@ async fn reauth_start(
     State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Json<PasskeyChallenge<RequestChallengeResponse>>, ErrorResponse> {
-    let (id, options) = state.core.reauth.start(auth.user.id).await?;
+    let (id, options) = state.core.reauth.start(auth.session.user_id).await?;
     Ok(Json(PasskeyChallenge {
         challenge_id: id.0.to_string(),
         options,

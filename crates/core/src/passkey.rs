@@ -384,27 +384,6 @@ impl PasskeyManager {
         Ok(credential)
     }
 
-    async fn user_for_notification(&self, user_id: UserId, what: &'static str) -> Option<User> {
-        match self.records.find(user_id).await {
-            Ok(user) => Some(user),
-            Err(Error::UserNotFound) => {
-                tracing::warn!(
-                    %user_id,
-                    "{what} notification skipped because user was not found"
-                );
-                None
-            }
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    %user_id,
-                    "{what} notification skipped because user lookup failed"
-                );
-                None
-            }
-        }
-    }
-
     async fn emit_auth_failure(
         &self,
         now: DateTime<Utc>,
@@ -491,19 +470,21 @@ impl PasskeyManager {
 
         let cooldown = RecoveryCooldown::of_passkey(&passkey, now);
 
+        let session = self
+            .sessions
+            .issue(user_id, context.clone(), cooldown)
+            .await?;
         self.metrics.record(MetricEvent::LoginSucceeded);
         self.audit
             .emit(AuditEvent {
                 timestamp: now,
                 actor: Actor::Subject {
-                    ip: context.ip.clone(),
-                    user_agent: context.user_agent.clone(),
+                    ip: context.ip,
+                    user_agent: context.user_agent,
                 },
                 kind: AuditEventKind::LoginSucceeded { user_id },
             })
             .await;
-
-        let session = self.sessions.issue(user_id, context, cooldown).await?;
         Ok(AuthenticationOutcome { user, session })
     }
 
@@ -600,7 +581,10 @@ impl PasskeyManager {
             })
             .await;
         if notice.sends()
-            && let Some(user) = self.user_for_notification(user_id, "passkey removed").await
+            && let Some(user) = self
+                .records
+                .find_for_notification(user_id, "passkey removed")
+                .await
         {
             match notice {
                 PasskeyRemovalNotice::SelfService => {

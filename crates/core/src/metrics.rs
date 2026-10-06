@@ -8,8 +8,6 @@ pub enum MetricEvent {
     LoginSucceeded,
     AuthFailed { reason: AuthFailureReason },
     AuthLatency(Duration),
-    CacheHit,
-    CacheMiss,
 }
 
 pub trait MetricSink: Send + Sync {
@@ -52,7 +50,6 @@ mod tests {
     fn noop_metrics_discards() {
         let metrics = NoopMetricSink;
         metrics.record(MetricEvent::LoginSucceeded);
-        metrics.record(MetricEvent::CacheHit);
     }
 
     #[test]

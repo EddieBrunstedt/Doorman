@@ -28,7 +28,7 @@ async fn request_email_change(
     state
         .core
         .account
-        .request_email_change(&auth.user, &auth.session, &body.new_email, proof, context)
+        .request_email_change(&auth.session, &body.new_email, proof, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

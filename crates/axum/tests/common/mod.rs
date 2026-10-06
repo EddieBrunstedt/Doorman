@@ -17,12 +17,11 @@ use doorman_axum::dto::{
     AuthResponse, PasskeyChallenge, PasskeyDto, Reauthentication, RegistrationFinishRequest,
     SignupConsumeRequest, SignupRequest, UserDto,
 };
-use doorman_axum::extractors::AuthSession;
+use doorman_axum::extractors::AuthUser;
 use doorman_axum::{AuthService, AuthServiceBuilder};
 use doorman_core::account::AccountConfig;
 use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
 use doorman_core::audit::NoopAuditSink;
-use doorman_core::cache::{SessionCacheConfig, SessionCachePolicy};
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::email::EmailSender;
 use doorman_core::memory::{
@@ -144,7 +143,6 @@ impl TestApp {
                 url_template: ACCOUNT_URL.to_string(),
                 ..AccountConfig::default()
             })
-            .session_cache(SessionCachePolicy::users_only(SessionCacheConfig::default()))
             .reauthentication(ReauthPolicy::disabled());
         let core = customise_core(core_builder)
             .build()
@@ -476,16 +474,16 @@ pub fn token_from_email_with(body: &str, template: &str) -> String {
 }
 
 async fn me_handler(
-    auth: AuthSession,
+    AuthUser(user): AuthUser,
     Extension(passkey_credentials): Extension<Arc<dyn PasskeyCredentialStore>>,
 ) -> Response {
     let passkey_count = passkey_credentials
-        .count_passkeys_for_user(auth.user.id)
+        .count_passkeys_for_user(user.id)
         .await
         .unwrap_or(0);
     (
         StatusCode::OK,
-        Json(UserDto::from_user(&auth.user, passkey_count)),
+        Json(UserDto::from_user(&user, passkey_count)),
     )
         .into_response()
 }

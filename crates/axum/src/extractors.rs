@@ -12,40 +12,9 @@ use doorman_core::storage::{Session, User};
 use crate::error::ErrorResponse;
 use crate::session::AuthContext;
 
-#[derive(Debug, Clone)]
-pub struct AuthUser(pub Arc<User>);
-
-impl<S: Send + Sync> FromRequestParts<S> for AuthUser {
-    type Rejection = ErrorResponse;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        match parts.extensions.get::<AuthContext>() {
-            Some(ctx) => Ok(AuthUser(ctx.user.clone())),
-            None => Err(ErrorResponse(Error::SessionNotFound)),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct OptionalAuthUser(pub Option<Arc<User>>);
-
-impl<S: Send + Sync> FromRequestParts<S> for OptionalAuthUser {
-    type Rejection = std::convert::Infallible;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        Ok(OptionalAuthUser(
-            parts
-                .extensions
-                .get::<AuthContext>()
-                .map(|ctx| ctx.user.clone()),
-        ))
-    }
-}
-
 #[derive(Clone)]
 pub struct AuthSession {
-    pub user: Arc<User>,
-    pub session: Arc<Session>,
+    pub session: Session,
     pub token: String,
     clock: Arc<dyn Clock>,
 }
@@ -53,7 +22,6 @@ pub struct AuthSession {
 impl std::fmt::Debug for AuthSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuthSession")
-            .field("user", &self.user)
             .field("session", &self.session)
             .field("token", &"<redacted>")
             .finish_non_exhaustive()
@@ -72,13 +40,42 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthSession {
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         match parts.extensions.get::<AuthContext>() {
             Some(ctx) => Ok(AuthSession {
-                user: ctx.user.clone(),
                 session: ctx.session.clone(),
                 token: ctx.token.clone(),
                 clock: ctx.clock.clone(),
             }),
             None => Err(ErrorResponse(Error::SessionNotFound)),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthUser(pub User);
+
+impl<S: Send + Sync> FromRequestParts<S> for AuthUser {
+    type Rejection = ErrorResponse;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let Some(ctx) = parts.extensions.get::<AuthContext>() else {
+            return Err(ErrorResponse(Error::SessionNotFound));
+        };
+        Ok(AuthUser(ctx.sessions.find_user(&ctx.session).await?))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OptionalAuthUser(pub Option<User>);
+
+impl<S: Send + Sync> FromRequestParts<S> for OptionalAuthUser {
+    type Rejection = ErrorResponse;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let Some(ctx) = parts.extensions.get::<AuthContext>() else {
+            return Ok(OptionalAuthUser(None));
+        };
+        Ok(OptionalAuthUser(Some(
+            ctx.sessions.find_user(&ctx.session).await?,
+        )))
     }
 }
 
@@ -159,8 +156,7 @@ mod tests {
             recovery_cooldown_until: Some(cooldown_until),
         };
         let auth = AuthSession {
-            user: Arc::new(user),
-            session: Arc::new(session),
+            session,
             token: "cooldown-token".into(),
             clock: clock.clone(),
         };
@@ -201,8 +197,7 @@ mod tests {
             recovery_cooldown_until: None,
         };
         let auth = AuthSession {
-            user: Arc::new(user),
-            session: Arc::new(session),
+            session,
             token: "super-secret-bearer-token".into(),
             clock: Arc::new(MockClock::new(start)),
         };

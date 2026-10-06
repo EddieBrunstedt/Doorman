@@ -14,7 +14,7 @@ use crate::dto::{
     PasskeyRenameRequest, RegistrationFinishRequest, RemovePasskeyRequest,
 };
 use crate::error::ErrorResponse;
-use crate::extractors::{AuthSession, AuthUser, RequestContext};
+use crate::extractors::{AuthSession, RequestContext};
 use crate::routes::{auth_success, parse_challenge_id, reauth_proof};
 use crate::state::AuthState;
 
@@ -85,9 +85,11 @@ async fn authenticate_finish(
 
 async fn list(
     State(state): State<AuthState>,
-    AuthUser(user): AuthUser,
+    auth: AuthSession,
 ) -> Result<Json<Vec<PasskeyDto>>, ErrorResponse> {
-    let creds = manager(&state).list_passkey_summaries(user.id).await?;
+    let creds = manager(&state)
+        .list_passkey_summaries(auth.session.user_id)
+        .await?;
     Ok(Json(creds.into_iter().map(PasskeyDto::from).collect()))
 }
 

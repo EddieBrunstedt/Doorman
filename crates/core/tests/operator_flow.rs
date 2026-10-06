@@ -54,13 +54,7 @@ async fn operator_delete_cascades_all_stores() {
     let session = session_for(&h, &user);
 
     h.account
-        .request_email_change(
-            &user,
-            &session,
-            "elsewhere@example.com",
-            None,
-            Default::default(),
-        )
+        .request_email_change(&session, "elsewhere@example.com", None, Default::default())
         .await
         .expect("request email change");
     let email_change_token = last_email_change_token(&h);

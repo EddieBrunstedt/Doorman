@@ -84,10 +84,9 @@ impl AccountManager {
             .await;
     }
 
-    #[tracing::instrument(skip(self, session, new_email, reauth, context), fields(user_id = %user.id))]
+    #[tracing::instrument(skip(self, session, new_email, reauth, context), fields(user_id = %session.user_id))]
     pub async fn request_email_change(
         &self,
-        user: &User,
         session: &Session,
         new_email: &str,
         reauth: Option<ReauthProof>,
@@ -109,15 +108,16 @@ impl AccountManager {
             return Err(Error::EmailAlreadyInUse);
         }
 
+        let user = self.records.find(session.user_id).await?;
         let url = self.link.issue(user.id, normalized.clone()).await?;
 
         let confirmation = self
             .emails
-            .email_change_confirmation_email(user, &normalized, &url);
+            .email_change_confirmation_email(&user, &normalized, &url);
         self.email.send(confirmation).await?;
 
         self.notifier
-            .email_change_requested(user, &normalized)
+            .email_change_requested(&user, &normalized)
             .await;
 
         self.emit(
@@ -172,10 +172,9 @@ impl AccountManager {
             .await
     }
 
-    #[tracing::instrument(skip(self, user, session, reauth, context), fields(user_id = %user.id, session_id = %session.id))]
+    #[tracing::instrument(skip(self, session, reauth, context), fields(user_id = %session.user_id, session_id = %session.id))]
     pub async fn revoke_other_sessions(
         &self,
-        user: &User,
         session: &Session,
         reauth: Option<ReauthProof>,
         context: SessionContext,
@@ -188,17 +187,24 @@ impl AccountManager {
                 &context,
             )
             .await?;
-        let count = self.sessions.revoke_others(user.id, session.id).await?;
-        if count > 0 {
-            self.notifier.other_sessions_revoked(user).await;
+        let count = self
+            .sessions
+            .revoke_others(session.user_id, session.id)
+            .await?;
+        if count > 0
+            && let Some(user) = self
+                .records
+                .find_for_notification(session.user_id, "other-sessions revoked")
+                .await
+        {
+            self.notifier.other_sessions_revoked(&user).await;
         }
         Ok(count)
     }
 
-    #[tracing::instrument(skip(self, user, session, reauth, context), fields(user_id = %user.id, session_id = %target))]
+    #[tracing::instrument(skip(self, session, reauth, context), fields(user_id = %session.user_id, session_id = %target))]
     pub async fn revoke_session(
         &self,
-        user: &User,
         session: &Session,
         target: SessionId,
         reauth: Option<ReauthProof>,
@@ -217,7 +223,7 @@ impl AccountManager {
         }
         self.sessions
             .revoke_session_for_target(
-                user.id,
+                session.user_id,
                 target,
                 Actor::Subject {
                     ip: session.ip.clone(),
@@ -225,8 +231,13 @@ impl AccountManager {
                 },
             )
             .await?;
-        if !is_current {
-            self.notifier.other_session_revoked(user).await;
+        if !is_current
+            && let Some(user) = self
+                .records
+                .find_for_notification(session.user_id, "other-session revoked")
+                .await
+        {
+            self.notifier.other_session_revoked(&user).await;
         }
         Ok(())
     }

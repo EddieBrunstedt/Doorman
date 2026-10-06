@@ -25,11 +25,8 @@ const RECOVERY_TEMPLATE: &str = "http://localhost:3000/recovery?token={token}";
 
 #[tokio::test]
 async fn signup_login_recovery_round_trip() {
-    async fn me(auth: AuthSession) -> String {
-        auth.user
-            .email
-            .clone()
-            .unwrap_or_else(|| "unknown".to_owned())
+    async fn me(AuthUser(user): AuthUser) -> String {
+        user.email.unwrap_or_else(|| "unknown".to_owned())
     }
 
     let storage = SqliteStorage::connect("sqlite::memory:")
@@ -43,7 +40,6 @@ async fn signup_login_recovery_round_trip() {
     let core = AuthCore::builder(storage.all_stores())
         .email(email.clone() as Arc<dyn doorman_core::email::EmailSender>)
         .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
-        .session_cache(SessionCachePolicy::users_only(SessionCacheConfig::default()))
         .reauthentication(ReauthPolicy::disabled())
         .audit(Arc::new(NoopAuditSink))
         .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))

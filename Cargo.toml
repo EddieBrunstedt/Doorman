@@ -41,7 +41,6 @@ async-trait = "0.1"
 base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 criterion = { version = "0.8", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
-lru = "0.18"
 proptest = "1"
 rand = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["json"] }

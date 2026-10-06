@@ -4,7 +4,6 @@ use std::time::Duration;
 use doorman_core::account::AccountConfig;
 use doorman_core::assembly::AuthCore;
 use doorman_core::audit::NoopAuditSink;
-use doorman_core::cache::{SessionCacheConfig, SessionCachePolicy};
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::NoopRateLimiter;
 use doorman_core::reauth::ReauthPolicy;
@@ -25,7 +24,6 @@ pub fn in_memory_core(storage: Storage) -> AuthCore {
             Url::parse("http://localhost:8080").expect("rp origin"),
             "doorman bench",
         ))
-        .session_cache(SessionCachePolicy::users_only(SessionCacheConfig::default()))
         .reauthentication(ReauthPolicy::disabled())
         .session(SessionConfig {
             absolute_lifetime: Duration::from_secs(60 * 60),

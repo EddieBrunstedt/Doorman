@@ -46,7 +46,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let core = AuthCore::builder(storage.all_stores())
         .email(Arc::new(TerminalEmailSender))
         .passkey(passkey_config)
-        .session_cache(SessionCachePolicy::users_only(SessionCacheConfig::default()))
         .reauthentication(ReauthPolicy::required_for([
             ReauthAction::DeleteAccount,
             ReauthAction::RequestEmailChange,
@@ -100,16 +99,17 @@ async fn index() -> Html<&'static str> {
 async fn me(
     State(state): State<AppState>,
     auth: AuthSession,
+    AuthUser(user): AuthUser,
 ) -> std::result::Result<Json<serde_json::Value>, axum::http::StatusCode> {
     let cooldown = auth.is_in_recovery_cooldown();
     let passkey_count = state
         .auth
         .passkey()
-        .count_passkeys(auth.user.id)
+        .count_passkeys(user.id)
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({
-        "user": UserDto::from_user(&auth.user, passkey_count),
+        "user": UserDto::from_user(&user, passkey_count),
         "session": SessionDto::from_session(&auth.session, true),
         "recovery_cooldown_active": cooldown,
     })))

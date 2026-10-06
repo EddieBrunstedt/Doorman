@@ -15,7 +15,7 @@ use doorman_core::storage::{
 };
 use doorman_test_support::CapturingEmailSender;
 
-use common::{Harness, ts};
+use common::{Harness, make_user, ts};
 
 fn harness_with_lifetime(absolute_lifetime: Duration) -> Harness {
     Harness::builder()
@@ -24,6 +24,44 @@ fn harness_with_lifetime(absolute_lifetime: Duration) -> Harness {
             ..SessionConfig::default()
         })
         .build()
+}
+
+async fn new_user(h: &Harness) -> UserId {
+    make_user(h, &format!("{}@example.com", UserId::new()))
+        .await
+        .id
+}
+
+#[tokio::test]
+async fn create_is_refused_for_a_user_who_cannot_log_in() {
+    let h = Harness::fresh();
+    let disabled = new_user(&h).await;
+    let now = h.clock.now();
+    h.users
+        .set_user_status(disabled, AccountStatus::Disabled { at: now }, now)
+        .await
+        .expect("disable");
+
+    let err = h
+        .session_manager
+        .create(disabled, SessionContext::default())
+        .await
+        .err();
+    assert!(matches!(err, Some(Error::AccountDisabled)), "got {err:?}");
+    let err = h
+        .session_manager
+        .create(UserId::new(), SessionContext::default())
+        .await
+        .err();
+    assert!(matches!(err, Some(Error::UserNotFound)), "got {err:?}");
+    assert!(h.sessions.is_empty(), "a refused session leaves no row");
+    assert!(
+        !h.audit
+            .events()
+            .iter()
+            .any(|e| matches!(e.kind, AuditEventKind::SessionCreated { .. })),
+        "a refused session is not audited as created",
+    );
 }
 
 #[test]
@@ -89,7 +127,7 @@ fn stored_passkey_cooldown_predicate_mirrors_session() {
 async fn create_then_validate_returns_same_session() {
     let h = Harness::fresh();
     let (manager, sessions, audit) = (&h.session_manager, &h.sessions, &h.audit);
-    let user_id = UserId::new();
+    let user_id = new_user(&h).await;
 
     let issued = manager
         .create(
@@ -124,7 +162,7 @@ async fn create_then_validate_returns_same_session() {
 async fn revoke_deletes_session_and_emits_audit() {
     let h = Harness::fresh();
     let (manager, sessions, audit) = (&h.session_manager, &h.sessions, &h.audit);
-    let user_id = UserId::new();
+    let user_id = new_user(&h).await;
 
     let issued = manager
         .create(user_id, SessionContext::default())
@@ -158,8 +196,8 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
         .build();
     let (manager, sessions, audit, clock) = (&h.session_manager, &h.sessions, &h.audit, &h.clock);
 
-    let alice = UserId::new();
-    let bob = UserId::new();
+    let alice = new_user(&h).await;
+    let bob = new_user(&h).await;
 
     let first = manager
         .create(alice, SessionContext::default())
@@ -244,7 +282,7 @@ async fn expired_session_fails_validation_and_logs() {
     let (manager, audit, clock) = (&h.session_manager, &h.audit, &h.clock);
 
     let issued = manager
-        .create(UserId::new(), SessionContext::default())
+        .create(new_user(&h).await, SessionContext::default())
         .await
         .expect("create");
 
@@ -270,7 +308,7 @@ async fn revoke_by_id_removes_session() {
     let h = Harness::fresh();
     let (manager, sessions) = (&h.session_manager, &h.sessions);
     let issued = manager
-        .create(UserId::new(), SessionContext::default())
+        .create(new_user(&h).await, SessionContext::default())
         .await
         .expect("create");
 
@@ -285,8 +323,8 @@ async fn revoke_by_id_removes_session() {
 async fn revoke_all_for_user_clears_only_that_user() {
     let h = Harness::fresh();
     let (manager, sessions) = (&h.session_manager, &h.sessions);
-    let alice = UserId::new();
-    let bob = UserId::new();
+    let alice = new_user(&h).await;
+    let bob = new_user(&h).await;
 
     manager
         .create(alice, SessionContext::default())
@@ -321,8 +359,8 @@ async fn list_for_user_returns_only_active_sessions_for_that_user() {
     let h = harness_with_lifetime(Duration::from_secs(60));
     let (manager, clock) = (&h.session_manager, &h.clock);
 
-    let alice = UserId::new();
-    let bob = UserId::new();
+    let alice = new_user(&h).await;
+    let bob = new_user(&h).await;
 
     let alice_first = manager
         .create(alice, SessionContext::default())
@@ -365,13 +403,13 @@ async fn purge_expired_deletes_only_expired() {
     let (manager, sessions, clock) = (&h.session_manager, &h.sessions, &h.clock);
 
     let short = manager
-        .create(UserId::new(), SessionContext::default())
+        .create(new_user(&h).await, SessionContext::default())
         .await
         .expect("short");
 
     clock.advance(ChronoDuration::seconds(30));
     let long = manager
-        .create(UserId::new(), SessionContext::default())
+        .create(new_user(&h).await, SessionContext::default())
         .await
         .expect("long");
 

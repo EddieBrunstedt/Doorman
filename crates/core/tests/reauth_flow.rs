@@ -468,7 +468,7 @@ async fn revoke_other_sessions_requires_proof_when_gated() {
 
     let err = h
         .account
-        .revoke_other_sessions(&user, &current, None, SessionContext::default())
+        .revoke_other_sessions(&current, None, SessionContext::default())
         .await
         .expect_err("missing proof must be rejected");
     assert!(matches!(err, Error::ReauthRequired), "got: {err:?}");
@@ -481,7 +481,7 @@ async fn revoke_other_sessions_requires_proof_when_gated() {
     let proof = fresh_proof(&h, user.id, &mut wa).await;
     let removed = h
         .account
-        .revoke_other_sessions(&user, &current, Some(proof), SessionContext::default())
+        .revoke_other_sessions(&current, Some(proof), SessionContext::default())
         .await
         .expect("revoke with a fresh proof");
     assert_eq!(removed, 1);
@@ -508,25 +508,19 @@ async fn revoke_session_requires_proof_only_for_another_session() {
 
     let err = h
         .account
-        .revoke_session(&user, &current, other.id, None, SessionContext::default())
+        .revoke_session(&current, other.id, None, SessionContext::default())
         .await
         .expect_err("another session needs a proof");
     assert!(matches!(err, Error::ReauthRequired), "got: {err:?}");
 
     let proof = fresh_proof(&h, user.id, &mut wa).await;
     h.account
-        .revoke_session(
-            &user,
-            &current,
-            other.id,
-            Some(proof),
-            SessionContext::default(),
-        )
+        .revoke_session(&current, other.id, Some(proof), SessionContext::default())
         .await
         .expect("revoke another session with a fresh proof");
 
     h.account
-        .revoke_session(&user, &current, current.id, None, SessionContext::default())
+        .revoke_session(&current, current.id, None, SessionContext::default())
         .await
         .expect("self-revocation is never gated");
 }

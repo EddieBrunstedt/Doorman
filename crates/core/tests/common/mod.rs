@@ -16,7 +16,6 @@ use doorman_core::assembly::{AssemblyError, AuthCore};
 use doorman_core::audit::{
     AuditEvent, AuditEventKind, AuditSink, RedemptionFailureReason, SecretKind,
 };
-use doorman_core::cache::{SessionCacheConfig, SessionCachePolicy};
 use doorman_core::clock::Clock;
 use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
 use doorman_core::error::StorageResult;
@@ -34,7 +33,8 @@ use doorman_core::session::hash_token;
 use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use doorman_core::storage::{
-    AccountStatus, Session, SessionId, Storage, StoredPasskey, User, UserId, UserStore,
+    AccountStatus, Session, SessionId, SessionStore, Storage, StoredPasskey, TokenHash, User,
+    UserId, UserStore,
 };
 pub use doorman_test_support::token_from_email;
 use doorman_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
@@ -90,22 +90,29 @@ pub fn recovery_config() -> RecoveryConfig {
 
 pub struct CountingUserStore {
     inner: Arc<InMemoryUserStore>,
-    reads_by_id: AtomicUsize,
+    reads: AtomicUsize,
     email_hold: Mutex<Option<(Arc<Barrier>, usize)>>,
+    id_hold: Mutex<Option<Arc<Barrier>>>,
 }
 
 impl CountingUserStore {
-    pub fn reads_by_id(&self) -> usize {
-        self.reads_by_id.load(Ordering::SeqCst)
+    pub fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
     }
 
     pub fn reset(&self) {
-        self.reads_by_id.store(0, Ordering::SeqCst);
+        self.reads.store(0, Ordering::SeqCst);
     }
 
     pub fn hold_email_lookups(&self, lookups: usize) -> Arc<Barrier> {
         let barrier = Arc::new(Barrier::new(lookups + 1));
         *self.email_hold.lock().expect("email hold lock") = Some((barrier.clone(), lookups));
+        barrier
+    }
+
+    pub fn hold_next_id_lookup(&self) -> Arc<Barrier> {
+        let barrier = Arc::new(Barrier::new(2));
+        *self.id_hold.lock().expect("id hold lock") = Some(barrier.clone());
         barrier
     }
 }
@@ -117,11 +124,19 @@ impl UserStore for CountingUserStore {
     }
 
     async fn find_user_by_id(&self, id: UserId) -> StorageResult<Option<User>> {
-        self.reads_by_id.fetch_add(1, Ordering::SeqCst);
-        self.inner.find_user_by_id(id).await
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        let barrier = self.id_hold.lock().expect("id hold lock").take();
+        let found = self.inner.find_user_by_id(id).await;
+        if let Some(barrier) = barrier {
+            // The first wait tells the test the lookup has read; the second releases it.
+            barrier.wait().await;
+            barrier.wait().await;
+        }
+        found
     }
 
     async fn find_user_by_email(&self, email: &str) -> StorageResult<Option<User>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         let barrier = match &mut *self.email_hold.lock().expect("email hold lock") {
             Some((barrier, left)) if *left > 0 => {
                 *left -= 1;
@@ -163,6 +178,76 @@ impl UserStore for CountingUserStore {
     }
 }
 
+pub struct CountingSessionStore {
+    inner: Arc<InMemorySessionStore>,
+    reads: AtomicUsize,
+}
+
+impl CountingSessionStore {
+    pub fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+
+    pub fn reset(&self) {
+        self.reads.store(0, Ordering::SeqCst);
+    }
+
+    fn read(&self) {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl SessionStore for CountingSessionStore {
+    async fn create_session(&self, session: Session) -> StorageResult<()> {
+        self.inner.create_session(session).await
+    }
+
+    async fn touch_session(
+        &self,
+        id: SessionId,
+        last_used_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> StorageResult<()> {
+        self.inner.touch_session(id, last_used_at, expires_at).await
+    }
+
+    async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
+        self.read();
+        self.inner.find_session_by_token_hash(hash).await
+    }
+
+    async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>> {
+        self.read();
+        self.inner.find_session_by_id(id).await
+    }
+
+    async fn list_for_user(
+        &self,
+        user_id: UserId,
+        now: DateTime<Utc>,
+    ) -> StorageResult<Vec<Session>> {
+        self.read();
+        self.inner.list_for_user(user_id, now).await
+    }
+
+    async fn delete_session(&self, id: SessionId) -> StorageResult<()> {
+        self.inner.delete_session(id).await
+    }
+
+    async fn delete_sessions_for_user(
+        &self,
+        user_id: UserId,
+        except: Option<SessionId>,
+    ) -> StorageResult<u64> {
+        self.inner.delete_sessions_for_user(user_id, except).await
+    }
+
+    async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
+        self.inner.purge_expired(now).await
+    }
+}
+
 pub struct Harness {
     pub passkey: PasskeyManager,
     pub signup: SignupManager,
@@ -174,6 +259,7 @@ pub struct Harness {
     pub users: Arc<InMemoryUserStore>,
     pub user_store: Arc<CountingUserStore>,
     pub sessions: Arc<InMemorySessionStore>,
+    pub session_store: Arc<CountingSessionStore>,
     pub tokens: Arc<InMemoryVerificationTokenStore>,
     pub credentials: Arc<InMemoryPasskeyCredentialStore>,
     pub challenges: Arc<InMemoryPasskeyChallengeStore>,
@@ -183,7 +269,6 @@ pub struct Harness {
     pub clock: Arc<MockClock>,
     pub metrics: Arc<CapturingMetrics>,
     session_config: SessionConfig,
-    session_cache: SessionCachePolicy,
 }
 
 impl Harness {
@@ -202,7 +287,6 @@ impl Harness {
             .email(self.email.clone() as Arc<dyn EmailSender>)
             .limiter(Arc::new(NoopRateLimiter))
             .session(self.session_config.clone())
-            .session_cache(self.session_cache)
             .passkey(PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME))
             .signup(signup_config())
             .recovery(recovery_config())
@@ -220,7 +304,6 @@ pub struct HarnessBuilder {
     signup: SignupConfig,
     recovery: RecoveryConfig,
     session_config: SessionConfig,
-    session_cache: SessionCachePolicy,
     passkey: PasskeyConfig,
     signup_limiter: Arc<dyn RateLimiter>,
     recovery_limiter: Arc<dyn RateLimiter>,
@@ -238,7 +321,6 @@ impl HarnessBuilder {
                 absolute_lifetime: Duration::from_secs(60 * 60),
                 ..SessionConfig::default()
             },
-            session_cache: SessionCachePolicy::users_only(SessionCacheConfig::default()),
             passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
             signup_limiter: Arc::new(NoopRateLimiter),
             recovery_limiter: Arc::new(NoopRateLimiter),
@@ -288,11 +370,6 @@ impl HarnessBuilder {
         self
     }
 
-    pub fn session_cache(mut self, policy: SessionCachePolicy) -> Self {
-        self.session_cache = policy;
-        self
-    }
-
     pub fn passkey_config(mut self, config: PasskeyConfig) -> Self {
         self.passkey = config;
         self
@@ -318,13 +395,18 @@ impl HarnessBuilder {
 
         let user_store = Arc::new(CountingUserStore {
             inner: users.clone(),
-            reads_by_id: AtomicUsize::new(0),
+            reads: AtomicUsize::new(0),
             email_hold: Mutex::new(None),
+            id_hold: Mutex::new(None),
+        });
+        let session_store = Arc::new(CountingSessionStore {
+            inner: sessions.clone(),
+            reads: AtomicUsize::new(0),
         });
 
         let storage = Storage {
             users: user_store.clone(),
-            sessions: sessions.clone(),
+            sessions: session_store.clone(),
             verification_tokens: tokens.clone(),
             passkey_credentials: credentials.clone(),
             passkey_challenges: challenges.clone(),
@@ -339,7 +421,6 @@ impl HarnessBuilder {
             .recovery_limiter(self.recovery_limiter)
             .metrics(metrics.clone() as Arc<dyn MetricSink>)
             .session(self.session_config.clone())
-            .session_cache(self.session_cache)
             .passkey(self.passkey)
             .signup(self.signup)
             .recovery(self.recovery)
@@ -362,6 +443,7 @@ impl HarnessBuilder {
             users,
             user_store,
             sessions,
+            session_store,
             tokens,
             credentials,
             challenges,
@@ -371,7 +453,6 @@ impl HarnessBuilder {
             clock,
             metrics,
             session_config: self.session_config,
-            session_cache: self.session_cache,
         })
     }
 }

@@ -258,7 +258,7 @@ async fn consume_then_finish_registers_passkey_and_issues_session() {
 }
 
 #[tokio::test]
-async fn finish_reads_the_user_once() {
+async fn finish_reads_the_user_before_and_after_issuing_its_session() {
     let h = Harness::fresh();
     h.signup
         .request_signup("alice@example.com", None, SessionContext::default())
@@ -284,7 +284,7 @@ async fn finish_reads_the_user_once() {
         .await
         .expect("finish");
 
-    assert_eq!(h.user_store.reads_by_id(), 1);
+    assert_eq!(h.user_store.reads(), 2);
 }
 
 #[tokio::test]

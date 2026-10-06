@@ -1,20 +1,19 @@
 mod common;
 
-use std::num::NonZeroU32;
-use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Duration as ChronoDuration;
 use doorman_core::Error;
 use doorman_core::assembly::AssemblyError;
-use doorman_core::audit::OperatorActor;
-use doorman_core::cache::{SessionCacheConfig, SessionCachePolicy};
+use doorman_core::audit::{AuditEventKind, OperatorActor};
 use doorman_core::clock::Clock;
-use doorman_core::metrics::MetricEvent;
 use doorman_core::session::{SessionConfig, SessionContext, hash_token};
 use doorman_core::storage::{AccountStatus, SessionStore, User, UserId, UserStore};
 
-use common::{Harness, SIGNUP_URL, last_email_change_token, make_user, token_from_email};
+use common::{
+    Harness, authenticator, last_email_change_token, make_user, register_passkey, session_count,
+    within_deadline,
+};
 
 fn sliding_config() -> SessionConfig {
     SessionConfig {
@@ -28,19 +27,6 @@ fn sliding_harness() -> Harness {
     Harness::builder().session_config(sliding_config()).build()
 }
 
-fn full_cache(ttl: Duration) -> SessionCachePolicy {
-    SessionCachePolicy::full(SessionCacheConfig {
-        ttl,
-        ..SessionCacheConfig::default()
-    })
-}
-
-fn full_cache_harness() -> Harness {
-    Harness::builder()
-        .session_cache(full_cache(Duration::from_secs(60)))
-        .build()
-}
-
 async fn signed_in(h: &Harness, email: &str) -> (User, String) {
     let user = make_user(h, email).await;
     let issued = h
@@ -51,46 +37,44 @@ async fn signed_in(h: &Harness, email: &str) -> (User, String) {
     (user, issued.token)
 }
 
-fn hits(h: &Harness) -> usize {
-    h.metrics.count(MetricEvent::CacheHit)
-}
+#[tokio::test]
+async fn a_request_reads_its_session_row_and_nothing_else() {
+    let h = sliding_harness();
+    let (user, token) = signed_in(&h, "alice@example.com").await;
 
-fn misses(h: &Harness) -> usize {
-    h.metrics.count(MetricEvent::CacheMiss)
+    for advance in [0, 90] {
+        h.clock.advance(ChronoDuration::seconds(advance));
+        h.session_store.reset();
+        h.user_store.reset();
+        let resolved = h.session_manager.resolve(&token).await.expect("resolve");
+        assert_eq!(resolved.session.user_id, user.id);
+        assert_eq!(resolved.slid, advance > 0);
+        assert_eq!(h.session_store.reads(), 1, "one session read");
+        assert_eq!(h.user_store.reads(), 0, "no user read");
+    }
 }
 
 #[tokio::test]
-async fn resolves_from_storage_then_serves_from_cache() {
-    let h = full_cache_harness();
-    let (user, token) = signed_in(&h, "alice@example.com").await;
+async fn unknown_token_is_refused() {
+    let h = Harness::fresh();
+    let err = h.session_manager.resolve("not-a-session").await.err();
+    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
+}
 
-    let first = h
-        .session_manager
-        .resolve(&token)
-        .await
-        .expect("first resolve");
-    assert_eq!(first.user.id, user.id);
-    assert_eq!(first.session.user_id, user.id);
-    assert_eq!((hits(&h), misses(&h)), (0, 1), "a cold token misses");
+#[tokio::test]
+async fn a_session_past_its_deadline_is_refused() {
+    let h = Harness::builder()
+        .session_config(SessionConfig {
+            absolute_lifetime: Duration::from_secs(30),
+            ..SessionConfig::default()
+        })
+        .build();
+    let (_, token) = signed_in(&h, "alice@example.com").await;
+    h.session_manager.resolve(&token).await.expect("resolve");
 
-    h.sessions
-        .delete_session(first.session.id)
-        .await
-        .expect("delete session row");
-    let second = h
-        .session_manager
-        .resolve(&token)
-        .await
-        .expect("warm resolve");
-    assert!(Arc::ptr_eq(&first.session, &second.session));
-    assert_eq!((hits(&h), misses(&h)), (1, 1), "a warm token hits");
-
-    h.clock.advance(ChronoDuration::seconds(60));
+    h.clock.advance(ChronoDuration::seconds(30));
     let err = h.session_manager.resolve(&token).await.err();
-    assert!(
-        matches!(err, Some(Error::SessionNotFound)),
-        "a stale entry re-reads storage, got {err:?}",
-    );
+    assert!(matches!(err, Some(Error::SessionExpired)), "got {err:?}");
 }
 
 #[tokio::test]
@@ -110,286 +94,79 @@ async fn a_revocation_reaches_another_process_at_once() {
 }
 
 #[tokio::test]
-async fn a_warm_request_reads_only_the_session() {
-    let h = Harness::fresh();
-    let (_, token) = signed_in(&h, "alice@example.com").await;
-    h.user_store.reset();
-
-    h.session_manager.resolve(&token).await.expect("cold");
-    assert_eq!(
-        h.user_store.reads_by_id(),
-        1,
-        "a cold request reads the user"
-    );
-    h.session_manager.resolve(&token).await.expect("warm");
-    assert_eq!(h.user_store.reads_by_id(), 1, "a warm request does not");
-    assert_eq!((hits(&h), misses(&h)), (1, 1));
-}
-
-#[tokio::test]
-async fn another_process_sees_a_changed_email_after_its_ttl() {
+async fn a_disable_reaches_another_process_at_once() {
     let h = Harness::fresh();
     let other = h.another_process();
-    let (_, token) = signed_in(&h, "old@example.com").await;
-    let warm = h.session_manager.resolve(&token).await.expect("warm");
+    let (user, token) = signed_in(&h, "alice@example.com").await;
     other
-        .session_manager
-        .resolve(&token)
-        .await
-        .expect("warm other");
-
-    h.account
-        .request_email_change(
-            &warm.user,
-            &warm.session,
-            "new@example.com",
-            None,
-            SessionContext::default(),
-        )
-        .await
-        .expect("request email change");
-    h.account
-        .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
-        .await
-        .expect("confirm email change");
-
-    let stale = other
         .session_manager
         .resolve(&token)
         .await
         .expect("resolve");
-    assert_eq!(stale.user.email.as_deref(), Some("old@example.com"));
 
-    h.clock.advance(ChronoDuration::seconds(60));
-    let fresh = other
-        .session_manager
-        .resolve(&token)
+    h.operator
+        .disable(user.id, operator())
         .await
-        .expect("resolve");
-    assert_eq!(fresh.user.email.as_deref(), Some("new@example.com"));
-}
-
-#[tokio::test]
-async fn a_full_cache_serves_a_revoked_session_until_its_ttl() {
-    let h = full_cache_harness();
-    let other = h.another_process();
-    let (_, token) = signed_in(&h, "alice@example.com").await;
-    other
-        .session_manager
-        .resolve(&token)
-        .await
-        .expect("warm the other process");
-
-    h.session_manager.revoke(&token).await.expect("revoke");
-    h.session_manager
-        .resolve(&token)
-        .await
-        .err()
-        .expect("the revoking process refuses it at once");
-
-    h.clock.advance(ChronoDuration::seconds(59));
-    other
-        .session_manager
-        .resolve(&token)
-        .await
-        .expect("the other process still serves its cached session");
-
-    h.clock.advance(ChronoDuration::seconds(1));
+        .expect("disable");
     let err = other.session_manager.resolve(&token).await.err();
     assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
 }
 
 #[tokio::test]
-async fn unknown_token_is_refused() {
+async fn a_delete_reaches_another_process_at_once() {
     let h = Harness::fresh();
-    let err = h.session_manager.resolve("not-a-session").await.err();
-    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
-}
-
-#[tokio::test]
-async fn warm_entry_past_its_session_deadline_is_not_served() {
-    let h = Harness::builder()
-        .session_config(SessionConfig {
-            absolute_lifetime: Duration::from_secs(30),
-            ..SessionConfig::default()
-        })
-        .session_cache(full_cache(Duration::from_secs(60)))
-        .build();
-    let (_, token) = signed_in(&h, "alice@example.com").await;
-    h.session_manager
+    let other = h.another_process();
+    let (user, token) = signed_in(&h, "alice@example.com").await;
+    other
+        .session_manager
         .resolve(&token)
         .await
-        .expect("warm the cache");
+        .expect("resolve");
 
-    h.clock.advance(ChronoDuration::seconds(31));
-    let err = h.session_manager.resolve(&token).await.err();
-    assert!(matches!(err, Some(Error::SessionExpired)), "got {err:?}");
-    assert_eq!(hits(&h), 0, "the expired snapshot was never served");
-}
-
-#[tokio::test]
-async fn revoke_evicts_the_warm_entry() {
-    let h = full_cache_harness();
-    let (_, token) = signed_in(&h, "alice@example.com").await;
-    h.session_manager
-        .resolve(&token)
+    h.operator
+        .delete_account(user.id, operator())
         .await
-        .expect("warm the cache");
-
-    h.session_manager.revoke(&token).await.expect("revoke");
-    let err = h.session_manager.resolve(&token).await.err();
+        .expect("delete");
+    let err = other.session_manager.resolve(&token).await.err();
     assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
-    assert_eq!(hits(&h), 0);
 }
 
 #[tokio::test]
-async fn revoke_by_id_evicts_the_warm_entry() {
-    let h = full_cache_harness();
-    let (_, token) = signed_in(&h, "alice@example.com").await;
-    let warm = h.session_manager.resolve(&token).await.expect("warm");
-
-    h.session_manager
-        .revoke_by_id(warm.session.id)
-        .await
-        .expect("revoke by id");
-    let err = h.session_manager.resolve(&token).await.err();
-    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
-    assert_eq!(hits(&h), 0);
-}
-
-#[tokio::test]
-async fn revoke_other_sessions_evicts_only_the_others() {
-    let h = full_cache_harness();
-    let (user, current) = signed_in(&h, "carol@example.com").await;
-    let other = h
-        .session_manager
-        .create(user.id, SessionContext::default())
-        .await
-        .expect("other session")
-        .token;
-    let warm = h.session_manager.resolve(&current).await.expect("warm");
-    h.session_manager.resolve(&other).await.expect("warm other");
-
-    let removed = h
-        .account
-        .revoke_other_sessions(&warm.user, &warm.session, None, SessionContext::default())
-        .await
-        .expect("revoke others");
-    assert_eq!(removed, 1);
-    let err = h.session_manager.resolve(&other).await.err();
-    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
-    h.session_manager
-        .resolve(&current)
-        .await
-        .expect("the current session survives");
-}
-
-#[tokio::test]
-async fn session_cap_eviction_evicts_the_warm_entry() {
-    let h = Harness::builder()
-        .session_config(SessionConfig {
-            max_sessions_per_user: NonZeroU32::new(1),
-            ..SessionConfig::default()
-        })
-        .session_cache(full_cache(Duration::from_secs(60)))
-        .build();
-    let (user, oldest) = signed_in(&h, "dave@example.com").await;
-    h.session_manager.resolve(&oldest).await.expect("warm");
-
-    h.session_manager
-        .create(user.id, SessionContext::default())
-        .await
-        .expect("a session past the cap");
-    let err = h.session_manager.resolve(&oldest).await.err();
-    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
-    assert_eq!(hits(&h), 0);
-}
-
-#[tokio::test]
-async fn revoke_all_for_user_evicts_every_warm_entry() {
-    let h = full_cache_harness();
-    let (user, first) = signed_in(&h, "bob@example.com").await;
-    let second = h
-        .session_manager
-        .create(user.id, SessionContext::default())
-        .await
-        .expect("second session")
-        .token;
-    h.session_manager.resolve(&first).await.expect("warm first");
-    h.session_manager
-        .resolve(&second)
-        .await
-        .expect("warm second");
-
-    let removed = h
-        .session_manager
-        .revoke_all_for_user(user.id)
-        .await
-        .expect("revoke all");
-    assert_eq!(removed, 2);
-    for token in [&first, &second] {
-        let err = h.session_manager.resolve(token).await.err();
-        assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
-    }
-    assert_eq!(hits(&h), 0);
-}
-
-#[tokio::test]
-async fn disabled_account_is_refused_and_never_cached() {
-    let h = full_cache_harness();
-    let (user, token) = signed_in(&h, "frozen@example.com").await;
+async fn access_is_the_session_row_whatever_the_user_row_says() {
+    let h = Harness::fresh();
+    let (user, token) = signed_in(&h, "alice@example.com").await;
     let now = h.clock.now();
     h.users
         .set_user_status(user.id, AccountStatus::Disabled { at: now }, now)
         .await
-        .expect("disable");
+        .expect("disable outside doorman");
 
-    for _ in 0..2 {
-        let err = h.session_manager.resolve(&token).await.err();
-        assert!(matches!(err, Some(Error::AccountDisabled)), "got {err:?}");
-    }
-    assert_eq!(
-        (hits(&h), misses(&h)),
-        (0, 2),
-        "a refused session is never cached",
-    );
-}
-
-#[tokio::test]
-async fn operator_disable_evicts_the_warm_entry() {
-    let h = full_cache_harness();
-    let (user, token) = signed_in(&h, "locked@example.com").await;
     h.session_manager
         .resolve(&token)
         .await
-        .expect("warm the cache");
-
-    let actor = OperatorActor::new("support-agent-7", None, None, None).expect("operator actor");
-    h.operator.disable(user.id, actor).await.expect("disable");
-
-    let err = h.session_manager.resolve(&token).await.err();
-    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
-    assert_eq!(hits(&h), 0);
+        .expect("a status written outside doorman leaves the session in place");
 }
 
 #[tokio::test]
-async fn email_change_evicts_the_warm_entry() {
-    let h = full_cache_harness();
-    let (_, token) = signed_in(&h, "old@example.com").await;
-    let warm = h
+async fn the_user_read_is_fresh_in_every_process() {
+    let h = Harness::fresh();
+    let other = h.another_process();
+    let (user, token) = signed_in(&h, "old@example.com").await;
+    let session = h
         .session_manager
         .resolve(&token)
         .await
-        .expect("warm the cache");
+        .expect("resolve")
+        .session;
+    let found = other
+        .session_manager
+        .find_user(&session)
+        .await
+        .expect("find user");
+    assert_eq!(found.email.as_deref(), Some("old@example.com"));
 
     h.account
-        .request_email_change(
-            &warm.user,
-            &warm.session,
-            "new@example.com",
-            None,
-            SessionContext::default(),
-        )
+        .request_email_change(&session, "new@example.com", None, SessionContext::default())
         .await
         .expect("request email change");
     h.account
@@ -397,76 +174,51 @@ async fn email_change_evicts_the_warm_entry() {
         .await
         .expect("confirm email change");
 
-    let resolved = h.session_manager.resolve(&token).await.expect("resolve");
-    assert_eq!(resolved.user.email.as_deref(), Some("new@example.com"));
-    assert_eq!(hits(&h), 0, "the stale snapshot was never served");
+    let found = other
+        .session_manager
+        .find_user(&session)
+        .await
+        .expect("find user");
+    assert_eq!(found.id, user.id);
+    assert_eq!(found.email.as_deref(), Some("new@example.com"));
 }
 
 #[tokio::test]
-async fn email_verification_evicts_the_warm_entry() {
-    let h = full_cache_harness();
-    let now = h.clock.now();
-    let user = User {
-        id: UserId::new(),
-        email: Some("late@example.com".to_owned()),
-        email_verified_at: None,
-        status: AccountStatus::Active,
-        created_at: now,
-        updated_at: now,
-    };
-    h.users
-        .create_user(user.clone())
-        .await
-        .expect("create user");
-    let token = h
-        .session_manager
+async fn a_security_notice_goes_to_the_address_changed_in_another_process() {
+    let h = Harness::fresh();
+    let other = h.another_process();
+    let (user, token) = signed_in(&h, "old@example.com").await;
+    h.session_manager
         .create(user.id, SessionContext::default())
         .await
-        .expect("create session")
-        .token;
-    let warm = h
+        .expect("second session");
+    let session = h
         .session_manager
         .resolve(&token)
         .await
-        .expect("warm the cache");
-    assert!(warm.user.email_verified_at.is_none());
+        .expect("resolve")
+        .session;
 
-    h.signup
-        .request_signup("late@example.com", None, SessionContext::default())
+    h.account
+        .request_email_change(&session, "new@example.com", None, SessionContext::default())
         .await
-        .expect("request signup");
-    let link = h
-        .email
-        .sent()
-        .last()
-        .expect("signup link queued")
-        .body_text
-        .clone();
-    h.signup
-        .consume_signup(
-            &token_from_email(&link, SIGNUP_URL),
-            SessionContext::default(),
-        )
+        .expect("request email change");
+    h.account
+        .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
         .await
-        .expect("consume signup");
+        .expect("confirm email change");
 
-    let resolved = h.session_manager.resolve(&token).await.expect("resolve");
-    assert!(resolved.user.email_verified_at.is_some());
-    assert_eq!(hits(&h), 0, "the stale snapshot was never served");
+    other
+        .account
+        .revoke_other_sessions(&session, None, SessionContext::default())
+        .await
+        .expect("revoke other sessions");
+    let notice = h.email.sent().pop().expect("notice sent");
+    assert_eq!(notice.to, "new@example.com");
 }
 
 #[tokio::test]
-async fn session_whose_owner_is_gone_is_refused() {
-    let h = Harness::fresh();
-    let (user, token) = signed_in(&h, "gone@example.com").await;
-    h.users.delete_user(user.id).await.expect("delete user row");
-
-    let err = h.session_manager.resolve(&token).await.err();
-    assert!(matches!(err, Some(Error::UserNotFound)), "got {err:?}");
-}
-
-#[tokio::test]
-async fn miss_after_the_throttle_slides_and_reports_it() {
+async fn a_request_after_the_slide_interval_slides_and_reports_it() {
     let h = sliding_harness();
     let (_, token) = signed_in(&h, "alice@example.com").await;
 
@@ -491,23 +243,6 @@ async fn miss_after_the_throttle_slides_and_reports_it() {
 }
 
 #[tokio::test]
-async fn hit_never_slides() {
-    let h = Harness::builder()
-        .session_config(sliding_config())
-        .session_cache(full_cache(Duration::from_secs(60)))
-        .build();
-    let (_, token) = signed_in(&h, "alice@example.com").await;
-    h.clock.advance(ChronoDuration::seconds(90));
-    let slid = h.session_manager.resolve(&token).await.expect("slide");
-
-    h.clock.advance(ChronoDuration::seconds(30));
-    let hit = h.session_manager.resolve(&token).await.expect("hit");
-    assert!(!hit.slid);
-    assert_eq!(hit.session.expires_at, slid.session.expires_at);
-    assert_eq!(hits(&h), 1);
-}
-
-#[tokio::test]
 async fn read_within_the_slide_interval_does_not_slide() {
     let h = sliding_harness();
     let (_, token) = signed_in(&h, "alice@example.com").await;
@@ -519,26 +254,6 @@ async fn read_within_the_slide_interval_does_not_slide() {
     assert!(!second.slid);
     assert_eq!(second.session.expires_at, first.session.expires_at);
     assert_eq!(second.session.last_used_at, first.session.last_used_at);
-}
-
-#[tokio::test]
-async fn a_cached_session_due_to_slide_is_read_and_slid() {
-    let h = Harness::builder()
-        .session_config(sliding_config())
-        .session_cache(full_cache(Duration::from_secs(5 * 60)))
-        .build();
-    let (_, token) = signed_in(&h, "alice@example.com").await;
-    h.session_manager.resolve(&token).await.expect("warm");
-
-    h.clock.advance(ChronoDuration::seconds(90));
-    let now = h.clock.now();
-    let resolved = h.session_manager.resolve(&token).await.expect("resolve");
-    assert!(
-        resolved.slid,
-        "a fresh entry does not hold back a due slide"
-    );
-    assert_eq!(resolved.session.last_used_at, now);
-    assert_eq!((hits(&h), misses(&h)), (0, 2));
 }
 
 #[tokio::test]
@@ -578,31 +293,6 @@ async fn without_an_idle_timeout_nothing_slides() {
 }
 
 #[tokio::test]
-async fn disabled_account_is_not_slid() {
-    let h = sliding_harness();
-    let (user, token) = signed_in(&h, "frozen@example.com").await;
-    h.clock.advance(ChronoDuration::seconds(90));
-    let now = h.clock.now();
-    h.users
-        .set_user_status(user.id, AccountStatus::Disabled { at: now }, now)
-        .await
-        .expect("disable");
-
-    let err = h.session_manager.resolve(&token).await.err();
-    assert!(matches!(err, Some(Error::AccountDisabled)), "got {err:?}");
-    let stored = h
-        .sessions
-        .find_session_by_token_hash(&hash_token(&token))
-        .await
-        .expect("find")
-        .expect("present");
-    assert!(
-        stored.last_used_at < now,
-        "a refused session is not touched"
-    );
-}
-
-#[tokio::test]
 async fn validate_does_not_slide() {
     let h = sliding_harness();
     let (_, token) = signed_in(&h, "alice@example.com").await;
@@ -634,14 +324,81 @@ fn slide_interval_must_be_strictly_below_the_idle_timeout() {
     assert!(build(idle - Duration::from_secs(1)).is_ok());
 }
 
-#[test]
-fn an_idle_timeout_does_not_bound_the_cache_ttl() {
-    let built = Harness::builder()
-        .session_config(SessionConfig {
-            idle_timeout: Some(Duration::from_secs(2 * 60)),
-            ..sliding_config()
-        })
-        .session_cache(full_cache(Duration::from_secs(5 * 60)))
-        .try_build();
-    assert!(built.is_ok());
+fn operator() -> OperatorActor {
+    OperatorActor::new("support-agent-7", None, None, None).expect("operator actor")
+}
+
+async fn login_racing(
+    h: &Harness,
+    email: &str,
+    lock_out: impl AsyncFnOnce(UserId),
+) -> (UserId, Result<(), Error>) {
+    let user = make_user(h, email).await;
+    let mut wa = authenticator();
+    let passkey = register_passkey(h, user.id, &mut wa, None).await;
+    let (challenge, options) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start login");
+    let assertion = wa.do_authentication(options, &passkey.credential_id);
+
+    let held = h.user_store.hold_next_id_lookup();
+    let (login, ()) = within_deadline(async {
+        tokio::join!(
+            h.passkey
+                .finish_authentication(challenge, &assertion, SessionContext::default()),
+            async {
+                held.wait().await;
+                lock_out(user.id).await;
+                held.wait().await;
+            },
+        )
+    })
+    .await;
+    (user.id, login.map(|_| ()))
+}
+
+#[tokio::test]
+async fn a_login_racing_a_disable_leaves_no_session() {
+    let h = Harness::fresh();
+    let other = h.another_process();
+    let (user_id, login) = login_racing(&h, "racer@example.com", async |user_id| {
+        other
+            .operator
+            .disable(user_id, operator())
+            .await
+            .expect("disable");
+    })
+    .await;
+
+    assert!(
+        matches!(login, Err(Error::AccountDisabled)),
+        "got {login:?}"
+    );
+    assert_eq!(session_count(&h, user_id).await, 0);
+    assert!(
+        !h.audit
+            .events()
+            .iter()
+            .any(|e| matches!(e.kind, AuditEventKind::LoginSucceeded { .. })),
+        "a refused login is not audited as a success",
+    );
+}
+
+#[tokio::test]
+async fn a_login_racing_a_delete_leaves_no_session() {
+    let h = Harness::fresh();
+    let other = h.another_process();
+    let (user_id, login) = login_racing(&h, "racer@example.com", async |user_id| {
+        other
+            .operator
+            .delete_account(user_id, operator())
+            .await
+            .expect("delete");
+    })
+    .await;
+
+    assert!(login.is_err(), "got {login:?}");
+    assert_eq!(session_count(&h, user_id).await, 0);
 }

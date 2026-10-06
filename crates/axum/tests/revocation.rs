@@ -3,15 +3,7 @@ mod common;
 use axum::Router;
 use axum::http::StatusCode;
 use common::{TestApp, login};
-use doorman_axum::{SessionCacheConfig, SessionCachePolicy};
 use doorman_core::audit::OperatorActor;
-
-async fn full_cache_app() -> TestApp {
-    TestApp::start_with(Router::new(), false, |b| {
-        b.session_cache(SessionCachePolicy::full(SessionCacheConfig::default()))
-    })
-    .await
-}
 
 async fn me(client: &reqwest::Client, app: &TestApp, token: &str) -> StatusCode {
     client
@@ -25,7 +17,7 @@ async fn me(client: &reqwest::Client, app: &TestApp, token: &str) -> StatusCode 
 
 #[tokio::test]
 async fn revoked_session_is_unauthorized_on_the_next_request() {
-    let app = full_cache_app().await;
+    let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
     let auth = login(&client, &app, "alice@example.com").await;
     assert_eq!(me(&client, &app, &auth.token).await, StatusCode::OK);
@@ -44,7 +36,7 @@ async fn revoked_session_is_unauthorized_on_the_next_request() {
 
 #[tokio::test]
 async fn operator_deleted_account_is_unauthorized_on_the_next_request() {
-    let app = full_cache_app().await;
+    let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
     let auth = login(&client, &app, "doomed@example.com").await;
     assert_eq!(me(&client, &app, &auth.token).await, StatusCode::OK);

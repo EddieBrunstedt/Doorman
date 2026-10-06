@@ -23,7 +23,7 @@ async fn me(client: &reqwest::Client, app: &TestApp, token: &str) -> StatusCode 
 }
 
 #[tokio::test]
-async fn disabled_user_is_refused_with_403() {
+async fn a_status_written_outside_doorman_leaves_the_session() {
     let app = TestApp::start(Router::new(), false).await;
     let client = reqwest::Client::new();
 
@@ -38,36 +38,9 @@ async fn disabled_user_is_refused_with_403() {
 
     assert_eq!(
         me(&client, &app, &auth.token).await,
-        StatusCode::FORBIDDEN,
-        "a disabled account is refused, not served"
+        StatusCode::OK,
+        "access is the session row; locking out means deleting the sessions",
     );
-
-    app.shutdown().await;
-}
-
-#[tokio::test]
-async fn disabled_response_carries_stable_code() {
-    let app = TestApp::start(Router::new(), false).await;
-    let client = reqwest::Client::new();
-
-    let auth = login(&client, &app, "coded@example.com").await;
-    app.set_user_status(
-        auth.user.id,
-        AccountStatus::Disabled {
-            at: chrono::Utc::now(),
-        },
-    )
-    .await;
-
-    let response = client
-        .get(app.url("/me"))
-        .bearer_auth(&auth.token)
-        .send()
-        .await
-        .expect("me");
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let body: serde_json::Value = response.json().await.expect("json body");
-    assert_eq!(body["error"]["code"], "account_disabled");
 
     app.shutdown().await;
 }

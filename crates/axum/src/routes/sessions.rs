@@ -36,7 +36,7 @@ async fn logout_all(
     state
         .core
         .session_manager
-        .revoke_all_for_user(auth.user.id)
+        .revoke_all_for_user(auth.session.user_id)
         .await?;
     no_content_clearing_session_cookie(&state.cookie_config)
 }
@@ -49,7 +49,7 @@ async fn list(
     let sessions = state
         .core
         .session_manager
-        .list_for_user(auth.user.id)
+        .list_for_user(auth.session.user_id)
         .await?;
     let dtos = sessions
         .into_iter()
@@ -76,7 +76,7 @@ async fn remove(
     state
         .core
         .account
-        .revoke_session(&auth.user, &auth.session, id, proof, context)
+        .revoke_session(&auth.session, id, proof, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -91,7 +91,7 @@ async fn remove_others(
     state
         .core
         .account
-        .revoke_other_sessions(&auth.user, &auth.session, proof, context)
+        .revoke_other_sessions(&auth.session, proof, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
