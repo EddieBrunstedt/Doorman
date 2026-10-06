@@ -572,6 +572,43 @@ async fn delete_account_cascades_all_stores() {
     assert_last_redemption_unknown(&h, SecretKind::RegistrationChallenge);
 }
 
+#[tokio::test]
+async fn registration_challenge_outliving_its_user_is_refused() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "racing@example.com").await;
+    let (challenge_id, options) = h
+        .passkey
+        .start_registration(&session_for(&h, &user))
+        .await
+        .expect("start a pending registration");
+    // Leaves the challenge behind, as a registration started while the delete runs can.
+    h.users.delete_user(user.id).await.expect("delete user row");
+    let attestation = authenticator().do_registration(options);
+    let passkeys_before = passkey_count(&h, user.id).await;
+    let audited_before = h.audit.events().len();
+
+    let err = h
+        .passkey
+        .finish_registration(challenge_id, &attestation, None, SessionContext::default())
+        .await
+        .expect_err("a challenge whose user is gone is refused");
+
+    assert!(matches!(err, Error::InvalidPasskeyChallenge), "got {err:?}");
+    assert_eq!(
+        passkey_count(&h, user.id).await,
+        passkeys_before,
+        "no passkey stored"
+    );
+    assert_eq!(
+        kinds(&h.audit.events()[audited_before..]),
+        vec![AuditEventKind::RedemptionFailed {
+            user_id: Some(user.id),
+            secret: SecretKind::RegistrationChallenge,
+            reason: RedemptionFailureReason::UserNotFound,
+        }],
+    );
+}
+
 async fn stored_session(
     h: &Harness,
     user: &User,

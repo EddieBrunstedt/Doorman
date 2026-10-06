@@ -172,10 +172,6 @@ impl UserRecords {
         self.audit
             .emit(actor, AuditEventKind::AccountDeleted { user_id })
             .await;
-
-        self.challenges
-            .delete_registrations_for_user(user_id)
-            .await?;
         Ok(())
     }
 }
