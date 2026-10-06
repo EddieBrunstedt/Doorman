@@ -58,6 +58,15 @@ webauthn-authenticator-rs = { version = "0.5", default-features = false, feature
 webauthn-rs = { version = "0.5", default-features = false, features = ["danger-allow-state-serialisation", "danger-credential-internals", "conditional-ui"] }
 webauthn-rs-proto = "0.5"
 
+# Full debug info made every test binary several hundred megabytes, and the
+# gigabytes written per rebuild held up the disk while the container-backed tests
+# started. Line tables keep file and line in panics and backtraces.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # Pinned bench profile: optimise like release but with a single codegen unit
 # and fat LTO so numbers are stable run-to-run and don't drift with incremental
 # codegen-unit partitioning.
