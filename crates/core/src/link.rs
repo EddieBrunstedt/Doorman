@@ -3,14 +3,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::assembly::{AssemblyError, validate_lifetime};
+use crate::audit::SecretKind;
 use crate::clock::{Clock, expiry};
-use crate::error::Result;
-use crate::redeem::Redeemer;
+use crate::error::{Error, Result};
+use crate::redeem::{Candidate, Redeemer};
 use crate::session::SessionContext;
 use crate::storage::{
     User, UserId, VerificationPurpose, VerificationToken, VerificationTokenStore,
 };
-use crate::token::generate_token;
+use crate::token::{generate_token, hash_token};
 use crate::verification::TOKEN_PLACEHOLDER;
 
 const PLACEHOLDER_URL_HOST: &str = "example.invalid";
@@ -18,6 +19,7 @@ const PLACEHOLDER_URL_HOST: &str = "example.invalid";
 pub(crate) trait LinkPurpose {
     type Payload;
     const PURPOSE: VerificationPurpose;
+    const SECRET: SecretKind;
     const FLOW: &'static str;
     const LIFETIME_FIELD: &'static str;
     fn store(payload: Self::Payload) -> Option<String>;
@@ -33,6 +35,7 @@ pub(crate) enum EmailChange {}
 impl LinkPurpose for Signup {
     type Payload = ();
     const PURPOSE: VerificationPurpose = VerificationPurpose::Signup;
+    const SECRET: SecretKind = SecretKind::SignupLink;
     const FLOW: &'static str = "signup";
     const LIFETIME_FIELD: &'static str = "signup token_lifetime";
 
@@ -48,6 +51,7 @@ impl LinkPurpose for Signup {
 impl LinkPurpose for Recovery {
     type Payload = ();
     const PURPOSE: VerificationPurpose = VerificationPurpose::Recovery;
+    const SECRET: SecretKind = SecretKind::RecoveryLink;
     const FLOW: &'static str = "recovery";
     const LIFETIME_FIELD: &'static str = "recovery token_lifetime";
 
@@ -63,6 +67,7 @@ impl LinkPurpose for Recovery {
 impl LinkPurpose for EmailChange {
     type Payload = String;
     const PURPOSE: VerificationPurpose = VerificationPurpose::EmailChange;
+    const SECRET: SecretKind = SecretKind::EmailChangeLink;
     const FLOW: &'static str = "account email change";
     const LIFETIME_FIELD: &'static str = "account token_lifetime";
 
@@ -155,9 +160,25 @@ impl<P: LinkPurpose> EmailedLink<P> {
         token: &str,
         context: &SessionContext,
     ) -> Result<(User, P::Payload)> {
-        let (user, payload) = self
+        let record = self
+            .tokens
+            .consume_token(&hash_token(token), P::PURPOSE)
+            .await?;
+        let candidate = record.map(|record| Candidate {
+            owner: Some(record.user_id),
+            purpose_matches: record.purpose == P::PURPOSE,
+            expires_at: record.expires_at,
+            payload: P::load(&record)
+                .map(|payload| (record.user_id, payload))
+                .ok_or_else(|| Error::Internal("email link carries no payload".to_string())),
+        });
+        let (user_id, payload) = self
             .redeemer
-            .link(token, P::PURPOSE, context, P::load)
+            .check(P::SECRET, None, candidate, context)
+            .await?;
+        let user = self
+            .redeemer
+            .active_owner(P::SECRET, user_id, context)
             .await?;
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
         Ok((user, payload))

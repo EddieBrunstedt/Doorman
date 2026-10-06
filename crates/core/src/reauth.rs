@@ -1,21 +1,19 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RequestChallengeResponse, Webauthn};
+use webauthn_rs::prelude::{PublicKeyCredential, RequestChallengeResponse, Webauthn};
 
-use crate::assertion::{AssertionVerifier, PendingAssertion};
+use crate::assertion::AssertionVerifier;
 use crate::audit::{
     Actor, AuditDispatch, AuditEvent, AuditEventKind, AuditSink, AuthFailureReason,
 };
-use crate::clock::{Clock, expiry};
+use crate::challenge::{PasskeyChallenge, Reauth};
+use crate::clock::Clock;
 use crate::error::{Error, Result};
-use crate::passkey::{PasskeyConfig, decode_credential, encode_passkey_authentication_state};
+use crate::passkey::PasskeyConfig;
 use crate::redeem::Redeemer;
 use crate::session::SessionContext;
-use crate::storage::{
-    AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
-    Session, Storage, StoredPasskeyAuthentication, UserId,
-};
+use crate::storage::{PasskeyChallengeId, Session, Storage, UserId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReauthAction {
@@ -79,14 +77,10 @@ pub struct ReauthProof {
 
 #[derive(Clone)]
 pub struct ReauthManager {
-    webauthn: Arc<Webauthn>,
-    credentials: Arc<dyn PasskeyCredentialStore>,
-    challenges: Arc<dyn PasskeyChallengeStore>,
-    redeemer: Redeemer,
+    challenges: PasskeyChallenge<Reauth>,
     assertions: AssertionVerifier,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
-    challenge_lifetime: std::time::Duration,
     policy: ReauthPolicy,
 }
 
@@ -101,19 +95,22 @@ impl ReauthManager {
     ) -> Self {
         let audit = AuditDispatch::new(audit);
         Self {
-            assertions: AssertionVerifier::new(
+            challenges: PasskeyChallenge::new(
+                config,
                 webauthn.clone(),
+                storage.passkey_challenges.clone(),
+                storage.passkey_credentials.clone(),
+                Redeemer::new(storage.users.clone(), clock.clone(), audit.clone()),
+                clock.clone(),
+            ),
+            assertions: AssertionVerifier::new(
+                webauthn,
                 storage.users.clone(),
                 storage.passkey_credentials.clone(),
                 clock.clone(),
             ),
-            webauthn,
-            credentials: storage.passkey_credentials.clone(),
-            challenges: storage.passkey_challenges.clone(),
-            redeemer: Redeemer::new(storage, clock.clone(), audit.clone()),
             clock,
             audit,
-            challenge_lifetime: config.challenge_lifetime,
             policy,
         }
     }
@@ -127,32 +124,7 @@ impl ReauthManager {
         &self,
         user_id: UserId,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
-        let stored = self.credentials.list_passkeys_for_user(user_id).await?;
-        if stored.is_empty() {
-            tracing::warn!(outcome = "no_credentials", "reauth start refused");
-            return Err(Error::PasskeyNotFound);
-        }
-        let passkeys = stored
-            .iter()
-            .map(|c| decode_credential(&c.passkey))
-            .collect::<Result<Vec<Passkey>>>()?;
-
-        let (rcr, auth_state) = self
-            .webauthn
-            .start_passkey_authentication(&passkeys)
-            .map_err(|e| Error::Webauthn(e.to_string()))?;
-
-        let now = self.clock.now();
-        let id = PasskeyChallengeId::new();
-        self.challenges
-            .put_authentication(StoredPasskeyAuthentication {
-                id,
-                purpose: AuthenticationPurpose::Reauth,
-                state: encode_passkey_authentication_state(&auth_state)?,
-                created_at: now,
-                expires_at: expiry(now, self.challenge_lifetime)?,
-            })
-            .await?;
+        let (id, rcr) = self.challenges.issue(user_id).await?;
         tracing::info!(outcome = "started", "reauth started");
         Ok((id, rcr))
     }
@@ -177,19 +149,12 @@ impl ReauthManager {
             return Err(Error::ReauthRequired);
         };
 
-        let state = self
-            .redeemer
-            .reauth(proof.challenge_id, user_id, context)
+        let pending = self
+            .challenges
+            .redeem(proof.challenge_id, user_id, context)
             .await?;
         let now = self.clock.now();
-        if let Err(refusal) = self
-            .assertions
-            .verify(
-                PendingAssertion::Reauth { user_id, state },
-                &proof.assertion,
-            )
-            .await?
-        {
+        if let Err(refusal) = self.assertions.verify(pending, &proof.assertion).await? {
             self.emit_failed(now, context, user_id, refusal.reason)
                 .await;
             return Err(refusal.error);

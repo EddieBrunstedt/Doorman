@@ -8,28 +8,25 @@ use chrono::{DateTime, Utc};
 use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
-    AttestationMetadata, CreationChallengeResponse, Credential, CredentialID,
-    DiscoverableAuthentication, Passkey, PasskeyAuthentication, PasskeyRegistration,
-    PublicKeyCredential, RegisterPublicKeyCredential, RequestChallengeResponse, Webauthn,
-    WebauthnBuilder,
+    AttestationMetadata, CreationChallengeResponse, Credential, Passkey, PublicKeyCredential,
+    RegisterPublicKeyCredential, RequestChallengeResponse, Webauthn, WebauthnBuilder,
 };
-use webauthn_rs_proto::ResidentKeyRequirement;
 
-use crate::assertion::{AssertionVerifier, PendingAssertion, VerifiedAssertion};
+use crate::assertion::{AssertionVerifier, VerifiedAssertion};
 use crate::audit::{Actor, AuditDispatch, AuditEvent, AuditEventKind, AuthFailureReason};
-use crate::clock::{Clock, expiry};
+use crate::challenge::{Login, PasskeyChallenge, RedeemedRegistration, Registration};
+use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::SecurityEmailNotifier;
 use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
 use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
-use crate::redeem::{RedeemedRegistration, Redeemer};
+use crate::redeem::Redeemer;
 use crate::session::{IssuedSession, SessionContext, SessionManager};
 use crate::storage::{
-    AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyCredentialStore,
-    PasskeySummary, Session, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
-    User, UserId,
+    PasskeyChallengeId, PasskeyCredentialStore, PasskeySummary, Session, StoredPasskey, User,
+    UserId,
 };
 use crate::user::UserRecords;
 use crate::verification::EnrollmentOutcome;
@@ -126,8 +123,8 @@ pub struct AuthenticationOutcome {
 pub struct PasskeyManager {
     records: UserRecords,
     credentials: Arc<dyn PasskeyCredentialStore>,
-    challenges: Arc<dyn PasskeyChallengeStore>,
-    redeemer: Redeemer,
+    registrations: PasskeyChallenge<Registration>,
+    logins: PasskeyChallenge<Login>,
     assertions: AssertionVerifier,
     sessions: SessionManager,
     reauth: ReauthManager,
@@ -142,11 +139,25 @@ pub struct PasskeyManager {
 
 impl PasskeyManager {
     pub(crate) fn new(deps: &CoreDeps, config: PasskeyConfig, webauthn: Arc<Webauthn>) -> Self {
+        fn challenge<P>(
+            deps: &CoreDeps,
+            config: &PasskeyConfig,
+            webauthn: &Arc<Webauthn>,
+        ) -> PasskeyChallenge<P> {
+            PasskeyChallenge::new(
+                config,
+                webauthn.clone(),
+                deps.passkey_challenges.clone(),
+                deps.passkey_credentials.clone(),
+                Redeemer::from_deps(deps),
+                deps.clock.clone(),
+            )
+        }
         Self {
             records: UserRecords::new(deps),
             credentials: deps.passkey_credentials.clone(),
-            challenges: deps.passkey_challenges.clone(),
-            redeemer: Redeemer::from_deps(deps),
+            registrations: challenge(deps, &config, &webauthn),
+            logins: challenge(deps, &config, &webauthn),
             assertions: AssertionVerifier::new(
                 webauthn.clone(),
                 deps.users.clone(),
@@ -181,52 +192,10 @@ impl PasskeyManager {
         recovery_cooldown_until: Option<DateTime<Utc>>,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let user = self.records.find_active(user_id).await?;
-
-        if let Some(max) = self.config.max_pending_registrations_per_user {
-            let pending = self
-                .challenges
-                .count_registrations_for_user(user_id)
-                .await?;
-            if pending >= u64::from(max.get()) {
-                tracing::warn!(%user_id, max = max.get(), "passkey registration rejected: too many pending challenges");
-                return Err(Error::ResourceLimitExceeded {
-                    resource: "pending registrations",
-                    limit: max.get(),
-                });
-            }
-        }
-
-        let display_name = display_name_for(&user);
-
-        let existing = self.credentials.list_passkeys_for_user(user_id).await?;
-        let exclude = if existing.is_empty() {
-            None
-        } else {
-            Some(
-                existing
-                    .iter()
-                    .map(|c| CredentialID::from(c.credential_id.clone()))
-                    .collect(),
-            )
-        };
-
-        let (mut ccr, reg_state) = self
-            .webauthn
-            .start_passkey_registration(user_id.0, &display_name, &display_name, exclude)
-            .map_err(|e| Error::Webauthn(e.to_string()))?;
-        require_discoverable_credential(&mut ccr)?;
-
-        let now = self.clock.now();
-        let id = PasskeyChallengeId::new();
-        let stored = StoredPasskeyRegistration {
-            id,
-            user_id,
-            state: encode_registration_state(&reg_state)?,
-            created_at: now,
-            expires_at: expiry(now, self.config.challenge_lifetime)?,
-            recovery_cooldown_until,
-        };
-        self.challenges.put_registration(stored).await?;
+        let (id, ccr) = self
+            .registrations
+            .issue(&user, recovery_cooldown_until)
+            .await?;
         tracing::info!(outcome = "started", "passkey registration started");
         Ok((id, ccr))
     }
@@ -253,7 +222,7 @@ impl PasskeyManager {
         &self,
         user_id: UserId,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
-        self.invalidate_pending_registrations(user_id).await?;
+        self.registrations.invalidate_pending(user_id).await?;
         self.start_registration_inner(user_id, None).await
     }
 
@@ -279,7 +248,7 @@ impl PasskeyManager {
         }
         let credential = self.verify_registration(&registration, response, name, cooldown_until)?;
         if cooldown_until.is_some() {
-            self.invalidate_pending_registrations(user.id).await?;
+            self.registrations.invalidate_pending(user.id).await?;
         }
         let passkey = self.store_credential(user, credential, &context).await?;
         let session = self
@@ -299,7 +268,7 @@ impl PasskeyManager {
         challenge_id: PasskeyChallengeId,
         context: &SessionContext,
     ) -> Result<RedeemedRegistration> {
-        let registration = self.redeemer.registration(challenge_id, context).await?;
+        let registration = self.registrations.redeem(challenge_id, context).await?;
         tracing::Span::current().record("user_id", tracing::field::display(registration.user.id));
         Ok(registration)
     }
@@ -432,21 +401,7 @@ impl PasskeyManager {
         )
         .await?;
 
-        let (rcr, auth_state) = self
-            .webauthn
-            .start_discoverable_authentication()
-            .map_err(|e| Error::Webauthn(e.to_string()))?;
-
-        let now = self.clock.now();
-        let id = PasskeyChallengeId::new();
-        let stored = StoredPasskeyAuthentication {
-            id,
-            purpose: AuthenticationPurpose::Login,
-            state: encode_authentication_state(&auth_state)?,
-            created_at: now,
-            expires_at: expiry(now, self.config.challenge_lifetime)?,
-        };
-        self.challenges.put_authentication(stored).await?;
+        let (id, rcr) = self.logins.issue().await?;
         tracing::info!(outcome = "started", "passkey authentication started");
         Ok((id, rcr))
     }
@@ -481,21 +436,18 @@ impl PasskeyManager {
         )
         .await?;
 
-        let auth_state = self.redeemer.login(challenge_id, &context).await?;
+        let pending = self.logins.redeem(challenge_id, &context).await?;
         let now = self.clock.now();
 
-        let VerifiedAssertion { user, passkey } = match self
-            .assertions
-            .verify(PendingAssertion::Login(auth_state), response)
-            .await?
-        {
-            Ok(verified) => verified,
-            Err(refusal) => {
-                self.emit_auth_failure(now, &context, refusal.user_id, refusal.reason)
-                    .await;
-                return Err(refusal.error);
-            }
-        };
+        let VerifiedAssertion { user, passkey } =
+            match self.assertions.verify(pending, response).await? {
+                Ok(verified) => verified,
+                Err(refusal) => {
+                    self.emit_auth_failure(now, &context, refusal.user_id, refusal.reason)
+                        .await;
+                    return Err(refusal.error);
+                }
+            };
         let user_id = user.id;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
@@ -540,17 +492,6 @@ impl PasskeyManager {
             .credentials
             .list_passkey_summaries_for_user(user_id)
             .await?)
-    }
-
-    async fn invalidate_pending_registrations(&self, user_id: UserId) -> Result<()> {
-        let dropped = self
-            .challenges
-            .delete_registrations_for_user(user_id)
-            .await?;
-        if dropped > 0 {
-            tracing::info!(%user_id, dropped, "pending passkey registrations invalidated");
-        }
-        Ok(())
     }
 
     #[tracing::instrument(skip(self, session, credential_id, reauth, context), fields(user_id = %session.user_id))]
@@ -686,10 +627,6 @@ pub(crate) async fn find_owned_passkey(
     Ok(credential)
 }
 
-fn display_name_for(user: &User) -> String {
-    user.email.clone().unwrap_or_else(|| user.id.to_string())
-}
-
 struct AuthLatencyGuard {
     metrics: Arc<dyn MetricSink>,
     started: Instant,
@@ -744,19 +681,6 @@ impl PasskeyMetadata {
     }
 }
 
-fn require_discoverable_credential(ccr: &mut CreationChallengeResponse) -> Result<()> {
-    let selection = ccr
-        .public_key
-        .authenticator_selection
-        .as_mut()
-        .ok_or_else(|| {
-            Error::Internal("passkey registration is missing authenticator selection".to_string())
-        })?;
-    selection.require_resident_key = true;
-    selection.resident_key = Some(ResidentKeyRequirement::Required);
-    Ok(())
-}
-
 pub(crate) fn build_webauthn(config: &PasskeyConfig) -> Result<Webauthn> {
     let mut builder = WebauthnBuilder::new(&config.rp_id, &config.rp_origin)
         .map_err(|e| Error::InvalidRelyingParty(e.to_string()))?
@@ -778,42 +702,10 @@ pub(crate) fn decode_credential(bytes: &[u8]) -> Result<Passkey> {
         .map_err(|e| Error::Internal(format!("deserialise credential: {e}")))
 }
 
-fn encode_registration_state(state: &PasskeyRegistration) -> Result<Vec<u8>> {
-    serde_json::to_vec(state)
-        .map_err(|e| Error::Internal(format!("serialise registration state: {e}")))
-}
-
-pub(crate) fn decode_registration_state(bytes: &[u8]) -> Result<PasskeyRegistration> {
-    serde_json::from_slice(bytes)
-        .map_err(|e| Error::Internal(format!("deserialise registration state: {e}")))
-}
-
-fn encode_authentication_state(state: &DiscoverableAuthentication) -> Result<Vec<u8>> {
-    serde_json::to_vec(state)
-        .map_err(|e| Error::Internal(format!("serialise authentication state: {e}")))
-}
-
-pub(crate) fn decode_authentication_state(bytes: &[u8]) -> Result<DiscoverableAuthentication> {
-    serde_json::from_slice(bytes)
-        .map_err(|e| Error::Internal(format!("deserialise authentication state: {e}")))
-}
-
-pub(crate) fn encode_passkey_authentication_state(
-    state: &PasskeyAuthentication,
-) -> Result<Vec<u8>> {
-    serde_json::to_vec(state).map_err(|e| Error::Internal(format!("serialise reauth state: {e}")))
-}
-
-pub(crate) fn decode_passkey_authentication_state(bytes: &[u8]) -> Result<PasskeyAuthentication> {
-    serde_json::from_slice(bytes)
-        .map_err(|e| Error::Internal(format!("deserialise reauth state: {e}")))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use url::Url;
-    use webauthn_rs_proto::UserVerificationPolicy;
 
     #[test]
     fn config_constructor_sets_default_lifetime() {
@@ -909,75 +801,5 @@ mod tests {
         )
         .expect_err("hostless origin must be rejected");
         assert!(matches!(err, Error::InvalidRelyingParty(_)));
-    }
-
-    #[test]
-    fn require_discoverable_forces_resident_key_when_selection_present() {
-        let origin = Url::parse("https://example.com").expect("valid url");
-        let webauthn = WebauthnBuilder::new("example.com", &origin)
-            .expect("valid relying party")
-            .build()
-            .expect("webauthn builds");
-
-        let (mut ccr, _state) = webauthn
-            .start_passkey_registration(Uuid::new_v4(), "user", "user", None)
-            .expect("registration starts");
-
-        require_discoverable_credential(&mut ccr)
-            .expect("authenticator selection present on fresh webauthn output");
-
-        let selection = ccr
-            .public_key
-            .authenticator_selection
-            .as_ref()
-            .expect("authenticator selection present");
-        assert!(selection.require_resident_key);
-        assert_eq!(
-            selection.resident_key,
-            Some(ResidentKeyRequirement::Required)
-        );
-    }
-
-    #[test]
-    fn registration_requests_user_verification_required() {
-        let origin = Url::parse("https://example.com").expect("valid url");
-        let webauthn = WebauthnBuilder::new("example.com", &origin)
-            .expect("valid relying party")
-            .build()
-            .expect("webauthn builds");
-
-        let (ccr, _state) = webauthn
-            .start_passkey_registration(Uuid::new_v4(), "user", "user", None)
-            .expect("registration starts");
-        let selection = ccr
-            .public_key
-            .authenticator_selection
-            .as_ref()
-            .expect("authenticator selection present");
-        assert_eq!(
-            selection.user_verification,
-            UserVerificationPolicy::Required,
-            "webauthn-rs changed its passkey registration UV default; doorman enforces \
-             user verification at finish assuming Required — reconcile before bumping",
-        );
-    }
-
-    #[test]
-    fn discoverable_authentication_requests_user_verification_required() {
-        let origin = Url::parse("https://example.com").expect("valid url");
-        let webauthn = WebauthnBuilder::new("example.com", &origin)
-            .expect("valid relying party")
-            .build()
-            .expect("webauthn builds");
-
-        let (rcr, _state) = webauthn
-            .start_discoverable_authentication()
-            .expect("discoverable authentication starts");
-        assert_eq!(
-            rcr.public_key.user_verification,
-            UserVerificationPolicy::Required,
-            "webauthn-rs changed its discoverable-auth UV default; doorman enforces user \
-             verification at finish assuming Required — reconcile before bumping",
-        );
     }
 }

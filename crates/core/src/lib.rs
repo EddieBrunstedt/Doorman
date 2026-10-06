@@ -3,6 +3,7 @@ pub mod assembly;
 mod assertion;
 pub mod audit;
 pub mod cache;
+mod challenge;
 pub mod clock;
 mod context;
 pub mod email;

@@ -304,6 +304,46 @@ async fn finish_registration_rejects_expired_challenge() {
 }
 
 #[tokio::test]
+async fn finish_registration_rejects_malformed_challenge() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "garbled@example.com").await;
+    let mut wa = authenticator();
+    let (challenge_id, ccr) = h
+        .passkey
+        .start_registration(&session_for(&h, &user))
+        .await
+        .expect("start");
+    let response = wa.do_registration(ccr);
+    let mut stored = h
+        .challenges
+        .take_registration(challenge_id)
+        .await
+        .expect("take challenge")
+        .expect("challenge present");
+    stored.state = b"not a registration state".to_vec();
+    h.challenges
+        .put_registration(stored)
+        .await
+        .expect("put challenge");
+
+    let err = h
+        .passkey
+        .finish_registration(challenge_id, &response, None, SessionContext::default())
+        .await
+        .expect_err("malformed");
+    assert!(matches!(err, Error::InvalidPasskeyChallenge));
+    assert_eq!(passkey_count(&h, user.id).await, 0, "no passkey stored");
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RedemptionFailed {
+            user_id: Some(id),
+            secret: SecretKind::RegistrationChallenge,
+            reason: RedemptionFailureReason::Malformed,
+        } if *id == user.id
+    )));
+}
+
+#[tokio::test]
 async fn finish_registration_against_deleted_user_writes_no_orphan_credential() {
     let h = Harness::fresh();
     let user = make_user(&h, "vanishing@example.com").await;
