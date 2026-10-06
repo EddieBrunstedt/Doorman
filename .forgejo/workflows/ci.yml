@@ -1,8 +1,8 @@
 # Continuous integration for doorman on Forgejo Actions (Codeberg).
 #
 # The runner is a self-hosted machine exposed under the `native` label. It
-# already carries most of the toolchain — a rustup with the stable and 1.99
-# toolchains, dprint, cargo-deny, and a Docker daemon for the testcontainers
+# already carries most of the toolchain — just, a rustup with the stable and
+# 1.99 toolchains, dprint, cargo-deny, and a Docker daemon for the testcontainers
 # conformance tests. It runs the host tools directly and reuses one warm build
 # cache, instead of the old design that recompiled the whole dependency tree
 # from a cold cache in a fresh container for every job (and rebuilt dprint and
@@ -46,46 +46,33 @@ jobs:
       - name: shared build cache
         run: echo "CARGO_TARGET_DIR=$HOME/.cache/doorman-ci/target" >> "$GITHUB_ENV"
 
+      # Every step runs its justfile recipe, so `just verify` and CI share one
+      # definition of each check and cannot drift apart. The steps stay
+      # sequential here: the runner shares its machine, and a step-by-step log
+      # is easier to read than `verify`'s parallel tail.
       - name: rustfmt
-        run: cargo fmt --all --check
+        run: just fmt-check
       - name: dprint (Markdown/TOML/YAML/JSON)
-        run: dprint check
-      # Drives the feature-powerset check below. `cargo install` is idempotent,
-      # so it builds once on a cold cache and no-ops afterwards.
-      - name: install cargo-hack
-        run: cargo install cargo-hack --locked
+        run: just dprint-check
+      # Drive the feature-powerset check and the test suite below. `cargo
+      # install` is idempotent, so each builds once on a cold cache and no-ops
+      # afterwards.
+      - name: install cargo-hack and cargo-nextest
+        run: cargo install cargo-hack cargo-nextest --locked
 
       - name: clippy (all targets, all features)
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: just clippy
       - name: docs
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --no-deps --all-features --locked
-
-      # Feature-combination builds. clippy above already compiles every target
-      # with *all* features on, so this only covers what that configuration
-      # hides: the default build (no features, no tokio) and the `#[cfg(feature)]`
-      # gating that only shows when a feature is enabled alone or paired with
-      # another. `--depth 2` covers every feature pair of the 11-feature umbrella
-      # without the full 2^11 powerset (see the justfile `check-features` recipe);
-      # doorman-sqlx's three driver features get a full powerset.
-      - name: build — default features (whole workspace)
-        run: cargo check --workspace --locked
-      - name: build — feature powerset (umbrella, depth 2)
-        run: cargo hack check -p doorman --feature-powerset --depth 2 --locked
-      - name: build — feature powerset (sqlx drivers)
-        run: cargo hack check -p doorman-sqlx --feature-powerset --locked
-
-      # Minimum supported Rust version; keep `1.99` in sync with `rust-version`
-      # in the workspace manifest. A compile check, not a test run.
+        run: just doc
+      - name: feature combinations
+        run: just check-features
       - name: msrv (1.99)
-        run: cargo +1.99.0 check --workspace --all-features --locked
-
+        run: just msrv
       # The real correctness gate: the full suite with every backend enabled,
       # which starts throwaway databases through testcontainers (hence the Docker
       # daemon on the native runner). Last because it is the slowest step.
       - name: test (all features)
-        run: cargo test --workspace --all-features --locked
+        run: just test
 
   # Dependency policy: licenses, RustSec advisories, banned/duplicate crates.
   # Split out because it compiles none of the project, so the weekly cron can
