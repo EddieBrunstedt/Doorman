@@ -1,10 +1,17 @@
 #!/bin/sh
 # Ensures staged files are dprint-formatted before a commit lands
-# (Markdown, JSON, TOML, YAML — see dprint.json).
+# (Markdown, JSON, TOML, YAML — see dprint.json), and staged Rust passes
+# rustfmt and clippy (the fast half of `just verify`).
 #
 # Enable once per clone:   git config core.hooksPath .githooks
 # Bypass for one commit:   git commit --no-verify
 set -eu
+
+rust=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')
+if [ -n "$rust" ]; then
+	just fmt-check
+	just clippy
+fi
 
 staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.md' '*.json' '*.toml' '*.yaml' '*.yml')
 [ -z "$staged" ] && exit 0
