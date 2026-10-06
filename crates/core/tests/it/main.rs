@@ -1,5 +1,6 @@
 mod assembly_contract;
 mod common;
+mod email_link_flow;
 mod operator_flow;
 mod passkey_flow;
 mod reauth_flow;

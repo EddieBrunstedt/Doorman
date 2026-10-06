@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Duration as ChronoDuration;
-use doorman_core::assembly::AssemblyError;
 use doorman_core::audit::{
     AuditEventKind, RecoveryFailureReason, RedemptionFailureReason, SecretKind,
 };
@@ -15,7 +14,7 @@ use doorman_core::error::Error;
 use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
-use doorman_core::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryRateLimits};
+use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use doorman_core::session::{SessionConfig, SessionContext};
 use doorman_core::storage::{PasskeyStore, User, UserStatus, UserStore};
 use doorman_test_support::MockClock;
@@ -305,91 +304,6 @@ async fn rate_limit_per_ip_blocks_after_budget() {
 }
 
 #[tokio::test]
-async fn redeem_rejects_replayed_token() {
-    let h = Harness::fresh();
-    let _ = provision_user(&h, "alice@example.com").await;
-
-    h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
-        .await
-        .expect("request");
-    let link = h
-        .email
-        .sent()
-        .into_iter()
-        .rev()
-        .find(|e| e.subject == "Recover access with a new passkey")
-        .expect("link queued");
-    let token = token_from_email(&link.body_text, RECOVERY_URL);
-
-    h.recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect("first redeem");
-    let err = h
-        .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect_err("replay");
-    assert!(matches!(err, Error::InvalidEmailLink));
-    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
-        k,
-        AuditEventKind::RedemptionFailed {
-            user_id: None,
-            secret: SecretKind::RecoveryLink,
-            reason: RedemptionFailureReason::Unknown,
-        }
-    )));
-}
-
-#[tokio::test]
-async fn redeem_rejects_expired_token_without_notice() {
-    let h = Harness::builder()
-        .recovery_config(RecoveryConfig {
-            token_lifetime: Duration::from_secs(60),
-            ..recovery_config()
-        })
-        .build();
-    let _ = provision_user(&h, "alice@example.com").await;
-
-    h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
-        .await
-        .expect("request");
-    let link = h
-        .email
-        .sent()
-        .into_iter()
-        .rev()
-        .find(|e| e.subject == "Recover access with a new passkey")
-        .expect("link queued");
-    let token = token_from_email(&link.body_text, RECOVERY_URL);
-    let mail_before = h.email.sent().len();
-
-    h.clock.advance(ChronoDuration::seconds(120));
-
-    let err = h
-        .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect_err("expired");
-    assert!(matches!(err, Error::InvalidEmailLink));
-    assert_eq!(
-        h.email.sent().len(),
-        mail_before,
-        "no notice on expired click",
-    );
-    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
-        k,
-        AuditEventKind::RedemptionFailed {
-            user_id: Some(_),
-            secret: SecretKind::RecoveryLink,
-            reason: RedemptionFailureReason::Expired,
-        }
-    )));
-}
-
-#[tokio::test]
 async fn successful_recovery_registers_passkey_and_sends_success_notice() {
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;
@@ -512,27 +426,6 @@ async fn successful_recovery_registers_passkey_and_sends_success_notice() {
 }
 
 #[tokio::test]
-async fn redeem_with_unknown_token_audits_invalid_token() {
-    let h = Harness::fresh();
-    let _ = provision_user(&h, "alice@example.com").await;
-
-    let err = h
-        .recovery
-        .redeem_recovery_link("not-a-real-token", SessionContext::default())
-        .await
-        .expect_err("invalid");
-    assert!(matches!(err, Error::InvalidEmailLink));
-    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
-        k,
-        AuditEventKind::RedemptionFailed {
-            user_id: None,
-            secret: SecretKind::RecoveryLink,
-            reason: RedemptionFailureReason::Unknown,
-        }
-    )));
-}
-
-#[tokio::test]
 async fn request_rejects_invalid_email() {
     let h = Harness::fresh();
     let err = h
@@ -541,30 +434,6 @@ async fn request_rejects_invalid_email() {
         .await
         .expect_err("invalid email");
     assert!(matches!(err, Error::InvalidEmail));
-}
-
-#[tokio::test]
-async fn signup_token_cannot_be_redeemed_via_recovery_redeem() {
-    let h = Harness::fresh();
-    h.signup
-        .request_signup("pending@example.com", None, SessionContext::default())
-        .await
-        .expect("signup request");
-    let signup_email = h
-        .email
-        .sent()
-        .into_iter()
-        .rev()
-        .find(|e| e.subject == "Finish signing up")
-        .expect("signup link queued");
-    let token = token_from_email(&signup_email.body_text, common::SIGNUP_URL);
-
-    let err = h
-        .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect_err("cross-purpose redeem");
-    assert!(matches!(err, Error::InvalidEmailLink));
 }
 
 #[tokio::test]
@@ -1197,54 +1066,6 @@ async fn signup_does_not_invalidate_other_pending_registrations() {
         .expect("pending registration still valid");
     assert_eq!(stored.user_id, user.id);
     assert_eq!(stored.recovery_cool_down_until, None);
-}
-
-#[test]
-fn recovery_config_with_subhour_cool_down_is_rejected() {
-    let result = Harness::builder()
-        .recovery_config(RecoveryConfig {
-            cool_down: Duration::from_secs(60 * 30),
-            ..recovery_config()
-        })
-        .try_build();
-    assert!(matches!(
-        result.err(),
-        Some(AssemblyError::RecoveryCoolDown(RecoveryConfigError::CoolDownTooShort {
-            configured,
-            minimum,
-        })) if configured == Duration::from_secs(60 * 30) && minimum == RecoveryConfig::MIN_COOL_DOWN
-    ));
-}
-
-#[test]
-fn recovery_config_above_ceiling_is_rejected() {
-    let configured = RecoveryConfig::MAX_COOL_DOWN + Duration::from_secs(1);
-    let result = Harness::builder()
-        .recovery_config(RecoveryConfig {
-            cool_down: configured,
-            ..recovery_config()
-        })
-        .try_build();
-    assert!(matches!(
-        result.err(),
-        Some(AssemblyError::RecoveryCoolDown(RecoveryConfigError::CoolDownTooLong {
-            configured: c,
-            maximum,
-        })) if c == configured && maximum == RecoveryConfig::MAX_COOL_DOWN
-    ));
-}
-
-#[test]
-fn recovery_config_at_floor_is_accepted() {
-    assert!(
-        Harness::builder()
-            .recovery_config(RecoveryConfig {
-                cool_down: RecoveryConfig::MIN_COOL_DOWN,
-                ..recovery_config()
-            })
-            .try_build()
-            .is_ok()
-    );
 }
 
 async fn drive_recovery_finish(

@@ -6,7 +6,7 @@ use doorman_core::session::SessionContext;
 use doorman_core::storage::{Session, SessionId, SessionStore, User, UserStatus, UserStore};
 
 use crate::common::{
-    Harness, SIGNUP_URL, USER_URL, assert_last_redemption_unknown, authenticator, kinds,
+    Harness, USER_URL, assert_last_redemption_unknown, authenticator, kinds,
     last_email_change_token, make_user, passkey_count, provision_user, session_count, session_for,
     session_in_cool_down_for, token_from_email, within_deadline,
 };
@@ -328,55 +328,6 @@ async fn delete_user_allowed_once_recovery_cool_down_lapses() {
 }
 
 #[tokio::test]
-async fn confirm_rejects_expired_token() {
-    let h = Harness::fresh();
-    let user = provision_user(&h, "old@example.com").await;
-    let session = session_for(&h, &user);
-
-    h.user
-        .request_email_change(&session, "new@example.com", None, SessionContext::default())
-        .await
-        .expect("request email change");
-    let confirmation = h
-        .email
-        .sent()
-        .into_iter()
-        .rev()
-        .find(|e| e.subject == "Confirm your new email address")
-        .expect("confirmation email queued");
-    let token = token_from_email(&confirmation.body_text, USER_URL);
-
-    h.clock.advance(chrono::Duration::minutes(16));
-
-    let err = h
-        .user
-        .confirm_email_change(&token, SessionContext::default())
-        .await
-        .expect_err("an expired token must be rejected");
-    assert!(matches!(err, Error::InvalidEmailLink));
-    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
-        k,
-        AuditEventKind::RedemptionFailed {
-            user_id: Some(id),
-            secret: SecretKind::EmailChangeLink,
-            reason: RedemptionFailureReason::Expired,
-        } if *id == user.id
-    )));
-
-    let stored = h
-        .users
-        .find_user_by_id(user.id)
-        .await
-        .expect("find user")
-        .expect("user present");
-    assert_eq!(
-        stored.email.as_deref(),
-        Some("old@example.com"),
-        "the address is unchanged when the link has expired",
-    );
-}
-
-#[tokio::test]
 async fn confirm_refused_for_disabled_user() {
     let h = Harness::fresh();
     let user = provision_user(&h, "old@example.com").await;
@@ -420,79 +371,6 @@ async fn confirm_refused_for_disabled_user() {
             .any(|k| matches!(k, AuditEventKind::EmailChangeCompleted { .. })),
         "no completion is audited",
     );
-}
-
-#[tokio::test]
-async fn confirm_rejects_unknown_token() {
-    let h = Harness::fresh();
-    let err = h
-        .user
-        .confirm_email_change("not-a-real-token", SessionContext::default())
-        .await
-        .expect_err("an unknown token must be rejected");
-    assert!(matches!(err, Error::InvalidEmailLink));
-    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
-        k,
-        AuditEventKind::RedemptionFailed {
-            user_id: None,
-            secret: SecretKind::EmailChangeLink,
-            reason: RedemptionFailureReason::Unknown,
-        }
-    )));
-}
-
-#[tokio::test]
-async fn email_change_token_cannot_be_redeemed_by_another_flow() {
-    let h = Harness::fresh();
-    let user = provision_user(&h, "old@example.com").await;
-    let session = session_for(&h, &user);
-    h.user
-        .request_email_change(&session, "new@example.com", None, SessionContext::default())
-        .await
-        .expect("request email change");
-    let token = last_email_change_token(&h);
-
-    let err = h
-        .signup
-        .redeem_signup_link(&token, SessionContext::default())
-        .await
-        .expect_err("email-change token rejected on signup");
-    assert!(matches!(err, Error::InvalidEmailLink));
-    let err = h
-        .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect_err("email-change token rejected on recovery");
-    assert!(matches!(err, Error::InvalidEmailLink));
-
-    let updated = h
-        .user
-        .confirm_email_change(&token, SessionContext::default())
-        .await
-        .expect("email-change token still valid on its own flow");
-    assert_eq!(updated.email.as_deref(), Some("new@example.com"));
-}
-
-#[tokio::test]
-async fn signup_token_cannot_confirm_an_email_change() {
-    let h = Harness::fresh();
-    h.signup
-        .request_signup("cross@example.com", None, SessionContext::default())
-        .await
-        .expect("request signup");
-    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
-
-    let err = h
-        .user
-        .confirm_email_change(&token, SessionContext::default())
-        .await
-        .expect_err("signup token rejected on email change");
-    assert!(matches!(err, Error::InvalidEmailLink));
-
-    h.signup
-        .redeem_signup_link(&token, SessionContext::default())
-        .await
-        .expect("signup token still valid on its own flow");
 }
 
 #[tokio::test]

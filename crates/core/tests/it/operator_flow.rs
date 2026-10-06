@@ -43,6 +43,82 @@ fn operator() -> OperatorActor {
     .expect("operator actor within bounds")
 }
 
+#[derive(Debug, Clone, Copy)]
+enum OperatorAction {
+    DeleteUser,
+    RemovePasskey,
+    RevokeSession,
+    RevokeAllSessions,
+    ListPasskeys,
+    ListSessions,
+    Disable,
+    Enable,
+}
+
+#[tokio::test]
+async fn every_operator_action_on_an_unknown_user_fails_and_touches_nothing() {
+    for action in [
+        OperatorAction::DeleteUser,
+        OperatorAction::RemovePasskey,
+        OperatorAction::RevokeSession,
+        OperatorAction::RevokeAllSessions,
+        OperatorAction::ListPasskeys,
+        OperatorAction::ListSessions,
+        OperatorAction::Disable,
+        OperatorAction::Enable,
+    ] {
+        let h = Harness::fresh();
+        let bystander = provision_user(&h, "bystander@example.com").await;
+        let credential_id = first_credential_id(&h, bystander.id).await;
+        let session_id = only_session_id(&h, bystander.id).await;
+        let audit_before = h.audit.events().len();
+        let unknown = UserId::new();
+
+        let result = match action {
+            OperatorAction::DeleteUser => h.operator.delete_user(unknown, operator()).await,
+            OperatorAction::RemovePasskey => h
+                .operator
+                .remove_passkey(unknown, &credential_id, operator())
+                .await
+                .map(drop),
+            OperatorAction::RevokeSession => {
+                h.operator
+                    .revoke_session(unknown, session_id, operator())
+                    .await
+            }
+            OperatorAction::RevokeAllSessions => h
+                .operator
+                .revoke_all_sessions(unknown, operator())
+                .await
+                .map(drop),
+            OperatorAction::ListPasskeys => h
+                .operator
+                .list_passkeys(unknown, operator())
+                .await
+                .map(drop),
+            OperatorAction::ListSessions => h
+                .operator
+                .list_sessions(unknown, operator())
+                .await
+                .map(drop),
+            OperatorAction::Disable => h.operator.disable(unknown, operator()).await,
+            OperatorAction::Enable => h.operator.enable(unknown, operator()).await,
+        };
+
+        assert!(
+            matches!(result, Err(Error::UserNotFound)),
+            "{action:?}: {result:?}"
+        );
+        assert!(
+            matches!(status_of(&h, bystander.id).await, UserStatus::Active),
+            "{action:?}"
+        );
+        assert_eq!(session_count(&h, bystander.id).await, 1, "{action:?}");
+        assert_eq!(passkey_count(&h, bystander.id).await, 1, "{action:?}");
+        assert_eq!(h.audit.events().len(), audit_before, "{action:?}");
+    }
+}
+
 #[tokio::test]
 async fn operator_delete_cascades_all_stores() {
     let h = Harness::fresh();
@@ -129,48 +205,6 @@ async fn operator_delete_emits_user_deleted_with_operator_actor() {
 }
 
 #[tokio::test]
-async fn operator_delete_unknown_user_fails_before_touching_stores() {
-    let h = Harness::fresh();
-    let bystander = provision_user(&h, "bystander@example.com").await;
-
-    let err = h
-        .operator
-        .delete_user(UserId::new(), operator())
-        .await
-        .expect_err("a missing target must fail loudly");
-    assert!(
-        matches!(err, Error::UserNotFound),
-        "expected UserNotFound, got {err:?}"
-    );
-
-    assert!(
-        h.users
-            .find_user_by_id(bystander.id)
-            .await
-            .expect("find bystander")
-            .is_some(),
-        "bystander survives",
-    );
-    assert_eq!(
-        session_count(&h, bystander.id).await,
-        1,
-        "bystander session untouched"
-    );
-    assert_eq!(
-        passkey_count(&h, bystander.id).await,
-        1,
-        "bystander passkey untouched"
-    );
-    assert!(
-        !h.audit
-            .events()
-            .iter()
-            .any(|e| matches!(e.kind, AuditEventKind::UserDeleted { .. })),
-        "no deletion event for a missing target",
-    );
-}
-
-#[tokio::test]
 async fn operator_remove_passkey_attributes_to_operator_and_sends_operator_copy() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
@@ -248,28 +282,6 @@ async fn operator_remove_passkey_refuses_cross_user_passkey() {
         h.audit.events().len(),
         before,
         "a refused cross-user removal emits no audit row",
-    );
-}
-
-#[tokio::test]
-async fn operator_remove_passkey_unknown_user_fails_loudly() {
-    let h = Harness::fresh();
-    let victim = provision_user(&h, "victim@example.com").await;
-    let credential_id = first_credential_id(&h, victim.id).await;
-
-    let err = h
-        .operator
-        .remove_passkey(UserId::new(), &credential_id, operator())
-        .await
-        .expect_err("a missing target must fail loudly");
-    assert!(
-        matches!(err, Error::UserNotFound),
-        "expected UserNotFound, got {err:?}"
-    );
-    assert_eq!(
-        passkey_count(&h, victim.id).await,
-        1,
-        "no passkey was removed for a missing target",
     );
 }
 
@@ -374,28 +386,6 @@ async fn operator_revoke_session_refuses_cross_user_session() {
 }
 
 #[tokio::test]
-async fn operator_revoke_session_unknown_user_fails_loudly() {
-    let h = Harness::fresh();
-    let victim = provision_user(&h, "victim@example.com").await;
-    let session_id = only_session_id(&h, victim.id).await;
-
-    let err = h
-        .operator
-        .revoke_session(UserId::new(), session_id, operator())
-        .await
-        .expect_err("a missing target must fail loudly");
-    assert!(
-        matches!(err, Error::UserNotFound),
-        "expected UserNotFound, got {err:?}"
-    );
-    assert_eq!(
-        session_count(&h, victim.id).await,
-        1,
-        "no session was revoked for a missing target"
-    );
-}
-
-#[tokio::test]
 async fn operator_revoke_all_clears_sessions_and_suppresses_notice_by_default() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
@@ -444,27 +434,6 @@ async fn operator_revoke_all_sends_operator_notice_when_opted_in() {
             .iter()
             .any(|e| e.subject == "Security notice: you were logged out by an operator"),
         "opting in sends the operator-aware revoke-all notice",
-    );
-}
-
-#[tokio::test]
-async fn operator_revoke_all_unknown_user_fails_loudly() {
-    let h = Harness::fresh();
-    let bystander = provision_user(&h, "bystander@example.com").await;
-
-    let err = h
-        .operator
-        .revoke_all_sessions(UserId::new(), operator())
-        .await
-        .expect_err("a missing target must fail loudly");
-    assert!(
-        matches!(err, Error::UserNotFound),
-        "expected UserNotFound, got {err:?}"
-    );
-    assert_eq!(
-        session_count(&h, bystander.id).await,
-        1,
-        "the bystander's session is untouched by a failed revoke-all",
     );
 }
 
@@ -563,39 +532,6 @@ async fn operator_list_sessions_returns_summaries_without_token_hash_and_audits(
         );
     };
     assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
-}
-
-#[tokio::test]
-async fn operator_reads_unknown_user_fail_loudly_and_unaudited() {
-    let h = Harness::fresh();
-    let _present = provision_user(&h, "present@example.com").await;
-    let before = h.audit.events().len();
-
-    let passkey_err = h
-        .operator
-        .list_passkeys(UserId::new(), operator())
-        .await
-        .expect_err("listing a missing user's passkeys must fail");
-    assert!(
-        matches!(passkey_err, Error::UserNotFound),
-        "expected UserNotFound, got {passkey_err:?}"
-    );
-
-    let session_err = h
-        .operator
-        .list_sessions(UserId::new(), operator())
-        .await
-        .expect_err("listing a missing user's sessions must fail");
-    assert!(
-        matches!(session_err, Error::UserNotFound),
-        "expected UserNotFound, got {session_err:?}"
-    );
-
-    assert_eq!(
-        h.audit.events().len(),
-        before,
-        "a read against a missing target emits no audit row",
-    );
 }
 
 async fn status_of(h: &Harness, user_id: UserId) -> UserStatus {
@@ -739,38 +675,6 @@ async fn operator_disable_is_idempotent() {
 }
 
 #[tokio::test]
-async fn operator_disable_unknown_user_fails_loudly() {
-    let h = Harness::fresh();
-    let bystander = provision_user(&h, "bystander@example.com").await;
-
-    let err = h
-        .operator
-        .disable(UserId::new(), operator())
-        .await
-        .expect_err("a missing target must fail loudly");
-    assert!(
-        matches!(err, Error::UserNotFound),
-        "expected UserNotFound, got {err:?}"
-    );
-    assert!(
-        matches!(status_of(&h, bystander.id).await, UserStatus::Active),
-        "bystander stays active",
-    );
-    assert_eq!(
-        session_count(&h, bystander.id).await,
-        1,
-        "bystander session untouched"
-    );
-    assert!(
-        !h.audit
-            .events()
-            .iter()
-            .any(|e| matches!(e.kind, AuditEventKind::OperatorDisabledUser { .. })),
-        "no disable event for a missing target",
-    );
-}
-
-#[tokio::test]
 async fn operator_enable_returns_user_to_active_and_audits() {
     let h = Harness::fresh();
     let user = provision_user(&h, "thawed@example.com").await;
@@ -810,29 +714,6 @@ async fn operator_enable_returns_user_to_active_and_audits() {
         );
     };
     assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
-}
-
-#[tokio::test]
-async fn operator_enable_unknown_user_fails_loudly() {
-    let h = Harness::fresh();
-    let _present = provision_user(&h, "present@example.com").await;
-
-    let err = h
-        .operator
-        .enable(UserId::new(), operator())
-        .await
-        .expect_err("a missing target must fail loudly");
-    assert!(
-        matches!(err, Error::UserNotFound),
-        "expected UserNotFound, got {err:?}"
-    );
-    assert!(
-        !h.audit
-            .events()
-            .iter()
-            .any(|e| matches!(e.kind, AuditEventKind::OperatorEnabledUser { .. })),
-        "no enable event for a missing target",
-    );
 }
 
 #[tokio::test]

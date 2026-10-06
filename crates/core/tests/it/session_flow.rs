@@ -4,14 +4,11 @@ use std::time::Duration;
 use chrono::Duration as ChronoDuration;
 use doorman_core::audit::AuditEventKind;
 use doorman_core::clock::Clock;
-use doorman_core::email::{Email, EmailSender};
 use doorman_core::error::Error;
-use doorman_core::memory::{InMemorySessionStore, InMemoryUserStore};
 use doorman_core::session::{SessionConfig, SessionContext, hash_token};
 use doorman_core::storage::{
-    Session, SessionId, SessionStore, StoredPasskey, User, UserId, UserStatus, UserStore,
+    Session, SessionId, SessionStore, StoredPasskey, UserId, UserStatus, UserStore,
 };
-use doorman_test_support::CapturingEmailSender;
 
 use crate::common::{Harness, make_user, ts};
 
@@ -432,112 +429,4 @@ async fn purge_expired_deletes_only_expired() {
             .expect("find long")
             .is_some()
     );
-}
-
-#[tokio::test]
-async fn user_store_round_trip() {
-    let store = InMemoryUserStore::new();
-    let user = User {
-        id: UserId::new(),
-        email: Some("alice@example.com".into()),
-        email_verified_at: None,
-        status: UserStatus::Active,
-        created_at: ts(2026, 1, 1),
-        updated_at: ts(2026, 1, 1),
-    };
-
-    store.create_user(user.clone()).await.expect("create");
-    assert_eq!(
-        store.find_user_by_id(user.id).await.expect("find by id"),
-        Some(user.clone())
-    );
-    assert_eq!(
-        store
-            .find_user_by_email("alice@example.com")
-            .await
-            .expect("find by email"),
-        Some(user.clone())
-    );
-
-    store
-        .create_user(user.clone())
-        .await
-        .expect_err("duplicate id should error");
-
-    let other = User {
-        id: UserId::new(),
-        email: Some("alice@example.com".into()),
-        email_verified_at: None,
-        status: UserStatus::Active,
-        created_at: user.created_at,
-        updated_at: user.updated_at,
-    };
-    store
-        .create_user(other)
-        .await
-        .expect_err("duplicate email should error");
-
-    store.delete_user(user.id).await.expect("delete");
-    assert!(
-        store
-            .find_user_by_id(user.id)
-            .await
-            .expect("find after delete")
-            .is_none()
-    );
-    assert!(
-        store
-            .find_user_by_email("alice@example.com")
-            .await
-            .expect("find email after delete")
-            .is_none()
-    );
-}
-
-#[tokio::test]
-async fn email_sender_captures_messages() {
-    let sender = CapturingEmailSender::new();
-    let email = Email {
-        to: "user@example.com".into(),
-        subject: "Verify".into(),
-        body_text: "click here".into(),
-        body_html: None,
-    };
-    sender.send(email.clone()).await.expect("send");
-    assert_eq!(sender.sent(), vec![email]);
-}
-
-#[tokio::test]
-async fn session_store_rejects_id_and_hash_collisions() {
-    let store = InMemorySessionStore::new();
-    let session = Session {
-        id: SessionId::new(),
-        user_id: UserId::new(),
-        token_hash: hash_token("abc"),
-        created_at: ts(2026, 1, 1),
-        last_used_at: ts(2026, 1, 1),
-        expires_at: ts(2026, 1, 1) + ChronoDuration::hours(1),
-        ip: None,
-        user_agent: None,
-        recovery_cool_down_until: None,
-    };
-    store.create_session(session.clone()).await.expect("first");
-
-    let dup_id = Session {
-        token_hash: hash_token("different"),
-        ..session.clone()
-    };
-    store
-        .create_session(dup_id)
-        .await
-        .expect_err("duplicate id should error");
-
-    let dup_hash = Session {
-        id: SessionId::new(),
-        ..session
-    };
-    store
-        .create_session(dup_hash)
-        .await
-        .expect_err("duplicate hash should error");
 }

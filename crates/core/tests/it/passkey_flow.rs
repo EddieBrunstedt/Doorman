@@ -1216,34 +1216,6 @@ async fn start_registration_refuses_disabled_user() {
 }
 
 #[tokio::test]
-async fn challenge_store_purges_expired_entries() {
-    let h = Harness::fresh();
-    let user = make_user(&h, "exp@example.com").await;
-    h.passkey
-        .start_registration(&session_for(&h, &user))
-        .await
-        .expect("start registration");
-    h.passkey
-        .start_authentication(SessionContext::default())
-        .await
-        .expect("start authentication");
-
-    h.clock.advance(ChronoDuration::seconds(600));
-    let removed = h
-        .challenges
-        .purge_expired(h.clock.now())
-        .await
-        .expect("purge expired");
-    assert_eq!(removed, 2, "both ceremonies were stored, then swept");
-    let removed_again = h
-        .challenges
-        .purge_expired(h.clock.now())
-        .await
-        .expect("purge expired again");
-    assert_eq!(removed_again, 0, "nothing is left to sweep");
-}
-
-#[tokio::test]
 async fn registration_is_rejected_once_passkey_cap_is_reached() {
     let h = Harness::builder()
         .passkey_config(PasskeyConfig {

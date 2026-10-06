@@ -3,8 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::Duration as ChronoDuration;
-use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
+use doorman_core::audit::AuditEventKind;
 use doorman_core::clock::Clock;
 use doorman_core::email::{Email, EmailTemplates};
 use doorman_core::error::{Error, Result, StorageError};
@@ -17,9 +16,8 @@ use doorman_core::storage::{User, UserStore};
 use doorman_test_support::MockClock;
 
 use crate::common::{
-    Harness, RECOVERY_URL, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds, passkey_count,
-    provision_user, rp_origin, session_count, session_for, signup_config, token_from_email, ts,
-    within_deadline,
+    Harness, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds, passkey_count, provision_user,
+    rp_origin, session_count, session_for, signup_config, token_from_email, ts, within_deadline,
 };
 
 #[tokio::test]
@@ -330,35 +328,6 @@ async fn notice_send_failure_does_not_undo_successful_finish() {
 }
 
 #[tokio::test]
-async fn redeem_rejects_replayed_token() {
-    let h = Harness::fresh();
-    h.signup
-        .request_signup("u@example.com", None, SessionContext::default())
-        .await
-        .expect("request");
-    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
-
-    h.signup
-        .redeem_signup_link(&token, SessionContext::default())
-        .await
-        .expect("first redeem");
-    let err = h
-        .signup
-        .redeem_signup_link(&token, SessionContext::default())
-        .await
-        .expect_err("second redeem");
-    assert!(matches!(err, Error::InvalidEmailLink));
-    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
-        k,
-        AuditEventKind::RedemptionFailed {
-            user_id: None,
-            secret: SecretKind::SignupLink,
-            reason: RedemptionFailureReason::Unknown,
-        }
-    )));
-}
-
-#[tokio::test]
 async fn redeem_replaces_unfinished_ceremonies_rather_than_hitting_the_pending_cap() {
     let h = Harness::builder()
         .passkey_config(PasskeyConfig {
@@ -424,108 +393,6 @@ async fn redeem_replaces_unfinished_ceremonies_rather_than_hitting_the_pending_c
         )
         .await
         .expect("the link's ceremony finishes");
-}
-
-#[tokio::test]
-async fn redeem_rejects_tampered_token_and_leaves_the_real_one_usable() {
-    let h = Harness::fresh();
-    h.signup
-        .request_signup("u@example.com", None, SessionContext::default())
-        .await
-        .expect("request");
-    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
-
-    let mut chars: Vec<char> = token.chars().collect();
-    chars[0] = if chars[0] == 'a' { 'b' } else { 'a' };
-    let tampered: String = chars.into_iter().collect();
-    assert_ne!(tampered, token, "tamper actually changed the token");
-
-    let err = h
-        .signup
-        .redeem_signup_link(&tampered, SessionContext::default())
-        .await
-        .expect_err("tampered token rejected");
-    assert!(matches!(err, Error::InvalidEmailLink));
-
-    h.signup
-        .redeem_signup_link(&token, SessionContext::default())
-        .await
-        .expect("genuine token still redeems after the tamper attempt");
-}
-
-#[tokio::test]
-async fn signup_token_cannot_be_redeemed_by_recovery() {
-    let h = Harness::fresh();
-    h.signup
-        .request_signup("cross@example.com", None, SessionContext::default())
-        .await
-        .expect("request");
-    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
-
-    let err = h
-        .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect_err("signup token rejected on recovery");
-    assert!(matches!(err, Error::InvalidEmailLink));
-
-    h.signup
-        .redeem_signup_link(&token, SessionContext::default())
-        .await
-        .expect("signup token still valid on its own flow");
-}
-
-#[tokio::test]
-async fn recovery_token_cannot_be_redeemed_by_signup() {
-    let h = Harness::fresh();
-    provision_user(&h, "cross@example.com").await;
-    let mail_before = h.email.sent().len();
-    h.recovery
-        .request_recovery("cross@example.com", SessionContext::default())
-        .await
-        .expect("recovery request");
-    let sent = h.email.sent();
-    let link = sent[mail_before..]
-        .iter()
-        .find(|e| e.subject == "Recover access with a new passkey")
-        .expect("recovery link queued");
-    let token = token_from_email(&link.body_text, RECOVERY_URL);
-
-    let err = h
-        .signup
-        .redeem_signup_link(&token, SessionContext::default())
-        .await
-        .expect_err("recovery token rejected on signup");
-    assert!(matches!(err, Error::InvalidEmailLink));
-
-    h.recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect("recovery token still valid on its own flow");
-}
-
-#[tokio::test]
-async fn redeem_rejects_expired_token() {
-    let h = Harness::builder()
-        .signup_config(SignupConfig {
-            token_lifetime: Duration::from_secs(60),
-            ..signup_config()
-        })
-        .build();
-    h.signup
-        .request_signup("u@example.com", None, SessionContext::default())
-        .await
-        .expect("request");
-    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
-
-    h.clock.advance(ChronoDuration::seconds(120));
-
-    let err = h
-        .signup
-        .redeem_signup_link(&token, SessionContext::default())
-        .await
-        .expect_err("expired");
-    assert!(matches!(err, Error::InvalidEmailLink));
 }
 
 #[tokio::test]

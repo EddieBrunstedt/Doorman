@@ -9,7 +9,7 @@ use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::reauth::ReauthPolicy;
-use doorman_core::recovery::RecoveryConfig;
+use doorman_core::recovery::{RecoveryConfig, RecoveryConfigError};
 use doorman_core::session::SessionConfig;
 use doorman_core::signup::SignupConfig;
 use doorman_core::storage::Storage;
@@ -256,21 +256,6 @@ fn recovery_url_template_without_token_is_rejected() {
 }
 
 #[test]
-fn subfloor_recovery_cool_down_is_rejected() {
-    let err = valid_builder()
-        .recovery(RecoveryConfig {
-            cool_down: Duration::from_secs(60),
-            ..real_recovery()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(err, Some(AssemblyError::RecoveryCoolDown(_))),
-        "expected RecoveryCoolDown, got: {err:?}"
-    );
-}
-
-#[test]
 fn zero_session_lifetime_is_rejected() {
     let err = valid_builder()
         .session(SessionConfig {
@@ -331,4 +316,42 @@ fn oversized_passkey_challenge_lifetime_is_rejected() {
         ),
         "expected InvalidLifetime for an oversized challenge lifetime, got: {err:?}"
     );
+}
+
+fn with_recovery_cool_down(cool_down: Duration) -> Result<AuthCore, AssemblyError> {
+    valid_builder()
+        .recovery(RecoveryConfig {
+            cool_down,
+            ..real_recovery()
+        })
+        .build()
+}
+
+#[test]
+fn recovery_cool_down_below_the_floor_is_rejected() {
+    let configured = RecoveryConfig::MIN_COOL_DOWN - Duration::from_secs(1);
+    assert!(matches!(
+        with_recovery_cool_down(configured).err(),
+        Some(AssemblyError::RecoveryCoolDown(RecoveryConfigError::CoolDownTooShort {
+            configured: c,
+            minimum,
+        })) if c == configured && minimum == RecoveryConfig::MIN_COOL_DOWN
+    ));
+}
+
+#[test]
+fn recovery_cool_down_above_the_ceiling_is_rejected() {
+    let configured = RecoveryConfig::MAX_COOL_DOWN + Duration::from_secs(1);
+    assert!(matches!(
+        with_recovery_cool_down(configured).err(),
+        Some(AssemblyError::RecoveryCoolDown(RecoveryConfigError::CoolDownTooLong {
+            configured: c,
+            maximum,
+        })) if c == configured && maximum == RecoveryConfig::MAX_COOL_DOWN
+    ));
+}
+
+#[test]
+fn recovery_cool_down_at_the_floor_is_accepted() {
+    assert!(with_recovery_cool_down(RecoveryConfig::MIN_COOL_DOWN).is_ok());
 }
