@@ -14,6 +14,7 @@ use webauthn_rs_proto::ResidentKeyRequirement;
 use crate::assertion::PendingAssertion;
 use crate::audit::SecretKind;
 use crate::clock::{Clock, expiry};
+use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::passkey::{PasskeyConfig, decode_passkey};
 use crate::recovery_cool_down::RecoveryCoolDown;
@@ -81,6 +82,21 @@ impl<P> PasskeyChallenge<P> {
             max_pending_registrations: config.max_pending_registrations_per_user,
             purpose: PhantomData,
         }
+    }
+
+    pub(crate) fn from_deps(
+        deps: &CoreDeps,
+        config: &PasskeyConfig,
+        webauthn: Arc<Webauthn>,
+    ) -> Self {
+        Self::new(
+            config,
+            webauthn,
+            deps.passkey_challenges.clone(),
+            deps.passkeys.clone(),
+            Redeemer::from_deps(deps),
+            deps.clock.clone(),
+        )
     }
 
     async fn put_authentication<S: Serialize>(

@@ -26,43 +26,7 @@ pub(crate) trait LinkPurpose {
     fn load(token: &EmailLink) -> Option<Self::Payload>;
 }
 
-pub(crate) enum Signup {}
-
-pub(crate) enum Recovery {}
-
 pub(crate) enum EmailChange {}
-
-impl LinkPurpose for Signup {
-    type Payload = ();
-    const PURPOSE: EmailLinkPurpose = EmailLinkPurpose::Signup;
-    const SECRET: SecretKind = SecretKind::SignupLink;
-    const FLOW: &'static str = "signup";
-    const LIFETIME_FIELD: &'static str = "signup token_lifetime";
-
-    fn store((): ()) -> Option<String> {
-        None
-    }
-
-    fn load(_: &EmailLink) -> Option<()> {
-        Some(())
-    }
-}
-
-impl LinkPurpose for Recovery {
-    type Payload = ();
-    const PURPOSE: EmailLinkPurpose = EmailLinkPurpose::Recovery;
-    const SECRET: SecretKind = SecretKind::RecoveryLink;
-    const FLOW: &'static str = "recovery";
-    const LIFETIME_FIELD: &'static str = "recovery token_lifetime";
-
-    fn store((): ()) -> Option<String> {
-        None
-    }
-
-    fn load(_: &EmailLink) -> Option<()> {
-        Some(())
-    }
-}
 
 impl LinkPurpose for EmailChange {
     type Payload = String;

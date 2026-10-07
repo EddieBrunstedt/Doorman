@@ -7,11 +7,11 @@ use crate::assembly::{AssemblyError, MAX_LIFETIME};
 use crate::audit::{AuditDispatch, AuditEventKind, RecoveryFailureReason};
 use crate::context::CoreDeps;
 use crate::email::{self, SecurityNotices};
-use crate::email_link::{self, EmailLinks, TOKEN_PLACEHOLDER};
+use crate::email_link::TOKEN_PLACEHOLDER;
+use crate::email_link_registration::{EmailLinkRegistration, Recovery};
 use crate::error::Result;
-use crate::passkey::{
-    EmailLinkRegistration, PasskeyManager, RegistrationOutcome, StartedRegistration,
-};
+use crate::passkey::{RegistrationOutcome, StartedRegistration};
+use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
 use crate::session::SessionContext;
 use crate::storage::PasskeyChallengeId;
@@ -98,20 +98,18 @@ impl Default for RecoveryConfig {
 
 #[derive(Clone)]
 pub struct RecoveryManager {
-    passkeys: PasskeyManager,
     records: UserRecords,
-    link: EmailLinks<email_link::Recovery>,
+    registration: EmailLinkRegistration<Recovery>,
     notices: SecurityNotices,
     rate_limiter: Arc<dyn RateLimiter>,
     audit: AuditDispatch,
     config: RecoveryConfig,
-    registration: EmailLinkRegistration,
 }
 
 impl RecoveryManager {
     pub(crate) fn new(
         deps: &CoreDeps,
-        passkeys: PasskeyManager,
+        registrations: PasskeyRegistrations,
         config: RecoveryConfig,
     ) -> std::result::Result<Self, AssemblyError> {
         let too_long = RecoveryConfigError::CoolDownTooLong {
@@ -132,14 +130,18 @@ impl RecoveryManager {
         }
         let cool_down = chrono::Duration::from_std(config.cool_down).map_err(|_| too_long)?;
         Ok(Self {
-            passkeys,
             records: UserRecords::new(deps),
-            link: EmailLinks::new(deps, &config.url_template, config.token_lifetime)?,
+            registration: EmailLinkRegistration::new(
+                deps,
+                registrations,
+                Recovery { cool_down },
+                &config.url_template,
+                config.token_lifetime,
+            )?,
             notices: deps.notices.clone(),
             rate_limiter: deps.rate_limiter.clone(),
             audit: deps.audit.clone(),
             config,
-            registration: EmailLinkRegistration::Recovery { cool_down },
         })
     }
 
@@ -227,7 +229,7 @@ impl RecoveryManager {
             return Ok(());
         }
 
-        let url = self.link.issue(user.id, ()).await?;
+        let url = self.registration.issue_link(user.id).await?;
         self.notices
             .send_best_effort(&user, "recovery link", |emails| {
                 emails.recovery_email(&user, &url)
@@ -255,25 +257,13 @@ impl RecoveryManager {
         token: &str,
         context: SessionContext,
     ) -> Result<StartedRegistration> {
-        let (user, ()) = self.link.redeem(token, &context).await?;
-        let (challenge_id, options) = self
-            .passkeys
-            .start_email_link_registration(user.id, self.registration)
-            .await?;
-
-        self.audit
-            .emit(
-                &context,
-                AuditEventKind::RecoveryLinkRedeemed { user_id: user.id },
-            )
-            .await;
-        tracing::info!(outcome = "redeemed", "recovery link redeemed");
-        Ok(StartedRegistration {
-            challenge_id,
-            options,
-        })
+        self.registration.redeem(token, context).await
     }
 
+    #[tracing::instrument(
+        skip(self, response, name, context),
+        fields(method = "recovery", user_id = tracing::field::Empty),
+    )]
     pub async fn finish_recovery(
         &self,
         challenge_id: PasskeyChallengeId,
@@ -281,20 +271,8 @@ impl RecoveryManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<RegistrationOutcome> {
-        let outcome = self
-            .passkeys
-            .finish_email_link_registration(
-                challenge_id,
-                response,
-                name,
-                context,
-                self.registration,
-            )
-            .await?;
-
-        self.notices.recovery_completed(&outcome.user).await;
-
-        tracing::info!(outcome = "succeeded", "recovery finished");
-        Ok(outcome)
+        self.registration
+            .finish(challenge_id, response, name, context)
+            .await
     }
 }

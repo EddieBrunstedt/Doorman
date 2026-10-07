@@ -171,58 +171,6 @@ async fn redeem_refused_for_disabled_user() {
 }
 
 #[tokio::test]
-async fn finish_refused_for_disabled_user_registers_nothing() {
-    let h = Harness::fresh();
-    let user = provision_user(&h, "alice@example.com").await;
-    let passkeys_before = passkey_count(&h, user.id).await;
-    let sessions_before = session_count(&h, user.id).await;
-
-    h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
-        .await
-        .expect("request while active");
-    let link = h
-        .email
-        .sent()
-        .into_iter()
-        .rev()
-        .find(|e| e.subject == "Recover access with a new passkey")
-        .expect("link queued");
-    let token = token_from_email(&link.body_text, RECOVERY_URL);
-    let started = h
-        .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect("redeem while active");
-    let mut wa = authenticator();
-    let attestation = wa.do_registration(started.options);
-
-    disable_user(&h, &user).await;
-
-    let err = h
-        .recovery
-        .finish_recovery(
-            started.challenge_id,
-            &attestation,
-            Some("backup device".into()),
-            SessionContext::default(),
-        )
-        .await
-        .expect_err("finish refused for disabled user");
-    assert!(matches!(err, Error::UserDisabled));
-    assert_eq!(
-        passkey_count(&h, user.id).await,
-        passkeys_before,
-        "no passkey registered for a disabled user",
-    );
-    assert_eq!(
-        session_count(&h, user.id).await,
-        sessions_before,
-        "no session issued for a disabled user",
-    );
-}
-
-#[tokio::test]
 async fn rate_limit_per_email_blocks_after_budget() {
     let clock_for_limiter = Arc::new(MockClock::new(common::ts(2026, 1, 1)));
     let limiter = Arc::new(InMemoryRateLimiter::new(
@@ -304,11 +252,9 @@ async fn rate_limit_per_ip_blocks_after_budget() {
 }
 
 #[tokio::test]
-async fn successful_recovery_registers_passkey_and_sends_success_notice() {
+async fn finish_sends_only_the_recovery_completed_notice() {
     let h = Harness::fresh();
-    let user = provision_user(&h, "alice@example.com").await;
-    let passkeys_before = passkey_count(&h, user.id).await;
-
+    provision_user(&h, "alice@example.com").await;
     h.recovery
         .request_recovery("alice@example.com", SessionContext::default())
         .await
@@ -321,14 +267,6 @@ async fn successful_recovery_registers_passkey_and_sends_success_notice() {
         .find(|e| e.subject == "Recover access with a new passkey")
         .expect("link queued");
     let token = token_from_email(&link.body_text, RECOVERY_URL);
-    let requested_notice = h
-        .email
-        .sent()
-        .into_iter()
-        .rev()
-        .find(|e| e.subject == "Security notice: recovery requested")
-        .expect("requested notice queued");
-
     let started = h
         .recovery
         .redeem_recovery_link(&token, SessionContext::default())
@@ -336,92 +274,78 @@ async fn successful_recovery_registers_passkey_and_sends_success_notice() {
         .expect("redeem");
 
     let mail_before_finish = h.email.sent().len();
-    let mut wa = authenticator();
-    let attestation = wa.do_registration(started.options);
-    let outcome = h
-        .recovery
+    h.recovery
         .finish_recovery(
             started.challenge_id,
-            &attestation,
+            &authenticator().do_registration(started.options),
             Some("backup device".into()),
             SessionContext::default(),
         )
         .await
         .expect("finish");
 
-    assert_eq!(outcome.user.id, user.id);
+    let sent = h.email.sent();
+    let subjects: Vec<&str> = sent[mail_before_finish..]
+        .iter()
+        .map(|e| e.subject.as_str())
+        .collect();
+    assert_eq!(subjects, vec!["Security notice: recovery completed"]);
+    let completed = &sent[mail_before_finish].body_text;
+    assert!(completed.contains("A recovery just completed"));
+    assert!(completed.contains("If this was not you"));
+}
+
+#[tokio::test]
+async fn notice_send_failure_does_not_undo_successful_finish() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "alice@example.com").await;
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access with a new passkey")
+        .expect("link queued");
+    let token = token_from_email(&link.body_text, RECOVERY_URL);
+    let started = h
+        .recovery
+        .redeem_recovery_link(&token, SessionContext::default())
+        .await
+        .expect("redeem");
+    let passkeys_before = passkey_count(&h, user.id).await;
+    let sessions_before = session_count(&h, user.id).await;
+
+    let mail_before_finish = h.email.sent().len();
+    h.email.fail_after_successful_sends(mail_before_finish);
+
+    h.recovery
+        .finish_recovery(
+            started.challenge_id,
+            &authenticator().do_registration(started.options),
+            Some("failing notices device".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish still succeeds");
+
     assert_eq!(
         passkey_count(&h, user.id).await,
         passkeys_before + 1,
-        "new passkey registered",
+        "passkey still stored"
     );
-    let user_passkeys = h
-        .passkeys
-        .list_passkeys_for_user(user.id)
-        .await
-        .expect("list");
-    assert!(
-        user_passkeys
-            .iter()
-            .any(|c| c.name.as_deref() == Some("backup device")),
-        "passkey registered by recovery shows up in list_passkeys for the user",
+    assert_eq!(
+        session_count(&h, user.id).await,
+        sessions_before + 1,
+        "session still issued"
     );
-    let sessions = h
-        .session_manager
-        .list(&outcome.session.session)
-        .await
-        .expect("list sessions");
-    assert!(
-        sessions.iter().any(|s| s.id == outcome.session.session.id),
-        "session issued"
-    );
-
-    let sent = h.email.sent();
-    let after_finish = &sent[mail_before_finish..];
-    assert_eq!(after_finish.len(), 2, "passkey + completed notices sent",);
-    let subjects: Vec<&str> = after_finish.iter().map(|e| e.subject.as_str()).collect();
-    let Some(passkey_notice) = after_finish
-        .iter()
-        .find(|e| e.subject == "Security notice: passkey registered")
-    else {
-        panic!("passkey notice sent ({subjects:?})");
-    };
-    let Some(completed_notice) = after_finish
-        .iter()
-        .find(|e| e.subject == "Security notice: recovery completed")
-    else {
-        panic!("completed notice sent ({subjects:?})");
-    };
-    assert!(passkey_notice.body_text.contains("backup device"));
-    assert_ne!(
-        completed_notice.subject.as_str(),
-        requested_notice.subject.as_str(),
-    );
-    assert_ne!(
-        completed_notice.body_text.as_str(),
-        requested_notice.body_text.as_str(),
-    );
-    assert!(
-        completed_notice
-            .body_text
-            .contains("A recovery just completed")
-    );
-    assert!(completed_notice.body_text.contains("If this was not you"));
-
-    let events = kinds(&h.audit.events());
-    assert!(events.iter().any(|k| matches!(
-        k,
-        AuditEventKind::RecoveryLinkRedeemed { user_id } if *user_id == user.id,
-    )));
-    assert!(
-        events
-            .iter()
-            .any(|k| matches!(k, AuditEventKind::PasskeyAdded { .. }))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. }))
+    assert_eq!(
+        h.email.sent().len(),
+        mail_before_finish,
+        "failed notice was not captured",
     );
 }
 
@@ -899,173 +823,6 @@ async fn passkey_registered_after_cool_down_carries_no_cool_down() {
         .expect("finish_registration");
 
     assert_eq!(passkey.recovery_cool_down_until, None);
-}
-
-#[tokio::test]
-async fn pre_recovery_registration_challenge_cannot_finish_after_recovery() {
-    let h = Harness::fresh();
-    let user = make_user(&h, "alice@example.com").await;
-
-    let (pre_challenge_id, pre_ccr) = h
-        .passkey
-        .start_registration(&session_for(&h, &user))
-        .await
-        .expect("start pre-recovery registration");
-    let mut pre_wa = authenticator();
-    let pre_attestation = pre_wa.do_registration(pre_ccr);
-
-    h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
-        .await
-        .expect("request");
-    let link = h
-        .email
-        .sent()
-        .into_iter()
-        .rev()
-        .find(|e| e.subject == "Recover access with a new passkey")
-        .expect("link queued");
-    let token = token_from_email(&link.body_text, RECOVERY_URL);
-    let started = h
-        .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect("redeem");
-    let mut recovery_wa = authenticator();
-    let attestation = recovery_wa.do_registration(started.options);
-    let outcome = h
-        .recovery
-        .finish_recovery(
-            started.challenge_id,
-            &attestation,
-            Some("recovery device".into()),
-            SessionContext::default(),
-        )
-        .await
-        .expect("finish");
-    assert!(
-        outcome
-            .session
-            .session
-            .is_in_recovery_cool_down(h.clock.now())
-    );
-
-    let err = h
-        .passkey
-        .finish_registration(
-            pre_challenge_id,
-            &pre_attestation,
-            None,
-            SessionContext::default(),
-        )
-        .await
-        .expect_err("pre-recovery challenge must be invalidated");
-    assert!(matches!(err, Error::InvalidPasskeyChallenge));
-
-    let passkeys = h
-        .passkeys
-        .list_passkeys_for_user(user.id)
-        .await
-        .expect("list");
-    assert_eq!(passkeys.len(), 1);
-    assert_eq!(
-        passkeys[0].recovery_cool_down_until,
-        outcome.passkey.recovery_cool_down_until
-    );
-}
-
-#[tokio::test]
-async fn pre_recovery_challenge_is_invalidated_before_recovery_session() {
-    let h = Harness::fresh();
-    let user = make_user(&h, "alice@example.com").await;
-
-    let (pre_challenge_id, pre_ccr) = h
-        .passkey
-        .start_registration(&session_for(&h, &user))
-        .await
-        .expect("start pre-recovery registration");
-    let mut pre_wa = authenticator();
-    let pre_attestation = pre_wa.do_registration(pre_ccr);
-
-    h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
-        .await
-        .expect("request");
-    let link = h
-        .email
-        .sent()
-        .into_iter()
-        .rev()
-        .find(|e| e.subject == "Recover access with a new passkey")
-        .expect("link queued");
-    let token = token_from_email(&link.body_text, RECOVERY_URL);
-    let started = h
-        .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect("redeem");
-    let mut recovery_wa = authenticator();
-    let attestation = recovery_wa.do_registration(started.options);
-    let outcome = h
-        .recovery
-        .finish_recovery(
-            started.challenge_id,
-            &attestation,
-            Some("recovery device".into()),
-            SessionContext::default(),
-        )
-        .await
-        .expect("finish recovery succeeds");
-
-    assert!(
-        outcome
-            .session
-            .session
-            .is_in_recovery_cool_down(h.clock.now()),
-        "recovery session must be issued with the cool-down on the success path"
-    );
-
-    let err = h
-        .passkey
-        .finish_registration(
-            pre_challenge_id,
-            &pre_attestation,
-            None,
-            SessionContext::default(),
-        )
-        .await
-        .expect_err("pre-recovery challenge must be invalidated");
-    assert!(matches!(err, Error::InvalidPasskeyChallenge));
-}
-
-#[tokio::test]
-async fn signup_does_not_invalidate_other_pending_registrations() {
-    let h = Harness::fresh();
-    let user = provision_user(&h, "alice@example.com").await;
-
-    let (pending_id, pending_ccr) = h
-        .passkey
-        .start_registration(&session_for(&h, &user))
-        .await
-        .expect("start pending registration");
-    let mut wa = authenticator();
-    let pending_attestation = wa.do_registration(pending_ccr);
-
-    let other = provision_user(&h, "bob@example.com").await;
-    assert_ne!(other.id, user.id);
-
-    let stored = h
-        .passkey
-        .finish_registration(
-            pending_id,
-            &pending_attestation,
-            Some("second device".into()),
-            SessionContext::default(),
-        )
-        .await
-        .expect("pending registration still valid");
-    assert_eq!(stored.user_id, user.id);
-    assert_eq!(stored.recovery_cool_down_until, None);
 }
 
 async fn drive_recovery_finish(

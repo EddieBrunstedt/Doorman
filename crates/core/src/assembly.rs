@@ -8,6 +8,7 @@ use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityN
 use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::operator::{NoticePolicy, OperatorManager};
 use crate::passkey::{PasskeyConfig, PasskeyManager, build_webauthn};
+use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::RateLimiter;
 use crate::reauth::{ReauthManager, ReauthPolicy};
 use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
@@ -293,9 +294,11 @@ impl AuthCoreBuilder {
 
         let sessions = SessionManager::new(&deps);
 
-        let passkey = PasskeyManager::new(&deps, passkey_config, webauthn);
+        let registrations = PasskeyRegistrations::new(&deps, &passkey_config, webauthn.clone());
 
-        let signup = SignupManager::new(&deps, passkey.clone(), signup_config)?;
+        let passkey = PasskeyManager::new(&deps, registrations.clone(), passkey_config, webauthn);
+
+        let signup = SignupManager::new(&deps, registrations.clone(), signup_config)?;
 
         let recovery_deps = match self.recovery_rate_limiter {
             Some(rate_limiter) => CoreDeps {
@@ -304,7 +307,7 @@ impl AuthCoreBuilder {
             },
             None => deps.clone(),
         };
-        let recovery = RecoveryManager::new(&recovery_deps, passkey.clone(), recovery_config)?;
+        let recovery = RecoveryManager::new(&recovery_deps, registrations, recovery_config)?;
 
         let user = UserManager::new(&deps, user_config)?;
 

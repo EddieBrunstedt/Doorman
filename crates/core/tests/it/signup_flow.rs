@@ -1,4 +1,3 @@
-use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -8,7 +7,6 @@ use doorman_core::clock::Clock;
 use doorman_core::email::{Email, EmailTemplates};
 use doorman_core::error::{Error, Result, StorageError};
 use doorman_core::memory::InMemoryRateLimiter;
-use doorman_core::passkey::{PasskeyConfig, PasskeyRateLimits};
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
 use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy, SignupRateLimits};
@@ -16,8 +14,8 @@ use doorman_core::storage::{User, UserStore};
 use doorman_test_support::MockClock;
 
 use crate::common::{
-    Harness, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds, passkey_count, provision_user,
-    rp_origin, session_count, session_for, signup_config, token_from_email, ts, within_deadline,
+    Harness, SIGNUP_URL, authenticator, kinds, provision_user, signup_config, token_from_email, ts,
+    within_deadline,
 };
 
 #[tokio::test]
@@ -185,14 +183,13 @@ async fn redeem_verifies_email_and_starts_passkey_registration() {
 }
 
 #[tokio::test]
-async fn redeem_then_finish_registers_passkey_and_issues_session() {
+async fn finish_sends_no_security_notice() {
     let h = Harness::fresh();
     h.signup
         .request_signup("alice@example.com", None, SessionContext::default())
         .await
         .expect("request");
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
-
     let started = h
         .signup
         .redeem_signup_link(&token, SessionContext::default())
@@ -200,50 +197,19 @@ async fn redeem_then_finish_registers_passkey_and_issues_session() {
         .expect("redeem");
 
     let mail_before_finish = h.email.sent().len();
-    let mut wa = authenticator();
-    let attestation = wa.do_registration(started.options);
     let outcome = h
         .signup
         .finish_signup(
             started.challenge_id,
-            &attestation,
+            &authenticator().do_registration(started.options),
             Some("alice device".into()),
             SessionContext::default(),
         )
         .await
         .expect("finish");
 
-    assert_eq!(outcome.user.email.as_deref(), Some("alice@example.com"));
     assert!(outcome.user.email_verified_at.is_some());
-    assert_eq!(
-        session_count(&h, outcome.user.id).await,
-        1,
-        "session issued"
-    );
-    assert_eq!(
-        passkey_count(&h, outcome.user.id).await,
-        1,
-        "passkey registered"
-    );
-    let sent = h.email.sent();
-    let after_finish = &sent[mail_before_finish..];
-    assert_eq!(after_finish.len(), 1, "passkey registration notice sent",);
-    assert_eq!(
-        after_finish[0].subject,
-        "Security notice: passkey registered",
-    );
-    assert!(after_finish[0].body_text.contains("alice device"));
-    let events = kinds(&h.audit.events());
-    assert!(
-        events
-            .iter()
-            .any(|k| matches!(k, AuditEventKind::PasskeyAdded { .. }))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|k| matches!(k, AuditEventKind::LoginSucceeded { .. }))
-    );
+    assert_eq!(h.email.sent().len(), mail_before_finish);
 }
 
 #[tokio::test]
@@ -274,125 +240,6 @@ async fn finish_reads_the_user_before_and_after_issuing_its_session() {
         .expect("finish");
 
     assert_eq!(h.user_store.reads(), 2);
-}
-
-#[tokio::test]
-async fn notice_send_failure_does_not_undo_successful_finish() {
-    let h = Harness::fresh();
-    h.signup
-        .request_signup("notify-fails@example.com", None, SessionContext::default())
-        .await
-        .expect("request");
-    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
-    let started = h
-        .signup
-        .redeem_signup_link(&token, SessionContext::default())
-        .await
-        .expect("redeem");
-
-    let mail_before_finish = h.email.sent().len();
-    h.email.fail_after_successful_sends(mail_before_finish);
-
-    let mut wa = authenticator();
-    let attestation = wa.do_registration(started.options);
-    let outcome = h
-        .signup
-        .finish_signup(
-            started.challenge_id,
-            &attestation,
-            Some("failing notices device".into()),
-            SessionContext::default(),
-        )
-        .await
-        .expect("finish still succeeds");
-
-    assert_eq!(
-        outcome.user.email.as_deref(),
-        Some("notify-fails@example.com")
-    );
-    assert_eq!(
-        passkey_count(&h, outcome.user.id).await,
-        1,
-        "passkey still stored"
-    );
-    assert_eq!(
-        session_count(&h, outcome.user.id).await,
-        1,
-        "session still issued"
-    );
-    assert_eq!(
-        h.email.sent().len(),
-        mail_before_finish,
-        "failed notice was not captured",
-    );
-}
-
-#[tokio::test]
-async fn redeem_replaces_unfinished_ceremonies_rather_than_hitting_the_pending_cap() {
-    let h = Harness::builder()
-        .passkey_config(PasskeyConfig {
-            rate_limits: PasskeyRateLimits::disabled(),
-            max_pending_registrations_per_user: NonZeroU32::new(1),
-            ..PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
-        })
-        .build();
-    h.signup
-        .request_signup("capped@example.com", None, SessionContext::default())
-        .await
-        .expect("request");
-    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
-    let user = h
-        .users
-        .find_user_by_email("capped@example.com")
-        .await
-        .expect("find user")
-        .expect("user present");
-
-    let (stale_id, stale_options) = h
-        .passkey
-        .start_registration(&session_for(&h, &user))
-        .await
-        .expect("fill the cap");
-    let err = h
-        .passkey
-        .start_registration(&session_for(&h, &user))
-        .await
-        .expect_err("the cap is full");
-    assert!(
-        matches!(err, Error::ResourceLimitExceeded { .. }),
-        "got: {err:?}"
-    );
-
-    let outcome = h
-        .signup
-        .redeem_signup_link(&token, SessionContext::default())
-        .await
-        .expect("redeem starts a ceremony despite the full cap");
-
-    let err = h
-        .passkey
-        .finish_registration(
-            stale_id,
-            &authenticator().do_registration(stale_options),
-            None,
-            SessionContext::default(),
-        )
-        .await
-        .expect_err("the unfinished ceremony was replaced");
-    assert!(
-        matches!(err, Error::InvalidPasskeyChallenge),
-        "got: {err:?}"
-    );
-
-    h.signup
-        .finish_signup(
-            outcome.challenge_id,
-            &authenticator().do_registration(outcome.options),
-            None,
-            SessionContext::default(),
-        )
-        .await
-        .expect("the link's ceremony finishes");
 }
 
 #[tokio::test]

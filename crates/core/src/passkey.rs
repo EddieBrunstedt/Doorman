@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chrono::{DateTime, Utc};
 use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
@@ -14,16 +13,18 @@ use webauthn_rs::prelude::{
 
 use crate::assertion::{AssertionVerifier, VerifiedAssertion};
 use crate::audit::{Actor, AuditDispatch, AuditEventKind};
-use crate::challenge::{Login, PasskeyChallenge, RedeemedRegistration, Registration};
+use crate::challenge::{Login, PasskeyChallenge};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::SecurityNotices;
 use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
+use crate::passkey_registration::{
+    FinishRules, PasskeyCap, PasskeyRegistrations, RegisteredPasskey,
+};
 use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::recovery_cool_down::RecoveryCoolDown;
-use crate::redeem::Redeemer;
 use crate::session::{IssuedSession, SessionContext};
 use crate::session_records::SessionRecords;
 use crate::storage::{
@@ -62,33 +63,6 @@ impl Default for PasskeyRateLimits {
             authenticate_start_per_ip: Some(Self::DEFAULT_START_PER_IP),
             authenticate_finish_per_ip: Some(Self::DEFAULT_FINISH_PER_IP),
             authenticate_finish_per_passkey: Some(Self::DEFAULT_FINISH_PER_PASSKEY),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum EmailLinkRegistration {
-    Signup,
-    Recovery { cool_down: chrono::Duration },
-}
-
-impl EmailLinkRegistration {
-    fn purpose(self) -> RegistrationPurpose {
-        match self {
-            Self::Signup => RegistrationPurpose::Signup,
-            Self::Recovery { .. } => RegistrationPurpose::Recovery,
-        }
-    }
-
-    // A user who has lost their passkeys may still sit at the cap, and recovery is their way back.
-    fn enforces_passkey_cap(self) -> bool {
-        matches!(self, Self::Signup)
-    }
-
-    fn started_cool_down(self, now: DateTime<Utc>) -> RecoveryCoolDown {
-        match self {
-            Self::Signup => RecoveryCoolDown::NONE,
-            Self::Recovery { cool_down } => RecoveryCoolDown::start(now, cool_down),
         }
     }
 }
@@ -152,7 +126,7 @@ pub struct RegistrationOutcome {
 pub struct PasskeyManager {
     records: UserRecords,
     passkeys: Arc<dyn PasskeyStore>,
-    registrations: PasskeyChallenge<Registration>,
+    registrations: PasskeyRegistrations,
     logins: PasskeyChallenge<Login>,
     assertions: AssertionVerifier,
     sessions: SessionRecords,
@@ -162,33 +136,23 @@ pub struct PasskeyManager {
     notices: SecurityNotices,
     rate_limiter: Arc<dyn RateLimiter>,
     metrics: Arc<dyn MetricSink>,
-    webauthn: Arc<Webauthn>,
     config: PasskeyConfig,
 }
 
 impl PasskeyManager {
-    pub(crate) fn new(deps: &CoreDeps, config: PasskeyConfig, webauthn: Arc<Webauthn>) -> Self {
-        fn challenge<P>(
-            deps: &CoreDeps,
-            config: &PasskeyConfig,
-            webauthn: &Arc<Webauthn>,
-        ) -> PasskeyChallenge<P> {
-            PasskeyChallenge::new(
-                config,
-                webauthn.clone(),
-                deps.passkey_challenges.clone(),
-                deps.passkeys.clone(),
-                Redeemer::from_deps(deps),
-                deps.clock.clone(),
-            )
-        }
+    pub(crate) fn new(
+        deps: &CoreDeps,
+        registrations: PasskeyRegistrations,
+        config: PasskeyConfig,
+        webauthn: Arc<Webauthn>,
+    ) -> Self {
         Self {
             records: UserRecords::new(deps),
             passkeys: deps.passkeys.clone(),
-            registrations: challenge(deps, &config, &webauthn),
-            logins: challenge(deps, &config, &webauthn),
+            registrations,
+            logins: PasskeyChallenge::from_deps(deps, &config, webauthn.clone()),
             assertions: AssertionVerifier::new(
-                webauthn.clone(),
+                webauthn,
                 deps.users.clone(),
                 deps.passkeys.clone(),
                 deps.clock.clone(),
@@ -200,7 +164,6 @@ impl PasskeyManager {
             notices: deps.notices.clone(),
             rate_limiter: deps.rate_limiter.clone(),
             metrics: deps.metrics.clone(),
-            webauthn,
             config,
         }
     }
@@ -211,20 +174,11 @@ impl PasskeyManager {
         session: &Session,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let cool_down = RecoveryCoolDown::of_session(session, self.clock.now());
-        self.issue_registration(session.user_id, RegistrationPurpose::AddPasskey, cool_down)
-            .await
-    }
-
-    async fn issue_registration(
-        &self,
-        user_id: UserId,
-        purpose: RegistrationPurpose,
-        cool_down: RecoveryCoolDown,
-    ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
-        let user = self.records.find_active(user_id).await?;
-        let (id, ccr) = self.registrations.issue(&user, purpose, cool_down).await?;
-        tracing::info!(outcome = "started", "passkey registration started");
-        Ok((id, ccr))
+        let started = self
+            .registrations
+            .start(session.user_id, RegistrationPurpose::AddPasskey, cool_down)
+            .await?;
+        Ok((started.challenge_id, started.options))
     }
 
     #[tracing::instrument(
@@ -238,144 +192,17 @@ impl PasskeyManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<StoredPasskey> {
-        let registration = self
-            .redeem_registration(challenge_id, RegistrationPurpose::AddPasskey, &context)
-            .await?;
-        self.enforce_passkey_cap(registration.user.id).await?;
-        let passkey =
-            self.verify_registration(&registration, response, name, registration.cool_down)?;
-        self.store_passkey(&registration.user, passkey, &context)
-            .await
-    }
-
-    pub(crate) async fn start_email_link_registration(
-        &self,
-        user_id: UserId,
-        registration: EmailLinkRegistration,
-    ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
-        self.registrations.invalidate_pending(user_id).await?;
-        let cool_down = registration.started_cool_down(self.clock.now());
-        self.issue_registration(user_id, registration.purpose(), cool_down)
-            .await
-    }
-
-    pub(crate) async fn finish_email_link_registration(
-        &self,
-        challenge_id: PasskeyChallengeId,
-        response: &RegisterPublicKeyCredential,
-        name: Option<String>,
-        context: SessionContext,
-        registration: EmailLinkRegistration,
-    ) -> Result<RegistrationOutcome> {
-        let started = registration.started_cool_down(self.clock.now());
-
-        let redeemed = self
-            .redeem_registration(challenge_id, registration.purpose(), &context)
-            .await?;
-        let user = &redeemed.user;
-        if registration.enforces_passkey_cap() {
-            self.enforce_passkey_cap(user.id).await?;
-        }
-        let cool_down = redeemed.cool_down.extended_by(started);
-        let passkey = self.verify_registration(&redeemed, response, name, cool_down)?;
-        // Registrations started before the recovery may belong to whoever holds the lost passkey.
-        if let EmailLinkRegistration::Recovery { .. } = registration {
-            self.registrations.invalidate_pending(user.id).await?;
-        }
-        let passkey = self.store_passkey(user, passkey, &context).await?;
-        let session = self
-            .sessions
-            .issue(user.id, context.clone(), cool_down)
-            .await?;
-        self.audit
-            .emit(
-                &context,
-                AuditEventKind::LoginSucceeded { user_id: user.id },
-            )
-            .await;
-
-        Ok(RegistrationOutcome {
-            user: redeemed.user,
-            session,
-            passkey,
-        })
-    }
-
-    async fn redeem_registration(
-        &self,
-        challenge_id: PasskeyChallengeId,
-        purpose: RegistrationPurpose,
-        context: &SessionContext,
-    ) -> Result<RedeemedRegistration> {
-        let registration = self
-            .registrations
-            .redeem(challenge_id, purpose, context)
-            .await?;
-        tracing::Span::current().record("user_id", tracing::field::display(registration.user.id));
-        Ok(registration)
-    }
-
-    async fn enforce_passkey_cap(&self, user_id: UserId) -> Result<()> {
-        let Some(max) = self.config.max_passkeys_per_user else {
-            return Ok(());
+        let rules = FinishRules {
+            purpose: RegistrationPurpose::AddPasskey,
+            passkey_cap: PasskeyCap::Enforced,
+            cool_down: RecoveryCoolDown::NONE,
         };
-        let count = self.passkeys.list_passkeys_for_user(user_id).await?.len();
-        if count >= max.get() as usize {
-            tracing::warn!(%user_id, max = max.get(), "passkey registration rejected: passkey cap reached");
-            return Err(Error::ResourceLimitExceeded {
-                resource: "passkeys",
-                limit: max.get(),
-            });
-        }
-        Ok(())
-    }
-
-    fn verify_registration(
-        &self,
-        registration: &RedeemedRegistration,
-        response: &RegisterPublicKeyCredential,
-        name: Option<String>,
-        cool_down: RecoveryCoolDown,
-    ) -> Result<StoredPasskey> {
-        let user_id = registration.user.id;
-        let passkey = self
-            .webauthn
-            .finish_passkey_registration(response, &registration.state)
-            .map_err(|e| Error::Webauthn(e.to_string()))?;
-
-        let metadata = PasskeyMetadata::from_passkey(&passkey);
-        if !metadata.user_verified {
-            tracing::warn!(%user_id, outcome = "user_verification_missing", "passkey registration failed");
-            return Err(Error::UserVerificationRequired);
-        }
-        Ok(StoredPasskey {
-            credential_id: passkey.cred_id().to_vec(),
-            user_id,
-            passkey: encode_passkey(&passkey)?,
-            name,
-            created_at: self.clock.now(),
-            last_used_at: None,
-            aaguid: metadata.aaguid,
-            transports: metadata.transports,
-            backup_eligible: metadata.backup_eligible,
-            backup_state: metadata.backup_state,
-            recovery_cool_down_until: cool_down.until(),
-        })
-    }
-
-    async fn store_passkey(
-        &self,
-        user: &User,
-        passkey: StoredPasskey,
-        context: &SessionContext,
-    ) -> Result<StoredPasskey> {
-        self.passkeys.add_passkey(passkey.clone()).await?;
-
-        self.audit
-            .emit(context, AuditEventKind::PasskeyAdded { user_id: user.id })
-            .await;
+        let RegisteredPasskey { user, passkey, .. } = self
+            .registrations
+            .finish(challenge_id, response, name, &context, rules)
+            .await?;
         self.notices
-            .passkey_registered(user, passkey.name.as_deref())
+            .passkey_registered(&user, passkey.name.as_deref())
             .await;
         Ok(passkey)
     }
@@ -626,11 +453,11 @@ impl Drop for AuthLatencyGuard {
 }
 
 pub(crate) struct PasskeyMetadata {
-    aaguid: Option<Uuid>,
-    transports: Vec<String>,
+    pub(crate) aaguid: Option<Uuid>,
+    pub(crate) transports: Vec<String>,
     pub(crate) backup_eligible: bool,
     pub(crate) backup_state: bool,
-    user_verified: bool,
+    pub(crate) user_verified: bool,
 }
 
 impl PasskeyMetadata {

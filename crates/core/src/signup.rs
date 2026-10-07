@@ -8,14 +8,14 @@ use crate::assembly::AssemblyError;
 use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
 use crate::email::{self, SecurityNotices};
-use crate::email_link::{self, EmailLinks, TOKEN_PLACEHOLDER};
+use crate::email_link::TOKEN_PLACEHOLDER;
+use crate::email_link_registration::{EmailLinkRegistration, Signup};
 use crate::error::{Error, Result};
-use crate::passkey::{
-    EmailLinkRegistration, PasskeyManager, RegistrationOutcome, StartedRegistration,
-};
+use crate::passkey::{RegistrationOutcome, StartedRegistration};
+use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
 use crate::session::SessionContext;
-use crate::storage::{PasskeyChallengeId, User};
+use crate::storage::{PasskeyChallengeId, PasskeyStore, User};
 use crate::user_records::UserRecords;
 
 #[derive(Debug, Clone)]
@@ -104,9 +104,9 @@ impl Default for SignupConfig {
 
 #[derive(Clone)]
 pub struct SignupManager {
-    passkeys: PasskeyManager,
+    passkeys: Arc<dyn PasskeyStore>,
     records: UserRecords,
-    link: EmailLinks<email_link::Signup>,
+    registration: EmailLinkRegistration<Signup>,
     notices: SecurityNotices,
     rate_limiter: Arc<dyn RateLimiter>,
     audit: AuditDispatch,
@@ -116,13 +116,19 @@ pub struct SignupManager {
 impl SignupManager {
     pub(crate) fn new(
         deps: &CoreDeps,
-        passkeys: PasskeyManager,
+        registrations: PasskeyRegistrations,
         config: SignupConfig,
     ) -> std::result::Result<Self, AssemblyError> {
         Ok(Self {
-            passkeys,
+            passkeys: deps.passkeys.clone(),
             records: UserRecords::new(deps),
-            link: EmailLinks::new(deps, &config.url_template, config.token_lifetime)?,
+            registration: EmailLinkRegistration::new(
+                deps,
+                registrations,
+                Signup,
+                &config.url_template,
+                config.token_lifetime,
+            )?,
             notices: deps.notices.clone(),
             rate_limiter: deps.rate_limiter.clone(),
             audit: deps.audit.clone(),
@@ -206,7 +212,12 @@ impl SignupManager {
     async fn request_for_existing(&self, existing: &User, context: &SessionContext) -> Result<()> {
         tracing::Span::current().record("user_id", tracing::field::display(existing.id));
 
-        if self.passkeys.count_passkeys(existing.id).await? == 0 {
+        if self
+            .passkeys
+            .list_passkeys_for_user(existing.id)
+            .await?
+            .is_empty()
+        {
             self.send_link(existing, context).await?;
             tracing::info!(
                 outcome = "reissued",
@@ -228,7 +239,7 @@ impl SignupManager {
     }
 
     async fn send_link(&self, user: &User, context: &SessionContext) -> Result<()> {
-        let url = self.link.issue(user.id, ()).await?;
+        let url = self.registration.issue_link(user.id).await?;
         self.notices
             .send_best_effort(user, "signup link", |emails| {
                 emails.signup_email(user, &url)
@@ -252,26 +263,13 @@ impl SignupManager {
         token: &str,
         context: SessionContext,
     ) -> Result<StartedRegistration> {
-        let (user, ()) = self.link.redeem(token, &context).await?;
-        self.records.mark_email_verified(&user).await?;
-        let (challenge_id, options) = self
-            .passkeys
-            .start_email_link_registration(user.id, EmailLinkRegistration::Signup)
-            .await?;
-
-        self.audit
-            .emit(
-                &context,
-                AuditEventKind::SignupLinkRedeemed { user_id: user.id },
-            )
-            .await;
-        tracing::info!(outcome = "redeemed", "signup link redeemed");
-        Ok(StartedRegistration {
-            challenge_id,
-            options,
-        })
+        self.registration.redeem(token, context).await
     }
 
+    #[tracing::instrument(
+        skip(self, response, name, context),
+        fields(method = "signup", user_id = tracing::field::Empty),
+    )]
     pub async fn finish_signup(
         &self,
         challenge_id: PasskeyChallengeId,
@@ -279,17 +277,8 @@ impl SignupManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<RegistrationOutcome> {
-        let outcome = self
-            .passkeys
-            .finish_email_link_registration(
-                challenge_id,
-                response,
-                name,
-                context,
-                EmailLinkRegistration::Signup,
-            )
-            .await?;
-        tracing::info!(outcome = "succeeded", "signup finished");
-        Ok(outcome)
+        self.registration
+            .finish(challenge_id, response, name, context)
+            .await
     }
 }
