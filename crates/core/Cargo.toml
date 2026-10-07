@@ -40,24 +40,6 @@ workspace = true
 all-features = true
 
 [dev-dependencies]
-criterion.workspace = true
 doorman-test-support = { path = "../test-support" }
 proptest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
-webauthn-authenticator-rs.workspace = true
-
-[[bench]]
-name = "session"
-harness = false
-
-[[bench]]
-name = "rate_limit"
-harness = false
-
-[[bench]]
-name = "signup"
-harness = false
-
-[[bench]]
-name = "passkey_auth"
-harness = false

@@ -31,12 +31,6 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 uuid.workspace = true
 
 [dev-dependencies]
-criterion.workspace = true
 doorman-conformance = { path = "../conformance" }
 testcontainers-modules = { version = "0.15", features = ["postgres", "mysql", "mariadb"] }
 tokio.workspace = true
-
-[[bench]]
-name = "storage"
-harness = false
-required-features = ["sqlite"]

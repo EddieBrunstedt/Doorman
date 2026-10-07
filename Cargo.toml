@@ -40,7 +40,6 @@ all = { level = "deny", priority = -1 }
 async-trait = "0.1"
 base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
-criterion = { version = "0.8", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
 proptest = "1"
 rand = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
@@ -65,13 +64,4 @@ webauthn-rs-proto = "0.5"
 debug = "line-tables-only"
 
 [profile.dev.package."*"]
-debug = false
-
-# Pinned bench profile: optimise like release but with a single codegen unit
-# and fat LTO so numbers are stable run-to-run and don't drift with incremental
-# codegen-unit partitioning.
-[profile.bench]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
 debug = false
