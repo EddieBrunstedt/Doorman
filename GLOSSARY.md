@@ -36,7 +36,7 @@ Passkey-only authentication for a single application: passkeys are the only way 
 
 **Destructive action**: An action that someone holding a stolen session could use to lock the real user out. _Avoid_: protected action, sensitive action
 
-**Recovery cool-down**: The period after a recovery during which destructive actions are refused. `cool_down` is its spelling in identifiers. _Avoid_: restricted session, cooldown
+**Recovery cool-down**: The period after a recovery during which destructive actions are refused to every session that started from the recovered passkey, or from a passkey added in one of those sessions. The user's other passkeys and their sessions are unaffected. `cool_down` is its spelling in identifiers. _Avoid_: restricted session, cooldown
 
 **Re-authentication**: Proving possession of a passkey again, within an existing session, right before a destructive action. `reauth` is the accepted abbreviation in identifiers. _Avoid_: step-up
 
