@@ -1,5 +1,6 @@
 use chrono::Duration as ChronoDuration;
 use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
+use doorman_core::destructive::DestructiveAction;
 use doorman_core::error::Error;
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{UserId, UserStore};
@@ -59,10 +60,12 @@ impl Link {
             }
             Link::EmailChange => {
                 let user = provision_user(h, "alice@example.com").await;
-                h.user
-                    .request_email_change(
+                h.destructive_actions
+                    .perform(
                         &session_for(h, &user).await,
-                        "new@example.com",
+                        DestructiveAction::RequestEmailChange {
+                            new_email: "new@example.com".into(),
+                        },
                         None,
                         SessionContext::default(),
                     )

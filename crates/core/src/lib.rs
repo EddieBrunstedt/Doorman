@@ -13,6 +13,7 @@ pub mod audit;
 mod challenge;
 pub mod clock;
 mod context;
+pub mod destructive;
 pub mod email;
 pub mod email_link;
 mod email_link_registration;

@@ -4,11 +4,11 @@ use std::time::Duration;
 use crate::assembly::AssemblyError;
 use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
+use crate::destructive::Cleared;
 use crate::email::{self, EmailSender, EmailTemplates, SecurityNotices};
 use crate::email_link::{EmailChange, EmailLinks, TOKEN_PLACEHOLDER};
 use crate::error::{Error, Result};
-use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
-use crate::session::{ResolvedSession, SessionContext};
+use crate::session::SessionContext;
 use crate::storage::User;
 use crate::user_records::UserRecords;
 
@@ -35,7 +35,6 @@ impl Default for UserConfig {
 pub struct UserManager {
     records: UserRecords,
     link: EmailLinks<EmailChange>,
-    reauth: ReauthManager,
     audit: AuditDispatch,
     email: Arc<dyn EmailSender>,
     emails: Arc<dyn EmailTemplates>,
@@ -51,7 +50,6 @@ impl UserManager {
         Ok(Self {
             records: UserRecords::new(deps),
             link,
-            reauth: deps.reauth.clone(),
             audit: deps.audit.clone(),
             email: deps.email.clone(),
             emails: deps.emails.clone(),
@@ -59,22 +57,13 @@ impl UserManager {
         })
     }
 
-    #[tracing::instrument(skip(self, session, new_email, reauth, context), fields(user_id = %session.user_id))]
-    pub async fn request_email_change(
+    pub(crate) async fn request_email_change(
         &self,
-        session: &ResolvedSession,
+        cleared: Cleared,
         new_email: &str,
-        reauth: Option<ReauthProof>,
         context: SessionContext,
     ) -> Result<()> {
-        self.reauth
-            .ensure(
-                ReauthAction::RequestEmailChange,
-                session,
-                reauth.as_ref(),
-                &context,
-            )
-            .await?;
+        let session = cleared.session();
         let normalized = email::normalize_email(new_email);
         email::validate_email(&normalized)?;
 
@@ -123,18 +112,13 @@ impl UserManager {
         Ok(user)
     }
 
-    #[tracing::instrument(skip(self, session, reauth, context), fields(user_id = %session.user_id))]
-    pub async fn delete_user(
+    pub(crate) async fn delete_user(
         &self,
-        session: &ResolvedSession,
-        reauth: Option<ReauthProof>,
+        cleared: Cleared,
         context: SessionContext,
     ) -> Result<()> {
-        self.reauth
-            .ensure(ReauthAction::DeleteUser, session, reauth.as_ref(), &context)
-            .await?;
         self.records
-            .delete(session.user_id, Actor::from(&context))
+            .delete(cleared.session().user_id, Actor::from(&context))
             .await
     }
 }

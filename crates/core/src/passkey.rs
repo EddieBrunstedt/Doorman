@@ -16,6 +16,7 @@ use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::challenge::{Login, PasskeyChallenge};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
+use crate::destructive::Cleared;
 use crate::email::SecurityNotices;
 use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
@@ -23,7 +24,6 @@ use crate::passkey_registration::{
     FinishRules, PasskeyCap, PasskeyRegistrations, RegisteredPasskey,
 };
 use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
-use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::{IssuedSession, ResolvedSession, SessionContext};
 use crate::session_records::SessionRecords;
@@ -130,7 +130,6 @@ pub struct PasskeyManager {
     logins: PasskeyChallenge<Login>,
     assertions: AssertionVerifier,
     sessions: SessionRecords,
-    reauth: ReauthManager,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     notices: SecurityNotices,
@@ -158,7 +157,6 @@ impl PasskeyManager {
                 deps.clock.clone(),
             ),
             sessions: deps.sessions.clone(),
-            reauth: deps.reauth.clone(),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             notices: deps.notices.clone(),
@@ -310,25 +308,14 @@ impl PasskeyManager {
         Ok(passkeys.into_iter().map(PasskeySummary::from).collect())
     }
 
-    #[tracing::instrument(skip(self, session, credential_id, reauth, context), fields(user_id = %session.user_id))]
-    pub async fn remove_passkey(
+    pub(crate) async fn remove_passkey(
         &self,
-        session: &ResolvedSession,
+        cleared: Cleared,
         credential_id: &[u8],
-        reauth: Option<ReauthProof>,
         context: SessionContext,
     ) -> Result<()> {
-        self.reauth
-            .ensure(
-                ReauthAction::RemovePasskey,
-                session,
-                reauth.as_ref(),
-                &context,
-            )
-            .await?;
-        let user_id = session.user_id;
         self.remove_passkey_for(
-            user_id,
+            cleared.session().user_id,
             credential_id,
             Actor::from(&context),
             PasskeyRemovalNotice::SelfService,

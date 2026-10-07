@@ -6,16 +6,17 @@ use axum::response::Response;
 use axum::routing::{delete, get, post};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use doorman_core::destructive::DestructiveAction;
 use doorman_core::passkey::PasskeyManager;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use crate::dto::{
-    AuthResponse, PasskeyAuthenticateFinishRequest, PasskeyChallenge, PasskeyDto,
-    PasskeyRenameRequest, RegistrationFinishRequest, RemovePasskeyRequest,
+    AuthResponse, DestructiveActionRequest, PasskeyAuthenticateFinishRequest, PasskeyChallenge,
+    PasskeyDto, PasskeyRenameRequest, RegistrationFinishRequest,
 };
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, RequestContext};
-use crate::routes::{auth_success, parse_challenge_id, reauth_proof};
+use crate::routes::{auth_success, parse_challenge_id, perform};
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
@@ -98,15 +99,14 @@ async fn remove(
     auth: AuthSession,
     RequestContext(context): RequestContext,
     Path(credential_id): Path<String>,
-    body: Option<Json<RemovePasskeyRequest>>,
+    body: Option<Json<DestructiveActionRequest>>,
 ) -> Result<StatusCode, ErrorResponse> {
-    let bytes = URL_SAFE_NO_PAD
+    let credential_id = URL_SAFE_NO_PAD
         .decode(credential_id.as_bytes())
         .map_err(|_| ErrorResponse(doorman_core::Error::PasskeyNotFound))?;
-    let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
-    manager(&state)
-        .remove_passkey(&auth.session, &bytes, proof, context)
-        .await?;
+    let reauth = body.and_then(|Json(b)| b.reauthentication);
+    let action = DestructiveAction::RemovePasskey { credential_id };
+    perform(&state, &auth, action, reauth, context).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

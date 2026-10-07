@@ -7,9 +7,9 @@ use std::time::Duration;
 use crate::audit::Actor;
 use crate::clock::Clock;
 use crate::context::CoreDeps;
+use crate::destructive::Cleared;
 use crate::email::SecurityNotices;
 use crate::error::Result;
-use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::session_records::SessionRecords;
 use crate::storage::{Session, SessionId, SessionSummary, User};
 pub use crate::token::hash_token;
@@ -89,7 +89,6 @@ impl Deref for ResolvedSession {
 pub struct SessionManager {
     records: SessionRecords,
     users: UserRecords,
-    reauth: ReauthManager,
     notices: SecurityNotices,
 }
 
@@ -98,7 +97,6 @@ impl SessionManager {
         Self {
             records: deps.sessions.clone(),
             users: UserRecords::new(deps),
-            reauth: deps.reauth.clone(),
             notices: deps.notices.clone(),
         }
     }
@@ -131,64 +129,36 @@ impl SessionManager {
             .await
     }
 
-    #[tracing::instrument(skip_all, fields(user_id = %session.user_id, session_id = %session.id))]
-    pub async fn log_out_everywhere(
-        &self,
-        session: &ResolvedSession,
-        reauth: Option<ReauthProof>,
-        context: SessionContext,
-    ) -> Result<()> {
-        self.revoke_others(session, reauth, context).await?;
-        self.log_out(session).await
+    pub(crate) async fn log_out_everywhere(&self, cleared: Cleared) -> Result<()> {
+        let session = cleared.session();
+        self.revoke_others_of(session).await?;
+        self.records
+            .revoke_owned(session.user_id, session.id, Actor::of_session(session))
+            .await
     }
 
-    #[tracing::instrument(skip_all, fields(user_id = %session.user_id, session_id = %target))]
-    pub async fn revoke(
-        &self,
-        session: &ResolvedSession,
-        target: SessionId,
-        reauth: Option<ReauthProof>,
-        context: SessionContext,
-    ) -> Result<()> {
-        if target == session.id {
-            return self.log_out(session).await;
-        }
-        self.reauth
-            .ensure(
-                ReauthAction::RevokeSession,
-                session,
-                reauth.as_ref(),
-                &context,
-            )
-            .await?;
+    pub(crate) async fn revoke(&self, cleared: Cleared, target: SessionId) -> Result<()> {
+        let session = cleared.session();
         self.records
             .revoke_owned(session.user_id, target, Actor::of_session(session))
             .await?;
-        if let Some(user) = self
-            .users
-            .find_for_notice(session.user_id, "other-session revoked")
-            .await
+        // Revoking the current session is logging out, so there is no other session to tell of.
+        if target != session.id
+            && let Some(user) = self
+                .users
+                .find_for_notice(session.user_id, "other-session revoked")
+                .await
         {
             self.notices.other_session_revoked(&user).await;
         }
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, fields(user_id = %session.user_id, session_id = %session.id))]
-    pub async fn revoke_others(
-        &self,
-        session: &ResolvedSession,
-        reauth: Option<ReauthProof>,
-        context: SessionContext,
-    ) -> Result<u64> {
-        self.reauth
-            .ensure(
-                ReauthAction::RevokeOtherSessions,
-                session,
-                reauth.as_ref(),
-                &context,
-            )
-            .await?;
+    pub(crate) async fn revoke_others(&self, cleared: Cleared) -> Result<()> {
+        self.revoke_others_of(cleared.session()).await
+    }
+
+    async fn revoke_others_of(&self, session: &Session) -> Result<()> {
         let count = self
             .records
             .revoke_others(session, Actor::of_session(session))
@@ -201,7 +171,7 @@ impl SessionManager {
         {
             self.notices.other_sessions_revoked(&user).await;
         }
-        Ok(count)
+        Ok(())
     }
 }
 

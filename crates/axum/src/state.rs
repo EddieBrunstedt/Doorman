@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use doorman_core::assembly::AuthCore;
+use doorman_core::destructive::DestructiveActions;
 use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::PasskeyManager;
 use doorman_core::reauth::ReauthManager;
@@ -48,5 +49,9 @@ impl AuthState {
 
     pub fn operator(&self) -> &OperatorManager {
         &self.core.operator
+    }
+
+    pub fn destructive_actions(&self) -> &DestructiveActions {
+        &self.core.destructive_actions
     }
 }

@@ -164,9 +164,25 @@ impl SessionRecords {
         }
     }
 
+    // A destructive action reads its session again, so one revoked or expired since it was
+    // resolved no longer passes the gate.
+    pub(crate) async fn reread(&self, session: &Session) -> Result<Session> {
+        let stored = self
+            .sessions
+            .find_session_by_id(session.id)
+            .await?
+            .filter(|stored| stored.token_hash == session.token_hash);
+        self.live(stored).await
+    }
+
     #[tracing::instrument(skip(self, hash), fields(user_id = tracing::field::Empty, session_id = tracing::field::Empty))]
     async fn validate_by_hash(&self, hash: &TokenHash) -> Result<Session> {
-        let Some(session) = self.sessions.find_session_by_token_hash(hash).await? else {
+        let stored = self.sessions.find_session_by_token_hash(hash).await?;
+        self.live(stored).await
+    }
+
+    async fn live(&self, stored: Option<Session>) -> Result<Session> {
+        let Some(session) = stored else {
             tracing::warn!(outcome = "not_found", "session validate failed");
             return Err(Error::SessionNotFound);
         };

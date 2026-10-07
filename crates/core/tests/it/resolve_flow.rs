@@ -5,6 +5,7 @@ use doorman_core::Error;
 use doorman_core::assembly::AssemblyError;
 use doorman_core::audit::{AuditEventKind, OperatorActor};
 use doorman_core::clock::Clock;
+use doorman_core::destructive::DestructiveAction;
 use doorman_core::session::{SessionConfig, SessionContext, hash_token};
 use doorman_core::storage::{SessionStore, User, UserId, UserStatus, UserStore};
 
@@ -142,8 +143,15 @@ async fn the_user_read_is_fresh_in_every_process() {
     let found = other.sessions.find_user(&session).await.expect("find user");
     assert_eq!(found.email.as_deref(), Some("old@example.com"));
 
-    h.user
-        .request_email_change(&session, "new@example.com", None, SessionContext::default())
+    h.destructive_actions
+        .perform(
+            &session,
+            DestructiveAction::RequestEmailChange {
+                new_email: "new@example.com".into(),
+            },
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("request email change");
     h.user
@@ -164,8 +172,15 @@ async fn a_security_notice_goes_to_the_address_changed_in_another_process() {
     alice.log_in_again(&h).await;
     let session = alice.session.session;
 
-    h.user
-        .request_email_change(&session, "new@example.com", None, SessionContext::default())
+    h.destructive_actions
+        .perform(
+            &session,
+            DestructiveAction::RequestEmailChange {
+                new_email: "new@example.com".into(),
+            },
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("request email change");
     h.user
@@ -174,8 +189,13 @@ async fn a_security_notice_goes_to_the_address_changed_in_another_process() {
         .expect("confirm email change");
 
     other
-        .sessions
-        .revoke_others(&session, None, SessionContext::default())
+        .destructive_actions
+        .perform(
+            &session,
+            DestructiveAction::RevokeOtherSessions,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("revoke other sessions");
     let notice = h.email.sent().pop().expect("notice sent");

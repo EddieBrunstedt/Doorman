@@ -198,19 +198,7 @@ pub struct EmailChangeRequest {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DeleteUserRequest {
-    #[serde(default)]
-    pub reauthentication: Option<Reauthentication>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct RemovePasskeyRequest {
-    #[serde(default)]
-    pub reauthentication: Option<Reauthentication>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct RevokeSessionRequest {
+pub struct DestructiveActionRequest {
     #[serde(default)]
     pub reauthentication: Option<Reauthentication>,
 }

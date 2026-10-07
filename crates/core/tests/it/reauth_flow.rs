@@ -3,73 +3,61 @@ use crate::common;
 use doorman_core::Error;
 use doorman_core::audit::{AuditEventKind, AuthFailureReason, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
+use doorman_core::destructive::DestructiveAction;
 use doorman_core::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
 use doorman_core::session::{ResolvedSession, SessionContext};
-use doorman_core::storage::{PasskeyStore, StoredPasskey, UserStatus, UserStore};
+use doorman_core::storage::{PasskeyStore, SessionId, StoredPasskey, UserStatus, UserStore};
 
 use crate::common::{
     Harness, authenticator, kinds, make_user, register_passkey, session_count, session_for,
     session_in_cool_down_for, sign_in,
 };
 
-fn all_actions() -> [ReauthAction; 5] {
-    let listed = |action: ReauthAction| match action {
-        ReauthAction::DeleteUser
-        | ReauthAction::RequestEmailChange
-        | ReauthAction::RemovePasskey
-        | ReauthAction::RevokeOtherSessions
-        | ReauthAction::RevokeSession => action,
+fn every_action(other_session: SessionId, spare_passkey: &[u8]) -> [DestructiveAction; 6] {
+    let listed = |action: DestructiveAction| match action {
+        DestructiveAction::DeleteUser
+        | DestructiveAction::RequestEmailChange { .. }
+        | DestructiveAction::RemovePasskey { .. }
+        | DestructiveAction::RevokeSession { .. }
+        | DestructiveAction::RevokeOtherSessions
+        | DestructiveAction::LogOutEverywhere => action,
     };
     [
-        ReauthAction::DeleteUser,
-        ReauthAction::RequestEmailChange,
-        ReauthAction::RemovePasskey,
-        ReauthAction::RevokeOtherSessions,
-        ReauthAction::RevokeSession,
+        DestructiveAction::DeleteUser,
+        DestructiveAction::RequestEmailChange {
+            new_email: "new@example.com".into(),
+        },
+        DestructiveAction::RemovePasskey {
+            credential_id: spare_passkey.to_vec(),
+        },
+        DestructiveAction::RevokeSession { id: other_session },
+        DestructiveAction::RevokeOtherSessions,
+        DestructiveAction::LogOutEverywhere,
     ]
     .map(listed)
 }
 
 fn gated_harness() -> Harness {
     Harness::builder()
-        .reauth_policy(ReauthPolicy::required_for(all_actions()))
+        .reauth_policy(ReauthPolicy::required_for([
+            ReauthAction::DeleteUser,
+            ReauthAction::RequestEmailChange,
+            ReauthAction::RemovePasskey,
+            ReauthAction::RevokeOtherSessions,
+            ReauthAction::RevokeSession,
+        ]))
         .build()
 }
 
-#[tokio::test]
-async fn ensure_matrix_cool_down_blocks_every_action_before_policy() {
-    let cases = [(Harness::fresh(), "disabled"), (gated_harness(), "gated")];
-    for (h, policy) in &cases {
-        let user = make_user(h, "owner@example.com").await;
-        let cool_down_until = h.clock.now() + chrono::Duration::hours(24);
-        let in_cool_down = session_in_cool_down_for(h, &user, cool_down_until).await;
-        let plain = session_for(h, &user).await;
-        for action in all_actions() {
-            let blocked = h
-                .reauth
-                .ensure(action, &in_cool_down, None, &SessionContext::default())
-                .await;
-            assert!(
-                matches!(blocked, Err(Error::RecoveryCoolDownActive)),
-                "{action:?} in cool-down under {policy} policy: got {blocked:?}",
-            );
-
-            let outside = h
-                .reauth
-                .ensure(action, &plain, None, &SessionContext::default())
-                .await;
-            match *policy {
-                "disabled" => assert!(
-                    outside.is_ok(),
-                    "{action:?} outside cool-down under disabled policy: got {outside:?}",
-                ),
-                _ => assert!(
-                    matches!(outside, Err(Error::ReauthRequired)),
-                    "{action:?} outside cool-down under gated policy: got {outside:?}",
-                ),
-            }
-        }
-    }
+async fn perform(
+    h: &Harness,
+    session: &ResolvedSession,
+    action: DestructiveAction,
+    proof: Option<ReauthProof>,
+) -> Result<(), Error> {
+    h.destructive_actions
+        .perform(session, action, proof, SessionContext::default())
+        .await
 }
 
 async fn fresh_proof(
@@ -86,55 +74,77 @@ async fn fresh_proof(
 }
 
 #[tokio::test]
-async fn disabled_policy_lets_destructive_action_through_without_proof() {
-    let h = Harness::fresh();
-    let user = make_user(&h, "owner@example.com").await;
-    let mut wa = authenticator();
-    register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let session = session_for(&h, &user).await;
+async fn every_destructive_action_refuses_cool_down_before_the_policy_asks_for_a_proof() {
+    for gated in [false, true] {
+        for index in 0..6 {
+            let h = if gated {
+                gated_harness()
+            } else {
+                Harness::fresh()
+            };
+            let mut alice = sign_in(&h, "owner@example.com").await;
+            let other = alice.log_in_again(&h).await;
+            let spare =
+                register_passkey(&h, alice.user.id, &mut alice.authenticator, Some("spare")).await;
+            let action = every_action(other.session.id, &spare.credential_id)[index].clone();
+            let current = alice.session.session.clone();
+            let policy = if gated { "gated" } else { "disabled" };
 
-    h.user
-        .delete_user(&session, None, SessionContext::default())
-        .await
-        .expect("delete succeeds when reauth is disabled");
-    assert!(
-        h.users
-            .find_user_by_id(user.id)
-            .await
-            .expect("lookup")
-            .is_none(),
-        "the user is gone"
-    );
+            let cool_down_until = h.clock.now() + chrono::Duration::hours(1);
+            let in_cool_down = session_in_cool_down_for(&h, &alice.user, cool_down_until).await;
+            let proof = fresh_proof(&h, &in_cool_down, &mut alice.authenticator).await;
+            let refused = perform(&h, &in_cool_down, action.clone(), Some(proof)).await;
+            assert!(
+                matches!(refused, Err(Error::RecoveryCoolDownActive)),
+                "{action:?} in cool-down under {policy} policy: got {refused:?}",
+            );
+
+            let proof = if gated {
+                let refused = perform(&h, &current, action.clone(), None).await;
+                assert!(
+                    matches!(refused, Err(Error::ReauthRequired)),
+                    "{action:?} without a proof under {policy} policy: got {refused:?}",
+                );
+                Some(fresh_proof(&h, &current, &mut alice.authenticator).await)
+            } else {
+                None
+            };
+            perform(&h, &current, action.clone(), proof)
+                .await
+                .unwrap_or_else(|err| panic!("{action:?} under {policy} policy: {err:?}"));
+        }
+    }
 }
 
 #[tokio::test]
-async fn gated_action_without_proof_is_reauth_required() {
-    let h = gated_harness();
-    let user = make_user(&h, "owner@example.com").await;
-    let mut wa = authenticator();
-    register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let session = session_for(&h, &user).await;
-
-    let err = h
-        .user
-        .delete_user(&session, None, SessionContext::default())
+async fn the_gate_refuses_a_session_that_ended_after_it_was_resolved() {
+    let h = Harness::fresh();
+    let revoked = sign_in(&h, "revoked@example.com").await;
+    let session = revoked.session.session.clone();
+    h.session_manager
+        .log_out(&session)
         .await
-        .expect_err("missing proof must be rejected");
-    assert!(matches!(err, Error::ReauthRequired), "got: {err:?}");
-    assert!(
-        h.users
-            .find_user_by_id(user.id)
-            .await
-            .expect("lookup")
-            .is_some(),
-        "the user is untouched"
-    );
-    assert!(
-        !kinds(&h.audit.events())
-            .iter()
-            .any(|k| matches!(k, AuditEventKind::ReauthFailed { .. })),
-        "absent proof must not emit ReauthFailed"
-    );
+        .expect("log out elsewhere");
+    let err = perform(&h, &session, DestructiveAction::DeleteUser, None).await;
+    assert!(matches!(err, Err(Error::SessionNotFound)), "got {err:?}");
+
+    let expired = sign_in(&h, "expired@example.com").await;
+    let session = expired.session.session.clone();
+    h.clock.advance(chrono::Duration::hours(2));
+    let err = perform(&h, &session, DestructiveAction::DeleteUser, None).await;
+    assert!(matches!(err, Err(Error::SessionExpired)), "got {err:?}");
+
+    for user in [&revoked.user, &expired.user] {
+        assert!(
+            h.users
+                .find_user_by_id(user.id)
+                .await
+                .expect("lookup")
+                .is_some(),
+            "{} is untouched",
+            user.id
+        );
+    }
 }
 
 #[tokio::test]
@@ -146,8 +156,13 @@ async fn gated_action_with_fresh_proof_succeeds_and_audits() {
     let session = session_for(&h, &user).await;
 
     let proof = fresh_proof(&h, &session, &mut wa).await;
-    h.user
-        .delete_user(&session, Some(proof), SessionContext::default())
+    h.destructive_actions
+        .perform(
+            &session,
+            DestructiveAction::DeleteUser,
+            Some(proof),
+            SessionContext::default(),
+        )
         .await
         .expect("delete succeeds with a fresh proof");
     assert!(
@@ -176,15 +191,14 @@ async fn successful_reauth_records_the_passkey_use() {
     h.clock.advance(chrono::Duration::minutes(1));
 
     let proof = fresh_proof(&h, &session, &mut wa).await;
-    h.reauth
-        .ensure(
-            ReauthAction::RemovePasskey,
-            &session,
-            Some(&proof),
-            &SessionContext::default(),
-        )
-        .await
-        .expect("a fresh proof passes");
+    perform(
+        &h,
+        &session,
+        DestructiveAction::RevokeOtherSessions,
+        Some(proof),
+    )
+    .await
+    .expect("a fresh proof passes");
 
     let stored = h
         .passkeys
@@ -218,16 +232,14 @@ async fn reauth_refuses_a_disabled_users_passkey() {
         .await
         .expect("disable user");
 
-    let err = h
-        .reauth
-        .ensure(
-            ReauthAction::RemovePasskey,
-            &session,
-            Some(&proof),
-            &SessionContext::default(),
-        )
-        .await
-        .expect_err("a disabled user cannot re-authenticate");
+    let err = perform(
+        &h,
+        &session,
+        DestructiveAction::RevokeOtherSessions,
+        Some(proof),
+    )
+    .await
+    .expect_err("a disabled user cannot re-authenticate");
     assert!(matches!(err, Error::UserDisabled), "got: {err:?}");
 
     let stored = h
@@ -266,10 +278,12 @@ async fn challenge_is_single_use() {
     let passkeys = h.passkey.list_passkeys(user.id).await.expect("list");
     let target = passkeys[0].credential_id.clone();
 
-    h.passkey
-        .remove_passkey(
+    h.destructive_actions
+        .perform(
             &session,
-            &target,
+            DestructiveAction::RemovePasskey {
+                credential_id: target,
+            },
             Some(proof.clone()),
             SessionContext::default(),
         )
@@ -278,8 +292,15 @@ async fn challenge_is_single_use() {
 
     let other = passkeys[1].credential_id.clone();
     let err = h
-        .passkey
-        .remove_passkey(&session, &other, Some(proof), SessionContext::default())
+        .destructive_actions
+        .perform(
+            &session,
+            DestructiveAction::RemovePasskey {
+                credential_id: other,
+            },
+            Some(proof),
+            SessionContext::default(),
+        )
         .await
         .expect_err("replayed challenge must be rejected");
     assert!(matches!(err, Error::ReauthRequired), "got: {err:?}");
@@ -301,9 +322,10 @@ async fn login_challenge_is_not_a_reauth_proof() {
     let assertion = wa.do_authentication(options, &passkey.credential_id);
 
     let err = h
-        .user
-        .delete_user(
+        .destructive_actions
+        .perform(
             &session,
+            DestructiveAction::DeleteUser,
             Some(ReauthProof {
                 challenge_id,
                 assertion,
@@ -344,9 +366,10 @@ async fn expired_challenge_is_rejected() {
     h.clock.advance(chrono::Duration::minutes(6));
 
     let err = h
-        .user
-        .delete_user(
+        .destructive_actions
+        .perform(
             &session,
+            DestructiveAction::DeleteUser,
             Some(ReauthProof {
                 challenge_id,
                 assertion,
@@ -387,9 +410,10 @@ async fn assertion_from_another_users_passkey_is_rejected() {
     let assertion = attacker_wa.do_scoped_authentication(scoped_to(options, &attacker_passkey));
 
     let err = h
-        .user
-        .delete_user(
+        .destructive_actions
+        .perform(
             &owner_session,
+            DestructiveAction::DeleteUser,
             Some(ReauthProof {
                 challenge_id,
                 assertion,
@@ -418,24 +442,6 @@ async fn assertion_from_another_users_passkey_is_rejected() {
     );
 }
 
-#[tokio::test]
-async fn cool_down_beats_reauth() {
-    let h = gated_harness();
-    let user = make_user(&h, "owner@example.com").await;
-    let mut wa = authenticator();
-    register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let cool_down_until = h.clock.now() + chrono::Duration::hours(24);
-    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
-
-    let proof = fresh_proof(&h, &in_cool_down, &mut wa).await;
-    let err = h
-        .user
-        .delete_user(&in_cool_down, Some(proof), SessionContext::default())
-        .await
-        .expect_err("cool-down blocks even with a valid proof");
-    assert!(matches!(err, Error::RecoveryCoolDownActive), "got: {err:?}");
-}
-
 fn scoped_to(
     mut options: webauthn_rs::prelude::RequestChallengeResponse,
     credential_id: &[u8],
@@ -450,74 +456,24 @@ fn scoped_to(
 }
 
 #[tokio::test]
-async fn bulk_revocations_require_proof_when_gated() {
+async fn revoking_the_current_session_is_gated_like_any_other() {
     let h = gated_harness();
     let mut alice = sign_in(&h, "owner@example.com").await;
-    alice.log_in_again(&h).await;
     let current = alice.session.session.clone();
+    let action = DestructiveAction::RevokeSession { id: current.id };
 
-    let err = h
-        .session_manager
-        .revoke_others(&current, None, SessionContext::default())
-        .await
-        .err();
-    assert!(matches!(err, Some(Error::ReauthRequired)), "got: {err:?}");
-    let err = h
-        .session_manager
-        .log_out_everywhere(&current, None, SessionContext::default())
-        .await
-        .err();
-    assert!(matches!(err, Some(Error::ReauthRequired)), "got: {err:?}");
-    assert_eq!(
-        session_count(&h, alice.user.id).await,
-        2,
-        "nothing is revoked without a proof"
-    );
+    let err = perform(&h, &current, action.clone(), None).await;
+    assert!(matches!(err, Err(Error::ReauthRequired)), "got: {err:?}");
 
+    let mail_before = h.email.sent().len();
     let proof = fresh_proof(&h, &current, &mut alice.authenticator).await;
-    let removed = h
-        .session_manager
-        .revoke_others(&current, Some(proof), SessionContext::default())
+    perform(&h, &current, action, Some(proof))
         .await
-        .expect("revoke others with a fresh proof");
-    assert_eq!(removed, 1);
-
-    alice.log_in_again(&h).await;
-    let proof = fresh_proof(&h, &current, &mut alice.authenticator).await;
-    h.session_manager
-        .log_out_everywhere(&current, Some(proof), SessionContext::default())
-        .await
-        .expect("log out everywhere with a fresh proof");
+        .expect("revoke the current session with a fresh proof");
     assert_eq!(session_count(&h, alice.user.id).await, 0);
-}
-
-#[tokio::test]
-async fn revoke_requires_proof_only_for_another_session() {
-    let h = gated_harness();
-    let mut alice = sign_in(&h, "owner@example.com").await;
-    let other = alice.log_in_again(&h).await;
-    let current = alice.session.session.clone();
-
-    let err = h
-        .session_manager
-        .revoke(&current, other.session.id, None, SessionContext::default())
-        .await
-        .expect_err("another session needs a proof");
-    assert!(matches!(err, Error::ReauthRequired), "got: {err:?}");
-
-    let proof = fresh_proof(&h, &current, &mut alice.authenticator).await;
-    h.session_manager
-        .revoke(
-            &current,
-            other.session.id,
-            Some(proof),
-            SessionContext::default(),
-        )
-        .await
-        .expect("revoke another session with a fresh proof");
-
-    h.session_manager
-        .revoke(&current, current.id, None, SessionContext::default())
-        .await
-        .expect("self-revocation is never gated");
+    assert_eq!(
+        h.email.sent().len(),
+        mail_before,
+        "revoking the current session sends no other-session notice"
+    );
 }

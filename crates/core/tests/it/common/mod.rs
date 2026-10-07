@@ -11,6 +11,7 @@ use doorman_core::audit::{
     AuditEvent, AuditEventKind, AuditSink, RedemptionFailureReason, SecretKind,
 };
 use doorman_core::clock::Clock;
+use doorman_core::destructive::DestructiveActions;
 use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
 use doorman_core::error::StorageResult;
 use doorman_core::memory::{
@@ -240,6 +241,7 @@ pub struct Harness {
     pub user: UserManager,
     pub reauth: ReauthManager,
     pub operator: OperatorManager,
+    pub destructive_actions: DestructiveActions,
     pub session_manager: SessionManager,
     pub users: Arc<InMemoryUserStore>,
     pub user_store: Arc<CountingUserStore>,
@@ -421,6 +423,7 @@ impl HarnessBuilder {
             user: core.user,
             reauth: core.reauth,
             operator: core.operator,
+            destructive_actions: core.destructive_actions,
             session_manager: core.sessions,
             users,
             user_store,
@@ -536,7 +539,8 @@ async fn stored_session(
             token_hash: hash_token(&token),
             created_at: now,
             last_used_at: now,
-            expires_at: now + chrono::Duration::hours(1),
+            // Outlives any recovery cool-down a test sets, as a real session outlives the default one.
+            expires_at: now + chrono::Duration::days(30),
             ip: None,
             user_agent: None,
             recovery_cool_down_until: cool_down,

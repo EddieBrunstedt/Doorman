@@ -4,6 +4,7 @@ use std::time::Duration;
 use crate::audit::{AuditDispatch, AuditSink};
 use crate::clock::{Clock, SystemClock};
 use crate::context::CoreDeps;
+use crate::destructive::DestructiveActions;
 use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityNotices};
 use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::operator::{NoticePolicy, OperatorManager};
@@ -106,6 +107,7 @@ pub struct AuthCore {
     pub user: UserManager,
     pub reauth: ReauthManager,
     pub operator: OperatorManager,
+    pub destructive_actions: DestructiveActions,
 }
 
 impl AuthCore {
@@ -275,19 +277,17 @@ impl AuthCoreBuilder {
             &self.storage,
             clock.clone(),
             audit.clone(),
-            reauth_policy,
             webauthn.clone(),
         );
 
         let deps = CoreDeps::new(
-            clock,
+            clock.clone(),
             audit,
             email,
             emails,
             notices,
             limiter,
-            session_records,
-            reauth.clone(),
+            session_records.clone(),
             self.storage,
         )
         .with_metrics(metrics);
@@ -317,6 +317,16 @@ impl AuthCoreBuilder {
             self.notice_policy.unwrap_or_default(),
         );
 
+        let destructive_actions = DestructiveActions::new(
+            session_records,
+            reauth.clone(),
+            reauth_policy,
+            clock,
+            sessions.clone(),
+            passkey.clone(),
+            user.clone(),
+        );
+
         Ok(AuthCore {
             sessions,
             passkey,
@@ -325,6 +335,7 @@ impl AuthCoreBuilder {
             user,
             reauth,
             operator,
+            destructive_actions,
         })
     }
 }

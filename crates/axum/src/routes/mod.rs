@@ -2,8 +2,10 @@ use axum::Json;
 use axum::Router;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use doorman_core::destructive::DestructiveAction;
 use doorman_core::passkey::{RegistrationOutcome, StartedRegistration};
 use doorman_core::reauth::ReauthProof;
+use doorman_core::session::SessionContext;
 use doorman_core::storage::PasskeyChallengeId;
 use uuid::Uuid;
 use webauthn_rs::prelude::CreationChallengeResponse;
@@ -12,6 +14,7 @@ use crate::config::CookieConfig;
 use crate::cookies::{clear_session_cookie, session_cookie};
 use crate::dto::{AuthResponse, PasskeyChallenge, Reauthentication};
 use crate::error::ErrorResponse;
+use crate::extractors::AuthSession;
 use crate::state::AuthState;
 
 pub(crate) mod passkey;
@@ -47,17 +50,31 @@ pub(crate) fn parse_challenge_id(raw: &str) -> Result<PasskeyChallengeId, ErrorR
         .map_err(|_| ErrorResponse(doorman_core::Error::InvalidPasskeyChallenge))
 }
 
-pub(crate) fn reauth_proof(
-    reauth: Option<Reauthentication>,
-) -> Result<Option<ReauthProof>, ErrorResponse> {
-    reauth
-        .map(|r| {
-            Ok(ReauthProof {
-                challenge_id: parse_challenge_id(&r.challenge_id)?,
-                assertion: r.assertion,
-            })
+impl TryFrom<Reauthentication> for ReauthProof {
+    type Error = ErrorResponse;
+
+    fn try_from(reauth: Reauthentication) -> Result<Self, ErrorResponse> {
+        Ok(ReauthProof {
+            challenge_id: parse_challenge_id(&reauth.challenge_id)?,
+            assertion: reauth.assertion,
         })
-        .transpose()
+    }
+}
+
+pub(crate) async fn perform(
+    state: &AuthState,
+    auth: &AuthSession,
+    action: DestructiveAction,
+    reauth: Option<Reauthentication>,
+    context: SessionContext,
+) -> Result<(), ErrorResponse> {
+    let proof = reauth.map(ReauthProof::try_from).transpose()?;
+    state
+        .core
+        .destructive_actions
+        .perform(&auth.session, action, proof, context)
+        .await?;
+    Ok(())
 }
 
 pub(crate) fn redeem_response(

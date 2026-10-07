@@ -4,6 +4,7 @@ use std::time::Duration;
 use chrono::Duration as ChronoDuration;
 use doorman_core::audit::AuditEventKind;
 use doorman_core::clock::Clock;
+use doorman_core::destructive::DestructiveAction;
 use doorman_core::error::Error;
 use doorman_core::session::{ResolvedSession, SessionConfig, SessionContext, hash_token};
 use doorman_core::storage::{Session, SessionId, SessionStore, StoredPasskey, User, UserId};
@@ -41,15 +42,13 @@ impl BulkRevocation {
     const ALL: [Self; 2] = [Self::RevokeOthers, Self::LogOutEverywhere];
 
     async fn run(self, h: &Harness, session: &ResolvedSession) -> Result<(), Error> {
-        let manager = &h.session_manager;
-        let context = SessionContext::default();
-        match self {
-            Self::RevokeOthers => manager
-                .revoke_others(session, None, context)
-                .await
-                .map(|_| ()),
-            Self::LogOutEverywhere => manager.log_out_everywhere(session, None, context).await,
-        }
+        let action = match self {
+            Self::RevokeOthers => DestructiveAction::RevokeOtherSessions,
+            Self::LogOutEverywhere => DestructiveAction::LogOutEverywhere,
+        };
+        h.destructive_actions
+            .perform(session, action, None, SessionContext::default())
+            .await
     }
 }
 
@@ -238,13 +237,16 @@ async fn revoke_others_keeps_only_the_acting_session_audits_and_notifies() {
     let current = &alice.session.session;
     let mail_before = h.email.sent().len();
 
-    let removed = h
-        .session_manager
-        .revoke_others(current, None, SessionContext::default())
+    h.destructive_actions
+        .perform(
+            current,
+            DestructiveAction::RevokeOtherSessions,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("revoke other sessions");
 
-    assert_eq!(removed, 2);
     assert!(
         session_exists(&h, current.id).await,
         "the acting session stays"
@@ -278,8 +280,13 @@ async fn log_out_everywhere_ends_every_session_of_the_user_only() {
     let mail_before = h.email.sent().len();
     let audited_before = h.audit.len();
 
-    h.session_manager
-        .log_out_everywhere(current, None, SessionContext::default())
+    h.destructive_actions
+        .perform(
+            current,
+            DestructiveAction::LogOutEverywhere,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("log out everywhere");
 
@@ -348,8 +355,15 @@ async fn revoke_notifies_only_for_another_session() {
     let current = &alice.session.session;
     let mail_before = h.email.sent().len();
 
-    h.session_manager
-        .revoke(current, other.session.id, None, SessionContext::default())
+    h.destructive_actions
+        .perform(
+            current,
+            DestructiveAction::RevokeSession {
+                id: other.session.id,
+            },
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("revoke other");
     assert!(!session_exists(&h, other.session.id).await);
@@ -359,8 +373,13 @@ async fn revoke_notifies_only_for_another_session() {
         "revoking another session notifies"
     );
 
-    h.session_manager
-        .revoke(current, current.id, None, SessionContext::default())
+    h.destructive_actions
+        .perform(
+            current,
+            DestructiveAction::RevokeSession { id: current.id },
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("revoke self");
     assert!(!session_exists(&h, current.id).await);
@@ -378,10 +397,12 @@ async fn revoke_hides_another_users_session() {
     let bob = sign_in(&h, "bob@example.com").await;
 
     let err = h
-        .session_manager
-        .revoke(
+        .destructive_actions
+        .perform(
             &alice.session.session,
-            bob.session.session.id,
+            DestructiveAction::RevokeSession {
+                id: bob.session.session.id,
+            },
             None,
             SessionContext::default(),
         )
@@ -392,15 +413,22 @@ async fn revoke_hides_another_users_session() {
 }
 
 #[tokio::test]
-async fn revoke_in_cool_down_blocks_others_but_allows_self() {
+async fn revoke_in_cool_down_is_refused_but_log_out_is_not() {
     let h = Harness::fresh();
     let mut alice = sign_in(&h, "alice@example.com").await;
     let other = alice.log_in_again(&h).await;
     let current = in_cool_down(&h, &alice.user).await;
 
     let err = h
-        .session_manager
-        .revoke(&current, other.session.id, None, SessionContext::default())
+        .destructive_actions
+        .perform(
+            &current,
+            DestructiveAction::RevokeSession {
+                id: other.session.id,
+            },
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect_err("revoking another device is refused during the cool-down");
     assert!(matches!(err, Error::RecoveryCoolDownActive), "got: {err:?}");
@@ -409,10 +437,22 @@ async fn revoke_in_cool_down_blocks_others_but_allows_self() {
         "the other device is untouched"
     );
 
-    h.session_manager
-        .revoke(&current, current.id, None, SessionContext::default())
+    let err = h
+        .destructive_actions
+        .perform(
+            &current,
+            DestructiveAction::RevokeSession { id: current.id },
+            None,
+            SessionContext::default(),
+        )
         .await
-        .expect("revoking the cool-down session itself stays allowed");
+        .expect_err("revoking the cool-down session itself is refused too");
+    assert!(matches!(err, Error::RecoveryCoolDownActive), "got: {err:?}");
+
+    h.session_manager
+        .log_out(&current)
+        .await
+        .expect("logging out stays allowed during the cool-down");
     assert!(!session_exists(&h, current.id).await);
 }
 

@@ -7,12 +7,11 @@ use crate::assertion::AssertionVerifier;
 use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::challenge::{PasskeyChallenge, Reauth};
 use crate::clock::Clock;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::passkey::PasskeyConfig;
-use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::redeem::Redeemer;
 use crate::session::{ResolvedSession, SessionContext};
-use crate::storage::{PasskeyChallengeId, Storage};
+use crate::storage::{PasskeyChallengeId, Session, Storage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ReauthAction {
@@ -54,9 +53,7 @@ pub struct ReauthProof {
 pub struct ReauthManager {
     challenges: PasskeyChallenge<Reauth>,
     assertions: AssertionVerifier,
-    clock: Arc<dyn Clock>,
     audit: AuditDispatch,
-    policy: ReauthPolicy,
 }
 
 impl ReauthManager {
@@ -65,7 +62,6 @@ impl ReauthManager {
         storage: &Storage,
         clock: Arc<dyn Clock>,
         audit: AuditDispatch,
-        policy: ReauthPolicy,
         webauthn: Arc<Webauthn>,
     ) -> Self {
         Self {
@@ -83,9 +79,7 @@ impl ReauthManager {
                 storage.passkeys.clone(),
                 clock.clone(),
             ),
-            clock,
             audit,
-            policy,
         }
     }
 
@@ -99,24 +93,13 @@ impl ReauthManager {
         Ok((id, rcr))
     }
 
-    #[tracing::instrument(skip(self, session, proof, context), fields(user_id = %session.user_id))]
-    pub async fn ensure(
+    pub(crate) async fn verify(
         &self,
-        action: ReauthAction,
-        session: &ResolvedSession,
-        proof: Option<&ReauthProof>,
+        session: &Session,
+        proof: &ReauthProof,
         context: &SessionContext,
     ) -> Result<()> {
-        RecoveryCoolDown::refuse_destructive_action(session, self.clock.now())?;
-        if !self.policy.requires(action) {
-            return Ok(());
-        }
         let user_id = session.user_id;
-        let Some(proof) = proof else {
-            tracing::info!(outcome = "proof_required", "reauth required");
-            return Err(Error::ReauthRequired);
-        };
-
         let pending = self
             .challenges
             .redeem(proof.challenge_id, user_id, context)

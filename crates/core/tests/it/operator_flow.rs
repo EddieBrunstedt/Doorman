@@ -1,6 +1,7 @@
 use doorman_core::Error;
 use doorman_core::audit::RecoveryFailureReason;
 use doorman_core::audit::{Actor, AuditEvent, AuditEventKind, OperatorActor, SecretKind};
+use doorman_core::destructive::DestructiveAction;
 use doorman_core::operator::{NoticePolicy, OperatorNotice};
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{PasskeyStore, SessionId, SessionStore, UserId, UserStatus, UserStore};
@@ -124,8 +125,15 @@ async fn operator_delete_cascades_all_stores() {
     let user = provision_user(&h, "doomed@example.com").await;
     let session = session_for(&h, &user).await;
 
-    h.user
-        .request_email_change(&session, "elsewhere@example.com", None, Default::default())
+    h.destructive_actions
+        .perform(
+            &session,
+            DestructiveAction::RequestEmailChange {
+                new_email: "elsewhere@example.com".into(),
+            },
+            None,
+            Default::default(),
+        )
         .await
         .expect("request email change");
     let email_change_token = last_email_change_token(&h);

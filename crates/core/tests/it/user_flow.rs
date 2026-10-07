@@ -1,6 +1,7 @@
 use doorman_core::Error;
 use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
+use doorman_core::destructive::DestructiveAction;
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{UserStatus, UserStore};
 
@@ -17,8 +18,15 @@ async fn email_change_happy_path() {
     let session = session_for(&h, &user).await;
     let mail_before = h.email.sent().len();
 
-    h.user
-        .request_email_change(&session, "New@Example.com", None, SessionContext::default())
+    h.destructive_actions
+        .perform(
+            &session,
+            DestructiveAction::RequestEmailChange {
+                new_email: "New@Example.com".into(),
+            },
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("request email change");
 
@@ -98,10 +106,12 @@ async fn email_change_confirm_refuses_address_claimed_since_request() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
     let session = session_for(&h, &user).await;
-    h.user
-        .request_email_change(
+    h.destructive_actions
+        .perform(
             &session,
-            "wanted@example.com",
+            DestructiveAction::RequestEmailChange {
+                new_email: "wanted@example.com".into(),
+            },
             None,
             SessionContext::default(),
         )
@@ -130,10 +140,12 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
     let session = session_for(&h, &user).await;
-    h.user
-        .request_email_change(
+    h.destructive_actions
+        .perform(
             &session,
-            "wanted@example.com",
+            DestructiveAction::RequestEmailChange {
+                new_email: "wanted@example.com".into(),
+            },
             None,
             SessionContext::default(),
         )
@@ -186,10 +198,12 @@ async fn email_change_rejects_address_already_in_use() {
     let mail_before = h.email.sent().len();
 
     let err = h
-        .user
-        .request_email_change(
+        .destructive_actions
+        .perform(
             &session,
-            "taken@example.com",
+            DestructiveAction::RequestEmailChange {
+                new_email: "taken@example.com".into(),
+            },
             None,
             SessionContext::default(),
         )
@@ -212,10 +226,12 @@ async fn request_email_change_refused_during_recovery_cool_down() {
     let mail_before = h.email.sent().len();
 
     let err = h
-        .user
-        .request_email_change(
+        .destructive_actions
+        .perform(
             &in_cool_down,
-            "new@example.com",
+            DestructiveAction::RequestEmailChange {
+                new_email: "new@example.com".into(),
+            },
             None,
             SessionContext::default(),
         )
@@ -237,8 +253,13 @@ async fn delete_user_refused_during_recovery_cool_down() {
     let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
 
     let err = h
-        .user
-        .delete_user(&in_cool_down, None, SessionContext::default())
+        .destructive_actions
+        .perform(
+            &in_cool_down,
+            DestructiveAction::DeleteUser,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect_err("deletion must be refused during the cool-down");
     assert!(matches!(err, Error::RecoveryCoolDownActive));
@@ -265,10 +286,12 @@ async fn request_email_change_allowed_once_recovery_cool_down_lapses() {
     let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
 
     let err = h
-        .user
-        .request_email_change(
+        .destructive_actions
+        .perform(
             &in_cool_down,
-            "new@example.com",
+            DestructiveAction::RequestEmailChange {
+                new_email: "new@example.com".into(),
+            },
             None,
             SessionContext::default(),
         )
@@ -278,10 +301,12 @@ async fn request_email_change_allowed_once_recovery_cool_down_lapses() {
 
     h.clock.advance(chrono::Duration::hours(25));
     let mail_before = h.email.sent().len();
-    h.user
-        .request_email_change(
+    h.destructive_actions
+        .perform(
             &in_cool_down,
-            "new@example.com",
+            DestructiveAction::RequestEmailChange {
+                new_email: "new@example.com".into(),
+            },
             None,
             SessionContext::default(),
         )
@@ -305,15 +330,25 @@ async fn delete_user_allowed_once_recovery_cool_down_lapses() {
     let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
 
     let err = h
-        .user
-        .delete_user(&in_cool_down, None, SessionContext::default())
+        .destructive_actions
+        .perform(
+            &in_cool_down,
+            DestructiveAction::DeleteUser,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect_err("blocked during the cool-down");
     assert!(matches!(err, Error::RecoveryCoolDownActive));
 
     h.clock.advance(chrono::Duration::hours(25));
-    h.user
-        .delete_user(&in_cool_down, None, SessionContext::default())
+    h.destructive_actions
+        .perform(
+            &in_cool_down,
+            DestructiveAction::DeleteUser,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("deletion allowed once the cool-down lapses");
     assert!(
@@ -331,8 +366,15 @@ async fn confirm_refused_for_disabled_user() {
     let h = Harness::fresh();
     let user = provision_user(&h, "old@example.com").await;
     let session = session_for(&h, &user).await;
-    h.user
-        .request_email_change(&session, "new@example.com", None, SessionContext::default())
+    h.destructive_actions
+        .perform(
+            &session,
+            DestructiveAction::RequestEmailChange {
+                new_email: "new@example.com".into(),
+            },
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("request email change");
     let confirmation = h
@@ -378,10 +420,12 @@ async fn delete_user_cascades_all_stores() {
     let user = provision_user(&h, "doomed@example.com").await;
     let session = session_for(&h, &user).await;
 
-    h.user
-        .request_email_change(
+    h.destructive_actions
+        .perform(
             &session,
-            "elsewhere@example.com",
+            DestructiveAction::RequestEmailChange {
+                new_email: "elsewhere@example.com".into(),
+            },
             None,
             SessionContext::default(),
         )
@@ -402,8 +446,13 @@ async fn delete_user_cascades_all_stores() {
     );
     assert_eq!(passkey_count(&h, user.id).await, 1, "signup left a passkey");
 
-    h.user
-        .delete_user(&session, None, SessionContext::default())
+    h.destructive_actions
+        .perform(
+            &session,
+            DestructiveAction::DeleteUser,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("delete user");
 

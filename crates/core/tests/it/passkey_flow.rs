@@ -5,6 +5,7 @@ use std::time::Duration;
 use chrono::Duration as ChronoDuration;
 use doorman_core::audit::{AuditEventKind, AuthFailureReason, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
+use doorman_core::destructive::DestructiveAction;
 use doorman_core::error::Error;
 use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::passkey::{PasskeyConfig, PasskeyRateLimits};
@@ -866,10 +867,12 @@ async fn remove_passkey_emits_audit_sends_notice_and_blocks_login() {
     let session = session_for(&h, &user).await;
     let mail_before = h.email.sent().len();
 
-    h.passkey
-        .remove_passkey(
+    h.destructive_actions
+        .perform(
             &session,
-            &passkey.credential_id,
+            DestructiveAction::RemovePasskey {
+                credential_id: passkey.credential_id.clone(),
+            },
             None,
             SessionContext::default(),
         )
@@ -902,10 +905,12 @@ async fn remove_passkey_refuses_other_users_passkey_without_notice() {
     let mail_before = h.email.sent().len();
 
     let err = h
-        .passkey
-        .remove_passkey(
+        .destructive_actions
+        .perform(
             &bob_session,
-            &passkey.credential_id,
+            DestructiveAction::RemovePasskey {
+                credential_id: passkey.credential_id.clone(),
+            },
             None,
             SessionContext::default(),
         )
@@ -927,10 +932,12 @@ async fn remove_missing_passkey_sends_no_notice() {
     let session = session_for(&h, &user).await;
 
     let err = h
-        .passkey
-        .remove_passkey(
+        .destructive_actions
+        .perform(
             &session,
-            b"missing passkey",
+            DestructiveAction::RemovePasskey {
+                credential_id: b"missing passkey".to_vec(),
+            },
             None,
             SessionContext::default(),
         )
@@ -950,10 +957,12 @@ async fn remove_passkey_notice_failure_does_not_undo_removal() {
     let mail_before = h.email.sent().len();
     h.email.fail_after_successful_sends(mail_before);
 
-    h.passkey
-        .remove_passkey(
+    h.destructive_actions
+        .perform(
             &session,
-            &passkey.credential_id,
+            DestructiveAction::RemovePasskey {
+                credential_id: passkey.credential_id.clone(),
+            },
             None,
             SessionContext::default(),
         )
@@ -986,10 +995,12 @@ async fn remove_passkey_refused_during_recovery_cool_down() {
     let mail_before = h.email.sent().len();
 
     let err = h
-        .passkey
-        .remove_passkey(
+        .destructive_actions
+        .perform(
             &in_cool_down,
-            &passkey.credential_id,
+            DestructiveAction::RemovePasskey {
+                credential_id: passkey.credential_id.clone(),
+            },
             None,
             SessionContext::default(),
         )
@@ -1008,10 +1019,12 @@ async fn remove_passkey_refused_during_recovery_cool_down() {
     );
 
     h.clock.advance(ChronoDuration::hours(25));
-    h.passkey
-        .remove_passkey(
+    h.destructive_actions
+        .perform(
             &in_cool_down,
-            &passkey.credential_id,
+            DestructiveAction::RemovePasskey {
+                credential_id: passkey.credential_id.clone(),
+            },
             None,
             SessionContext::default(),
         )
