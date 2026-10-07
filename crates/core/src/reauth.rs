@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use webauthn_rs::prelude::{PublicKeyCredential, RequestChallengeResponse, Webauthn};
@@ -13,7 +14,7 @@ use crate::redeem::Redeemer;
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, Session, Storage, UserId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ReauthAction {
     DeleteUser,
     RequestEmailChange,
@@ -22,48 +23,24 @@ pub enum ReauthAction {
     RevokeSession,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReauthPolicy {
-    delete_user: bool,
-    request_email_change: bool,
-    remove_passkey: bool,
-    revoke_other_sessions: bool,
-    revoke_session: bool,
+    required: BTreeSet<ReauthAction>,
 }
 
 impl ReauthPolicy {
     pub fn required_for(actions: impl IntoIterator<Item = ReauthAction>) -> Self {
-        let mut policy = Self::disabled();
-        for action in actions {
-            match action {
-                ReauthAction::DeleteUser => policy.delete_user = true,
-                ReauthAction::RequestEmailChange => policy.request_email_change = true,
-                ReauthAction::RemovePasskey => policy.remove_passkey = true,
-                ReauthAction::RevokeOtherSessions => policy.revoke_other_sessions = true,
-                ReauthAction::RevokeSession => policy.revoke_session = true,
-            }
-        }
-        policy
-    }
-
-    pub const fn disabled() -> Self {
         Self {
-            delete_user: false,
-            request_email_change: false,
-            remove_passkey: false,
-            revoke_other_sessions: false,
-            revoke_session: false,
+            required: actions.into_iter().collect(),
         }
     }
 
-    pub const fn requires(&self, action: ReauthAction) -> bool {
-        match action {
-            ReauthAction::DeleteUser => self.delete_user,
-            ReauthAction::RequestEmailChange => self.request_email_change,
-            ReauthAction::RemovePasskey => self.remove_passkey,
-            ReauthAction::RevokeOtherSessions => self.revoke_other_sessions,
-            ReauthAction::RevokeSession => self.revoke_session,
-        }
+    pub fn disabled() -> Self {
+        Self::default()
+    }
+
+    pub fn requires(&self, action: ReauthAction) -> bool {
+        self.required.contains(&action)
     }
 }
 
@@ -110,10 +87,6 @@ impl ReauthManager {
             audit,
             policy,
         }
-    }
-
-    pub fn policy(&self) -> ReauthPolicy {
-        self.policy
     }
 
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
