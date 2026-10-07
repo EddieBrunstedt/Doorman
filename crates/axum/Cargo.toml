@@ -46,6 +46,3 @@ proptest.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }
 tokio = { workspace = true, features = ["net"] }
 tower = { version = "0.5", features = ["util"] }
-tracing-subscriber = { workspace = true }
-webauthn-authenticator-rs.workspace = true
-webauthn-rs-proto.workspace = true
