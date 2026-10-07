@@ -6,7 +6,7 @@ use crate::email::{EmailSender, EmailTemplates, SecurityNotices};
 use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::rate_limit::RateLimiter;
 use crate::reauth::ReauthManager;
-use crate::session::SessionManager;
+use crate::session_records::SessionRecords;
 use crate::storage::{EmailLinkStore, PasskeyChallengeStore, PasskeyStore, Storage, UserStore};
 
 #[derive(Clone)]
@@ -18,7 +18,7 @@ pub(crate) struct CoreDeps {
     pub(crate) notices: SecurityNotices,
     pub(crate) rate_limiter: Arc<dyn RateLimiter>,
     pub(crate) metrics: Arc<dyn MetricSink>,
-    pub(crate) sessions: SessionManager,
+    pub(crate) sessions: SessionRecords,
     pub(crate) reauth: ReauthManager,
     pub(crate) users: Arc<dyn UserStore>,
     pub(crate) email_links: Arc<dyn EmailLinkStore>,
@@ -38,7 +38,7 @@ impl CoreDeps {
         emails: Arc<dyn EmailTemplates>,
         notices: SecurityNotices,
         rate_limiter: Arc<dyn RateLimiter>,
-        sessions: SessionManager,
+        sessions: SessionRecords,
         reauth: ReauthManager,
         storage: Storage,
     ) -> Self {

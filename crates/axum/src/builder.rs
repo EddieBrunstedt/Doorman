@@ -75,7 +75,7 @@ impl AuthServiceBuilder {
             return Err(BuilderError::InvalidCookieAttributes);
         }
 
-        let session_lifetime = core.session_manager.unused_lifetime();
+        let session_lifetime = core.sessions.unused_lifetime();
         if cookie_config.session_max_age > session_lifetime {
             return Err(BuilderError::CookieMaxAgeExceedsSessionLifetime {
                 cookie_max_age: cookie_config.session_max_age,
@@ -91,7 +91,7 @@ impl AuthServiceBuilder {
         .enabled_config();
 
         let layer_state = Arc::new(SessionLayerState {
-            sessions: core.session_manager.clone(),
+            sessions: core.sessions.clone(),
             cookie: cookie_config.clone(),
             csrf: csrf_config,
         });

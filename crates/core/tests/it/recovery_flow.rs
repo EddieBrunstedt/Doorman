@@ -368,7 +368,7 @@ async fn successful_recovery_registers_passkey_and_sends_success_notice() {
     );
     let sessions = h
         .session_manager
-        .list_for_user(user.id)
+        .list(&outcome.session.session)
         .await
         .expect("list sessions");
     assert!(

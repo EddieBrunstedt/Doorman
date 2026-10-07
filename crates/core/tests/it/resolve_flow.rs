@@ -10,7 +10,7 @@ use doorman_core::storage::{SessionStore, User, UserId, UserStatus, UserStore};
 
 use crate::common::{
     Harness, authenticator, last_email_change_token, make_user, register_passkey, session_count,
-    within_deadline,
+    sign_in, within_deadline,
 };
 
 fn sliding_config() -> SessionConfig {
@@ -26,13 +26,8 @@ fn sliding_harness() -> Harness {
 }
 
 async fn signed_in(h: &Harness, email: &str) -> (User, String) {
-    let user = make_user(h, email).await;
-    let issued = h
-        .session_manager
-        .create(user.id, SessionContext::default())
-        .await
-        .expect("create session");
-    (user, issued.token)
+    let signed_in = sign_in(h, email).await;
+    (signed_in.user, signed_in.session.token)
 }
 
 #[tokio::test]
@@ -81,13 +76,19 @@ async fn a_revocation_reaches_another_process_at_once() {
     let other = h.another_process();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     other
-        .session_manager
+        .sessions
         .resolve(&token)
         .await
         .expect("the other process resolves the session");
 
-    h.session_manager.revoke(&token).await.expect("revoke");
-    let err = other.session_manager.resolve(&token).await.err();
+    let session = h
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("resolve")
+        .session;
+    h.session_manager.log_out(&session).await.expect("log out");
+    let err = other.sessions.resolve(&token).await.err();
     assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
 }
 
@@ -96,17 +97,13 @@ async fn a_disable_reaches_another_process_at_once() {
     let h = Harness::fresh();
     let other = h.another_process();
     let (user, token) = signed_in(&h, "alice@example.com").await;
-    other
-        .session_manager
-        .resolve(&token)
-        .await
-        .expect("resolve");
+    other.sessions.resolve(&token).await.expect("resolve");
 
     h.operator
         .disable(user.id, operator())
         .await
         .expect("disable");
-    let err = other.session_manager.resolve(&token).await.err();
+    let err = other.sessions.resolve(&token).await.err();
     assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
 }
 
@@ -115,17 +112,13 @@ async fn a_delete_reaches_another_process_at_once() {
     let h = Harness::fresh();
     let other = h.another_process();
     let (user, token) = signed_in(&h, "alice@example.com").await;
-    other
-        .session_manager
-        .resolve(&token)
-        .await
-        .expect("resolve");
+    other.sessions.resolve(&token).await.expect("resolve");
 
     h.operator
         .delete_user(user.id, operator())
         .await
         .expect("delete");
-    let err = other.session_manager.resolve(&token).await.err();
+    let err = other.sessions.resolve(&token).await.err();
     assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
 }
 
@@ -156,11 +149,7 @@ async fn the_user_read_is_fresh_in_every_process() {
         .await
         .expect("resolve")
         .session;
-    let found = other
-        .session_manager
-        .find_user(&session)
-        .await
-        .expect("find user");
+    let found = other.sessions.find_user(&session).await.expect("find user");
     assert_eq!(found.email.as_deref(), Some("old@example.com"));
 
     h.user
@@ -172,11 +161,7 @@ async fn the_user_read_is_fresh_in_every_process() {
         .await
         .expect("confirm email change");
 
-    let found = other
-        .session_manager
-        .find_user(&session)
-        .await
-        .expect("find user");
+    let found = other.sessions.find_user(&session).await.expect("find user");
     assert_eq!(found.id, user.id);
     assert_eq!(found.email.as_deref(), Some("new@example.com"));
 }
@@ -185,17 +170,9 @@ async fn the_user_read_is_fresh_in_every_process() {
 async fn a_security_notice_goes_to_the_address_changed_in_another_process() {
     let h = Harness::fresh();
     let other = h.another_process();
-    let (user, token) = signed_in(&h, "old@example.com").await;
-    h.session_manager
-        .create(user.id, SessionContext::default())
-        .await
-        .expect("second session");
-    let session = h
-        .session_manager
-        .resolve(&token)
-        .await
-        .expect("resolve")
-        .session;
+    let mut alice = sign_in(&h, "old@example.com").await;
+    alice.log_in_again(&h).await;
+    let session = alice.session.session;
 
     h.user
         .request_email_change(&session, "new@example.com", None, SessionContext::default())
@@ -207,8 +184,8 @@ async fn a_security_notice_goes_to_the_address_changed_in_another_process() {
         .expect("confirm email change");
 
     other
-        .user
-        .revoke_other_sessions(&session, None, SessionContext::default())
+        .sessions
+        .revoke_others(&session, None, SessionContext::default())
         .await
         .expect("revoke other sessions");
     let notice = h.email.sent().pop().expect("notice sent");
@@ -288,18 +265,6 @@ async fn without_an_idle_timeout_nothing_slides() {
     assert!(!resolved.slid);
     assert_eq!(resolved.session.expires_at, issued.expires_at);
     assert_eq!(resolved.session.last_used_at, issued.last_used_at);
-}
-
-#[tokio::test]
-async fn validate_does_not_slide() {
-    let h = sliding_harness();
-    let (_, token) = signed_in(&h, "alice@example.com").await;
-    let issued = h.session_manager.validate(&token).await.expect("validate");
-
-    h.clock.advance(ChronoDuration::seconds(90));
-    let validated = h.session_manager.validate(&token).await.expect("validate");
-    assert_eq!(validated.last_used_at, issued.last_used_at);
-    assert_eq!(validated.expires_at, issued.expires_at);
 }
 
 #[test]

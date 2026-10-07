@@ -337,10 +337,11 @@ async fn signup_session_and_audit_record_the_peer_despite_spoofing() {
     let (auth, _) = app.signup("identity@example.com").await;
 
     let session = app
-        .session_manager
-        .validate(&auth.token)
+        .sessions
+        .resolve(&auth.token)
         .await
-        .expect("session");
+        .expect("session")
+        .session;
     assert_eq!(session.ip.as_deref(), Some(PEER));
     assert_eq!(session.user_agent.as_deref(), Some("signup agent"));
     let events = audit.events();

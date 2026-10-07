@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::body::{Body, Bytes, to_bytes};
@@ -18,14 +19,14 @@ use doorman_axum::{AuthService, AuthServiceBuilder};
 use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
 use doorman_core::audit::NoopAuditSink;
 use doorman_core::clock::SystemClock;
-use doorman_core::email::{EmailSender, normalize_email};
+use doorman_core::email::EmailSender;
 use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
-use doorman_core::session::{SessionContext, SessionManager};
+use doorman_core::session::SessionManager;
 use doorman_core::signup::{SignupConfig, SignupRateLimits};
-use doorman_core::storage::{User, UserId, UserStatus, UserStore};
+use doorman_core::storage::{UserId, UserStatus, UserStore};
 use doorman_core::user::UserConfig;
 pub use doorman_test_support::ResidentAuthenticator;
 use doorman_test_support::{CapturingEmailSender, token_from_email};
@@ -47,8 +48,9 @@ pub struct TestApp {
     router: Router,
     default_headers: HeaderMap,
     pub email: Arc<CapturingEmailSender>,
-    pub session_manager: SessionManager,
+    pub sessions: SessionManager,
     users: Arc<dyn UserStore>,
+    authenticators: Mutex<HashMap<String, ResidentAuthenticator>>,
 }
 
 impl TestApp {
@@ -96,7 +98,7 @@ impl TestApp {
                 ..CookieConfig::default()
             });
         let auth = customise_http(http).build().expect("auth built");
-        let session_manager = auth.state().session_manager().clone();
+        let sessions = auth.state().sessions().clone();
 
         let router = Router::new()
             .merge(auth.router())
@@ -107,8 +109,9 @@ impl TestApp {
             router,
             default_headers: HeaderMap::new(),
             email,
-            session_manager,
+            sessions,
             users,
+            authenticators: Mutex::default(),
         }
     }
 
@@ -172,37 +175,31 @@ impl TestApp {
     }
 
     pub async fn session_for(&self, email: &str) -> AuthResponse {
-        let email = normalize_email(email);
-        let user = match self
-            .users
-            .find_user_by_email(&email)
-            .await
-            .expect("find user")
-        {
-            Some(user) => user,
-            None => {
-                let now = chrono::Utc::now();
-                let user = User {
-                    id: UserId::new(),
-                    email: Some(email),
-                    email_verified_at: Some(now),
-                    status: UserStatus::Active,
-                    created_at: now,
-                    updated_at: now,
-                };
-                self.users
-                    .create_user(user.clone())
-                    .await
-                    .expect("create user");
-                user
-            }
+        let stored = self
+            .authenticators
+            .lock()
+            .expect("authenticators lock")
+            .remove(email);
+        let (session, authenticator) = match stored {
+            Some(mut authenticator) => (self.log_in_again(&mut authenticator).await, authenticator),
+            None => self.signup(email).await,
         };
-        let issued = self
-            .session_manager
-            .create(user.id, SessionContext::default())
-            .await
-            .expect("create session");
-        AuthResponse::from_issued(user, issued, 0)
+        self.authenticators
+            .lock()
+            .expect("authenticators lock")
+            .insert(email.to_owned(), authenticator);
+        session
+    }
+
+    pub async fn log_in_again(&self, authenticator: &mut ResidentAuthenticator) -> AuthResponse {
+        let credential_id = authenticator
+            .credential_ids()
+            .into_iter()
+            .next()
+            .expect("the authenticator holds a passkey");
+        let reply = self.log_in(authenticator, &credential_id).await;
+        assert_eq!(reply.status, StatusCode::OK);
+        reply.json()
     }
 
     pub async fn set_user_status(&self, user_id: UserId, status: UserStatus) {

@@ -6,7 +6,7 @@ use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result, StorageErrorKind};
-use crate::session::SessionManager;
+use crate::session_records::SessionRecords;
 use crate::storage::{
     EmailLinkPurpose, EmailLinkStore, PasskeyChallengeStore, PasskeyStore, User, UserId,
     UserStatus, UserStore,
@@ -38,7 +38,7 @@ pub(crate) async fn find_active_user(users: &dyn UserStore, user_id: UserId) -> 
 #[derive(Clone)]
 pub(crate) struct UserRecords {
     users: Arc<dyn UserStore>,
-    sessions: SessionManager,
+    sessions: SessionRecords,
     passkeys: Arc<dyn PasskeyStore>,
     tokens: Arc<dyn EmailLinkStore>,
     challenges: Arc<dyn PasskeyChallengeStore>,
@@ -140,7 +140,7 @@ impl UserRecords {
 
     pub(crate) async fn disable(&self, user_id: UserId) -> Result<u64> {
         let now = self.now();
-        // The status goes before the sessions; `SessionManager::issue` relies on that order.
+        // The status goes before the sessions; `SessionRecords::issue` relies on that order.
         self.users
             .set_user_status(user_id, UserStatus::Disabled { at: now }, now)
             .await?;
@@ -157,7 +157,7 @@ impl UserRecords {
     pub(crate) async fn delete(&self, user_id: UserId, actor: Actor) -> Result<()> {
         self.find(user_id).await?;
 
-        // Disabling first makes a racing login refuse its own session (see `SessionManager::issue`),
+        // Disabling first makes a racing login refuse its own session (see `SessionRecords::issue`),
         // and leaves a delete that fails partway with a user who cannot log in.
         self.disable(user_id).await?;
         self.passkeys.delete_passkeys_for_user(user_id).await?;

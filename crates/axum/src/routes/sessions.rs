@@ -25,18 +25,21 @@ async fn logout(
     State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Response, ErrorResponse> {
-    state.core.session_manager.revoke(&auth.token).await?;
+    state.core.sessions.log_out(&auth.session).await?;
     no_content_clearing_session_cookie(&state.cookie_config)
 }
 
 async fn logout_all(
     State(state): State<AuthState>,
     auth: AuthSession,
+    RequestContext(context): RequestContext,
+    body: Option<Json<RevokeSessionRequest>>,
 ) -> Result<Response, ErrorResponse> {
+    let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     state
         .core
-        .session_manager
-        .revoke_all_for_user(auth.session.user_id)
+        .sessions
+        .log_out_everywhere(&auth.session, proof, context)
         .await?;
     no_content_clearing_session_cookie(&state.cookie_config)
 }
@@ -46,17 +49,10 @@ async fn list(
     auth: AuthSession,
 ) -> Result<Json<Vec<SessionDto>>, ErrorResponse> {
     let current_id = auth.session.id;
-    let sessions = state
-        .core
-        .session_manager
-        .list_for_user(auth.session.user_id)
-        .await?;
+    let sessions = state.core.sessions.list(&auth.session).await?;
     let dtos = sessions
-        .into_iter()
-        .map(|s| {
-            let is_current = s.id == current_id;
-            SessionDto::from_session(&s, is_current)
-        })
+        .iter()
+        .map(|s| SessionDto::from_summary(s, s.id == current_id))
         .collect();
     Ok(Json(dtos))
 }
@@ -75,8 +71,8 @@ async fn remove(
     let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     state
         .core
-        .user
-        .revoke_session(&auth.session, id, proof, context)
+        .sessions
+        .revoke(&auth.session, id, proof, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -90,8 +86,8 @@ async fn remove_others(
     let proof = reauth_proof(body.and_then(|Json(b)| b.reauthentication))?;
     state
         .core
-        .user
-        .revoke_other_sessions(&auth.session, proof, context)
+        .sessions
+        .revoke_others(&auth.session, proof, context)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

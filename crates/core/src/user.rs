@@ -8,8 +8,8 @@ use crate::email::{self, EmailSender, EmailTemplates, SecurityNotices};
 use crate::email_link::{EmailChange, EmailLinks, TOKEN_PLACEHOLDER};
 use crate::error::{Error, Result};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
-use crate::session::{SessionContext, SessionManager};
-use crate::storage::{Session, SessionId, User};
+use crate::session::SessionContext;
+use crate::storage::{Session, User};
 use crate::user_records::UserRecords;
 
 #[derive(Clone)]
@@ -34,7 +34,6 @@ impl Default for UserConfig {
 #[derive(Clone)]
 pub struct UserManager {
     records: UserRecords,
-    sessions: SessionManager,
     link: EmailLinks<EmailChange>,
     reauth: ReauthManager,
     audit: AuditDispatch,
@@ -51,7 +50,6 @@ impl UserManager {
         let link = EmailLinks::new(deps, &config.url_template, config.token_lifetime)?;
         Ok(Self {
             records: UserRecords::new(deps),
-            sessions: deps.sessions.clone(),
             link,
             reauth: deps.reauth.clone(),
             audit: deps.audit.clone(),
@@ -138,68 +136,5 @@ impl UserManager {
         self.records
             .delete(session.user_id, Actor::from(&context))
             .await
-    }
-
-    #[tracing::instrument(skip(self, session, reauth, context), fields(user_id = %session.user_id, session_id = %session.id))]
-    pub async fn revoke_other_sessions(
-        &self,
-        session: &Session,
-        reauth: Option<ReauthProof>,
-        context: SessionContext,
-    ) -> Result<u64> {
-        self.reauth
-            .ensure(
-                ReauthAction::RevokeOtherSessions,
-                session,
-                reauth.as_ref(),
-                &context,
-            )
-            .await?;
-        let count = self
-            .sessions
-            .revoke_others(session.user_id, session.id)
-            .await?;
-        if count > 0
-            && let Some(user) = self
-                .records
-                .find_for_notice(session.user_id, "other-sessions revoked")
-                .await
-        {
-            self.notices.other_sessions_revoked(&user).await;
-        }
-        Ok(count)
-    }
-
-    #[tracing::instrument(skip(self, session, reauth, context), fields(user_id = %session.user_id, session_id = %target))]
-    pub async fn revoke_session(
-        &self,
-        session: &Session,
-        target: SessionId,
-        reauth: Option<ReauthProof>,
-        context: SessionContext,
-    ) -> Result<()> {
-        let is_current = target == session.id;
-        if !is_current {
-            self.reauth
-                .ensure(
-                    ReauthAction::RevokeSession,
-                    session,
-                    reauth.as_ref(),
-                    &context,
-                )
-                .await?;
-        }
-        self.sessions
-            .revoke_session_for_target(session.user_id, target, Actor::of_session(session))
-            .await?;
-        if !is_current
-            && let Some(user) = self
-                .records
-                .find_for_notice(session.user_id, "other-session revoked")
-                .await
-        {
-            self.notices.other_session_revoked(&user).await;
-        }
-        Ok(())
     }
 }

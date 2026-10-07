@@ -3,7 +3,7 @@ use crate::context::CoreDeps;
 use crate::email::SecurityNotices;
 use crate::error::{Error, Result};
 use crate::passkey::{PasskeyManager, PasskeyRemovalNotice};
-use crate::session::SessionManager;
+use crate::session_records::SessionRecords;
 use crate::storage::{PasskeySummary, SessionId, SessionSummary, User, UserId};
 use crate::user_records::UserRecords;
 
@@ -33,7 +33,7 @@ impl Default for NoticePolicy {
 #[derive(Clone)]
 pub struct OperatorManager {
     records: UserRecords,
-    sessions: SessionManager,
+    sessions: SessionRecords,
     passkey: PasskeyManager,
     notices: SecurityNotices,
     audit: AuditDispatch,
@@ -186,7 +186,7 @@ impl OperatorManager {
         self.resolve_subject(target_user_id).await?;
 
         self.sessions
-            .revoke_session_for_target(target_user_id, session_id, actor.into())
+            .revoke_owned(target_user_id, session_id, actor.into())
             .await?;
 
         Ok(())

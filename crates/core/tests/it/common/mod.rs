@@ -24,7 +24,7 @@ use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::reauth::{ReauthManager, ReauthPolicy};
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
 use doorman_core::session::hash_token;
-use doorman_core::session::{SessionConfig, SessionContext, SessionManager};
+use doorman_core::session::{IssuedSession, SessionConfig, SessionContext, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use doorman_core::storage::{
     Session, SessionId, SessionStore, Storage, StoredPasskey, TokenHash, User, UserId, UserStatus,
@@ -423,7 +423,7 @@ impl HarnessBuilder {
             user: core.user,
             reauth: core.reauth,
             operator: core.operator,
-            session_manager: core.session_manager,
+            session_manager: core.sessions,
             users,
             user_store,
             sessions,
@@ -453,8 +453,8 @@ pub async fn within_deadline<T>(race: impl Future<Output = T>) -> T {
 }
 
 pub async fn session_count(h: &Harness, user_id: UserId) -> usize {
-    h.session_manager
-        .list_for_user(user_id)
+    h.sessions
+        .list_for_user(user_id, h.clock.now())
         .await
         .expect("list sessions")
         .len()
@@ -591,6 +591,61 @@ pub async fn provision_user(h: &Harness, email: &str) -> User {
         .await
         .expect("signup finish");
     outcome.user
+}
+
+pub struct SignedIn {
+    pub user: User,
+    pub authenticator: ResidentAuthenticator,
+    pub credential_id: Vec<u8>,
+    pub session: IssuedSession,
+}
+
+impl SignedIn {
+    pub async fn log_in_again(&mut self, h: &Harness) -> IssuedSession {
+        log_in(
+            h,
+            &mut self.authenticator,
+            &self.credential_id,
+            SessionContext::default(),
+        )
+        .await
+    }
+}
+
+pub async fn sign_in(h: &Harness, email: &str) -> SignedIn {
+    sign_in_from(h, email, SessionContext::default()).await
+}
+
+pub async fn sign_in_from(h: &Harness, email: &str, context: SessionContext) -> SignedIn {
+    let user = make_user(h, email).await;
+    let mut authenticator = authenticator();
+    let passkey = register_passkey(h, user.id, &mut authenticator, None).await;
+    let session = log_in(h, &mut authenticator, &passkey.credential_id, context).await;
+    SignedIn {
+        user,
+        authenticator,
+        credential_id: passkey.credential_id,
+        session,
+    }
+}
+
+pub async fn log_in(
+    h: &Harness,
+    wa: &mut ResidentAuthenticator,
+    credential_id: &[u8],
+    context: SessionContext,
+) -> IssuedSession {
+    let (challenge_id, options) = h
+        .passkey
+        .start_authentication(context.clone())
+        .await
+        .expect("start login");
+    let assertion = wa.do_authentication(options, credential_id);
+    h.passkey
+        .finish_authentication(challenge_id, &assertion, context)
+        .await
+        .expect("finish login")
+        .session
 }
 
 pub fn authenticator() -> ResidentAuthenticator {

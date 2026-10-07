@@ -158,6 +158,10 @@ pub enum AuditEventKind {
         user_id: UserId,
         reason: AuthFailureReason,
     },
+    OtherSessionsRevoked {
+        user_id: UserId,
+        revoked_count: u64,
+    },
     OperatorRevokedAllSessions {
         user_id: UserId,
         revoked_count: u64,
@@ -205,6 +209,7 @@ impl AuditEventKind {
             | Self::UserDeleted { user_id }
             | Self::ReauthSucceeded { user_id }
             | Self::ReauthFailed { user_id, .. }
+            | Self::OtherSessionsRevoked { user_id, .. }
             | Self::OperatorRevokedAllSessions { user_id, .. }
             | Self::OperatorDisabledUser { user_id }
             | Self::OperatorEnabledUser { user_id }

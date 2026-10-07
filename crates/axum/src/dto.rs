@@ -2,7 +2,9 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use doorman_core::session::IssuedSession;
-use doorman_core::storage::{PasskeySummary, Session, SessionId, StoredPasskey, User, UserId};
+use doorman_core::storage::{
+    PasskeySummary, Session, SessionId, SessionSummary, StoredPasskey, User, UserId,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +41,10 @@ pub struct SessionDto {
 
 impl SessionDto {
     pub fn from_session(value: &Session, is_current: bool) -> Self {
+        Self::from_summary(&SessionSummary::from(value), is_current)
+    }
+
+    pub fn from_summary(value: &SessionSummary, is_current: bool) -> Self {
         Self {
             id: value.id,
             created_at: value.created_at,

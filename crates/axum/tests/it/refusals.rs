@@ -78,6 +78,7 @@ async fn destructive_routes_refuse_a_session_in_recovery_cool_down() {
             json!({}),
         ),
         (Method::DELETE, "/auth/sessions".to_owned(), json!({})),
+        (Method::POST, "/auth/logout-all".to_owned(), json!({})),
         (
             Method::POST,
             "/auth/user/email".to_owned(),
@@ -109,6 +110,7 @@ enum Gated {
     RemovePasskey,
     RevokeSession,
     RevokeOtherSessions,
+    LogOutEverywhere,
     RequestEmailChange,
 }
 
@@ -119,6 +121,7 @@ async fn gated_routes_require_and_accept_a_reauthentication() {
         Gated::RemovePasskey,
         Gated::RevokeSession,
         Gated::RevokeOtherSessions,
+        Gated::LogOutEverywhere,
         Gated::RequestEmailChange,
     ] {
         let app = TestApp::with(
@@ -134,7 +137,7 @@ async fn gated_routes_require_and_accept_a_reauthentication() {
             |b| b,
         );
         let (auth, mut authenticator) = app.signup("owner@example.com").await;
-        let other = app.session_for("owner@example.com").await;
+        let other = app.log_in_again(&mut authenticator).await;
         let (method, path) = match gated {
             Gated::DeleteUser => (Method::DELETE, "/auth/user".to_owned()),
             Gated::RemovePasskey => {
@@ -150,6 +153,7 @@ async fn gated_routes_require_and_accept_a_reauthentication() {
                 format!("/auth/sessions/{}", other.session.id),
             ),
             Gated::RevokeOtherSessions => (Method::DELETE, "/auth/sessions".to_owned()),
+            Gated::LogOutEverywhere => (Method::POST, "/auth/logout-all".to_owned()),
             Gated::RequestEmailChange => (Method::POST, "/auth/user/email".to_owned()),
         };
         let body = |proof: Option<Reauthentication>| {

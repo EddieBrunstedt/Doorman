@@ -9,7 +9,7 @@ use doorman_core::storage::{PasskeyStore, StoredPasskey, UserStatus, UserStore};
 
 use crate::common::{
     Harness, authenticator, kinds, make_user, register_passkey, session_count, session_for,
-    session_in_cool_down_for,
+    session_in_cool_down_for, sign_in,
 };
 
 fn all_actions() -> [ReauthAction; 5] {
@@ -450,77 +450,74 @@ fn scoped_to(
 }
 
 #[tokio::test]
-async fn revoke_other_sessions_requires_proof_when_gated() {
+async fn bulk_revocations_require_proof_when_gated() {
     let h = gated_harness();
-    let user = make_user(&h, "owner@example.com").await;
-    let mut wa = authenticator();
-    register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let current = h
-        .session_manager
-        .create(user.id, SessionContext::default())
-        .await
-        .expect("current")
-        .session;
-    h.session_manager
-        .create(user.id, SessionContext::default())
-        .await
-        .expect("other");
+    let mut alice = sign_in(&h, "owner@example.com").await;
+    alice.log_in_again(&h).await;
+    let current = alice.session.session.clone();
 
     let err = h
-        .user
-        .revoke_other_sessions(&current, None, SessionContext::default())
+        .session_manager
+        .revoke_others(&current, None, SessionContext::default())
         .await
-        .expect_err("missing proof must be rejected");
-    assert!(matches!(err, Error::ReauthRequired), "got: {err:?}");
+        .err();
+    assert!(matches!(err, Some(Error::ReauthRequired)), "got: {err:?}");
+    let err = h
+        .session_manager
+        .log_out_everywhere(&current, None, SessionContext::default())
+        .await
+        .err();
+    assert!(matches!(err, Some(Error::ReauthRequired)), "got: {err:?}");
     assert_eq!(
-        session_count(&h, user.id).await,
+        session_count(&h, alice.user.id).await,
         2,
         "nothing is revoked without a proof"
     );
 
-    let proof = fresh_proof(&h, user.id, &mut wa).await;
+    let proof = fresh_proof(&h, alice.user.id, &mut alice.authenticator).await;
     let removed = h
-        .user
-        .revoke_other_sessions(&current, Some(proof), SessionContext::default())
+        .session_manager
+        .revoke_others(&current, Some(proof), SessionContext::default())
         .await
-        .expect("revoke with a fresh proof");
+        .expect("revoke others with a fresh proof");
     assert_eq!(removed, 1);
+
+    alice.log_in_again(&h).await;
+    let proof = fresh_proof(&h, alice.user.id, &mut alice.authenticator).await;
+    h.session_manager
+        .log_out_everywhere(&current, Some(proof), SessionContext::default())
+        .await
+        .expect("log out everywhere with a fresh proof");
+    assert_eq!(session_count(&h, alice.user.id).await, 0);
 }
 
 #[tokio::test]
-async fn revoke_session_requires_proof_only_for_another_session() {
+async fn revoke_requires_proof_only_for_another_session() {
     let h = gated_harness();
-    let user = make_user(&h, "owner@example.com").await;
-    let mut wa = authenticator();
-    register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let current = h
-        .session_manager
-        .create(user.id, SessionContext::default())
-        .await
-        .expect("current")
-        .session;
-    let other = h
-        .session_manager
-        .create(user.id, SessionContext::default())
-        .await
-        .expect("other")
-        .session;
+    let mut alice = sign_in(&h, "owner@example.com").await;
+    let other = alice.log_in_again(&h).await;
+    let current = alice.session.session.clone();
 
     let err = h
-        .user
-        .revoke_session(&current, other.id, None, SessionContext::default())
+        .session_manager
+        .revoke(&current, other.session.id, None, SessionContext::default())
         .await
         .expect_err("another session needs a proof");
     assert!(matches!(err, Error::ReauthRequired), "got: {err:?}");
 
-    let proof = fresh_proof(&h, user.id, &mut wa).await;
-    h.user
-        .revoke_session(&current, other.id, Some(proof), SessionContext::default())
+    let proof = fresh_proof(&h, alice.user.id, &mut alice.authenticator).await;
+    h.session_manager
+        .revoke(
+            &current,
+            other.session.id,
+            Some(proof),
+            SessionContext::default(),
+        )
         .await
         .expect("revoke another session with a fresh proof");
 
-    h.user
-        .revoke_session(&current, current.id, None, SessionContext::default())
+    h.session_manager
+        .revoke(&current, current.id, None, SessionContext::default())
         .await
         .expect("self-revocation is never gated");
 }

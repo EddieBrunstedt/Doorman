@@ -24,7 +24,8 @@ use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::redeem::Redeemer;
-use crate::session::{IssuedSession, SessionContext, SessionManager};
+use crate::session::{IssuedSession, SessionContext};
+use crate::session_records::SessionRecords;
 use crate::storage::{
     PasskeyChallengeId, PasskeyStore, PasskeySummary, RegistrationPurpose, Session, StoredPasskey,
     User, UserId,
@@ -154,7 +155,7 @@ pub struct PasskeyManager {
     registrations: PasskeyChallenge<Registration>,
     logins: PasskeyChallenge<Login>,
     assertions: AssertionVerifier,
-    sessions: SessionManager,
+    sessions: SessionRecords,
     reauth: ReauthManager,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,

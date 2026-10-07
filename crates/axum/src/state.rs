@@ -22,8 +22,8 @@ impl AuthState {
         &self.cookie_config
     }
 
-    pub fn session_manager(&self) -> &SessionManager {
-        &self.core.session_manager
+    pub fn sessions(&self) -> &SessionManager {
+        &self.core.sessions
     }
 
     pub fn passkey(&self) -> &PasskeyManager {

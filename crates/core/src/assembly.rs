@@ -12,6 +12,7 @@ use crate::rate_limit::RateLimiter;
 use crate::reauth::{ReauthManager, ReauthPolicy};
 use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
 use crate::session::{SessionConfig, SessionManager};
+use crate::session_records::SessionRecords;
 use crate::signup::{SignupConfig, SignupManager};
 use crate::storage::Storage;
 use crate::user::{UserConfig, UserManager};
@@ -97,7 +98,7 @@ fn validate_idle_timeout(
 
 #[derive(Clone)]
 pub struct AuthCore {
-    pub session_manager: SessionManager,
+    pub sessions: SessionManager,
     pub passkey: PasskeyManager,
     pub signup: SignupManager,
     pub recovery: RecoveryManager,
@@ -256,7 +257,7 @@ impl AuthCoreBuilder {
 
         let notices = SecurityNotices::new(email.clone(), emails.clone());
 
-        let session_manager = SessionManager::new(
+        let session_records = SessionRecords::new(
             self.storage.sessions.clone(),
             self.storage.users.clone(),
             clock.clone(),
@@ -284,11 +285,13 @@ impl AuthCoreBuilder {
             emails,
             notices,
             limiter,
-            session_manager.clone(),
+            session_records,
             reauth.clone(),
             self.storage,
         )
         .with_metrics(metrics);
+
+        let sessions = SessionManager::new(&deps);
 
         let passkey = PasskeyManager::new(&deps, passkey_config, webauthn);
 
@@ -312,7 +315,7 @@ impl AuthCoreBuilder {
         );
 
         Ok(AuthCore {
-            session_manager,
+            sessions,
             passkey,
             signup,
             recovery,
