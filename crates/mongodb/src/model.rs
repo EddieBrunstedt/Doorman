@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{
-    EmailLink, EmailLinkPurpose, PasskeyChallengeId, PasskeySummary, Session, SessionId,
-    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
+    EmailLink, PasskeyChallengeId, Session, SessionId, StoredPasskey, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, TokenHash, User, UserId,
 };
 use mongodb::bson::spec::BinarySubtype;
 use mongodb::bson::{Binary, Bson, DateTime as BsonDateTime, Document, doc};
@@ -134,8 +134,8 @@ pub(crate) fn session_id_str(id: SessionId) -> String {
     id.0.to_string()
 }
 
-pub(crate) fn email_link_id(purpose: EmailLinkPurpose, hash: &TokenHash) -> String {
-    format!("{}#{}", purpose_str(purpose), hex(&hash.0))
+pub(crate) fn email_link_id(hash: &TokenHash) -> String {
+    hex(&hash.0)
 }
 
 pub(crate) fn passkey_id(credential_id: &[u8]) -> String {
@@ -219,7 +219,7 @@ pub(crate) fn session_from_doc(doc: &Document) -> StorageResult<Session> {
 pub(crate) fn email_link_to_doc(token: &EmailLink) -> Document {
     let token_hash_bin = to_binary(token.token_hash.0.to_vec());
     let mut doc = doc! {
-        "_id": email_link_id(token.purpose, &token.token_hash),
+        "_id": email_link_id(&token.token_hash),
         "token_hash": token_hash_bin,
         "purpose": purpose_str(token.purpose),
         "user_id": token.user_id.0.to_string(),
@@ -279,10 +279,11 @@ pub(crate) fn passkey_to_doc(passkey: &StoredPasskey) -> Document {
     doc
 }
 
-fn passkey_meta_from_doc(doc: &Document) -> StorageResult<PasskeySummary> {
-    Ok(PasskeySummary {
+pub(crate) fn passkey_from_doc(doc: &Document) -> StorageResult<StoredPasskey> {
+    Ok(StoredPasskey {
         credential_id: get_bytes(doc, "credential_id")?,
         user_id: UserId(get_uuid(doc, "user_id")?),
+        passkey: get_bytes(doc, "passkey")?,
         name: get_opt_str(doc, "name")?,
         created_at: get_dt(doc, "created_at")?,
         last_used_at: get_opt_dt(doc, "last_used_at")?,
@@ -292,27 +293,6 @@ fn passkey_meta_from_doc(doc: &Document) -> StorageResult<PasskeySummary> {
         backup_state: get_bool(doc, "backup_state")?,
         recovery_cool_down_until: get_opt_dt(doc, "recovery_cool_down_until")?,
     })
-}
-
-pub(crate) fn passkey_from_doc(doc: &Document) -> StorageResult<StoredPasskey> {
-    let meta = passkey_meta_from_doc(doc)?;
-    Ok(StoredPasskey {
-        credential_id: meta.credential_id,
-        user_id: meta.user_id,
-        passkey: get_bytes(doc, "passkey")?,
-        name: meta.name,
-        created_at: meta.created_at,
-        last_used_at: meta.last_used_at,
-        aaguid: meta.aaguid,
-        transports: meta.transports,
-        backup_eligible: meta.backup_eligible,
-        backup_state: meta.backup_state,
-        recovery_cool_down_until: meta.recovery_cool_down_until,
-    })
-}
-
-pub(crate) fn passkey_summary_from_doc(doc: &Document) -> StorageResult<PasskeySummary> {
-    passkey_meta_from_doc(doc)
 }
 
 pub(crate) fn pkreg_to_doc(value: &StoredPasskeyRegistration) -> Document {

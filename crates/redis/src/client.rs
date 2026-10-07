@@ -119,14 +119,6 @@ pub(crate) async fn smembers(
         .map_err(StorageError::new)
 }
 
-pub(crate) async fn scard(conn: &mut ConnectionManager, key: &str) -> StorageResult<u64> {
-    redis::cmd("SCARD")
-        .arg(key)
-        .query_async(conn)
-        .await
-        .map_err(StorageError::new)
-}
-
 pub(crate) async fn srem(
     conn: &mut ConnectionManager,
     key: &str,

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use doorman_core::error::{StorageError, StorageResult};
+use doorman_core::error::StorageResult;
 use doorman_core::storage::{EmailLink, EmailLinkPurpose, EmailLinkStore, TokenHash, UserId};
 
 use crate::client::{self, RedisClient};
@@ -21,40 +21,35 @@ impl RedisEmailLinkStore {
 impl EmailLinkStore for RedisEmailLinkStore {
     async fn create_link(&self, token: EmailLink) -> StorageResult<()> {
         let keys = self.client.keys();
-        let email_link_key = keys.email_link(token.purpose, &token.token_hash);
+        let email_link_key = keys.email_link(&token.token_hash);
         let user_key = keys.user_email_links(token.user_id, token.purpose);
         let member = keys::token_hash_hex(&token.token_hash);
         let json = client::to_json(&token)?;
         let mut conn = self.client.conn();
 
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        pipe.cmd("SET").arg(&email_link_key).arg(&json).ignore();
-        pipe.cmd("SADD").arg(&user_key).arg(&member).ignore();
-        if let Some(ms) = client::ttl_at_ms(token.expires_at) {
-            pipe.cmd("PEXPIREAT").arg(&email_link_key).arg(ms).ignore();
-        }
-        let _: () = pipe
-            .query_async(&mut conn)
-            .await
-            .map_err(StorageError::new)?;
-        Ok(())
+        stores::insert_absent(
+            &mut conn,
+            &[(&email_link_key, &json)],
+            token.expires_at,
+            Some(stores::OwnerIndex {
+                set: &user_key,
+                member: &member,
+            }),
+            "email link token hash",
+        )
+        .await
     }
 
-    async fn redeem_link(
-        &self,
-        hash: &TokenHash,
-        purpose: EmailLinkPurpose,
-    ) -> StorageResult<Option<EmailLink>> {
+    async fn redeem_link(&self, hash: &TokenHash) -> StorageResult<Option<EmailLink>> {
         let keys = self.client.keys();
-        let email_link_key = keys.email_link(purpose, hash);
+        let email_link_key = keys.email_link(hash);
         let mut conn = self.client.conn();
 
         let Some(token) = client::getdel_json::<EmailLink>(&mut conn, &email_link_key).await?
         else {
             return Ok(None);
         };
-        let user_key = keys.user_email_links(token.user_id, purpose);
+        let user_key = keys.user_email_links(token.user_id, token.purpose);
         let member = keys::token_hash_hex(hash);
         let _ = client::srem(&mut conn, &user_key, &[member]).await;
         Ok(Some(token))
@@ -75,7 +70,7 @@ impl EmailLinkStore for RedisEmailLinkStore {
         }
         let email_link_keys: Vec<String> = members
             .iter()
-            .map(|hex| keys.email_link_key_for(purpose, hex))
+            .map(|hex| keys.email_link_key_for(hex))
             .collect();
         let removed = client::del(&mut conn, &email_link_keys).await?;
         client::del(&mut conn, &[user_key]).await?;
@@ -92,7 +87,7 @@ impl EmailLinkStore for RedisEmailLinkStore {
                 &mut conn,
                 keys,
                 &keys.user_email_links_pattern(purpose),
-                |hex| keys.email_link_key_for(purpose, hex),
+                |hex| keys.email_link_key_for(hex),
                 now,
             )
             .await?;

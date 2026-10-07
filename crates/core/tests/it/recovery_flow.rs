@@ -1210,9 +1210,9 @@ async fn recovery_succeeds_when_at_passkey_cap() {
     register_passkey(&h, user.id, &mut filler, Some("second device")).await;
     let at_cap = h
         .passkeys
-        .list_passkey_summaries_for_user(user.id)
+        .list_passkeys_for_user(user.id)
         .await
-        .expect("list summaries")
+        .expect("list passkeys")
         .len();
     assert_eq!(at_cap, CAP as usize, "user starts exactly at the cap");
 
@@ -1252,9 +1252,9 @@ async fn recovery_succeeds_when_at_passkey_cap() {
 
     let after = h
         .passkeys
-        .list_passkey_summaries_for_user(user.id)
+        .list_passkeys_for_user(user.id)
         .await
-        .expect("list summaries")
+        .expect("list passkeys")
         .len();
     assert_eq!(
         after,

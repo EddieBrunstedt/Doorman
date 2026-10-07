@@ -1,7 +1,6 @@
 use doorman_core::Error;
 use doorman_core::audit::RecoveryFailureReason;
 use doorman_core::audit::{Actor, AuditEvent, AuditEventKind, OperatorActor, SecretKind};
-use doorman_core::clock::Clock;
 use doorman_core::operator::{NoticePolicy, OperatorNotice};
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{PasskeyStore, SessionId, SessionStore, UserId, UserStatus, UserStore};
@@ -27,7 +26,7 @@ async fn first_credential_id(h: &Harness, user_id: UserId) -> Vec<u8> {
 async fn only_session_id(h: &Harness, user_id: UserId) -> SessionId {
     let sessions = h
         .sessions
-        .list_for_user(user_id, h.clock.now())
+        .list_for_user(user_id)
         .await
         .expect("list sessions");
     sessions.first().map(|s| s.id).expect("user has a session")

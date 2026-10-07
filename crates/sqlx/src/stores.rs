@@ -314,17 +314,15 @@ macro_rules! sqlx_stores {
             async fn list_for_user(
                 &self,
                 user_id: $crate::stores::__reexport::UserId,
-                now: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
             ) -> $crate::stores::__reexport::StorageResult<
                 Vec<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
                     "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
-                     FROM sessions WHERE user_id = ? AND expires_at > ?",
+                     FROM sessions WHERE user_id = ?",
                 );
                 let rows = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(user_id.0))
-                    .bind($ts(now))
                     .fetch_all(&self.pool)
                     .await
                     .map_err($crate::common::storage_err)?;
@@ -441,7 +439,6 @@ macro_rules! sqlx_stores {
             async fn redeem_link(
                 &self,
                 hash: &$crate::stores::__reexport::TokenHash,
-                purpose: $crate::stores::__reexport::EmailLinkPurpose,
             ) -> $crate::stores::__reexport::StorageResult<
                 Option<$crate::stores::__reexport::EmailLink>,
             > {
@@ -451,11 +448,8 @@ macro_rules! sqlx_stores {
                     ph: $ph,
                     table: "email_links",
                     cols: "token_hash, purpose, user_id, new_email, created_at, expires_at",
-                    filter: "token_hash = ? AND purpose = ?",
-                    binds: [
-                        $crate::common::token_hash_bytes(hash),
-                        $crate::common::purpose_to_str(purpose),
-                    ],
+                    filter: "token_hash = ?",
+                    binds: [$crate::common::token_hash_bytes(hash)],
                     map: row_to_email_link,
                 }
             }
@@ -611,38 +605,6 @@ macro_rules! sqlx_stores {
                 rows.into_iter().map(row_to_passkey).collect()
             }
 
-            async fn list_passkey_summaries_for_user(
-                &self,
-                user_id: $crate::stores::__reexport::UserId,
-            ) -> $crate::stores::__reexport::StorageResult<
-                Vec<$crate::stores::__reexport::PasskeySummary>,
-            > {
-                let sql = $ph(
-                    "SELECT credential_id, user_id, name, created_at, last_used_at,
-                            aaguid, transports, backup_eligible, backup_state, recovery_cool_down_until
-                     FROM passkeys WHERE user_id = ?",
-                );
-                let rows = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind($crate::common::uuid_to_bytes(user_id.0))
-                    .fetch_all(&self.pool)
-                    .await
-                    .map_err($crate::common::storage_err)?;
-                rows.into_iter().map(row_to_passkey_summary).collect()
-            }
-
-            async fn count_passkeys_for_user(
-                &self,
-                user_id: $crate::stores::__reexport::UserId,
-            ) -> $crate::stores::__reexport::StorageResult<u64> {
-                let sql = $ph("SELECT COUNT(*) FROM passkeys WHERE user_id = ?");
-                let count: i64 = ::sqlx::query_scalar(::sqlx::AssertSqlSafe(sql))
-                    .bind($crate::common::uuid_to_bytes(user_id.0))
-                    .fetch_one(&self.pool)
-                    .await
-                    .map_err($crate::common::storage_err)?;
-                Ok(count.max(0) as u64)
-            }
-
             async fn find_passkey_by_credential_id(
                 &self,
                 credential_id: &[u8],
@@ -689,22 +651,22 @@ macro_rules! sqlx_stores {
             }
         }
 
-        fn row_to_passkey_summary(
+        fn row_to_passkey(
             row: $row,
-        ) -> $crate::stores::__reexport::StorageResult<
-            $crate::stores::__reexport::PasskeySummary,
-        > {
+        ) -> $crate::stores::__reexport::StorageResult<$crate::stores::__reexport::StoredPasskey> {
             use ::sqlx::Row as _;
+            let passkey: Vec<u8> = row.try_get("passkey").map_err($crate::common::storage_err)?;
             let credential_id: Vec<u8> =
                 row.try_get("credential_id").map_err($crate::common::storage_err)?;
             let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage_err)?;
             let aaguid: Option<String> = row.try_get("aaguid").map_err($crate::common::storage_err)?;
             let transports: String = row.try_get("transports").map_err($crate::common::storage_err)?;
-            Ok($crate::stores::__reexport::PasskeySummary {
+            Ok($crate::stores::__reexport::StoredPasskey {
                 credential_id,
                 user_id: $crate::stores::__reexport::UserId(
                     $crate::common::uuid_from_row(user_id_bytes)?,
                 ),
+                passkey,
                 name: row.try_get("name").map_err($crate::common::storage_err)?,
                 created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
                 last_used_at: row.try_get("last_used_at").map_err($crate::common::storage_err)?,
@@ -717,27 +679,6 @@ macro_rules! sqlx_stores {
                 recovery_cool_down_until: row
                     .try_get("recovery_cool_down_until")
                     .map_err($crate::common::storage_err)?,
-            })
-        }
-
-        fn row_to_passkey(
-            row: $row,
-        ) -> $crate::stores::__reexport::StorageResult<$crate::stores::__reexport::StoredPasskey> {
-            use ::sqlx::Row as _;
-            let passkey: Vec<u8> = row.try_get("passkey").map_err($crate::common::storage_err)?;
-            let meta = row_to_passkey_summary(row)?;
-            Ok($crate::stores::__reexport::StoredPasskey {
-                credential_id: meta.credential_id,
-                user_id: meta.user_id,
-                passkey,
-                name: meta.name,
-                created_at: meta.created_at,
-                last_used_at: meta.last_used_at,
-                aaguid: meta.aaguid,
-                transports: meta.transports,
-                backup_eligible: meta.backup_eligible,
-                backup_state: meta.backup_state,
-                recovery_cool_down_until: meta.recovery_cool_down_until,
             })
         }
 
@@ -800,18 +741,22 @@ macro_rules! sqlx_stores {
                 Ok(res.rows_affected())
             }
 
-            async fn count_registrations_for_user(
+            async fn list_registrations_for_user(
                 &self,
                 user_id: $crate::stores::__reexport::UserId,
-            ) -> $crate::stores::__reexport::StorageResult<u64> {
-                let sql =
-                    $ph("SELECT COUNT(*) FROM passkey_registrations WHERE user_id = ?");
-                let count: i64 = ::sqlx::query_scalar(::sqlx::AssertSqlSafe(sql))
+            ) -> $crate::stores::__reexport::StorageResult<
+                Vec<$crate::stores::__reexport::StoredPasskeyRegistration>,
+            > {
+                let sql = $ph(
+                    "SELECT id, purpose, user_id, state, created_at, expires_at, recovery_cool_down_until
+                     FROM passkey_registrations WHERE user_id = ?",
+                );
+                let rows = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(user_id.0))
-                    .fetch_one(&self.pool)
+                    .fetch_all(&self.pool)
                     .await
                     .map_err($crate::common::storage_err)?;
-                Ok(count.max(0) as u64)
+                rows.into_iter().map(row_to_registration).collect()
             }
 
             async fn put_authentication(
@@ -989,8 +934,8 @@ pub(crate) mod __reexport {
     pub use doorman_core::error::{StorageError, StorageResult};
     pub use doorman_core::storage::{
         EmailLink, EmailLinkPurpose, EmailLinkStore, PasskeyChallengeId, PasskeyChallengeStore,
-        PasskeyStore, PasskeySummary, PasskeyUse, Session, SessionId, SessionStore, Storage,
-        StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User,
-        UserId, UserStatus, UserStore,
+        PasskeyStore, PasskeyUse, Session, SessionId, SessionStore, Storage, StoredPasskey,
+        StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
+        UserStatus, UserStore,
     };
 }

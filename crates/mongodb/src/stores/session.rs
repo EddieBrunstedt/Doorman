@@ -73,15 +73,8 @@ impl SessionStore for MongoSessionStore {
         }
     }
 
-    async fn list_for_user(
-        &self,
-        user_id: UserId,
-        now: DateTime<Utc>,
-    ) -> StorageResult<Vec<Session>> {
-        let filter = doc! {
-            "user_id": user_id.0.to_string(),
-            "expires_at": { "$gt": to_bson_dt(now) },
-        };
+    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
+        let filter = doc! { "user_id": user_id.0.to_string() };
         let mut cursor = self.coll.find(filter).await.map_err(err)?;
         let mut out = Vec::new();
         while cursor.advance().await.map_err(err)? {

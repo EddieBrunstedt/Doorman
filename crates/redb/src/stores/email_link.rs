@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use doorman_core::error::StorageResult;
+use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{EmailLink, EmailLinkPurpose, EmailLinkStore, TokenHash, UserId};
 use redb::ReadableTable as _;
 
@@ -21,7 +21,7 @@ impl EmailLinkStore for RedbEmailLinkStore {
     async fn create_link(&self, token: EmailLink) -> StorageResult<()> {
         self.handle
             .write(move |wtxn| {
-                let vt_key = db::email_link_key(token.purpose, &token.token_hash);
+                let vt_key = db::token_hash_hex(&token.token_hash);
                 let user_idx_key =
                     db::user_email_links_idx_key(token.user_id, token.purpose, &token.token_hash);
                 let encoded = db::encode(&token)?;
@@ -29,6 +29,11 @@ impl EmailLinkStore for RedbEmailLinkStore {
                 let mut email_links = wtxn.open_table(db::EMAIL_LINKS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_EMAIL_LINKS_IDX).map_err(db::err)?;
 
+                if email_links.get(vt_key.as_str()).map_err(db::err)?.is_some() {
+                    return Err(StorageError::conflict(
+                        "email link token hash already exists",
+                    ));
+                }
                 email_links
                     .insert(vt_key.as_str(), encoded.as_slice())
                     .map_err(db::err)?;
@@ -40,12 +45,8 @@ impl EmailLinkStore for RedbEmailLinkStore {
             .await
     }
 
-    async fn redeem_link(
-        &self,
-        hash: &TokenHash,
-        purpose: EmailLinkPurpose,
-    ) -> StorageResult<Option<EmailLink>> {
-        let vt_key = db::email_link_key(purpose, hash);
+    async fn redeem_link(&self, hash: &TokenHash) -> StorageResult<Option<EmailLink>> {
+        let vt_key = db::token_hash_hex(hash);
         self.handle
             .write(move |wtxn| {
                 let mut email_links = wtxn.open_table(db::EMAIL_LINKS).map_err(db::err)?;
@@ -87,12 +88,7 @@ impl EmailLinkStore for RedbEmailLinkStore {
                 let mut count = 0u64;
                 for idx_key in &idx_keys {
                     let hash_hex = &idx_key[prefix.len()..];
-                    let vt_key = db::email_link_key_raw(purpose, hash_hex);
-                    if email_links
-                        .remove(vt_key.as_str())
-                        .map_err(db::err)?
-                        .is_some()
-                    {
+                    if email_links.remove(hash_hex).map_err(db::err)?.is_some() {
                         count += 1;
                     }
                     user_idx.remove(idx_key.as_str()).map_err(db::err)?;

@@ -158,10 +158,7 @@ impl<P: LinkPurpose> EmailLinks<P> {
         token: &str,
         context: &SessionContext,
     ) -> Result<(User, P::Payload)> {
-        let record = self
-            .tokens
-            .redeem_link(&hash_token(token), P::PURPOSE)
-            .await?;
+        let record = self.tokens.redeem_link(&hash_token(token)).await?;
         let candidate = record.map(|record| Candidate {
             owner: Some(record.user_id),
             purpose_matches: record.purpose == P::PURPOSE,

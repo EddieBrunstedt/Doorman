@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use aws_sdk_dynamodb::types::AttributeValue;
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{PasskeyStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId};
+use doorman_core::storage::{PasskeyStore, PasskeyUse, StoredPasskey, UserId};
 
 use crate::client::{self, DynamoClient, PK};
 use crate::model;
@@ -117,23 +117,6 @@ impl PasskeyStore for DynamoPasskeyStore {
             .query_owner(&model::user_passkeys_key(user_id))
             .await?;
         items.iter().map(model::passkey_from_item).collect()
-    }
-
-    async fn list_passkey_summaries_for_user(
-        &self,
-        user_id: UserId,
-    ) -> StorageResult<Vec<PasskeySummary>> {
-        let items = self
-            .client
-            .query_owner(&model::user_passkeys_key(user_id))
-            .await?;
-        items.iter().map(model::passkey_summary_from_item).collect()
-    }
-
-    async fn count_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        self.client
-            .count_owner(&model::user_passkeys_key(user_id))
-            .await
     }
 
     async fn find_passkey_by_credential_id(

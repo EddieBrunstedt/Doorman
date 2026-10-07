@@ -31,6 +31,11 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
                 let mut pkregs = wtxn.open_table(db::PKREGS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
 
+                if pkregs.get(key.as_str()).map_err(db::err)?.is_some() {
+                    return Err(StorageError::conflict(
+                        "registration challenge id already exists",
+                    ));
+                }
                 pkregs
                     .insert(key.as_str(), encoded.as_slice())
                     .map_err(db::err)?;
@@ -96,18 +101,41 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
             .await
     }
 
-    async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+    async fn list_registrations_for_user(
+        &self,
+        user_id: UserId,
+    ) -> StorageResult<Vec<StoredPasskeyRegistration>> {
         self.handle
             .read(move |rtxn| {
                 let prefix = db::user_pkregs_prefix(user_id);
                 let end = db::prefix_end(&prefix);
 
-                let idx_tbl = rtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
-                let count = idx_tbl
-                    .range(prefix.as_str()..end.as_str())
-                    .map_err(db::err)?
-                    .count() as u64;
-                Ok(count)
+                let challenge_ids: Vec<String> = {
+                    let idx_tbl = rtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
+                    idx_tbl
+                        .range(prefix.as_str()..end.as_str())
+                        .map_err(db::err)?
+                        .map(|r| {
+                            r.map_err(db::err).and_then(|(k, _)| {
+                                k.value()
+                                    .split_once(db::SEP)
+                                    .map(|x| x.1.to_owned())
+                                    .ok_or_else(|| {
+                                        StorageError::msg("malformed user_pkregs_idx key")
+                                    })
+                            })
+                        })
+                        .collect::<StorageResult<_>>()?
+                };
+
+                let pkregs = rtxn.open_table(db::PKREGS).map_err(db::err)?;
+                let mut out = Vec::with_capacity(challenge_ids.len());
+                for id in &challenge_ids {
+                    if let Some(guard) = pkregs.get(id.as_str()).map_err(db::err)? {
+                        out.push(db::decode(guard.value())?);
+                    }
+                }
+                Ok(out)
             })
             .await
     }
@@ -119,6 +147,11 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
                 let encoded = db::encode(&value)?;
 
                 let mut pkauths = wtxn.open_table(db::PKAUTHS).map_err(db::err)?;
+                if pkauths.get(key.as_str()).map_err(db::err)?.is_some() {
+                    return Err(StorageError::conflict(
+                        "authentication challenge id already exists",
+                    ));
+                }
                 pkauths
                     .insert(key.as_str(), encoded.as_slice())
                     .map_err(db::err)?;

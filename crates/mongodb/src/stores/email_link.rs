@@ -27,12 +27,8 @@ impl EmailLinkStore for MongoEmailLinkStore {
         Ok(())
     }
 
-    async fn redeem_link(
-        &self,
-        hash: &TokenHash,
-        purpose: EmailLinkPurpose,
-    ) -> StorageResult<Option<EmailLink>> {
-        let filter = doc! { "_id": email_link_id(purpose, hash) };
+    async fn redeem_link(&self, hash: &TokenHash) -> StorageResult<Option<EmailLink>> {
+        let filter = doc! { "_id": email_link_id(hash) };
         match self.coll.find_one_and_delete(filter).await.map_err(err)? {
             Some(doc) => Ok(Some(model::email_link_from_doc(&doc)?)),
             None => Ok(None),

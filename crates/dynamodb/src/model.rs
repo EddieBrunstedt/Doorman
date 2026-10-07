@@ -6,17 +6,18 @@ use doorman_core::encoding::{
 };
 use doorman_core::error::StorageResult;
 use doorman_core::storage::{
-    EmailLink, EmailLinkPurpose, PasskeyChallengeId, PasskeySummary, Session, SessionId,
-    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
+    EmailLink, EmailLinkPurpose, PasskeyChallengeId, Session, SessionId, StoredPasskey,
+    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
 };
 use uuid::Uuid;
 
-use crate::client::{self, GSI1PK, GSI2PK, Item};
+use crate::client::{self, GSI2PK, Item};
 
 pub(crate) const ENTITY_USER: &str = "user";
 pub(crate) const ENTITY_EMAIL: &str = "email";
 pub(crate) const ENTITY_SESSION: &str = "session";
 pub(crate) const ENTITY_SESSION_INDEX: &str = "usess";
+pub(crate) const ENTITY_SESSION_HASH: &str = "shash";
 pub(crate) const ENTITY_EMAIL_LINK: &str = "email_link";
 pub(crate) const ENTITY_PASSKEY: &str = "passkey";
 pub(crate) const ENTITY_PKREG: &str = "pkreg";
@@ -38,7 +39,7 @@ pub(crate) fn session_pk_for(id: &str) -> String {
     format!("session#{id}")
 }
 
-pub(crate) fn session_hash_key(hash: &TokenHash) -> String {
+pub(crate) fn session_hash_pk(hash: &TokenHash) -> String {
     format!("shash#{}", hex(&hash.0))
 }
 
@@ -48,8 +49,8 @@ pub(crate) fn session_index_pk(user_id: UserId) -> String {
 
 pub(crate) const SESSION_IDS: &str = "session_ids";
 
-pub(crate) fn email_link_pk(purpose: EmailLinkPurpose, hash: &TokenHash) -> String {
-    format!("email_link#{}#{}", purpose_str(purpose), hex(&hash.0))
+pub(crate) fn email_link_pk(hash: &TokenHash) -> String {
+    format!("email_link#{}", hex(&hash.0))
 }
 
 pub(crate) fn user_email_links_key(user_id: UserId, purpose: EmailLinkPurpose) -> String {
@@ -167,11 +168,13 @@ pub(crate) fn session_item(session: &Session) -> Item {
         "recovery_cool_down_until",
         session.recovery_cool_down_until,
     );
-    item.insert(
-        GSI1PK.to_string(),
-        client::s(session_hash_key(&session.token_hash)),
-    );
     put_ttl(&mut item, session.expires_at);
+    item
+}
+
+pub(crate) fn session_hash_item(session: &Session) -> Item {
+    let mut item = base(ENTITY_SESSION_HASH, session_hash_pk(&session.token_hash));
+    item.insert("id".to_string(), client::s(session.id.0.to_string()));
     item
 }
 
@@ -190,10 +193,7 @@ pub(crate) fn session_from_item(item: &Item) -> StorageResult<Session> {
 }
 
 pub(crate) fn email_link_item(token: &EmailLink) -> Item {
-    let mut item = base(
-        ENTITY_EMAIL_LINK,
-        email_link_pk(token.purpose, &token.token_hash),
-    );
+    let mut item = base(ENTITY_EMAIL_LINK, email_link_pk(&token.token_hash));
     item.insert(
         "token_hash".to_string(),
         client::b(token.token_hash.0.to_vec()),
@@ -265,10 +265,11 @@ pub(crate) fn passkey_item(passkey: &StoredPasskey) -> Item {
     item
 }
 
-fn passkey_meta_from_item(item: &Item) -> StorageResult<PasskeySummary> {
-    Ok(PasskeySummary {
+pub(crate) fn passkey_from_item(item: &Item) -> StorageResult<StoredPasskey> {
+    Ok(StoredPasskey {
         credential_id: client::get_b(item, "credential_id")?,
         user_id: UserId(client::get_uuid(item, "user_id")?),
+        passkey: client::get_b(item, "passkey")?,
         name: client::get_opt_s(item, "name")?,
         created_at: client::get_ts(item, "created_at")?,
         last_used_at: client::get_opt_ts(item, "last_used_at")?,
@@ -278,27 +279,6 @@ fn passkey_meta_from_item(item: &Item) -> StorageResult<PasskeySummary> {
         backup_state: client::get_bool(item, "backup_state")?,
         recovery_cool_down_until: client::get_opt_ts(item, "recovery_cool_down_until")?,
     })
-}
-
-pub(crate) fn passkey_from_item(item: &Item) -> StorageResult<StoredPasskey> {
-    let meta = passkey_meta_from_item(item)?;
-    Ok(StoredPasskey {
-        credential_id: meta.credential_id,
-        user_id: meta.user_id,
-        passkey: client::get_b(item, "passkey")?,
-        name: meta.name,
-        created_at: meta.created_at,
-        last_used_at: meta.last_used_at,
-        aaguid: meta.aaguid,
-        transports: meta.transports,
-        backup_eligible: meta.backup_eligible,
-        backup_state: meta.backup_state,
-        recovery_cool_down_until: meta.recovery_cool_down_until,
-    })
-}
-
-pub(crate) fn passkey_summary_from_item(item: &Item) -> StorageResult<PasskeySummary> {
-    passkey_meta_from_item(item)
 }
 
 fn aaguid_from_item(item: &Item) -> StorageResult<Option<Uuid>> {

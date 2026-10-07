@@ -1305,6 +1305,28 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
 }
 
 #[tokio::test]
+async fn expired_registrations_do_not_count_toward_the_pending_cap() {
+    let h = Harness::builder()
+        .passkey_config(PasskeyConfig {
+            max_pending_registrations_per_user: NonZeroU32::new(1),
+            ..base_passkey_config()
+        })
+        .build();
+    let user = make_user(&h, "abandoned@example.com").await;
+
+    h.passkey
+        .start_registration(&session_for(&h, &user))
+        .await
+        .expect("first pending allowed");
+    h.clock.advance(ChronoDuration::seconds(301));
+
+    h.passkey
+        .start_registration(&session_for(&h, &user))
+        .await
+        .expect("the expired registration no longer holds the only slot");
+}
+
+#[tokio::test]
 async fn authenticate_start_is_rate_limited_per_ip() {
     let limiter = Arc::new(InMemoryRateLimiter::new(
         Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,

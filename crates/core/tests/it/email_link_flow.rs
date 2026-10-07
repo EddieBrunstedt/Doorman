@@ -112,22 +112,35 @@ fn audited_failure(
 }
 
 #[tokio::test]
-async fn a_link_redeems_only_for_its_own_purpose() {
+async fn a_link_presented_for_another_purpose_is_refused_and_redeemed() {
     for issued in LINKS {
         for other in LINKS.into_iter().filter(|l| *l != issued) {
             let h = Harness::fresh();
-            let (_, token) = issued.issue(&h).await;
+            let (owner, token) = issued.issue(&h).await;
 
             let err = other.redeem(&h, &token).await.expect_err("wrong purpose");
             assert!(
                 matches!(err, Error::InvalidEmailLink),
                 "{issued:?} link at {other:?}"
             );
+            assert!(
+                audited_failure(
+                    &h,
+                    other,
+                    Some(owner),
+                    RedemptionFailureReason::WrongPurpose
+                ),
+                "{issued:?} link at {other:?}"
+            );
 
-            issued
+            let err = issued
                 .redeem(&h, &token)
                 .await
-                .unwrap_or_else(|e| panic!("{issued:?} link still redeems for itself: {e}"));
+                .expect_err("the link was redeemed");
+            assert!(
+                matches!(err, Error::InvalidEmailLink),
+                "{issued:?} link after {other:?}"
+            );
         }
     }
 }

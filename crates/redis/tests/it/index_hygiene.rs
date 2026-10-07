@@ -80,7 +80,7 @@ async fn run_index_hygiene(backend: Backend) {
     );
     assert!(
         sessions
-            .list_for_user(lister, now)
+            .list_for_user(lister)
             .await
             .expect("list")
             .is_empty(),

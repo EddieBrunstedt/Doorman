@@ -94,11 +94,7 @@ impl SessionStore for RedbSessionStore {
             .await
     }
 
-    async fn list_for_user(
-        &self,
-        user_id: UserId,
-        now: DateTime<Utc>,
-    ) -> StorageResult<Vec<Session>> {
+    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
         self.handle
             .read(move |rtxn| {
                 let prefix = db::user_sessions_prefix(user_id);
@@ -121,10 +117,7 @@ impl SessionStore for RedbSessionStore {
                 let mut out = Vec::with_capacity(session_ids.len());
                 for id in &session_ids {
                     if let Some(guard) = sessions_tbl.get(id.as_str()).map_err(db::err)? {
-                        let session: Session = db::decode(guard.value())?;
-                        if session.expires_at > now {
-                            out.push(session);
-                        }
+                        out.push(db::decode(guard.value())?);
                     }
                 }
                 Ok(out)

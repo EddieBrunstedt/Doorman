@@ -319,8 +319,8 @@ impl PasskeyManager {
         let Some(max) = self.config.max_passkeys_per_user else {
             return Ok(());
         };
-        let count = self.passkeys.count_passkeys_for_user(user_id).await?;
-        if count >= u64::from(max.get()) {
+        let count = self.passkeys.list_passkeys_for_user(user_id).await?.len();
+        if count >= max.get() as usize {
             tracing::warn!(%user_id, max = max.get(), "passkey registration rejected: passkey cap reached");
             return Err(Error::ResourceLimitExceeded {
                 resource: "passkeys",
@@ -473,15 +473,14 @@ impl PasskeyManager {
 
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn count_passkeys(&self, user_id: UserId) -> Result<u64> {
-        Ok(self.passkeys.count_passkeys_for_user(user_id).await?)
+        let passkeys = self.passkeys.list_passkeys_for_user(user_id).await?;
+        Ok(passkeys.len() as u64)
     }
 
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn list_passkey_summaries(&self, user_id: UserId) -> Result<Vec<PasskeySummary>> {
-        Ok(self
-            .passkeys
-            .list_passkey_summaries_for_user(user_id)
-            .await?)
+        let passkeys = self.passkeys.list_passkeys_for_user(user_id).await?;
+        Ok(passkeys.into_iter().map(PasskeySummary::from).collect())
     }
 
     #[tracing::instrument(skip(self, session, credential_id, reauth, context), fields(user_id = %session.user_id))]

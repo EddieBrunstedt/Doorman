@@ -9,7 +9,7 @@ use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::{
     AttributeDefinition, AttributeValue, BillingMode, DeleteRequest, GlobalSecondaryIndex,
     KeySchemaElement, KeyType, KeysAndAttributes, Projection, ProjectionType, ReturnValue,
-    ScalarAttributeType, Select, TimeToLiveSpecification, WriteRequest,
+    ScalarAttributeType, TimeToLiveSpecification, WriteRequest,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use doorman_core::error::{StorageError, StorageResult};
@@ -20,13 +20,11 @@ use doorman_core::storage::TokenHash;
 pub(crate) type Item = HashMap<String, AttributeValue>;
 
 pub(crate) const PK: &str = "pk";
-pub(crate) const GSI1PK: &str = "gsi1pk";
 pub(crate) const GSI2PK: &str = "gsi2pk";
 pub(crate) const TTL: &str = "ttl";
 pub(crate) const ENTITY: &str = "entity";
 pub(crate) const EXPIRES_AT: &str = "expires_at";
 
-const GSI1: &str = "lookup-index";
 const GSI2: &str = "owner-index";
 
 pub(crate) fn err<E>(e: E) -> StorageError
@@ -236,14 +234,20 @@ impl DynamoClient {
         Ok(out.item)
     }
 
-    pub(crate) async fn put(&self, item: Item) -> StorageResult<()> {
+    pub(crate) async fn put_new(&self, item: Item, what: &str) -> StorageResult<()> {
         self.client
             .put_item()
             .table_name(&self.table)
             .set_item(Some(item))
+            .condition_expression("attribute_not_exists(#pk)")
+            .expression_attribute_names("#pk", PK)
             .send()
             .await
-            .map_err(err)?;
+            .map_err(|e| {
+                condition_err(e, || {
+                    StorageError::conflict(format!("{what} already exists"))
+                })
+            })?;
         Ok(())
     }
 
@@ -284,36 +288,6 @@ impl DynamoClient {
 
     pub(crate) async fn query_owner(&self, key: &str) -> StorageResult<Vec<Item>> {
         self.query_index(GSI2, GSI2PK, key).await
-    }
-
-    pub(crate) async fn query_lookup(&self, key: &str) -> StorageResult<Vec<Item>> {
-        self.query_index(GSI1, GSI1PK, key).await
-    }
-
-    pub(crate) async fn count_owner(&self, key: &str) -> StorageResult<u64> {
-        let mut total: i64 = 0;
-        let mut start: Option<Item> = None;
-        loop {
-            let mut req = self
-                .client
-                .query()
-                .table_name(&self.table)
-                .index_name(GSI2)
-                .key_condition_expression("#k = :v")
-                .expression_attribute_names("#k", GSI2PK)
-                .expression_attribute_values(":v", s(key))
-                .select(Select::Count);
-            if let Some(start) = start.take() {
-                req = req.set_exclusive_start_key(Some(start));
-            }
-            let resp = req.send().await.map_err(err)?;
-            total += i64::from(resp.count);
-            match resp.last_evaluated_key {
-                Some(k) if !k.is_empty() => start = Some(k),
-                _ => break,
-            }
-        }
-        Ok(total.max(0) as u64)
     }
 
     async fn query_index(
@@ -529,10 +503,8 @@ impl DynamoClient {
             .table_name(&self.table)
             .billing_mode(BillingMode::PayPerRequest)
             .attribute_definitions(string_attr(PK)?)
-            .attribute_definitions(string_attr(GSI1PK)?)
             .attribute_definitions(string_attr(GSI2PK)?)
             .key_schema(primary_key)
-            .global_secondary_indexes(hash_index(GSI1, GSI1PK)?)
             .global_secondary_indexes(hash_index(GSI2, GSI2PK)?)
             .send()
             .await;

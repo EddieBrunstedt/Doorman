@@ -4,9 +4,9 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use doorman_core::error::{StorageErrorKind, StorageResult};
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
-    AuthenticationPurpose, EmailLink, EmailLinkPurpose, PasskeyChallengeId, PasskeySummary,
-    PasskeyUse, RegistrationPurpose, Session, SessionId, Storage, StoredPasskey,
-    StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, UserStatus,
+    AuthenticationPurpose, EmailLink, EmailLinkPurpose, PasskeyChallengeId, PasskeyUse,
+    RegistrationPurpose, Session, SessionId, Storage, StoredPasskey, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, User, UserId, UserStatus,
 };
 
 fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
@@ -49,7 +49,6 @@ pub async fn run(storage: &Storage) {
     email_link_email_change_payload(storage).await;
     email_link_purge_and_delete(storage).await;
     sessions_crud_and_queries(storage).await;
-    sessions_list_excludes_expired(storage).await;
     sessions_purge_expired(storage).await;
     session_touch_slides_deadline(storage).await;
     session_touch_does_not_resurrect(storage).await;
@@ -65,49 +64,7 @@ pub async fn run(storage: &Storage) {
     passkey_challenge_purge_expired(storage).await;
     owner_indexes_track_removals(storage).await;
     absent_lookups_return_none(storage).await;
-}
-
-async fn sessions_list_excludes_expired(storage: &Storage) {
-    let now = ts(2026, 3, 1);
-    let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "list-expiry@example.com"))
-        .await
-        .expect("user");
-
-    let mk = |token: &str, expires_at: DateTime<Utc>| Session {
-        id: SessionId::new(),
-        user_id,
-        token_hash: hash_token(token),
-        created_at: now - Duration::hours(2),
-        last_used_at: now - Duration::hours(2),
-        expires_at,
-        ip: None,
-        user_agent: None,
-        recovery_cool_down_until: None,
-    };
-    let live = mk("list-live", now + Duration::hours(1));
-    let expired = mk("list-expired", now - Duration::hours(1));
-    for session in [&live, &expired] {
-        storage
-            .sessions
-            .create_session(session.clone())
-            .await
-            .expect("create session");
-    }
-
-    let listed = storage
-        .sessions
-        .list_for_user(user_id, now)
-        .await
-        .expect("list");
-    let ids: std::collections::HashSet<_> = listed.iter().map(|s| s.id).collect();
-    assert!(ids.contains(&live.id), "live session is listed");
-    assert!(
-        !ids.contains(&expired.id),
-        "expired session is excluded at the store"
-    );
+    inserts_refuse_duplicate_keys(storage).await;
 }
 
 async fn users_round_trip(storage: &Storage) {
@@ -400,7 +357,7 @@ async fn email_link_single_use(storage: &Storage) {
 
     assert!(
         tokens
-            .redeem_link(&hash, EmailLinkPurpose::Signup)
+            .redeem_link(&hash)
             .await
             .expect("first redeem")
             .is_some(),
@@ -408,14 +365,14 @@ async fn email_link_single_use(storage: &Storage) {
     );
     assert!(
         tokens
-            .redeem_link(&hash, EmailLinkPurpose::Signup)
+            .redeem_link(&hash)
             .await
             .expect("second redeem")
             .is_none(),
         "second redeem returns nothing",
     );
 
-    let signup_hash = hash_token("purpose-scoped-token");
+    let signup_hash = hash_token("purpose-carrying-token");
     tokens
         .create_link(EmailLink {
             token_hash: signup_hash,
@@ -427,21 +384,15 @@ async fn email_link_single_use(storage: &Storage) {
         })
         .await
         .expect("create scoped");
-    assert!(
-        tokens
-            .redeem_link(&signup_hash, EmailLinkPurpose::Recovery)
-            .await
-            .expect("wrong-purpose redeem")
-            .is_none(),
-        "redeeming under the wrong purpose returns nothing",
-    );
-    assert!(
-        tokens
-            .redeem_link(&signup_hash, EmailLinkPurpose::Signup)
-            .await
-            .expect("right-purpose redeem")
-            .is_some(),
-        "the token still redeems under its own purpose",
+    let redeemed = tokens
+        .redeem_link(&signup_hash)
+        .await
+        .expect("redeem by hash")
+        .expect("the link redeems by its hash alone");
+    assert_eq!(
+        redeemed.purpose,
+        EmailLinkPurpose::Signup,
+        "the link comes back with the purpose it was stored under",
     );
 }
 
@@ -468,7 +419,7 @@ async fn email_link_email_change_payload(storage: &Storage) {
         .expect("create email-change token");
 
     let redeemed = tokens
-        .redeem_link(&hash, EmailLinkPurpose::EmailChange)
+        .redeem_link(&hash)
         .await
         .expect("redeem")
         .expect("token present");
@@ -521,7 +472,7 @@ async fn email_link_purge_and_delete(storage: &Storage) {
     assert_eq!(removed, 1, "exactly the signup token was deleted");
     assert!(
         tokens
-            .redeem_link(&signup_hash, EmailLinkPurpose::Signup)
+            .redeem_link(&signup_hash)
             .await
             .expect("redeem deleted")
             .is_none(),
@@ -529,7 +480,7 @@ async fn email_link_purge_and_delete(storage: &Storage) {
     );
     assert!(
         tokens
-            .redeem_link(&recovery_hash, EmailLinkPurpose::Recovery)
+            .redeem_link(&recovery_hash)
             .await
             .expect("redeem surviving")
             .is_some(),
@@ -552,7 +503,7 @@ async fn email_link_purge_and_delete(storage: &Storage) {
     assert!(purged >= 1, "at least the expired token was purged");
     assert!(
         tokens
-            .redeem_link(&expired_hash, EmailLinkPurpose::Signup)
+            .redeem_link(&expired_hash)
             .await
             .expect("redeem purged")
             .is_none(),
@@ -618,7 +569,7 @@ async fn sessions_crud_and_queries(storage: &Storage) {
         .expect("session present");
     assert_eq!(by_id.recovery_cool_down_until, Some(cool_down_until));
 
-    let listed = sessions.list_for_user(user_id, now).await.expect("list");
+    let listed = sessions.list_for_user(user_id).await.expect("list");
     let listed_ids: std::collections::HashSet<_> = listed.iter().map(|s| s.id).collect();
     let expected: std::collections::HashSet<_> =
         [keep.id, other_a.id, other_b.id, with_cool_down.id].into();
@@ -632,10 +583,7 @@ async fn sessions_crud_and_queries(storage: &Storage) {
         .await
         .expect("delete others");
     assert_eq!(removed, 3, "every session except the exception was removed");
-    let after = sessions
-        .list_for_user(user_id, now)
-        .await
-        .expect("list after");
+    let after = sessions.list_for_user(user_id).await.expect("list after");
     assert_eq!(after.len(), 1);
     assert_eq!(after[0].id, keep.id);
 
@@ -654,7 +602,7 @@ async fn sessions_crud_and_queries(storage: &Storage) {
     assert_eq!(removed, 1, "the surviving session was removed");
     assert!(
         sessions
-            .list_for_user(user_id, now)
+            .list_for_user(user_id)
             .await
             .expect("list cleared")
             .is_empty()
@@ -948,7 +896,7 @@ async fn session_revoke_races_creation(storage: &Storage) {
 
     let listed: std::collections::HashSet<_> = storage
         .sessions
-        .list_for_user(user_id, now)
+        .list_for_user(user_id)
         .await
         .expect("list")
         .iter()
@@ -1086,27 +1034,6 @@ async fn passkeys_cool_down_round_trip(storage: &Storage) {
         Some(cool_down_until),
         "cool-down preserved on update",
     );
-
-    let summaries = passkeys
-        .list_passkey_summaries_for_user(user_id)
-        .await
-        .expect("list passkey summaries");
-    assert_eq!(summaries.len(), 1);
-    let summary = &summaries[0];
-    assert_eq!(summary.credential_id, updated.credential_id);
-    assert_eq!(summary.user_id, user_id);
-    assert_eq!(summary.name.as_deref(), Some("renamed security key"));
-    assert_eq!(summary.created_at, updated.created_at);
-    assert_eq!(summary.last_used_at, updated.last_used_at);
-    assert_eq!(summary.aaguid, Some(aaguid));
-    assert_eq!(
-        summary.transports,
-        vec!["usb".to_string(), "nfc".to_string()]
-    );
-    assert!(summary.backup_eligible);
-    assert!(summary.backup_state);
-    assert_eq!(summary.recovery_cool_down_until, Some(cool_down_until));
-    assert_eq!(*summary, PasskeySummary::from(listed[0].clone()));
 
     let other_user_id = UserId::new();
     storage
@@ -1315,9 +1242,10 @@ async fn passkeys_bulk_delete_for_user(storage: &Storage) {
 
     let count = |user_id: UserId| async move {
         passkeys
-            .count_passkeys_for_user(user_id)
+            .list_passkeys_for_user(user_id)
             .await
             .expect("count passkeys")
+            .len()
     };
     assert_eq!(count(target).await, 3, "count covers the owner's passkeys");
     assert_eq!(count(bystander).await, 1, "count excludes other users");
@@ -1464,18 +1392,20 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
     assert_eq!(
         storage
             .passkey_challenges
-            .count_registrations_for_user(target)
+            .list_registrations_for_user(target)
             .await
-            .expect("count target"),
+            .expect("count target")
+            .len(),
         2,
         "target has two pending registrations",
     );
     assert_eq!(
         storage
             .passkey_challenges
-            .count_registrations_for_user(bystander)
+            .list_registrations_for_user(bystander)
             .await
-            .expect("count bystander"),
+            .expect("count bystander")
+            .len(),
         1,
     );
 
@@ -1492,9 +1422,10 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
     assert_eq!(
         storage
             .passkey_challenges
-            .count_registrations_for_user(target)
+            .list_registrations_for_user(target)
             .await
-            .expect("count target after delete"),
+            .expect("count target after delete")
+            .len(),
         0,
         "count drops to zero after the user's challenges are deleted",
     );
@@ -1502,9 +1433,10 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
     assert_eq!(
         storage
             .passkey_challenges
-            .count_registrations_for_user(bystander)
+            .list_registrations_for_user(bystander)
             .await
-            .expect("count bystander after delete"),
+            .expect("count bystander after delete")
+            .len(),
         1,
         "another user's pending registration must be untouched",
     );
@@ -1684,13 +1616,7 @@ async fn single_use_under_concurrency(storage: &Storage) {
         .expect("create token");
     let redeemed = count_redeemers(|| {
         let tokens = storage.email_links.clone();
-        async move {
-            tokens
-                .redeem_link(&hash, EmailLinkPurpose::Signup)
-                .await
-                .expect("redeem")
-                .is_some()
-        }
+        async move { tokens.redeem_link(&hash).await.expect("redeem").is_some() }
     })
     .await;
     assert_eq!(redeemed, 1, "exactly one caller redeems the token");
@@ -1821,7 +1747,7 @@ async fn owner_indexes_track_removals(storage: &Storage) {
     }
     assert!(
         tokens
-            .redeem_link(&redeemed.token_hash, EmailLinkPurpose::Recovery)
+            .redeem_link(&redeemed.token_hash)
             .await
             .expect("redeem token")
             .is_some(),
@@ -1861,11 +1787,12 @@ async fn owner_indexes_track_removals(storage: &Storage) {
     }
     let count = || async {
         challenges
-            .count_registrations_for_user(user_id)
+            .list_registrations_for_user(user_id)
             .await
             .expect("count registrations")
+            .len()
     };
-    assert_eq!(count().await, 3, "all three registrations are counted");
+    assert_eq!(count().await, 3, "all three registrations are listed");
     assert!(
         challenges
             .take_registration(taken.id)
@@ -1874,11 +1801,7 @@ async fn owner_indexes_track_removals(storage: &Storage) {
             .is_some(),
         "the registration is taken",
     );
-    assert_eq!(
-        count().await,
-        2,
-        "a taken registration is no longer counted"
-    );
+    assert_eq!(count().await, 2, "a taken registration is no longer listed");
     assert!(
         challenges
             .purge_expired(now)
@@ -1890,7 +1813,7 @@ async fn owner_indexes_track_removals(storage: &Storage) {
     assert_eq!(
         count().await,
         1,
-        "a purged registration is no longer counted"
+        "a purged registration is no longer listed"
     );
     assert_eq!(
         challenges
@@ -1925,7 +1848,7 @@ async fn absent_lookups_return_none(storage: &Storage) {
     assert!(
         storage
             .email_links
-            .redeem_link(&hash_token("no-such-token"), EmailLinkPurpose::Signup)
+            .redeem_link(&hash_token("no-such-token"))
             .await
             .expect("absent token redeem")
             .is_none(),
@@ -1949,4 +1872,204 @@ async fn absent_lookups_return_none(storage: &Storage) {
             .is_none(),
         "taking an unknown authentication resolves to None",
     );
+}
+
+async fn inserts_refuse_duplicate_keys(storage: &Storage) {
+    let now = ts(2026, 1, 1);
+    let owner = UserId::new();
+    let intruder = UserId::new();
+    storage
+        .users
+        .create_user(user(owner, "duplicate-owner@example.com"))
+        .await
+        .expect("owner");
+    storage
+        .users
+        .create_user(user(intruder, "duplicate-intruder@example.com"))
+        .await
+        .expect("intruder");
+
+    let sessions = &storage.sessions;
+    let session = |user_id, token: &str| Session {
+        id: SessionId::new(),
+        user_id,
+        token_hash: hash_token(token),
+        created_at: now,
+        last_used_at: now,
+        expires_at: ts(2099, 1, 1),
+        ip: None,
+        user_agent: None,
+        recovery_cool_down_until: None,
+    };
+    let original = session(owner, "duplicate-session");
+    sessions
+        .create_session(original.clone())
+        .await
+        .expect("create session");
+    assert_refused(
+        sessions
+            .create_session(Session {
+                id: original.id,
+                ..session(intruder, "duplicate-session-other-token")
+            })
+            .await,
+        StorageErrorKind::Conflict,
+        "duplicate session id",
+    );
+    assert_refused(
+        sessions
+            .create_session(Session {
+                token_hash: original.token_hash,
+                ..session(intruder, "unused")
+            })
+            .await,
+        StorageErrorKind::Conflict,
+        "duplicate session token hash",
+    );
+    assert_eq!(
+        sessions
+            .find_session_by_token_hash(&original.token_hash)
+            .await
+            .expect("find by hash"),
+        Some(original.clone()),
+        "the original session is untouched",
+    );
+    assert!(
+        sessions
+            .find_session_by_token_hash(&hash_token("duplicate-session-other-token"))
+            .await
+            .expect("find refused session by hash")
+            .is_none(),
+        "a refused session leaves no token hash behind",
+    );
+    assert!(
+        sessions
+            .list_for_user(intruder)
+            .await
+            .expect("list intruder")
+            .is_empty(),
+        "a refused session leaves nothing in its user's list",
+    );
+
+    let link = EmailLink {
+        token_hash: hash_token("duplicate-link"),
+        user_id: owner,
+        purpose: EmailLinkPurpose::Signup,
+        new_email: None,
+        created_at: now,
+        expires_at: ts(2099, 1, 1),
+    };
+    storage
+        .email_links
+        .create_link(link.clone())
+        .await
+        .expect("create link");
+    assert_refused(
+        storage
+            .email_links
+            .create_link(EmailLink {
+                user_id: intruder,
+                purpose: EmailLinkPurpose::Recovery,
+                ..link.clone()
+            })
+            .await,
+        StorageErrorKind::Conflict,
+        "duplicate email link hash",
+    );
+    assert_eq!(
+        storage
+            .email_links
+            .delete_links_for_user(intruder, EmailLinkPurpose::Recovery)
+            .await
+            .expect("delete intruder links"),
+        0,
+        "a refused link leaves nothing for its user",
+    );
+    assert_eq!(
+        storage
+            .email_links
+            .redeem_link(&link.token_hash)
+            .await
+            .expect("redeem link"),
+        Some(link),
+        "the original link is untouched",
+    );
+
+    let challenges = &storage.passkey_challenges;
+    let registration = StoredPasskeyRegistration {
+        id: PasskeyChallengeId::new(),
+        purpose: RegistrationPurpose::AddPasskey,
+        user_id: owner,
+        state: b"duplicate-registration".to_vec(),
+        created_at: now,
+        expires_at: ts(2099, 1, 1),
+        recovery_cool_down_until: None,
+    };
+    challenges
+        .put_registration(registration.clone())
+        .await
+        .expect("put registration");
+    assert_refused(
+        challenges
+            .put_registration(StoredPasskeyRegistration {
+                user_id: intruder,
+                state: b"intruding-registration".to_vec(),
+                ..registration.clone()
+            })
+            .await,
+        StorageErrorKind::Conflict,
+        "duplicate registration id",
+    );
+    assert!(
+        challenges
+            .list_registrations_for_user(intruder)
+            .await
+            .expect("list intruder registrations")
+            .is_empty(),
+        "a refused registration leaves nothing for its user",
+    );
+    let taken = challenges
+        .take_registration(registration.id)
+        .await
+        .expect("take registration")
+        .expect("registration present");
+    assert_eq!(
+        taken.user_id, owner,
+        "the original registration is untouched"
+    );
+    assert_eq!(taken.state, registration.state);
+
+    let authentication = StoredPasskeyAuthentication {
+        id: PasskeyChallengeId::new(),
+        purpose: AuthenticationPurpose::Login,
+        state: b"duplicate-authentication".to_vec(),
+        created_at: now,
+        expires_at: ts(2099, 1, 1),
+    };
+    challenges
+        .put_authentication(authentication.clone())
+        .await
+        .expect("put authentication");
+    assert_refused(
+        challenges
+            .put_authentication(StoredPasskeyAuthentication {
+                purpose: AuthenticationPurpose::Reauth,
+                state: b"intruding-authentication".to_vec(),
+                ..authentication.clone()
+            })
+            .await,
+        StorageErrorKind::Conflict,
+        "duplicate authentication id",
+    );
+    let taken = challenges
+        .take_authentication(authentication.id)
+        .await
+        .expect("take authentication")
+        .expect("authentication present");
+    assert_eq!(
+        taken.purpose,
+        AuthenticationPurpose::Login,
+        "the original authentication is untouched",
+    );
+    assert_eq!(taken.state, authentication.state);
 }

@@ -236,7 +236,9 @@ impl SessionRecords {
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     async fn list_for_user(&self, user_id: UserId) -> Result<Vec<Session>> {
         let now = self.clock.now();
-        Ok(self.sessions.list_for_user(user_id, now).await?)
+        let mut sessions = self.sessions.list_for_user(user_id).await?;
+        sessions.retain(|session| session.expires_at > now);
+        Ok(sessions)
     }
 
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]

@@ -64,12 +64,8 @@ impl SessionStore for AuditedSessions {
         self.inner.find_session_by_id(id).await
     }
 
-    async fn list_for_user(
-        &self,
-        user_id: UserId,
-        now: DateTime<Utc>,
-    ) -> StorageResult<Vec<Session>> {
-        self.inner.list_for_user(user_id, now).await
+    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
+        self.inner.list_for_user(user_id).await
     }
 
     async fn delete_session(&self, id: SessionId) -> StorageResult<()> {

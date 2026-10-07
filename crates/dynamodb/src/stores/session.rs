@@ -3,21 +3,27 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use aws_sdk_dynamodb::types::{Put, ReturnValue, TransactWriteItem, Update};
 use chrono::{DateTime, Utc};
-use doorman_core::error::StorageResult;
+use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 
 use crate::client::{self, DynamoClient, PK};
-use crate::model::{self, ENTITY_SESSION, ENTITY_SESSION_INDEX, SESSION_IDS};
+use crate::model::{self, ENTITY_SESSION, ENTITY_SESSION_HASH, ENTITY_SESSION_INDEX, SESSION_IDS};
 
 pub(crate) fn create_writes(
     table: &str,
     session: &Session,
 ) -> StorageResult<Vec<TransactWriteItem>> {
-    let row = Put::builder()
-        .table_name(table)
-        .set_item(Some(model::session_item(session)))
-        .build()
-        .map_err(client::err)?;
+    let put_new = |item| {
+        Put::builder()
+            .table_name(table)
+            .set_item(Some(item))
+            .condition_expression("attribute_not_exists(#pk)")
+            .expression_attribute_names("#pk", PK)
+            .build()
+            .map_err(client::err)
+    };
+    let row = put_new(model::session_item(session))?;
+    let hash = put_new(model::session_hash_item(session))?;
     let index = Update::builder()
         .table_name(table)
         .key(PK, client::s(model::session_index_pk(session.user_id)))
@@ -32,6 +38,7 @@ pub(crate) fn create_writes(
         .map_err(client::err)?;
     Ok(vec![
         TransactWriteItem::builder().put(row).build(),
+        TransactWriteItem::builder().put(hash).build(),
         TransactWriteItem::builder().update(index).build(),
     ])
 }
@@ -120,14 +127,20 @@ impl DynamoSessionStore {
 #[async_trait]
 impl SessionStore for DynamoSessionStore {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
-        self.client
+        let result = self
+            .client
             .inner()
             .transact_write_items()
             .set_transact_items(Some(create_writes(self.client.table(), &session)?))
             .send()
-            .await
-            .map_err(client::err)?;
-        Ok(())
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if client::failed_conditions(&e).is_empty() => Err(client::err(e)),
+            Err(_) => Err(StorageError::conflict(
+                "session id or token hash already exists",
+            )),
+        }
     }
 
     async fn touch_session(
@@ -172,15 +185,16 @@ impl SessionStore for DynamoSessionStore {
     }
 
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
-        let items = self
-            .client
-            .query_lookup(&model::session_hash_key(hash))
-            .await?;
-        let Some(item) = items.first() else {
+        let hash_pk = model::session_hash_pk(hash);
+        let Some(item) = self.client.get(&hash_pk).await? else {
             return Ok(None);
         };
-        let id = SessionId(client::get_uuid(item, "id")?);
-        self.find_session_by_id(id).await
+        let id = SessionId(client::get_uuid(&item, "id")?);
+        let session = self.find_session_by_id(id).await?;
+        if session.is_none() {
+            let _ = self.client.delete(&hash_pk).await;
+        }
+        Ok(session)
     }
 
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>> {
@@ -190,23 +204,19 @@ impl SessionStore for DynamoSessionStore {
         }
     }
 
-    async fn list_for_user(
-        &self,
-        user_id: UserId,
-        now: DateTime<Utc>,
-    ) -> StorageResult<Vec<Session>> {
+    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
         let ids = self.indexed_ids(user_id).await?;
         let (sessions, gone) = self.load(&ids).await?;
         let _ = self.unindex(user_id, gone).await;
-        Ok(sessions
-            .into_iter()
-            .filter(|session| session.expires_at > now)
-            .collect())
+        Ok(sessions)
     }
 
     async fn delete_session(&self, id: SessionId) -> StorageResult<()> {
         if let Some(item) = self.client.take(&model::session_pk(id)).await? {
             let session = model::session_from_item(&item)?;
+            self.client
+                .delete(&model::session_hash_pk(&session.token_hash))
+                .await?;
             self.unindex(session.user_id, vec![id.0.to_string()])
                 .await?;
         }
@@ -225,7 +235,12 @@ impl SessionStore for DynamoSessionStore {
             return Ok(0);
         }
         let (sessions, _) = self.load(&ids).await?;
-        let pks = ids.iter().map(|id| model::session_pk_for(id)).collect();
+        let mut pks: Vec<String> = ids.iter().map(|id| model::session_pk_for(id)).collect();
+        pks.extend(
+            sessions
+                .iter()
+                .map(|session| model::session_hash_pk(&session.token_hash)),
+        );
         self.client.batch_delete(pks).await?;
         self.unindex(user_id, ids).await?;
         Ok(sessions.len() as u64)
@@ -234,17 +249,20 @@ impl SessionStore for DynamoSessionStore {
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
         let items = self
             .client
-            .scan_entities(&[ENTITY_SESSION, ENTITY_SESSION_INDEX])
+            .scan_entities(&[ENTITY_SESSION, ENTITY_SESSION_INDEX, ENTITY_SESSION_HASH])
             .await?;
         let mut expired_pks = Vec::new();
         let mut expired: HashMap<UserId, Vec<String>> = HashMap::new();
         let mut live = HashSet::new();
         let mut indexes = Vec::new();
+        let mut hashes = Vec::new();
         for item in &items {
-            if client::get_s(item, client::ENTITY)? == ENTITY_SESSION {
+            let entity = client::get_s(item, client::ENTITY)?;
+            if entity == ENTITY_SESSION {
                 let session = model::session_from_item(item)?;
                 if session.expires_at <= now {
                     expired_pks.push(model::session_pk(session.id));
+                    expired_pks.push(model::session_hash_pk(&session.token_hash));
                     expired
                         .entry(session.user_id)
                         .or_default()
@@ -252,14 +270,35 @@ impl SessionStore for DynamoSessionStore {
                 } else {
                     live.insert(session.id.0.to_string());
                 }
+            } else if entity == ENTITY_SESSION_HASH {
+                hashes.push((client::item_pk(item)?, client::get_s(item, "id")?));
             } else {
                 let user_id = UserId(client::get_uuid(item, "user_id")?);
                 indexes.push((user_id, client::get_ss(item, SESSION_IDS)?));
             }
         }
 
-        let mut removed = expired_pks.len() as u64;
+        let mut removed = expired.values().map(Vec::len).sum::<usize>() as u64;
         self.client.batch_delete(expired_pks).await?;
+
+        let expired_ids: HashSet<&String> = expired.values().flatten().collect();
+        let (hash_pks, unseen): (Vec<String>, Vec<String>) = hashes
+            .into_iter()
+            .filter(|(_, id)| !live.contains(id) && !expired_ids.contains(id))
+            .unzip();
+        if !unseen.is_empty() {
+            // A session's row may have been written after the scan passed it, so only a row a
+            // strong read cannot find leaves its token hash item dangling.
+            let (_, dangling) = self.load(&unseen).await?;
+            let dangling: HashSet<String> = dangling.into_iter().collect();
+            let dangling_pks = hash_pks
+                .into_iter()
+                .zip(unseen)
+                .filter(|(_, id)| dangling.contains(id))
+                .map(|(pk, _)| pk)
+                .collect();
+            self.client.batch_delete(dangling_pks).await?;
+        }
         for (user_id, ids) in indexes {
             let mut gone = expired.remove(&user_id).unwrap_or_default();
             let unseen: Vec<String> = ids

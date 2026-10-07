@@ -9,9 +9,9 @@ use crate::error::{StorageError, StorageResult};
 use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::storage::{
     EmailLink, EmailLinkPurpose, EmailLinkStore, PasskeyChallengeId, PasskeyChallengeStore,
-    PasskeyStore, PasskeySummary, PasskeyUse, Session, SessionId, SessionStore, Storage,
-    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
-    UserStatus, UserStore,
+    PasskeyStore, PasskeyUse, Session, SessionId, SessionStore, Storage, StoredPasskey,
+    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStatus,
+    UserStore,
 };
 use crate::sync;
 
@@ -285,16 +285,12 @@ impl SessionStore for InMemorySessionStore {
         Ok(self.read().by_id.get(&id).cloned())
     }
 
-    async fn list_for_user(
-        &self,
-        user_id: UserId,
-        now: DateTime<Utc>,
-    ) -> StorageResult<Vec<Session>> {
+    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
         Ok(self
             .read()
             .by_id
             .values()
-            .filter(|s| s.user_id == user_id && s.expires_at > now)
+            .filter(|s| s.user_id == user_id)
             .cloned()
             .collect())
     }
@@ -349,25 +345,16 @@ impl InMemoryEmailLinkStore {
 impl EmailLinkStore for InMemoryEmailLinkStore {
     async fn create_link(&self, token: EmailLink) -> StorageResult<()> {
         let mut state = self.lock();
-        if state
-            .iter()
-            .any(|t| t.token_hash == token.token_hash && t.purpose == token.purpose)
-        {
+        if state.iter().any(|t| t.token_hash == token.token_hash) {
             return Err(StorageError::conflict("email link token hash collision"));
         }
         state.push(token);
         Ok(())
     }
 
-    async fn redeem_link(
-        &self,
-        hash: &TokenHash,
-        purpose: EmailLinkPurpose,
-    ) -> StorageResult<Option<EmailLink>> {
+    async fn redeem_link(&self, hash: &TokenHash) -> StorageResult<Option<EmailLink>> {
         let mut state = self.lock();
-        let pos = state
-            .iter()
-            .position(|t| t.token_hash == *hash && t.purpose == purpose);
+        let pos = state.iter().position(|t| t.token_hash == *hash);
         Ok(pos.map(|i| state.remove(i)))
     }
 
@@ -465,22 +452,6 @@ impl PasskeyStore for InMemoryPasskeyStore {
             .collect())
     }
 
-    async fn list_passkey_summaries_for_user(
-        &self,
-        user_id: UserId,
-    ) -> StorageResult<Vec<PasskeySummary>> {
-        Ok(self
-            .lock()
-            .iter()
-            .filter(|c| c.user_id == user_id)
-            .map(PasskeySummary::from)
-            .collect())
-    }
-
-    async fn count_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        Ok(self.lock().iter().filter(|c| c.user_id == user_id).count() as u64)
-    }
-
     async fn find_passkey_by_credential_id(
         &self,
         credential_id: &[u8],
@@ -563,13 +534,17 @@ impl PasskeyChallengeStore for InMemoryPasskeyChallengeStore {
         Ok((before - state.registrations.len()) as u64)
     }
 
-    async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+    async fn list_registrations_for_user(
+        &self,
+        user_id: UserId,
+    ) -> StorageResult<Vec<StoredPasskeyRegistration>> {
         Ok(self
             .lock()
             .registrations
             .values()
             .filter(|v| v.user_id == user_id)
-            .count() as u64)
+            .cloned()
+            .collect())
     }
 
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
@@ -694,7 +669,7 @@ mod tests {
         assert!(
             storage
                 .sessions
-                .list_for_user(user.id, now)
+                .list_for_user(user.id)
                 .await
                 .expect("session store wired")
                 .is_empty()
@@ -702,7 +677,7 @@ mod tests {
         assert!(
             storage
                 .email_links
-                .redeem_link(&TokenHash([0u8; 32]), EmailLinkPurpose::Signup)
+                .redeem_link(&TokenHash([0u8; 32]))
                 .await
                 .expect("email link store wired")
                 .is_none()
@@ -710,7 +685,7 @@ mod tests {
         assert!(
             storage
                 .passkeys
-                .list_passkey_summaries_for_user(user.id)
+                .list_passkeys_for_user(user.id)
                 .await
                 .expect("passkey store wired")
                 .is_empty()

@@ -2,14 +2,82 @@ pub(crate) mod email_link;
 pub(crate) mod passkey_chal;
 pub(crate) mod session;
 
+use std::sync::LazyLock;
+
 use chrono::{DateTime, Utc};
-use doorman_core::error::StorageResult;
+use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{EmailLink, Session, StoredPasskeyRegistration};
 use redis::aio::ConnectionManager;
 use serde::de::DeserializeOwned;
 
 use crate::client;
 use crate::keys::KeySchema;
+use crate::scripts;
+
+static INSERT_ABSENT: LazyLock<redis::Script> =
+    LazyLock::new(|| redis::Script::new(scripts::INSERT_ABSENT));
+
+pub(crate) struct OwnerIndex<'a> {
+    pub(crate) set: &'a str,
+    pub(crate) member: &'a str,
+}
+
+pub(crate) async fn insert_absent(
+    conn: &mut ConnectionManager,
+    rows: &[(&str, &str)],
+    expires_at: DateTime<Utc>,
+    index: Option<OwnerIndex<'_>>,
+    what: &str,
+) -> StorageResult<()> {
+    let mut invocation = INSERT_ABSENT.prepare_invoke();
+    for (key, _) in rows {
+        invocation.key(*key);
+    }
+    if let Some(index) = &index {
+        invocation.key(index.set);
+    }
+    invocation
+        .arg(rows.len())
+        .arg(client::ttl_at_ms(expires_at).unwrap_or(0));
+    for (_, value) in rows {
+        invocation.arg(*value);
+    }
+    if let Some(index) = &index {
+        invocation.arg(index.member);
+    }
+    let inserted: i64 = invocation
+        .invoke_async(conn)
+        .await
+        .map_err(StorageError::new)?;
+    if inserted == 0 {
+        return Err(StorageError::conflict(format!("{what} already exists")));
+    }
+    Ok(())
+}
+
+pub(crate) async fn list_indexed<T: IndexedRow>(
+    conn: &mut ConnectionManager,
+    set_key: &str,
+    row_key: impl Fn(&str) -> String,
+) -> StorageResult<Vec<T>> {
+    let members = client::smembers(conn, set_key).await?;
+    if members.is_empty() {
+        return Ok(Vec::new());
+    }
+    let row_keys: Vec<String> = members.iter().map(|m| row_key(m)).collect();
+    let rows: Vec<Option<T>> = client::mget_json(conn, &row_keys).await?;
+
+    let mut out = Vec::new();
+    let mut dangling = Vec::new();
+    for (member, row) in members.into_iter().zip(rows) {
+        match row {
+            Some(row) => out.push(row),
+            None => dangling.push(member),
+        }
+    }
+    let _ = client::srem(conn, set_key, &dangling).await;
+    Ok(out)
+}
 
 pub(crate) trait IndexedRow: DeserializeOwned {
     fn expires_at(&self) -> DateTime<Utc>;

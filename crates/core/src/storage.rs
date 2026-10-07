@@ -160,11 +160,7 @@ pub trait SessionStore: Send + Sync {
 
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>>;
 
-    async fn list_for_user(
-        &self,
-        user_id: UserId,
-        now: DateTime<Utc>,
-    ) -> StorageResult<Vec<Session>>;
+    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>>;
 
     async fn delete_session(&self, id: SessionId) -> StorageResult<()>;
 
@@ -317,13 +313,6 @@ pub trait PasskeyStore: Send + Sync {
 
     async fn list_passkeys_for_user(&self, user_id: UserId) -> StorageResult<Vec<StoredPasskey>>;
 
-    async fn list_passkey_summaries_for_user(
-        &self,
-        user_id: UserId,
-    ) -> StorageResult<Vec<PasskeySummary>>;
-
-    async fn count_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64>;
-
     async fn find_passkey_by_credential_id(
         &self,
         credential_id: &[u8],
@@ -345,7 +334,10 @@ pub trait PasskeyChallengeStore: Send + Sync {
 
     async fn delete_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64>;
 
-    async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64>;
+    async fn list_registrations_for_user(
+        &self,
+        user_id: UserId,
+    ) -> StorageResult<Vec<StoredPasskeyRegistration>>;
 
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()>;
 
@@ -379,11 +371,7 @@ pub struct EmailLink {
 pub trait EmailLinkStore: Send + Sync {
     async fn create_link(&self, token: EmailLink) -> StorageResult<()>;
 
-    async fn redeem_link(
-        &self,
-        hash: &TokenHash,
-        purpose: EmailLinkPurpose,
-    ) -> StorageResult<Option<EmailLink>>;
+    async fn redeem_link(&self, hash: &TokenHash) -> StorageResult<Option<EmailLink>>;
 
     async fn delete_links_for_user(
         &self,

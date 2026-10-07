@@ -56,12 +56,19 @@ impl PasskeyChallengeStore for MongoPasskeyChallengeStore {
         Ok(result.deleted_count)
     }
 
-    async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+    async fn list_registrations_for_user(
+        &self,
+        user_id: UserId,
+    ) -> StorageResult<Vec<StoredPasskeyRegistration>> {
         let filter = doc! { "user_id": user_id.0.to_string() };
-        self.registrations
-            .count_documents(filter)
-            .await
-            .map_err(err)
+        let mut cursor = self.registrations.find(filter).await.map_err(err)?;
+        let mut out = Vec::new();
+        while cursor.advance().await.map_err(err)? {
+            out.push(model::pkreg_from_doc(
+                &cursor.deserialize_current().map_err(err)?,
+            )?);
+        }
+        Ok(out)
     }
 
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {

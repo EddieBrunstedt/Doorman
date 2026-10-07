@@ -24,13 +24,12 @@ CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 
 CREATE TABLE email_links (
-    token_hash BINARY(32) NOT NULL,
+    token_hash BINARY(32) PRIMARY KEY,
     purpose VARCHAR(32) NOT NULL,
     user_id BINARY(16) NOT NULL,
     new_email VARCHAR(255),
     created_at DATETIME(6) NOT NULL,
     expires_at DATETIME(6) NOT NULL,
-    PRIMARY KEY (token_hash, purpose),
     CONSTRAINT fk_email_links_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_email_links_user_id ON email_links(user_id);

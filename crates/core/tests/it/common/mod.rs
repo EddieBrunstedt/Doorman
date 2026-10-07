@@ -209,13 +209,9 @@ impl SessionStore for CountingSessionStore {
         self.inner.find_session_by_id(id).await
     }
 
-    async fn list_for_user(
-        &self,
-        user_id: UserId,
-        now: DateTime<Utc>,
-    ) -> StorageResult<Vec<Session>> {
+    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
         self.read();
-        self.inner.list_for_user(user_id, now).await
+        self.inner.list_for_user(user_id).await
     }
 
     async fn delete_session(&self, id: SessionId) -> StorageResult<()> {
@@ -453,11 +449,14 @@ pub async fn within_deadline<T>(race: impl Future<Output = T>) -> T {
 }
 
 pub async fn session_count(h: &Harness, user_id: UserId) -> usize {
+    let now = h.clock.now();
     h.sessions
-        .list_for_user(user_id, h.clock.now())
+        .list_for_user(user_id)
         .await
         .expect("list sessions")
-        .len()
+        .iter()
+        .filter(|session| session.expires_at > now)
+        .count()
 }
 
 pub async fn passkey_count(h: &Harness, user_id: UserId) -> u64 {

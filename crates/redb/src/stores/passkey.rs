@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{PasskeyStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId};
+use doorman_core::storage::{PasskeyStore, PasskeyUse, StoredPasskey, UserId};
 
 use redb::ReadableTable as _;
 
@@ -129,61 +129,6 @@ impl PasskeyStore for RedbPasskeyStore {
                     }
                 }
                 Ok(out)
-            })
-            .await
-    }
-
-    async fn list_passkey_summaries_for_user(
-        &self,
-        user_id: UserId,
-    ) -> StorageResult<Vec<PasskeySummary>> {
-        self.handle
-            .read(move |rtxn| {
-                let prefix = db::user_creds_prefix(user_id);
-                let end = db::prefix_end(&prefix);
-
-                let passkey_keys: Vec<String> = {
-                    let idx_tbl = rtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
-                    idx_tbl
-                        .range(prefix.as_str()..end.as_str())
-                        .map_err(db::err)?
-                        .map(|r| {
-                            r.map_err(db::err).and_then(|(k, _)| {
-                                k.value()
-                                    .split_once('\x00')
-                                    .map(|x| x.1.to_owned())
-                                    .ok_or_else(|| {
-                                        StorageError::msg("malformed user_creds_idx key")
-                                    })
-                            })
-                        })
-                        .collect::<StorageResult<_>>()?
-                };
-
-                let creds_tbl = rtxn.open_table(db::PASSKEYS).map_err(db::err)?;
-                let mut out = Vec::with_capacity(passkey_keys.len());
-                for key in &passkey_keys {
-                    if let Some(guard) = creds_tbl.get(key.as_str()).map_err(db::err)? {
-                        out.push(db::decode_passkey_summary(guard.value())?);
-                    }
-                }
-                Ok(out)
-            })
-            .await
-    }
-
-    async fn count_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        self.handle
-            .read(move |rtxn| {
-                let prefix = db::user_creds_prefix(user_id);
-                let end = db::prefix_end(&prefix);
-
-                let idx_tbl = rtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
-                let count = idx_tbl
-                    .range(prefix.as_str()..end.as_str())
-                    .map_err(db::err)?
-                    .count() as u64;
-                Ok(count)
             })
             .await
     }

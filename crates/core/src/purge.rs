@@ -196,11 +196,7 @@ mod tests {
         }
         handle.abort();
 
-        let remaining = storage
-            .sessions
-            .list_for_user(user_id, now)
-            .await
-            .expect("list");
+        let remaining = storage.sessions.list_for_user(user_id).await.expect("list");
         assert_eq!(remaining.len(), 1, "background task swept the expired row");
         assert!(remaining[0].expires_at > now);
     }

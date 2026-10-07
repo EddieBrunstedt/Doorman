@@ -95,7 +95,7 @@ async fn dangling_session_ids_are_reclaimed() {
     }
 
     evict(&client, listed_away.id).await;
-    let listed = sessions.list_for_user(user_id, now).await.expect("list");
+    let listed = sessions.list_for_user(user_id).await.expect("list");
     let mut listed_ids: Vec<_> = listed.iter().map(|s| s.id).collect();
     listed_ids.sort_by_key(|id| id.0);
     let mut expected = vec![kept.id, purged_away.id];
@@ -135,49 +135,63 @@ async fn dangling_session_ids_are_reclaimed() {
 }
 
 #[tokio::test]
-async fn revoked_session_never_resolves_from_a_stale_lookup_entry() {
+async fn dangling_token_hash_items_are_reclaimed() {
     let (_node, client, storage) = start().await;
     let sessions = storage.session_store();
 
     let now = Utc::now();
-    let revoked = session(UserId::new(), "stale-lookup", now);
-    sessions
-        .create_session(revoked.clone())
-        .await
-        .expect("create session");
+    let user_id = UserId::new();
+    let kept = session(user_id, "hash-kept", now);
+    let found_away = session(user_id, "hash-found-away", now);
+    let purged_away = session(user_id, "hash-purged-away", now);
+    for s in [&kept, &found_away, &purged_away] {
+        sessions
+            .create_session(s.clone())
+            .await
+            .expect("create session");
+    }
 
-    let mut stale = client
-        .get_item()
-        .table_name(TABLE)
-        .key("pk", AttributeValue::S(format!("session#{}", revoked.id.0)))
-        .consistent_read(true)
-        .send()
-        .await
-        .expect("get session row")
-        .item
-        .expect("session row present");
-    stale.insert(
-        "pk".to_string(),
-        AttributeValue::S(format!("stale#{}", revoked.id.0)),
-    );
-    client
-        .put_item()
-        .table_name(TABLE)
-        .set_item(Some(stale))
-        .send()
-        .await
-        .expect("put stale lookup entry");
-
-    sessions
-        .delete_session(revoked.id)
-        .await
-        .expect("revoke session");
+    evict(&client, found_away.id).await;
     assert!(
         sessions
-            .find_session_by_token_hash(&revoked.token_hash)
+            .find_session_by_token_hash(&found_away.token_hash)
             .await
             .expect("find by hash")
             .is_none(),
-        "a revoked session must not resolve from a stale lookup entry",
+        "an evicted session does not resolve by its token hash",
     );
+    assert!(
+        !hash_item_exists(&client, &found_away).await,
+        "the lookup dropped the dangling token hash item",
+    );
+
+    evict(&client, purged_away.id).await;
+    sessions.purge_expired(now).await.expect("purge");
+    assert!(
+        !hash_item_exists(&client, &purged_away).await,
+        "the purge dropped the dangling token hash item",
+    );
+    assert!(
+        hash_item_exists(&client, &kept).await,
+        "the purge kept the live session's token hash item",
+    );
+}
+
+async fn hash_item_exists(client: &Client, session: &Session) -> bool {
+    client
+        .get_item()
+        .table_name(TABLE)
+        .key(
+            "pk",
+            AttributeValue::S(format!(
+                "shash#{}",
+                doorman_core::encoding::hex(&session.token_hash.0)
+            )),
+        )
+        .consistent_read(true)
+        .send()
+        .await
+        .expect("get token hash item")
+        .item
+        .is_some()
 }

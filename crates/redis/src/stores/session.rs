@@ -27,20 +27,17 @@ impl SessionStore for RedisSessionStore {
         let json = client::to_json(&session)?;
         let mut conn = self.client.conn();
 
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        pipe.cmd("SET").arg(&session_key).arg(&json).ignore();
-        pipe.cmd("SET").arg(&hash_key).arg(&id).ignore();
-        pipe.cmd("SADD").arg(&user_key).arg(&id).ignore();
-        if let Some(ms) = client::ttl_at_ms(session.expires_at) {
-            pipe.cmd("PEXPIREAT").arg(&session_key).arg(ms).ignore();
-            pipe.cmd("PEXPIREAT").arg(&hash_key).arg(ms).ignore();
-        }
-        let _: () = pipe
-            .query_async(&mut conn)
-            .await
-            .map_err(StorageError::new)?;
-        Ok(())
+        stores::insert_absent(
+            &mut conn,
+            &[(&session_key, &json), (&hash_key, &id)],
+            session.expires_at,
+            Some(stores::OwnerIndex {
+                set: &user_key,
+                member: &id,
+            }),
+            "session id or token hash",
+        )
+        .await
     }
 
     async fn touch_session(
@@ -110,33 +107,13 @@ impl SessionStore for RedisSessionStore {
         client::get_json(&mut conn, &session_key).await
     }
 
-    async fn list_for_user(
-        &self,
-        user_id: UserId,
-        now: DateTime<Utc>,
-    ) -> StorageResult<Vec<Session>> {
+    async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
         let keys = self.client.keys();
-        let user_key = keys.user_sessions(user_id);
         let mut conn = self.client.conn();
-
-        let members = client::smembers(&mut conn, &user_key).await?;
-        if members.is_empty() {
-            return Ok(Vec::new());
-        }
-        let session_keys: Vec<String> = members.iter().map(|m| keys.session_key_for(m)).collect();
-        let rows: Vec<Option<Session>> = client::mget_json(&mut conn, &session_keys).await?;
-
-        let mut out = Vec::new();
-        let mut dangling = Vec::new();
-        for (member, row) in members.iter().zip(rows) {
-            match row {
-                Some(session) if session.expires_at > now => out.push(session),
-                Some(_) => {}
-                None => dangling.push(member.clone()),
-            }
-        }
-        let _ = client::srem(&mut conn, &user_key, &dangling).await;
-        Ok(out)
+        stores::list_indexed(&mut conn, &keys.user_sessions(user_id), |m| {
+            keys.session_key_for(m)
+        })
+        .await
     }
 
     async fn delete_session(&self, id: SessionId) -> StorageResult<()> {

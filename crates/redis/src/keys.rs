@@ -34,17 +34,12 @@ impl KeySchema {
         format!("{}user:*:sessions", self.prefix)
     }
 
-    pub(crate) fn email_link(&self, purpose: EmailLinkPurpose, hash: &TokenHash) -> String {
-        self.email_link_key_for(purpose, &token_hash_hex(hash))
+    pub(crate) fn email_link(&self, hash: &TokenHash) -> String {
+        self.email_link_key_for(&token_hash_hex(hash))
     }
 
-    pub(crate) fn email_link_key_for(&self, purpose: EmailLinkPurpose, hex_hash: &str) -> String {
-        format!(
-            "{}email_link:{}:{}",
-            self.prefix,
-            purpose_str(purpose),
-            hex_hash
-        )
+    pub(crate) fn email_link_key_for(&self, hex_hash: &str) -> String {
+        format!("{}email_link:{}", self.prefix, hex_hash)
     }
 
     pub(crate) fn user_email_links(&self, user_id: UserId, purpose: EmailLinkPurpose) -> String {
@@ -107,7 +102,7 @@ mod tests {
     use doorman_core::session::hash_token;
 
     #[test]
-    fn keys_are_prefixed_and_purpose_scoped() {
+    fn keys_are_prefixed_and_owner_indexes_purpose_scoped() {
         let keys = KeySchema::new("doorman:".to_string());
         let hash = hash_token("a-token");
         let user = UserId::new();
@@ -118,10 +113,10 @@ mod tests {
         );
         assert_eq!(keys.prefix(), "doorman:");
 
-        let signup = keys.email_link(EmailLinkPurpose::Signup, &hash);
-        let recovery = keys.email_link(EmailLinkPurpose::Recovery, &hash);
-        assert_ne!(signup, recovery);
-        assert!(signup.ends_with(&token_hash_hex(&hash)));
+        assert_eq!(
+            keys.email_link(&hash),
+            format!("doorman:email_link:{}", token_hash_hex(&hash))
+        );
 
         assert_eq!(
             keys.user_email_links(user, EmailLinkPurpose::EmailChange),

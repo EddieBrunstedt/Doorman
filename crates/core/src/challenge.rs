@@ -130,11 +130,15 @@ impl PasskeyChallenge<Registration> {
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let user_id = user.id;
         if let Some(max) = self.max_pending_registrations {
+            let now = self.clock.now();
             let pending = self
                 .challenges
-                .count_registrations_for_user(user_id)
-                .await?;
-            if pending >= u64::from(max.get()) {
+                .list_registrations_for_user(user_id)
+                .await?
+                .iter()
+                .filter(|registration| registration.expires_at > now)
+                .count();
+            if pending >= max.get() as usize {
                 tracing::warn!(%user_id, max = max.get(), "passkey registration rejected: too many pending challenges");
                 return Err(Error::ResourceLimitExceeded {
                     resource: "pending registrations",

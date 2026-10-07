@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use doorman_core::error::{StorageError, StorageResult};
+use doorman_core::error::StorageResult;
 use doorman_core::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, StoredPasskeyAuthentication,
     StoredPasskeyRegistration, UserId,
@@ -29,18 +29,17 @@ impl PasskeyChallengeStore for RedisPasskeyChallengeStore {
         let json = client::to_json(&value)?;
         let mut conn = self.client.conn();
 
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        pipe.cmd("SET").arg(&reg_key).arg(&json).ignore();
-        pipe.cmd("SADD").arg(&user_key).arg(&id).ignore();
-        if let Some(ms) = client::ttl_at_ms(value.expires_at) {
-            pipe.cmd("PEXPIREAT").arg(&reg_key).arg(ms).ignore();
-        }
-        let _: () = pipe
-            .query_async(&mut conn)
-            .await
-            .map_err(StorageError::new)?;
-        Ok(())
+        stores::insert_absent(
+            &mut conn,
+            &[(&reg_key, &json)],
+            value.expires_at,
+            Some(stores::OwnerIndex {
+                set: &user_key,
+                member: &id,
+            }),
+            "registration challenge id",
+        )
+        .await
     }
 
     async fn take_registration(
@@ -76,29 +75,31 @@ impl PasskeyChallengeStore for RedisPasskeyChallengeStore {
         Ok(removed)
     }
 
-    async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let user_key = self.client.keys().user_pkregs(user_id);
+    async fn list_registrations_for_user(
+        &self,
+        user_id: UserId,
+    ) -> StorageResult<Vec<StoredPasskeyRegistration>> {
+        let keys = self.client.keys();
         let mut conn = self.client.conn();
-        client::scard(&mut conn, &user_key).await
+        stores::list_indexed(&mut conn, &keys.user_pkregs(user_id), |m| {
+            keys.pkreg_key_for(m)
+        })
+        .await
     }
 
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
-        let keys = self.client.keys();
-        let auth_key = keys.pkauth(value.id);
+        let auth_key = self.client.keys().pkauth(value.id);
         let json = client::to_json(&value)?;
         let mut conn = self.client.conn();
 
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        pipe.cmd("SET").arg(&auth_key).arg(&json).ignore();
-        if let Some(ms) = client::ttl_at_ms(value.expires_at) {
-            pipe.cmd("PEXPIREAT").arg(&auth_key).arg(ms).ignore();
-        }
-        let _: () = pipe
-            .query_async(&mut conn)
-            .await
-            .map_err(StorageError::new)?;
-        Ok(())
+        stores::insert_absent(
+            &mut conn,
+            &[(&auth_key, &json)],
+            value.expires_at,
+            None,
+            "authentication challenge id",
+        )
+        .await
     }
 
     async fn take_authentication(

@@ -19,19 +19,13 @@ impl DynamoEmailLinkStore {
 #[async_trait]
 impl EmailLinkStore for DynamoEmailLinkStore {
     async fn create_link(&self, token: EmailLink) -> StorageResult<()> {
-        self.client.put(model::email_link_item(&token)).await
+        self.client
+            .put_new(model::email_link_item(&token), "email link token hash")
+            .await
     }
 
-    async fn redeem_link(
-        &self,
-        hash: &TokenHash,
-        purpose: EmailLinkPurpose,
-    ) -> StorageResult<Option<EmailLink>> {
-        match self
-            .client
-            .take(&model::email_link_pk(purpose, hash))
-            .await?
-        {
+    async fn redeem_link(&self, hash: &TokenHash) -> StorageResult<Option<EmailLink>> {
+        match self.client.take(&model::email_link_pk(hash)).await? {
             Some(item) => Ok(Some(model::email_link_from_item(&item)?)),
             None => Ok(None),
         }

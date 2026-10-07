@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{
-    EmailLinkPurpose, PasskeySummary, Session, StoredPasskey, TokenHash, UserId,
+use doorman_core::storage::{EmailLinkPurpose, Session, StoredPasskey, TokenHash, UserId};
+use redb::{
+    Database, ReadTransaction, ReadableDatabase as _, ReadableTable as _, TableDefinition,
+    WriteTransaction,
 };
-use redb::{Database, ReadTransaction, ReadableDatabase as _, TableDefinition, WriteTransaction};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -35,14 +36,6 @@ pub(crate) fn token_hash_hex(hash: &TokenHash) -> String {
 
 pub(crate) fn hex_bytes(bytes: &[u8]) -> String {
     doorman_core::encoding::hex(bytes)
-}
-
-pub(crate) fn email_link_key(purpose: EmailLinkPurpose, hash: &TokenHash) -> String {
-    format!("{}{SEP}{}", purpose_str(purpose), token_hash_hex(hash))
-}
-
-pub(crate) fn email_link_key_raw(purpose: EmailLinkPurpose, hash_hex: &str) -> String {
-    format!("{}{SEP}{}", purpose_str(purpose), hash_hex)
 }
 
 pub(crate) fn user_sessions_idx_key(
@@ -179,11 +172,6 @@ pub(crate) fn decode_passkey(bytes: &[u8]) -> StorageResult<StoredPasskey> {
     row_to_passkey(row)
 }
 
-pub(crate) fn decode_passkey_summary(bytes: &[u8]) -> StorageResult<PasskeySummary> {
-    let row: PasskeyRow = serde_json::from_slice(bytes).map_err(err)?;
-    Ok(PasskeySummary::from(&row_to_passkey(row)?))
-}
-
 fn decode_hex(s: &str) -> StorageResult<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return Err(StorageError::msg("odd-length hex string in stored record"));
@@ -252,6 +240,12 @@ pub(crate) fn write_session(wtxn: &WriteTransaction, session: &Session) -> Stora
     let mut hash_idx = wtxn.open_table(SESSION_HASH_IDX).map_err(err)?;
     let mut user_idx = wtxn.open_table(USER_SESSIONS_IDX).map_err(err)?;
 
+    if sessions.get(session_key.as_str()).map_err(err)?.is_some() {
+        return Err(StorageError::conflict("session id already exists"));
+    }
+    if hash_idx.get(hash_key.as_str()).map_err(err)?.is_some() {
+        return Err(StorageError::conflict("session token hash already exists"));
+    }
     sessions
         .insert(session_key.as_str(), encoded.as_slice())
         .map_err(err)?;

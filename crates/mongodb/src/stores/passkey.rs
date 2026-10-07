@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{PasskeyStore, PasskeySummary, PasskeyUse, StoredPasskey, UserId};
+use doorman_core::storage::{PasskeyStore, PasskeyUse, StoredPasskey, UserId};
 use mongodb::bson::spec::BinarySubtype;
 use mongodb::bson::{Binary, Document, doc};
 
@@ -74,26 +74,6 @@ impl PasskeyStore for MongoPasskeyStore {
             )?);
         }
         Ok(out)
-    }
-
-    async fn list_passkey_summaries_for_user(
-        &self,
-        user_id: UserId,
-    ) -> StorageResult<Vec<PasskeySummary>> {
-        let filter = doc! { "user_id": user_id.0.to_string() };
-        let mut cursor = self.coll.find(filter).await.map_err(err)?;
-        let mut out = Vec::new();
-        while cursor.advance().await.map_err(err)? {
-            out.push(model::passkey_summary_from_doc(
-                &cursor.deserialize_current().map_err(err)?,
-            )?);
-        }
-        Ok(out)
-    }
-
-    async fn count_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        let filter = doc! { "user_id": user_id.0.to_string() };
-        self.coll.count_documents(filter).await.map_err(err)
     }
 
     async fn find_passkey_by_credential_id(

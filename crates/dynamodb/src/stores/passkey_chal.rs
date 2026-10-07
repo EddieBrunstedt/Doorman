@@ -22,7 +22,9 @@ impl DynamoPasskeyChallengeStore {
 #[async_trait]
 impl PasskeyChallengeStore for DynamoPasskeyChallengeStore {
     async fn put_registration(&self, value: StoredPasskeyRegistration) -> StorageResult<()> {
-        self.client.put(model::pkreg_item(&value)).await
+        self.client
+            .put_new(model::pkreg_item(&value), "registration challenge id")
+            .await
     }
 
     async fn take_registration(
@@ -41,14 +43,21 @@ impl PasskeyChallengeStore for DynamoPasskeyChallengeStore {
             .await
     }
 
-    async fn count_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
-        self.client
-            .count_owner(&model::user_pkregs_key(user_id))
-            .await
+    async fn list_registrations_for_user(
+        &self,
+        user_id: UserId,
+    ) -> StorageResult<Vec<StoredPasskeyRegistration>> {
+        let items = self
+            .client
+            .query_owner(&model::user_pkregs_key(user_id))
+            .await?;
+        items.iter().map(model::pkreg_from_item).collect()
     }
 
     async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
-        self.client.put(model::pkauth_item(&value)).await
+        self.client
+            .put_new(model::pkauth_item(&value), "authentication challenge id")
+            .await
     }
 
     async fn take_authentication(

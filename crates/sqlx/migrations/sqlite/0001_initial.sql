@@ -23,13 +23,12 @@ CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 
 CREATE TABLE email_links (
-    token_hash BLOB NOT NULL,
+    token_hash BLOB PRIMARY KEY,
     purpose TEXT NOT NULL,
     user_id BLOB NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     new_email TEXT,
     created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    PRIMARY KEY (token_hash, purpose)
+    expires_at TEXT NOT NULL
 );
 CREATE INDEX idx_email_links_user_id ON email_links(user_id);
 CREATE INDEX idx_email_links_expires_at ON email_links(expires_at);
