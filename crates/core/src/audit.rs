@@ -276,6 +276,7 @@ pub enum SecretKind {
 pub enum RedemptionFailureReason {
     Unknown,
     WrongPurpose,
+    WrongSession,
     Expired,
     Malformed,
     UserNotFound,

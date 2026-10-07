@@ -354,6 +354,52 @@ async fn login_challenge_is_not_a_reauth_proof() {
 }
 
 #[tokio::test]
+async fn a_proof_started_in_another_session_is_refused() {
+    let h = gated_harness();
+    let mut alice = sign_in(&h, "owner@example.com").await;
+    let other = alice.log_in_again(&h).await;
+    let current = alice.session.session.clone();
+
+    let proof = fresh_proof(&h, &other.session, &mut alice.authenticator).await;
+    let err = perform(
+        &h,
+        &current,
+        DestructiveAction::DeleteUser,
+        Some(proof.clone()),
+    )
+    .await;
+    assert!(matches!(err, Err(Error::ReauthRequired)), "got: {err:?}");
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RedemptionFailed {
+            user_id: Some(id),
+            secret: SecretKind::ReauthChallenge,
+            reason: RedemptionFailureReason::WrongSession,
+        } if *id == alice.user.id
+    )));
+
+    let err = perform(
+        &h,
+        &other.session,
+        DestructiveAction::DeleteUser,
+        Some(proof),
+    )
+    .await;
+    assert!(
+        matches!(err, Err(Error::ReauthRequired)),
+        "the refused attempt redeemed the challenge: got {err:?}"
+    );
+    assert!(
+        h.users
+            .find_user_by_id(alice.user.id)
+            .await
+            .expect("lookup")
+            .is_some(),
+        "the user survives"
+    );
+}
+
+#[tokio::test]
 async fn expired_challenge_is_rejected() {
     let h = gated_harness();
     let user = make_user(&h, "owner@example.com").await;

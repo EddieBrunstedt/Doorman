@@ -3,15 +3,16 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::{
-    CreationChallengeResponse, CredentialID, Passkey, PasskeyRegistration,
+    CreationChallengeResponse, CredentialID, Passkey, PasskeyAuthentication, PasskeyRegistration,
     RequestChallengeResponse, Webauthn,
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
 
 use crate::assertion::PendingAssertion;
+use crate::audit::RedemptionFailureReason::WrongSession;
 use crate::audit::SecretKind;
 use crate::clock::{Clock, expiry};
 use crate::context::CoreDeps;
@@ -22,7 +23,8 @@ use crate::redeem::{Candidate, Redeemer};
 use crate::session::SessionContext;
 use crate::storage::{
     AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore,
-    RegistrationPurpose, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
+    RegistrationPurpose, Session, SessionId, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, User, UserId,
 };
 
 pub(crate) enum Registration {}
@@ -272,12 +274,23 @@ impl PasskeyChallenge<Login> {
     }
 }
 
+// Re-authentication proves possession within one session, so a challenge records the session
+// that started it and another session cannot spend it.
+#[derive(Serialize, Deserialize)]
+struct ReauthChallengeState {
+    session_id: SessionId,
+    state: PasskeyAuthentication,
+}
+
 impl PasskeyChallenge<Reauth> {
     pub(crate) async fn issue(
         &self,
-        user_id: UserId,
+        session: &Session,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
-        let stored = self.passkeys.list_passkeys_for_user(user_id).await?;
+        let stored = self
+            .passkeys
+            .list_passkeys_for_user(session.user_id)
+            .await?;
         if stored.is_empty() {
             tracing::warn!(outcome = "no_passkeys", "reauth start refused");
             return Err(Error::PasskeyNotFound);
@@ -291,6 +304,10 @@ impl PasskeyChallenge<Reauth> {
             .webauthn
             .start_passkey_authentication(&passkeys)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
+        let state = ReauthChallengeState {
+            session_id: session.id,
+            state,
+        };
         let id = self
             .put_authentication(AuthenticationPurpose::Reauth, &state)
             .await?;
@@ -300,18 +317,26 @@ impl PasskeyChallenge<Reauth> {
     pub(crate) async fn redeem(
         &self,
         id: PasskeyChallengeId,
-        user_id: UserId,
+        session: &Session,
         context: &SessionContext,
     ) -> Result<PendingAssertion> {
-        let state = self
+        let secret = SecretKind::ReauthChallenge;
+        let user_id = session.user_id;
+        let ReauthChallengeState { session_id, state } = self
             .take_authentication(
                 id,
-                SecretKind::ReauthChallenge,
+                secret,
                 AuthenticationPurpose::Reauth,
                 Some(user_id),
                 context,
             )
             .await?;
+        if session_id != session.id {
+            return Err(self
+                .redeemer
+                .refuse(secret, Some(user_id), WrongSession, context)
+                .await);
+        }
         Ok(PendingAssertion::Reauth { user_id, state })
     }
 }

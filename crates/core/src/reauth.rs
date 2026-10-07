@@ -88,7 +88,7 @@ impl ReauthManager {
         &self,
         session: &ResolvedSession,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
-        let (id, rcr) = self.challenges.issue(session.user_id).await?;
+        let (id, rcr) = self.challenges.issue(session).await?;
         tracing::info!(outcome = "started", "reauth started");
         Ok((id, rcr))
     }
@@ -102,7 +102,7 @@ impl ReauthManager {
         let user_id = session.user_id;
         let pending = self
             .challenges
-            .redeem(proof.challenge_id, user_id, context)
+            .redeem(proof.challenge_id, session, context)
             .await?;
         if let Err(refusal) = self.assertions.verify(pending, &proof.assertion).await? {
             self.audit

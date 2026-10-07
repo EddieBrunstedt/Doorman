@@ -88,7 +88,7 @@ impl Redeemer {
         }
     }
 
-    async fn refuse(
+    pub(crate) async fn refuse(
         &self,
         secret: SecretKind,
         user_id: Option<UserId>,
