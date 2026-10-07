@@ -40,8 +40,8 @@ async fn a_request_reads_its_session_row_and_nothing_else() {
         h.session_store.clear_reads();
         h.user_store.clear_reads();
         let resolved = h.session_manager.resolve(&token).await.expect("resolve");
-        assert_eq!(resolved.session.user_id, user.id);
-        assert_eq!(resolved.slid, advance > 0);
+        assert_eq!(resolved.user_id, user.id);
+        assert_eq!(resolved.slid(), advance > 0);
         assert_eq!(h.session_store.reads(), 1, "one session read");
         assert_eq!(h.user_store.reads(), 0, "no user read");
     }
@@ -81,12 +81,7 @@ async fn a_revocation_reaches_another_process_at_once() {
         .await
         .expect("the other process resolves the session");
 
-    let session = h
-        .session_manager
-        .resolve(&token)
-        .await
-        .expect("resolve")
-        .session;
+    let session = h.session_manager.resolve(&token).await.expect("resolve");
     h.session_manager.log_out(&session).await.expect("log out");
     let err = other.sessions.resolve(&token).await.err();
     assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
@@ -143,12 +138,7 @@ async fn the_user_read_is_fresh_in_every_process() {
     let h = Harness::fresh();
     let other = h.another_process();
     let (user, token) = signed_in(&h, "old@example.com").await;
-    let session = h
-        .session_manager
-        .resolve(&token)
-        .await
-        .expect("resolve")
-        .session;
+    let session = h.session_manager.resolve(&token).await.expect("resolve");
     let found = other.sessions.find_user(&session).await.expect("find user");
     assert_eq!(found.email.as_deref(), Some("old@example.com"));
 
@@ -200,12 +190,9 @@ async fn a_request_after_the_slide_interval_slides_and_reports_it() {
     h.clock.advance(ChronoDuration::seconds(90));
     let now = h.clock.now();
     let resolved = h.session_manager.resolve(&token).await.expect("resolve");
-    assert!(resolved.slid, "the deadline moved");
-    assert_eq!(resolved.session.last_used_at, now);
-    assert_eq!(
-        resolved.session.expires_at,
-        now + ChronoDuration::minutes(10)
-    );
+    assert!(resolved.slid(), "the deadline moved");
+    assert_eq!(resolved.last_used_at, now);
+    assert_eq!(resolved.expires_at, now + ChronoDuration::minutes(10));
 
     let stored = h
         .sessions
@@ -213,7 +200,7 @@ async fn a_request_after_the_slide_interval_slides_and_reports_it() {
         .await
         .expect("find")
         .expect("present");
-    assert_eq!(stored.expires_at, resolved.session.expires_at, "persisted");
+    assert_eq!(stored.expires_at, resolved.expires_at, "persisted");
     assert_eq!(stored.last_used_at, now);
 }
 
@@ -226,9 +213,9 @@ async fn read_within_the_slide_interval_does_not_slide() {
 
     h.clock.advance(ChronoDuration::seconds(30));
     let second = h.session_manager.resolve(&token).await.expect("read");
-    assert!(!second.slid);
-    assert_eq!(second.session.expires_at, first.session.expires_at);
-    assert_eq!(second.session.last_used_at, first.session.last_used_at);
+    assert!(!second.slid());
+    assert_eq!(second.expires_at, first.expires_at);
+    assert_eq!(second.last_used_at, first.last_used_at);
 }
 
 #[tokio::test]
@@ -242,11 +229,11 @@ async fn slide_is_clamped_at_the_absolute_cap() {
     for _ in 0..11 {
         h.clock.advance(ChronoDuration::minutes(5));
         let resolved = h.session_manager.resolve(&token).await.expect("resolve");
-        assert!(resolved.session.expires_at <= cap);
+        assert!(resolved.expires_at <= cap);
         last = Some(resolved);
     }
     let last = last.expect("resolved at least once");
-    assert_eq!(last.session.expires_at, cap);
+    assert_eq!(last.expires_at, cap);
 }
 
 #[tokio::test]
@@ -262,9 +249,9 @@ async fn without_an_idle_timeout_nothing_slides() {
 
     h.clock.advance(ChronoDuration::minutes(30));
     let resolved = h.session_manager.resolve(&token).await.expect("resolve");
-    assert!(!resolved.slid);
-    assert_eq!(resolved.session.expires_at, issued.expires_at);
-    assert_eq!(resolved.session.last_used_at, issued.last_used_at);
+    assert!(!resolved.slid());
+    assert_eq!(resolved.expires_at, issued.expires_at);
+    assert_eq!(resolved.last_used_at, issued.last_used_at);
 }
 
 #[test]

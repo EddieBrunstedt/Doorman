@@ -24,7 +24,9 @@ use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::reauth::{ReauthManager, ReauthPolicy};
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
 use doorman_core::session::hash_token;
-use doorman_core::session::{IssuedSession, SessionConfig, SessionContext, SessionManager};
+use doorman_core::session::{
+    IssuedSession, ResolvedSession, SessionConfig, SessionContext, SessionManager,
+};
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use doorman_core::storage::{
     Session, SessionId, SessionStore, Storage, StoredPasskey, TokenHash, User, UserId, UserStatus,
@@ -507,31 +509,44 @@ pub async fn make_user(h: &Harness, email: &str) -> User {
     user
 }
 
-pub fn session_for(h: &Harness, user: &User) -> Session {
-    plain_session(h, user.id, None)
+pub async fn session_for(h: &Harness, user: &User) -> ResolvedSession {
+    stored_session(h, user.id, None).await
 }
 
-pub fn session_in_cool_down_for(
+pub async fn session_in_cool_down_for(
     h: &Harness,
     user: &User,
     cool_down_until: DateTime<Utc>,
-) -> Session {
-    plain_session(h, user.id, Some(cool_down_until))
+) -> ResolvedSession {
+    stored_session(h, user.id, Some(cool_down_until)).await
 }
 
-fn plain_session(h: &Harness, user_id: UserId, cool_down: Option<DateTime<Utc>>) -> Session {
+async fn stored_session(
+    h: &Harness,
+    user_id: UserId,
+    cool_down: Option<DateTime<Utc>>,
+) -> ResolvedSession {
     let now = h.clock.now();
-    Session {
-        id: SessionId::new(),
-        user_id,
-        token_hash: hash_token("test-session-token"),
-        created_at: now,
-        last_used_at: now,
-        expires_at: now + chrono::Duration::hours(1),
-        ip: None,
-        user_agent: None,
-        recovery_cool_down_until: cool_down,
-    }
+    let id = SessionId::new();
+    let token = format!("test-session-token-{id}");
+    h.sessions
+        .create_session(Session {
+            id,
+            user_id,
+            token_hash: hash_token(&token),
+            created_at: now,
+            last_used_at: now,
+            expires_at: now + chrono::Duration::hours(1),
+            ip: None,
+            user_agent: None,
+            recovery_cool_down_until: cool_down,
+        })
+        .await
+        .expect("store session");
+    h.session_manager
+        .resolve(&token)
+        .await
+        .expect("resolve stored session")
 }
 
 pub async fn register_passkey(
@@ -540,11 +555,17 @@ pub async fn register_passkey(
     wa: &mut ResidentAuthenticator,
     name: Option<&str>,
 ) -> StoredPasskey {
+    let session = stored_session(h, user, None).await;
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration(&plain_session(h, user, None))
+        .start_registration(&session)
         .await
         .expect("start_registration");
+    // The registering session is scaffolding; leave the user's session count as the test made it.
+    h.sessions
+        .delete_session(session.id)
+        .await
+        .expect("drop registering session");
     let response = wa.do_registration(ccr);
     h.passkey
         .finish_registration(

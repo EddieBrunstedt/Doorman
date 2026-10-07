@@ -5,10 +5,10 @@ use chrono::Duration as ChronoDuration;
 use doorman_core::audit::AuditEventKind;
 use doorman_core::clock::Clock;
 use doorman_core::error::Error;
-use doorman_core::session::{SessionConfig, SessionContext, hash_token};
-use doorman_core::storage::{Session, SessionId, SessionStore, StoredPasskey, UserId};
+use doorman_core::session::{ResolvedSession, SessionConfig, SessionContext, hash_token};
+use doorman_core::storage::{Session, SessionId, SessionStore, StoredPasskey, User, UserId};
 
-use crate::common::{Harness, kinds, sign_in, sign_in_from, ts};
+use crate::common::{Harness, kinds, session_in_cool_down_for, sign_in, sign_in_from, ts};
 
 fn harness_with_lifetime(absolute_lifetime: Duration) -> Harness {
     Harness::builder()
@@ -27,11 +27,8 @@ async fn session_exists(h: &Harness, id: SessionId) -> bool {
         .is_some()
 }
 
-fn in_cool_down(h: &Harness, session: &Session) -> Session {
-    Session {
-        recovery_cool_down_until: Some(h.clock.now() + ChronoDuration::minutes(10)),
-        ..session.clone()
-    }
+async fn in_cool_down(h: &Harness, user: &User) -> ResolvedSession {
+    session_in_cool_down_for(h, user, h.clock.now() + ChronoDuration::minutes(10)).await
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -43,7 +40,7 @@ enum BulkRevocation {
 impl BulkRevocation {
     const ALL: [Self; 2] = [Self::RevokeOthers, Self::LogOutEverywhere];
 
-    async fn run(self, h: &Harness, session: &Session) -> Result<(), Error> {
+    async fn run(self, h: &Harness, session: &ResolvedSession) -> Result<(), Error> {
         let manager = &h.session_manager;
         let context = SessionContext::default();
         match self {
@@ -76,7 +73,7 @@ async fn a_login_issues_a_session_bound_to_its_token() {
         .resolve(&issued.token)
         .await
         .expect("resolve");
-    assert_eq!(resolved.session.id, issued.session.id);
+    assert_eq!(resolved.id, issued.session.id);
     assert!(
         kinds(&h.audit.events()).contains(&AuditEventKind::SessionCreated {
             user_id: alice.user.id,
@@ -316,7 +313,7 @@ async fn bulk_revocations_are_refused_during_recovery_cool_down() {
         let h = Harness::fresh();
         let mut alice = sign_in(&h, "alice@example.com").await;
         let other = alice.log_in_again(&h).await;
-        let current = in_cool_down(&h, &alice.session.session);
+        let current = in_cool_down(&h, &alice.user).await;
         let mail_before = h.email.sent().len();
 
         let err = action.run(&h, &current).await.err();
@@ -399,7 +396,7 @@ async fn revoke_in_cool_down_blocks_others_but_allows_self() {
     let h = Harness::fresh();
     let mut alice = sign_in(&h, "alice@example.com").await;
     let other = alice.log_in_again(&h).await;
-    let current = in_cool_down(&h, &alice.session.session);
+    let current = in_cool_down(&h, &alice.user).await;
 
     let err = h
         .session_manager

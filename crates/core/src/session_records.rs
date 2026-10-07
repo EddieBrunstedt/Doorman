@@ -69,7 +69,7 @@ impl SessionRecords {
         span.record("session_id", tracing::field::display(session.id));
         span.record("user_id", tracing::field::display(session.user_id));
         let (session, slid) = self.slide(session, self.clock.now()).await;
-        Ok(ResolvedSession { session, slid })
+        Ok(ResolvedSession::new(session, slid))
     }
 
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id))]
@@ -129,7 +129,10 @@ impl SessionRecords {
             )
             .await;
 
-        Ok(IssuedSession { session, token })
+        Ok(IssuedSession {
+            session: ResolvedSession::new(session, false),
+            token,
+        })
     }
 
     async fn enforce_session_cap(&self, user_id: UserId, max: u32) -> Result<()> {

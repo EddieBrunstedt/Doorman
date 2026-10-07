@@ -1,5 +1,6 @@
 use std::fmt;
 use std::num::NonZeroU32;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,7 +17,7 @@ use crate::user_records::UserRecords;
 
 #[derive(Clone)]
 pub struct IssuedSession {
-    pub session: Session,
+    pub session: ResolvedSession,
     pub token: String,
 }
 
@@ -58,10 +59,30 @@ pub struct SessionContext {
     pub user_agent: Option<String>,
 }
 
+// Only core builds one, so a method that takes it acts on a session core resolved or issued, with
+// its real recovery cool-down, never on a row the caller made up.
 #[derive(Debug, Clone)]
 pub struct ResolvedSession {
-    pub session: Session,
-    pub slid: bool,
+    session: Session,
+    slid: bool,
+}
+
+impl ResolvedSession {
+    pub(crate) fn new(session: Session, slid: bool) -> Self {
+        Self { session, slid }
+    }
+
+    pub fn slid(&self) -> bool {
+        self.slid
+    }
+}
+
+impl Deref for ResolvedSession {
+    type Target = Session;
+
+    fn deref(&self) -> &Session {
+        &self.session
+    }
 }
 
 #[derive(Clone)]
@@ -94,17 +115,17 @@ impl SessionManager {
         self.records.resolve(token).await
     }
 
-    pub async fn find_user(&self, session: &Session) -> Result<User> {
+    pub async fn find_user(&self, session: &ResolvedSession) -> Result<User> {
         self.records.find_user(session).await
     }
 
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id))]
-    pub async fn list(&self, session: &Session) -> Result<Vec<SessionSummary>> {
+    pub async fn list(&self, session: &ResolvedSession) -> Result<Vec<SessionSummary>> {
         self.records.list_summaries_for_user(session.user_id).await
     }
 
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id, session_id = %session.id))]
-    pub async fn log_out(&self, session: &Session) -> Result<()> {
+    pub async fn log_out(&self, session: &ResolvedSession) -> Result<()> {
         self.records
             .revoke_owned(session.user_id, session.id, Actor::of_session(session))
             .await
@@ -113,7 +134,7 @@ impl SessionManager {
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id, session_id = %session.id))]
     pub async fn log_out_everywhere(
         &self,
-        session: &Session,
+        session: &ResolvedSession,
         reauth: Option<ReauthProof>,
         context: SessionContext,
     ) -> Result<()> {
@@ -124,7 +145,7 @@ impl SessionManager {
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id, session_id = %target))]
     pub async fn revoke(
         &self,
-        session: &Session,
+        session: &ResolvedSession,
         target: SessionId,
         reauth: Option<ReauthProof>,
         context: SessionContext,
@@ -156,7 +177,7 @@ impl SessionManager {
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id, session_id = %session.id))]
     pub async fn revoke_others(
         &self,
-        session: &Session,
+        session: &ResolvedSession,
         reauth: Option<ReauthProof>,
         context: SessionContext,
     ) -> Result<u64> {
@@ -275,7 +296,7 @@ mod tests {
             recovery_cool_down_until: None,
         };
         let issued = IssuedSession {
-            session,
+            session: ResolvedSession::new(session, false),
             token: "super-secret-bearer-token".to_string(),
         };
 

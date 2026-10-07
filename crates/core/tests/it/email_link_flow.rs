@@ -61,7 +61,7 @@ impl Link {
                 let user = provision_user(h, "alice@example.com").await;
                 h.user
                     .request_email_change(
-                        &session_for(h, &user),
+                        &session_for(h, &user).await,
                         "new@example.com",
                         None,
                         SessionContext::default(),

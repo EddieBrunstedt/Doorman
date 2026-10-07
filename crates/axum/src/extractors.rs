@@ -6,15 +6,15 @@ use axum::http::header::USER_AGENT;
 use axum::http::request::Parts;
 use doorman_core::Error;
 use doorman_core::clock::Clock;
-use doorman_core::session::SessionContext;
-use doorman_core::storage::{Session, User};
+use doorman_core::session::{ResolvedSession, SessionContext};
+use doorman_core::storage::User;
 
 use crate::error::ErrorResponse;
 use crate::session::AuthContext;
 
 #[derive(Clone)]
 pub struct AuthSession {
-    pub session: Session,
+    pub session: ResolvedSession,
     pub token: String,
     clock: Arc<dyn Clock>,
 }
@@ -121,86 +121,97 @@ impl<S: Send + Sync> FromRequestParts<S> for RequestContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{DateTime, Duration, TimeZone, Utc};
+    use doorman_core::assembly::AuthCore;
+    use doorman_core::audit::NoopAuditSink;
+    use doorman_core::email::TerminalEmailSender;
+    use doorman_core::email_link::TOKEN_PLACEHOLDER;
+    use doorman_core::memory::InMemoryStorage;
+    use doorman_core::passkey::PasskeyConfig;
+    use doorman_core::rate_limit::NoopRateLimiter;
+    use doorman_core::reauth::ReauthPolicy;
+    use doorman_core::recovery::RecoveryConfig;
+    use doorman_core::signup::SignupConfig;
+    use doorman_core::storage::{Session, SessionId, UserId};
+    use doorman_core::token::hash_token;
+    use doorman_core::user::UserConfig;
+    use doorman_test_support::MockClock;
 
-    #[test]
-    fn auth_session_cool_down_answers_through_injected_clock() {
-        use chrono::{Duration, TimeZone, Utc};
-        use doorman_core::storage::{Session, SessionId, UserId, UserStatus};
-        use doorman_core::token::hash_token;
-        use doorman_test_support::MockClock;
-
-        let start = Utc
-            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+    fn start() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
             .single()
-            .expect("valid timestamp");
-        let clock = Arc::new(MockClock::new(start));
-        let cool_down_until = start + Duration::hours(24);
+            .expect("valid timestamp")
+    }
 
-        let user = User {
-            id: UserId::new(),
-            email: Some("alice@example.com".into()),
-            email_verified_at: Some(start),
-            status: UserStatus::Active,
-            created_at: start,
-            updated_at: start,
-        };
-        let session = Session {
-            id: SessionId::new(),
-            user_id: user.id,
-            token_hash: hash_token("cool-down-token"),
-            created_at: start,
-            last_used_at: start,
-            expires_at: start + Duration::days(30),
-            ip: None,
-            user_agent: None,
-            recovery_cool_down_until: Some(cool_down_until),
-        };
-        let auth = AuthSession {
-            session,
-            token: "cool-down-token".into(),
-            clock: clock.clone(),
-        };
+    async fn auth_session(
+        token: &str,
+        cool_down_until: Option<DateTime<Utc>>,
+        clock: Arc<MockClock>,
+    ) -> AuthSession {
+        let storage = InMemoryStorage::new();
+        let core = AuthCore::builder(storage.all_stores())
+            .clock(clock.clone())
+            .audit(Arc::new(NoopAuditSink))
+            .email(Arc::new(TerminalEmailSender))
+            .limiter(Arc::new(NoopRateLimiter))
+            .passkey(PasskeyConfig::new(
+                "localhost",
+                "http://localhost".parse().expect("origin"),
+                "doorman",
+            ))
+            .signup(SignupConfig {
+                url_template: format!("http://localhost/signup?token={TOKEN_PLACEHOLDER}"),
+                ..SignupConfig::default()
+            })
+            .recovery(RecoveryConfig {
+                url_template: format!("http://localhost/recover?token={TOKEN_PLACEHOLDER}"),
+                ..RecoveryConfig::default()
+            })
+            .user(UserConfig {
+                url_template: format!("http://localhost/email?token={TOKEN_PLACEHOLDER}"),
+                ..UserConfig::default()
+            })
+            .reauthentication(ReauthPolicy::disabled())
+            .build()
+            .expect("core assembles");
+        let now = clock.now();
+        storage
+            .session_store()
+            .create_session(Session {
+                id: SessionId::new(),
+                user_id: UserId::new(),
+                token_hash: hash_token(token),
+                created_at: now,
+                last_used_at: now,
+                expires_at: now + Duration::days(30),
+                ip: None,
+                user_agent: None,
+                recovery_cool_down_until: cool_down_until,
+            })
+            .await
+            .expect("store session");
+        AuthSession {
+            session: core.sessions.resolve(token).await.expect("resolve"),
+            token: token.into(),
+            clock,
+        }
+    }
+
+    #[tokio::test]
+    async fn auth_session_cool_down_answers_through_injected_clock() {
+        let clock = Arc::new(MockClock::new(start()));
+        let cool_down_until = start() + Duration::hours(24);
+        let auth = auth_session("cool-down-token", Some(cool_down_until), clock.clone()).await;
 
         assert!(auth.is_in_recovery_cool_down());
         clock.advance(Duration::hours(24) + Duration::seconds(1));
         assert!(!auth.is_in_recovery_cool_down());
     }
 
-    #[test]
-    fn auth_session_debug_redacts_token() {
-        use chrono::{Duration, TimeZone, Utc};
-        use doorman_core::storage::{Session, SessionId, UserId, UserStatus};
-        use doorman_core::token::hash_token;
-        use doorman_test_support::MockClock;
-
-        let start = Utc
-            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
-            .single()
-            .expect("valid timestamp");
-        let user = User {
-            id: UserId::new(),
-            email: Some("alice@example.com".into()),
-            email_verified_at: Some(start),
-            status: UserStatus::Active,
-            created_at: start,
-            updated_at: start,
-        };
-        let session = Session {
-            id: SessionId::new(),
-            user_id: user.id,
-            token_hash: hash_token("super-secret-bearer-token"),
-            created_at: start,
-            last_used_at: start,
-            expires_at: start + Duration::days(30),
-            ip: None,
-            user_agent: None,
-            recovery_cool_down_until: None,
-        };
-        let auth = AuthSession {
-            session,
-            token: "super-secret-bearer-token".into(),
-            clock: Arc::new(MockClock::new(start)),
-        };
+    #[tokio::test]
+    async fn auth_session_debug_redacts_token() {
+        let clock = Arc::new(MockClock::new(start()));
+        let auth = auth_session("super-secret-bearer-token", None, clock).await;
 
         let rendered = format!("{auth:?}");
         assert!(

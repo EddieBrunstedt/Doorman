@@ -36,7 +36,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
 
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);
@@ -72,6 +72,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
         .expect("start_authentication");
     assert_discoverable_request_options(&rcr);
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
+    let sessions_before = session_count(&h, user.id).await;
 
     let issued = h
         .passkey
@@ -91,7 +92,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
     );
     let issued = issued.session;
     assert_eq!(issued.session.user_id, user.id);
-    assert_eq!(session_count(&h, user.id).await, 1);
+    assert_eq!(session_count(&h, user.id).await, sessions_before + 1);
 
     let stored = h
         .passkeys
@@ -237,7 +238,7 @@ async fn second_registration_excludes_existing_passkeys() {
 
     let (_id2, ccr2) = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("start second registration");
     assert_resident_registration_options(&ccr2);
@@ -255,7 +256,7 @@ async fn finish_registration_rejects_unknown_challenge() {
     let mut wa = authenticator();
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("start");
     let response = wa.do_registration(ccr);
@@ -279,7 +280,7 @@ async fn finish_registration_rejects_expired_challenge() {
     let mut wa = authenticator();
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("start");
     let response = wa.do_registration(ccr);
@@ -308,7 +309,7 @@ async fn finish_registration_rejects_malformed_challenge() {
     let mut wa = authenticator();
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("start");
     let response = wa.do_registration(ccr);
@@ -349,7 +350,7 @@ async fn finish_registration_against_deleted_user_writes_no_orphan_passkey() {
 
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("start");
     let response = wa.do_registration(ccr);
@@ -507,7 +508,7 @@ async fn finish_registration_rejects_tampered_attestation() {
 
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("start");
     let mut response = wa.do_registration(ccr);
@@ -785,9 +786,11 @@ async fn finish_authentication_rejects_a_reauth_challenge() {
     let user = make_user(&h, "mixup@example.com").await;
     let mut wa = authenticator();
     register_passkey(&h, user.id, &mut wa, None).await;
+    let session = session_for(&h, &user).await;
 
-    let (reauth_id, options) = h.reauth.start(user.id).await.expect("reauth start");
+    let (reauth_id, options) = h.reauth.start(&session).await.expect("reauth start");
     let assertion = wa.do_scoped_authentication(options);
+    let sessions_before = session_count(&h, user.id).await;
 
     let err = h
         .passkey
@@ -798,7 +801,11 @@ async fn finish_authentication_rejects_a_reauth_challenge() {
         matches!(err, Error::InvalidPasskeyChallenge),
         "got: {err:?}"
     );
-    assert_eq!(session_count(&h, user.id).await, 0, "no session minted");
+    assert_eq!(
+        session_count(&h, user.id).await,
+        sessions_before,
+        "no session minted"
+    );
 
     let events = kinds(&h.audit.events());
     assert!(events.iter().any(|k| matches!(
@@ -856,7 +863,7 @@ async fn remove_passkey_emits_audit_sends_notice_and_blocks_login() {
     let user = make_user(&h, "remover@example.com").await;
     let mut wa = authenticator();
     let passkey = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
     let mail_before = h.email.sent().len();
 
     h.passkey
@@ -891,7 +898,7 @@ async fn remove_passkey_refuses_other_users_passkey_without_notice() {
     let bob = make_user(&h, "b@example.com").await;
     let mut wa = authenticator();
     let passkey = register_passkey(&h, alice.id, &mut wa, None).await;
-    let bob_session = session_for(&h, &bob);
+    let bob_session = session_for(&h, &bob).await;
     let mail_before = h.email.sent().len();
 
     let err = h
@@ -917,7 +924,7 @@ async fn remove_passkey_refuses_other_users_passkey_without_notice() {
 async fn remove_missing_passkey_sends_no_notice() {
     let h = Harness::fresh();
     let user = make_user(&h, "missing@example.com").await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
 
     let err = h
         .passkey
@@ -939,7 +946,7 @@ async fn remove_passkey_notice_failure_does_not_undo_removal() {
     let user = make_user(&h, "remove-failure@example.com").await;
     let mut wa = authenticator();
     let passkey = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
     let mail_before = h.email.sent().len();
     h.email.fail_after_successful_sends(mail_before);
 
@@ -975,7 +982,7 @@ async fn remove_passkey_refused_during_recovery_cool_down() {
     let mut wa = authenticator();
     let passkey = register_passkey(&h, user.id, &mut wa, Some("only key")).await;
     let cool_down_until = h.clock.now() + ChronoDuration::hours(24);
-    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
     let mail_before = h.email.sent().len();
 
     let err = h
@@ -1019,7 +1026,7 @@ async fn rename_passkey_updates_name_emits_audit_and_sends_no_notice() {
     let user = make_user(&h, "renamer@example.com").await;
     let mut wa = authenticator();
     let passkey = register_passkey(&h, user.id, &mut wa, Some("old phone")).await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
     let mail_before = h.email.sent().len();
 
     let updated = h
@@ -1061,7 +1068,7 @@ async fn rename_passkey_clears_name_with_none() {
     let user = make_user(&h, "clearer@example.com").await;
     let mut wa = authenticator();
     let passkey = register_passkey(&h, user.id, &mut wa, Some("labelled")).await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
 
     let updated = h
         .passkey
@@ -1083,7 +1090,7 @@ async fn rename_passkey_refuses_other_users_passkey() {
     let bob = make_user(&h, "b-rename@example.com").await;
     let mut wa = authenticator();
     let passkey = register_passkey(&h, alice.id, &mut wa, Some("alice key")).await;
-    let bob_session = session_for(&h, &bob);
+    let bob_session = session_for(&h, &bob).await;
 
     let err = h
         .passkey
@@ -1110,7 +1117,7 @@ async fn rename_passkey_refuses_other_users_passkey() {
 async fn rename_missing_passkey_fails() {
     let h = Harness::fresh();
     let user = make_user(&h, "missing-rename@example.com").await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
 
     let err = h
         .passkey
@@ -1132,7 +1139,7 @@ async fn rename_passkey_allowed_during_recovery_cool_down() {
     let mut wa = authenticator();
     let passkey = register_passkey(&h, user.id, &mut wa, Some("only key")).await;
     let cool_down_until = h.clock.now() + ChronoDuration::hours(24);
-    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
 
     let updated = h
         .passkey
@@ -1152,7 +1159,7 @@ async fn start_registration_from_ordinary_session_carries_no_cool_down() {
     let h = Harness::fresh();
     let user = make_user(&h, "ordinary@example.com").await;
     let mut wa = authenticator();
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
 
     let (challenge_id, ccr) = h
         .passkey
@@ -1176,7 +1183,7 @@ async fn start_registration_for_deleted_user_errors() {
     h.users.delete_user(user.id).await.expect("delete user");
     let err = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect_err("unknown user");
     assert!(matches!(err, Error::UserNotFound));
@@ -1199,7 +1206,7 @@ async fn start_registration_refuses_disabled_user() {
 
     let err = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect_err("disabled user must be refused");
     assert!(matches!(err, Error::UserDisabled));
@@ -1210,7 +1217,7 @@ async fn start_registration_refuses_disabled_user() {
         .await
         .expect("re-enable user");
     h.passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("no ceremony started: the pending budget is untouched");
 }
@@ -1231,7 +1238,7 @@ async fn registration_is_rejected_once_passkey_cap_is_reached() {
 
     let (challenge_id, ccr) = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("second start allowed");
     let response = wa.do_registration(ccr);
@@ -1267,16 +1274,16 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
 
     let (first_id, first_options) = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("first pending allowed");
     h.passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("second pending allowed");
     let err = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect_err("third start rejected at the cap");
     assert!(matches!(
@@ -1293,13 +1300,13 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
         .await
         .expect("finish the first ceremony");
     h.passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("no extra challenge was minted");
 
     let other = make_user(&h, "pending-other@example.com").await;
     h.passkey
-        .start_registration(&session_for(&h, &other))
+        .start_registration(&session_for(&h, &other).await)
         .await
         .expect("a different user has its own budget");
 }
@@ -1315,13 +1322,13 @@ async fn expired_registrations_do_not_count_toward_the_pending_cap() {
     let user = make_user(&h, "abandoned@example.com").await;
 
     h.passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("first pending allowed");
     h.clock.advance(ChronoDuration::seconds(301));
 
     h.passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("the expired registration no longer holds the only slot");
 }

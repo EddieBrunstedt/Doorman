@@ -8,8 +8,8 @@ use crate::email::{self, EmailSender, EmailTemplates, SecurityNotices};
 use crate::email_link::{EmailChange, EmailLinks, TOKEN_PLACEHOLDER};
 use crate::error::{Error, Result};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
-use crate::session::SessionContext;
-use crate::storage::{Session, User};
+use crate::session::{ResolvedSession, SessionContext};
+use crate::storage::User;
 use crate::user_records::UserRecords;
 
 #[derive(Clone)]
@@ -62,7 +62,7 @@ impl UserManager {
     #[tracing::instrument(skip(self, session, new_email, reauth, context), fields(user_id = %session.user_id))]
     pub async fn request_email_change(
         &self,
-        session: &Session,
+        session: &ResolvedSession,
         new_email: &str,
         reauth: Option<ReauthProof>,
         context: SessionContext,
@@ -123,10 +123,10 @@ impl UserManager {
         Ok(user)
     }
 
-    #[tracing::instrument(skip(self, reauth, context), fields(user_id = %session.user_id))]
+    #[tracing::instrument(skip(self, session, reauth, context), fields(user_id = %session.user_id))]
     pub async fn delete_user(
         &self,
-        session: &Session,
+        session: &ResolvedSession,
         reauth: Option<ReauthProof>,
         context: SessionContext,
     ) -> Result<()> {

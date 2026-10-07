@@ -7,8 +7,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Request, header};
 use axum::response::Response;
 use doorman_core::clock::Clock;
-use doorman_core::session::SessionManager;
-use doorman_core::storage::Session;
+use doorman_core::session::{ResolvedSession, SessionManager};
 use tower_layer::Layer;
 use tower_service::Service;
 use tracing::Instrument;
@@ -20,7 +19,7 @@ use crate::error::csrf_rejection_response;
 
 #[derive(Clone)]
 pub struct AuthContext {
-    pub session: Session,
+    pub session: ResolvedSession,
     pub token: String,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) sessions: SessionManager,
@@ -96,13 +95,12 @@ where
                     && let Ok(resolved) = state.sessions.resolve(&token).await
                 {
                     let span = tracing::Span::current();
-                    span.record("session_id", tracing::field::display(resolved.session.id));
-                    span.record("user_id", tracing::field::display(resolved.session.user_id));
-                    if resolved.slid && source == TokenSource::Cookie {
-                        let remaining = (resolved.session.expires_at
-                            - state.sessions.clock().now())
-                        .to_std()
-                        .unwrap_or(Duration::ZERO);
+                    span.record("session_id", tracing::field::display(resolved.id));
+                    span.record("user_id", tracing::field::display(resolved.user_id));
+                    if resolved.slid() && source == TokenSource::Cookie {
+                        let remaining = (resolved.expires_at - state.sessions.clock().now())
+                            .to_std()
+                            .unwrap_or(Duration::ZERO);
                         match session_cookie_with_max_age(&state.cookie, &token, remaining) {
                             Ok(cookie) => cookie_refresh = Some(cookie),
                             Err(err) => {
@@ -111,7 +109,7 @@ where
                         }
                     }
                     req.extensions_mut().insert(AuthContext {
-                        session: resolved.session,
+                        session: resolved,
                         token,
                         clock: state.sessions.clock().clone(),
                         sessions: state.sessions.clone(),

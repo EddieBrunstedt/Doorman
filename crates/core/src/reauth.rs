@@ -11,8 +11,8 @@ use crate::error::{Error, Result};
 use crate::passkey::PasskeyConfig;
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::redeem::Redeemer;
-use crate::session::SessionContext;
-use crate::storage::{PasskeyChallengeId, Session, Storage, UserId};
+use crate::session::{ResolvedSession, SessionContext};
+use crate::storage::{PasskeyChallengeId, Storage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ReauthAction {
@@ -89,12 +89,12 @@ impl ReauthManager {
         }
     }
 
-    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
+    #[tracing::instrument(skip_all, fields(user_id = %session.user_id))]
     pub async fn start(
         &self,
-        user_id: UserId,
+        session: &ResolvedSession,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
-        let (id, rcr) = self.challenges.issue(user_id).await?;
+        let (id, rcr) = self.challenges.issue(session.user_id).await?;
         tracing::info!(outcome = "started", "reauth started");
         Ok((id, rcr))
     }
@@ -103,7 +103,7 @@ impl ReauthManager {
     pub async fn ensure(
         &self,
         action: ReauthAction,
-        session: &Session,
+        session: &ResolvedSession,
         proof: Option<&ReauthProof>,
         context: &SessionContext,
     ) -> Result<()> {

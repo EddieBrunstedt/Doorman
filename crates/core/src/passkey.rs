@@ -25,11 +25,11 @@ use crate::passkey_registration::{
 use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
 use crate::reauth::{ReauthAction, ReauthManager, ReauthProof};
 use crate::recovery_cool_down::RecoveryCoolDown;
-use crate::session::{IssuedSession, SessionContext};
+use crate::session::{IssuedSession, ResolvedSession, SessionContext};
 use crate::session_records::SessionRecords;
 use crate::storage::{
-    PasskeyChallengeId, PasskeyStore, PasskeySummary, RegistrationPurpose, Session, StoredPasskey,
-    User, UserId,
+    PasskeyChallengeId, PasskeyStore, PasskeySummary, RegistrationPurpose, StoredPasskey, User,
+    UserId,
 };
 use crate::user_records::UserRecords;
 
@@ -171,7 +171,7 @@ impl PasskeyManager {
     #[tracing::instrument(skip(self, session), fields(method = "passkey", user_id = %session.user_id))]
     pub async fn start_registration(
         &self,
-        session: &Session,
+        session: &ResolvedSession,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let cool_down = RecoveryCoolDown::of_session(session, self.clock.now());
         let started = self
@@ -313,7 +313,7 @@ impl PasskeyManager {
     #[tracing::instrument(skip(self, session, credential_id, reauth, context), fields(user_id = %session.user_id))]
     pub async fn remove_passkey(
         &self,
-        session: &Session,
+        session: &ResolvedSession,
         credential_id: &[u8],
         reauth: Option<ReauthProof>,
         context: SessionContext,
@@ -339,7 +339,7 @@ impl PasskeyManager {
     #[tracing::instrument(skip(self, session, credential_id, name, context), fields(user_id = %session.user_id))]
     pub async fn rename_passkey(
         &self,
-        session: &Session,
+        session: &ResolvedSession,
         credential_id: &[u8],
         name: Option<String>,
         context: SessionContext,

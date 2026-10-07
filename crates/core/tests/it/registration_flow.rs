@@ -161,12 +161,12 @@ async fn redeeming_an_email_link_replaces_unfinished_registrations_rather_than_h
         let (user, token) = link.issue(&h).await;
         let (stale_id, stale_options) = h
             .passkey
-            .start_registration(&session_for(&h, &user))
+            .start_registration(&session_for(&h, &user).await)
             .await
             .expect("fill the cap");
         let err = h
             .passkey
-            .start_registration(&session_for(&h, &user))
+            .start_registration(&session_for(&h, &user).await)
             .await
             .expect_err("the cap is full");
         assert!(
@@ -207,7 +207,7 @@ async fn finishing_an_email_link_registration_drops_registrations_started_since_
         let started = link.redeem(&h, &token).await.expect("redeem");
         let (meanwhile_id, meanwhile_options) = h
             .passkey
-            .start_registration(&session_for(&h, &user))
+            .start_registration(&session_for(&h, &user).await)
             .await
             .expect("start a registration after the redeem");
 
@@ -288,7 +288,7 @@ async fn start(
             let user = provision_user(h, "alice@example.com").await;
             let (challenge_id, options) = h
                 .passkey
-                .start_registration(&session_for(h, &user))
+                .start_registration(&session_for(h, &user).await)
                 .await
                 .expect("start_registration");
             return (user, challenge_id, options);

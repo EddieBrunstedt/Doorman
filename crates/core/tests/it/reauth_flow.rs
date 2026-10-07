@@ -4,7 +4,7 @@ use doorman_core::Error;
 use doorman_core::audit::{AuditEventKind, AuthFailureReason, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
-use doorman_core::session::SessionContext;
+use doorman_core::session::{ResolvedSession, SessionContext};
 use doorman_core::storage::{PasskeyStore, StoredPasskey, UserStatus, UserStore};
 
 use crate::common::{
@@ -42,8 +42,8 @@ async fn ensure_matrix_cool_down_blocks_every_action_before_policy() {
     for (h, policy) in &cases {
         let user = make_user(h, "owner@example.com").await;
         let cool_down_until = h.clock.now() + chrono::Duration::hours(24);
-        let in_cool_down = session_in_cool_down_for(h, &user, cool_down_until);
-        let plain = session_for(h, &user);
+        let in_cool_down = session_in_cool_down_for(h, &user, cool_down_until).await;
+        let plain = session_for(h, &user).await;
         for action in all_actions() {
             let blocked = h
                 .reauth
@@ -74,10 +74,10 @@ async fn ensure_matrix_cool_down_blocks_every_action_before_policy() {
 
 async fn fresh_proof(
     h: &Harness,
-    user: doorman_core::storage::UserId,
+    session: &ResolvedSession,
     wa: &mut common::ResidentAuthenticator,
 ) -> ReauthProof {
-    let (challenge_id, options) = h.reauth.start(user).await.expect("reauth start");
+    let (challenge_id, options) = h.reauth.start(session).await.expect("reauth start");
     let assertion = wa.do_scoped_authentication(options);
     ReauthProof {
         challenge_id,
@@ -91,7 +91,7 @@ async fn disabled_policy_lets_destructive_action_through_without_proof() {
     let user = make_user(&h, "owner@example.com").await;
     let mut wa = authenticator();
     register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
 
     h.user
         .delete_user(&session, None, SessionContext::default())
@@ -113,7 +113,7 @@ async fn gated_action_without_proof_is_reauth_required() {
     let user = make_user(&h, "owner@example.com").await;
     let mut wa = authenticator();
     register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
 
     let err = h
         .user
@@ -143,9 +143,9 @@ async fn gated_action_with_fresh_proof_succeeds_and_audits() {
     let user = make_user(&h, "owner@example.com").await;
     let mut wa = authenticator();
     register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
 
-    let proof = fresh_proof(&h, user.id, &mut wa).await;
+    let proof = fresh_proof(&h, &session, &mut wa).await;
     h.user
         .delete_user(&session, Some(proof), SessionContext::default())
         .await
@@ -172,10 +172,10 @@ async fn successful_reauth_records_the_passkey_use() {
     let user = make_user(&h, "owner@example.com").await;
     let mut wa = authenticator();
     let registered = register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
     h.clock.advance(chrono::Duration::minutes(1));
 
-    let proof = fresh_proof(&h, user.id, &mut wa).await;
+    let proof = fresh_proof(&h, &session, &mut wa).await;
     h.reauth
         .ensure(
             ReauthAction::RemovePasskey,
@@ -209,8 +209,8 @@ async fn reauth_refuses_a_disabled_users_passkey() {
     let user = make_user(&h, "disabled@example.com").await;
     let mut wa = authenticator();
     let registered = register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let session = session_for(&h, &user);
-    let proof = fresh_proof(&h, user.id, &mut wa).await;
+    let session = session_for(&h, &user).await;
+    let proof = fresh_proof(&h, &session, &mut wa).await;
 
     let now = h.clock.now();
     h.users
@@ -259,9 +259,9 @@ async fn challenge_is_single_use() {
     let user = make_user(&h, "owner@example.com").await;
     let mut wa = authenticator();
     register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
 
-    let proof = fresh_proof(&h, user.id, &mut wa).await;
+    let proof = fresh_proof(&h, &session, &mut wa).await;
     register_passkey(&h, user.id, &mut wa, Some("second")).await;
     let passkeys = h.passkey.list_passkeys(user.id).await.expect("list");
     let target = passkeys[0].credential_id.clone();
@@ -291,7 +291,7 @@ async fn login_challenge_is_not_a_reauth_proof() {
     let user = make_user(&h, "owner@example.com").await;
     let mut wa = authenticator();
     let passkey = register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
 
     let (challenge_id, options) = h
         .passkey
@@ -337,9 +337,9 @@ async fn expired_challenge_is_rejected() {
     let user = make_user(&h, "owner@example.com").await;
     let mut wa = authenticator();
     register_passkey(&h, user.id, &mut wa, Some("device")).await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
 
-    let (challenge_id, options) = h.reauth.start(user.id).await.expect("reauth start");
+    let (challenge_id, options) = h.reauth.start(&session).await.expect("reauth start");
     let assertion = wa.do_scoped_authentication(options);
     h.clock.advance(chrono::Duration::minutes(6));
 
@@ -378,12 +378,12 @@ async fn assertion_from_another_users_passkey_is_rejected() {
     register_passkey(&h, owner.id, &mut owner_wa, Some("owner device")).await;
     let mut attacker_wa = authenticator();
     register_passkey(&h, attacker.id, &mut attacker_wa, Some("attacker device")).await;
-    let owner_session = session_for(&h, &owner);
+    let owner_session = session_for(&h, &owner).await;
 
     let attacker_passkey = h.passkey.list_passkeys(attacker.id).await.expect("list")[0]
         .credential_id
         .clone();
-    let (challenge_id, options) = h.reauth.start(owner.id).await.expect("reauth start");
+    let (challenge_id, options) = h.reauth.start(&owner_session).await.expect("reauth start");
     let assertion = attacker_wa.do_scoped_authentication(scoped_to(options, &attacker_passkey));
 
     let err = h
@@ -425,9 +425,9 @@ async fn cool_down_beats_reauth() {
     let mut wa = authenticator();
     register_passkey(&h, user.id, &mut wa, Some("device")).await;
     let cool_down_until = h.clock.now() + chrono::Duration::hours(24);
-    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
 
-    let proof = fresh_proof(&h, user.id, &mut wa).await;
+    let proof = fresh_proof(&h, &in_cool_down, &mut wa).await;
     let err = h
         .user
         .delete_user(&in_cool_down, Some(proof), SessionContext::default())
@@ -474,7 +474,7 @@ async fn bulk_revocations_require_proof_when_gated() {
         "nothing is revoked without a proof"
     );
 
-    let proof = fresh_proof(&h, alice.user.id, &mut alice.authenticator).await;
+    let proof = fresh_proof(&h, &current, &mut alice.authenticator).await;
     let removed = h
         .session_manager
         .revoke_others(&current, Some(proof), SessionContext::default())
@@ -483,7 +483,7 @@ async fn bulk_revocations_require_proof_when_gated() {
     assert_eq!(removed, 1);
 
     alice.log_in_again(&h).await;
-    let proof = fresh_proof(&h, alice.user.id, &mut alice.authenticator).await;
+    let proof = fresh_proof(&h, &current, &mut alice.authenticator).await;
     h.session_manager
         .log_out_everywhere(&current, Some(proof), SessionContext::default())
         .await
@@ -505,7 +505,7 @@ async fn revoke_requires_proof_only_for_another_session() {
         .expect_err("another session needs a proof");
     assert!(matches!(err, Error::ReauthRequired), "got: {err:?}");
 
-    let proof = fresh_proof(&h, alice.user.id, &mut alice.authenticator).await;
+    let proof = fresh_proof(&h, &current, &mut alice.authenticator).await;
     h.session_manager
         .revoke(
             &current,

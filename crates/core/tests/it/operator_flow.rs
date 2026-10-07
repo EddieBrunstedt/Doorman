@@ -122,7 +122,7 @@ async fn every_operator_action_on_an_unknown_user_fails_and_touches_nothing() {
 async fn operator_delete_cascades_all_stores() {
     let h = Harness::fresh();
     let user = provision_user(&h, "doomed@example.com").await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
 
     h.user
         .request_email_change(&session, "elsewhere@example.com", None, Default::default())
@@ -131,15 +131,15 @@ async fn operator_delete_cascades_all_stores() {
     let email_change_token = last_email_change_token(&h);
     let (challenge_id, options) = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session)
         .await
         .expect("start a pending registration");
     let attestation = authenticator().do_registration(options);
 
     assert_eq!(
         session_count(&h, user.id).await,
-        1,
-        "signup left an active session"
+        2,
+        "signup and the test's own session are active"
     );
     assert_eq!(passkey_count(&h, user.id).await, 1, "signup left a passkey");
 

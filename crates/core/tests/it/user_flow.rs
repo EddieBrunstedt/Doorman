@@ -14,7 +14,7 @@ use crate::common::{
 async fn email_change_happy_path() {
     let h = Harness::fresh();
     let user = provision_user(&h, "old@example.com").await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
     let mail_before = h.email.sent().len();
 
     h.user
@@ -97,7 +97,7 @@ async fn email_change_happy_path() {
 async fn email_change_confirm_refuses_address_claimed_since_request() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
     h.user
         .request_email_change(
             &session,
@@ -129,7 +129,7 @@ async fn email_change_confirm_refuses_address_claimed_since_request() {
 async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
     h.user
         .request_email_change(
             &session,
@@ -181,7 +181,7 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
 async fn email_change_rejects_address_already_in_use() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
     make_user(&h, "taken@example.com").await;
     let mail_before = h.email.sent().len();
 
@@ -208,7 +208,7 @@ async fn request_email_change_refused_during_recovery_cool_down() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
     let cool_down_until = h.clock.now() + chrono::Duration::hours(24);
-    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
     let mail_before = h.email.sent().len();
 
     let err = h
@@ -234,7 +234,7 @@ async fn delete_user_refused_during_recovery_cool_down() {
     let h = Harness::fresh();
     let user = provision_user(&h, "doomed@example.com").await;
     let cool_down_until = h.clock.now() + chrono::Duration::hours(24);
-    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
 
     let err = h
         .user
@@ -252,8 +252,8 @@ async fn delete_user_refused_during_recovery_cool_down() {
     );
     assert_eq!(
         session_count(&h, user.id).await,
-        1,
-        "the signup session is left intact"
+        2,
+        "the signup session and the one in cool-down are left intact"
     );
 }
 
@@ -262,7 +262,7 @@ async fn request_email_change_allowed_once_recovery_cool_down_lapses() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
     let cool_down_until = h.clock.now() + chrono::Duration::hours(24);
-    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
 
     let err = h
         .user
@@ -302,7 +302,7 @@ async fn delete_user_allowed_once_recovery_cool_down_lapses() {
     let h = Harness::fresh();
     let user = provision_user(&h, "doomed@example.com").await;
     let cool_down_until = h.clock.now() + chrono::Duration::hours(24);
-    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until);
+    let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
 
     let err = h
         .user
@@ -330,7 +330,7 @@ async fn delete_user_allowed_once_recovery_cool_down_lapses() {
 async fn confirm_refused_for_disabled_user() {
     let h = Harness::fresh();
     let user = provision_user(&h, "old@example.com").await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
     h.user
         .request_email_change(&session, "new@example.com", None, SessionContext::default())
         .await
@@ -376,7 +376,7 @@ async fn confirm_refused_for_disabled_user() {
 async fn delete_user_cascades_all_stores() {
     let h = Harness::fresh();
     let user = provision_user(&h, "doomed@example.com").await;
-    let session = session_for(&h, &user);
+    let session = session_for(&h, &user).await;
 
     h.user
         .request_email_change(
@@ -390,15 +390,15 @@ async fn delete_user_cascades_all_stores() {
     let email_change_token = last_email_change_token(&h);
     let (challenge_id, options) = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session)
         .await
         .expect("start a pending registration");
     let attestation = authenticator().do_registration(options);
 
     assert_eq!(
         session_count(&h, user.id).await,
-        1,
-        "signup left an active session"
+        2,
+        "signup and the test's own session are active"
     );
     assert_eq!(passkey_count(&h, user.id).await, 1, "signup left a passkey");
 
@@ -449,7 +449,7 @@ async fn registration_challenge_outliving_its_user_is_refused() {
     let user = provision_user(&h, "racing@example.com").await;
     let (challenge_id, options) = h
         .passkey
-        .start_registration(&session_for(&h, &user))
+        .start_registration(&session_for(&h, &user).await)
         .await
         .expect("start a pending registration");
     // Leaves the challenge behind, as a registration started while the delete runs can.
