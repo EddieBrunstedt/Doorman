@@ -16,6 +16,7 @@ async fn every_session_route_refuses_a_request_without_a_session() {
         (Method::DELETE, "/auth/sessions".to_owned()),
         (Method::DELETE, format!("/auth/sessions/{some_id}")),
         (Method::POST, "/auth/passkey/register/start".to_owned()),
+        (Method::POST, "/auth/passkey/register/finish".to_owned()),
         (Method::GET, "/auth/passkey".to_owned()),
         (Method::DELETE, "/auth/passkey/some-passkey".to_owned()),
         (Method::PATCH, "/auth/passkey/some-passkey".to_owned()),

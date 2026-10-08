@@ -12,7 +12,7 @@ use crate::passkey::{PasskeyConfig, PasskeyMetadata, StartedRegistration, encode
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::{ResolvedSession, SessionContext};
 use crate::storage::{
-    PasskeyChallengeId, PasskeyStore, RegistrationPurpose, StoredPasskey, User, UserId,
+    PasskeyChallengeId, PasskeyStore, RegistrationPurpose, SessionId, StoredPasskey, User, UserId,
 };
 use crate::user_records::UserRecords;
 
@@ -29,6 +29,39 @@ impl RegistrationSource<'_> {
             Self::SignupLink(_) => RegistrationPurpose::Signup,
             Self::RecoveryLink(_) => RegistrationPurpose::Recovery,
             Self::Session(_) => RegistrationPurpose::AddPasskey,
+        }
+    }
+
+    fn session_id(self) -> Option<SessionId> {
+        match self {
+            Self::SignupLink(_) | Self::RecoveryLink(_) => None,
+            Self::Session(session) => Some(session.id),
+        }
+    }
+}
+
+// Who finishes a registration must be who started it: the same kind of email link, or the same
+// session.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RegistrationFinish<'a> {
+    SignupLink,
+    RecoveryLink,
+    Session(&'a ResolvedSession),
+}
+
+impl RegistrationFinish<'_> {
+    const fn purpose(self) -> RegistrationPurpose {
+        match self {
+            Self::SignupLink => RegistrationPurpose::Signup,
+            Self::RecoveryLink => RegistrationPurpose::Recovery,
+            Self::Session(_) => RegistrationPurpose::AddPasskey,
+        }
+    }
+
+    fn session_id(self) -> Option<SessionId> {
+        match self {
+            Self::SignupLink | Self::RecoveryLink => None,
+            Self::Session(session) => Some(session.id),
         }
     }
 }
@@ -89,7 +122,7 @@ impl PasskeyRegistrations {
         };
         let (challenge_id, options) = self
             .challenges
-            .issue_registration(&user, source.purpose(), cool_down)
+            .issue_registration(&user, source.purpose(), source.session_id(), cool_down)
             .await?;
         tracing::info!(outcome = "started", "passkey registration started");
         Ok(StartedRegistration {
@@ -104,11 +137,12 @@ impl PasskeyRegistrations {
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
         context: &SessionContext,
-        purpose: RegistrationPurpose,
+        finish: RegistrationFinish<'_>,
     ) -> Result<RegisteredPasskey> {
+        let purpose = finish.purpose();
         let redeemed = self
             .challenges
-            .redeem_registration(challenge_id, purpose, context)
+            .redeem_registration(challenge_id, purpose, finish.session_id(), context)
             .await?;
         let user_id = redeemed.user.id;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));

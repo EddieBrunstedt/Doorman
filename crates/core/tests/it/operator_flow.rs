@@ -125,7 +125,7 @@ async fn operator_delete_cascades_all_stores() {
     let user = provision_user(&h, "doomed@example.com").await;
     let session = session_for(&h, &user).await;
 
-    h.destructive_actions
+    h.session_manager
         .perform(
             &session,
             DestructiveAction::RequestEmailChange {
@@ -138,8 +138,8 @@ async fn operator_delete_cascades_all_stores() {
         .expect("request email change");
     let email_change_token = last_email_change_token(&h);
     let (challenge_id, options) = h
-        .passkey
-        .start_registration(&session)
+        .session_manager
+        .start_passkey_registration(&session)
         .await
         .expect("start a pending registration");
     let attestation = authenticator().do_registration(options);
@@ -176,8 +176,14 @@ async fn operator_delete_cascades_all_stores() {
     assert_last_redemption_unknown(&h, SecretKind::EmailChangeLink);
 
     let err = h
-        .passkey
-        .finish_registration(challenge_id, &attestation, None, SessionContext::default())
+        .session_manager
+        .finish_passkey_registration(
+            &session,
+            challenge_id,
+            &attestation,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect_err("the pending ceremony is gone");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
@@ -334,7 +340,7 @@ async fn notice_policy_leaves_self_service_notices_alone() {
     let credential_id = first_credential_id(&h, user.id).await;
     let session = session_for(&h, &user).await;
 
-    h.destructive_actions
+    h.session_manager
         .perform(
             &session,
             DestructiveAction::RemovePasskey { credential_id },

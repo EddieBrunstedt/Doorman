@@ -716,14 +716,20 @@ async fn passkey_registered_during_cool_down_inherits_its_deadline() {
 
     let mut wa = authenticator();
     let (challenge_id, ccr) = h
-        .passkey
-        .start_registration(&resolved)
+        .session_manager
+        .start_passkey_registration(&resolved)
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);
     let passkey = h
-        .passkey
-        .finish_registration(challenge_id, &response, None, SessionContext::default())
+        .session_manager
+        .finish_passkey_registration(
+            &resolved,
+            challenge_id,
+            &response,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("finish_registration");
 
@@ -770,14 +776,20 @@ async fn passkey_registered_after_cool_down_carries_no_cool_down() {
 
     let mut wa = authenticator();
     let (challenge_id, ccr) = h
-        .passkey
-        .start_registration(&resolved)
+        .session_manager
+        .start_passkey_registration(&resolved)
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);
     let passkey = h
-        .passkey
-        .finish_registration(challenge_id, &response, None, SessionContext::default())
+        .session_manager
+        .finish_passkey_registration(
+            &resolved,
+            challenge_id,
+            &response,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect("finish_registration");
 
@@ -997,15 +1009,17 @@ async fn ordinary_registration_still_rejected_at_cap() {
         "user starts exactly at the cap",
     );
 
+    let session = session_for(&h, &user).await;
     let (challenge_id, ccr) = h
-        .passkey
-        .start_registration(&session_for(&h, &user).await)
+        .session_manager
+        .start_passkey_registration(&session)
         .await
         .expect("start allowed at the cap");
     let response = filler.do_registration(ccr);
     let err = h
-        .passkey
-        .finish_registration(
+        .session_manager
+        .finish_passkey_registration(
+            &session,
             challenge_id,
             &response,
             Some("third device".into()),

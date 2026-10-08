@@ -47,7 +47,7 @@ async fn list(
     auth: AuthSession,
 ) -> Result<Json<Vec<SessionDto>>, ErrorResponse> {
     let current_id = auth.session.id;
-    let sessions = state.core.sessions.list(&auth.session).await?;
+    let sessions = state.core.sessions.list_sessions(&auth.session).await?;
     let dtos = sessions
         .iter()
         .map(|s| SessionDto::new(s, s.id == current_id))

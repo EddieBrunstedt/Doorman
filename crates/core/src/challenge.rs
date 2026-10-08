@@ -43,6 +43,14 @@ pub(crate) struct PasskeyChallenges {
     max_pending_registrations: Option<NonZeroU32>,
 }
 
+// A passkey added from a session can be finished only by that session, so revoking a stolen
+// session also kills the registrations it started.
+#[derive(Serialize, Deserialize)]
+struct RegistrationChallengeState {
+    session_id: Option<SessionId>,
+    state: PasskeyRegistration,
+}
+
 impl PasskeyChallenges {
     pub(crate) fn from_deps(
         deps: &CoreDeps,
@@ -102,6 +110,7 @@ impl PasskeyChallenges {
         &self,
         user: &User,
         purpose: RegistrationPurpose,
+        session_id: Option<SessionId>,
         cool_down: RecoveryCoolDown,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let user_id = user.id;
@@ -141,6 +150,7 @@ impl PasskeyChallenges {
             .start_passkey_registration(user_id.0, &display_name, &display_name, exclude)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
         require_discoverable_credential(&mut ccr)?;
+        let state = RegistrationChallengeState { session_id, state };
 
         let now = self.clock.now();
         let id = PasskeyChallengeId::new();
@@ -162,21 +172,38 @@ impl PasskeyChallenges {
         &self,
         id: PasskeyChallengeId,
         purpose: RegistrationPurpose,
+        session_id: Option<SessionId>,
         context: &SessionContext,
     ) -> Result<RedeemedRegistration> {
         let taken = self.challenges.take_registration(id).await?;
-        let (user, (state, cool_down)) = self
+        let (user, (started_by, state, cool_down)) = self
             .redeemer
             .check_owned(
                 taken,
                 purpose,
                 |stored| {
-                    let state = decode_state(&stored.state)?;
-                    Ok((state, RecoveryCoolDown::of_registration(&stored)))
+                    let RegistrationChallengeState { session_id, state } =
+                        decode_state(&stored.state)?;
+                    Ok((
+                        session_id,
+                        state,
+                        RecoveryCoolDown::of_registration(&stored),
+                    ))
                 },
                 context,
             )
             .await?;
+        if started_by != session_id {
+            return Err(self
+                .redeemer
+                .refuse(
+                    SecretKind::RegistrationChallenge,
+                    Some(user.id),
+                    WrongSession,
+                    context,
+                )
+                .await);
+        }
         Ok(RedeemedRegistration {
             user,
             state,

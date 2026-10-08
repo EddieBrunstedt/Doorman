@@ -6,7 +6,7 @@ use doorman_core::error::Error;
 use doorman_core::passkey::{
     PasskeyConfig, PasskeyRateLimits, RegistrationOutcome, StartedRegistration,
 };
-use doorman_core::session::SessionContext;
+use doorman_core::session::{ResolvedSession, SessionContext};
 use doorman_core::storage::{PasskeyChallengeId, User, UserStatus, UserStore};
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
@@ -159,14 +159,15 @@ async fn redeeming_an_email_link_replaces_unfinished_registrations_rather_than_h
             })
             .build();
         let (user, token) = link.issue(&h).await;
+        let session = session_for(&h, &user).await;
         let (stale_id, stale_options) = h
-            .passkey
-            .start_registration(&session_for(&h, &user).await)
+            .session_manager
+            .start_passkey_registration(&session)
             .await
             .expect("fill the cap");
         let err = h
-            .passkey
-            .start_registration(&session_for(&h, &user).await)
+            .session_manager
+            .start_passkey_registration(&session)
             .await
             .expect_err("the cap is full");
         assert!(
@@ -180,8 +181,9 @@ async fn redeeming_an_email_link_replaces_unfinished_registrations_rather_than_h
             .expect("redeem starts a registration despite the full cap");
 
         let err = h
-            .passkey
-            .finish_registration(
+            .session_manager
+            .finish_passkey_registration(
+                &session,
                 stale_id,
                 &authenticator().do_registration(stale_options),
                 None,
@@ -205,17 +207,19 @@ async fn finishing_an_email_link_registration_drops_registrations_started_since_
         let h = Harness::fresh();
         let (user, token) = link.issue(&h).await;
         let started = link.redeem(&h, &token).await.expect("redeem");
+        let session = session_for(&h, &user).await;
         let (meanwhile_id, meanwhile_options) = h
-            .passkey
-            .start_registration(&session_for(&h, &user).await)
+            .session_manager
+            .start_passkey_registration(&session)
             .await
             .expect("start a registration after the redeem");
 
         link.finish(&h, started).await.expect("finish");
 
         let err = h
-            .passkey
-            .finish_registration(
+            .session_manager
+            .finish_passkey_registration(
+                &session,
                 meanwhile_id,
                 &authenticator().do_registration(meanwhile_options),
                 None,
@@ -277,31 +281,40 @@ enum Finish {
     AddPasskey,
 }
 
+// The session is the user's, so a finish as an added passkey has one to present.
 async fn start(
     h: &Harness,
     started: Started,
-) -> (User, PasskeyChallengeId, CreationChallengeResponse) {
+) -> (
+    User,
+    ResolvedSession,
+    PasskeyChallengeId,
+    CreationChallengeResponse,
+) {
     let link = match started {
         Started::Signup => Link::Signup,
         Started::Recovery => Link::Recovery,
         Started::AddPasskey => {
             let user = provision_user(h, "alice@example.com").await;
+            let session = session_for(h, &user).await;
             let (challenge_id, options) = h
-                .passkey
-                .start_registration(&session_for(h, &user).await)
+                .session_manager
+                .start_passkey_registration(&session)
                 .await
                 .expect("start_registration");
-            return (user, challenge_id, options);
+            return (user, session, challenge_id, options);
         }
     };
     let (user, token) = link.issue(h).await;
     let started = link.redeem(h, &token).await.expect("redeem");
-    (user, started.challenge_id, started.options)
+    let session = session_for(h, &user).await;
+    (user, session, started.challenge_id, started.options)
 }
 
 async fn finish(
     h: &Harness,
     finish: Finish,
+    session: &ResolvedSession,
     challenge_id: PasskeyChallengeId,
     response: &RegisterPublicKeyCredential,
 ) -> Error {
@@ -318,8 +331,8 @@ async fn finish(
             .await
             .map(drop),
         Finish::AddPasskey => h
-            .passkey
-            .finish_registration(challenge_id, response, None, context())
+            .session_manager
+            .finish_passkey_registration(session, challenge_id, response, None, context())
             .await
             .map(drop),
     }
@@ -328,14 +341,14 @@ async fn finish(
 
 async fn assert_refused_as_wrong_purpose(started: Started, finished_as: Finish) {
     let h = Harness::fresh();
-    let (user, challenge_id, options) = start(&h, started).await;
+    let (user, session, challenge_id, options) = start(&h, started).await;
     let passkeys_before = passkey_count(&h, user.id).await;
     let sessions_before = session_count(&h, user.id).await;
     let emails_before = h.email.sent().len();
     let audited_before = h.audit.events().len();
 
     let response = authenticator().do_registration(options);
-    let err = finish(&h, finished_as, challenge_id, &response).await;
+    let err = finish(&h, finished_as, &session, challenge_id, &response).await;
 
     assert!(
         matches!(err, Error::InvalidPasskeyChallenge),
@@ -400,10 +413,10 @@ async fn added_passkey_challenge_cannot_finish_as_recovery() {
 #[tokio::test]
 async fn wrong_purpose_finish_burns_the_challenge() {
     let h = Harness::fresh();
-    let (_, challenge_id, options) = start(&h, Started::AddPasskey).await;
+    let (_, session, challenge_id, options) = start(&h, Started::AddPasskey).await;
     let response = authenticator().do_registration(options);
-    finish(&h, Finish::Signup, challenge_id, &response).await;
+    finish(&h, Finish::Signup, &session, challenge_id, &response).await;
 
-    let err = finish(&h, Finish::AddPasskey, challenge_id, &response).await;
+    let err = finish(&h, Finish::AddPasskey, &session, challenge_id, &response).await;
     assert!(matches!(err, Error::InvalidPasskeyChallenge), "got {err:?}");
 }

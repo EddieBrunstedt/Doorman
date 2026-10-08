@@ -8,12 +8,12 @@ use crate::context::CoreDeps;
 use crate::email_link::EmailLinks;
 use crate::error::Result;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
-use crate::passkey_registration::{PasskeyRegistrations, RegisteredPasskey, RegistrationSource};
+use crate::passkey_registration::{
+    PasskeyRegistrations, RegisteredPasskey, RegistrationFinish, RegistrationSource,
+};
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
-use crate::storage::{
-    EmailLinkPurpose, PasskeyChallengeId, PasskeySummary, RegistrationPurpose, User, UserId,
-};
+use crate::storage::{EmailLinkPurpose, PasskeyChallengeId, PasskeySummary, User, UserId};
 use crate::user_records::UserRecords;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,10 +30,10 @@ impl RegistrationLink {
         }
     }
 
-    const fn registration_purpose(self) -> RegistrationPurpose {
+    const fn finish(self) -> RegistrationFinish<'static> {
         match self {
-            Self::Signup => RegistrationPurpose::Signup,
-            Self::Recovery => RegistrationPurpose::Recovery,
+            Self::Signup => RegistrationFinish::SignupLink,
+            Self::Recovery => RegistrationFinish::RecoveryLink,
         }
     }
 
@@ -114,13 +114,7 @@ impl EmailLinkRegistration {
             passkey_count,
         } = self
             .registrations
-            .finish(
-                challenge_id,
-                response,
-                name,
-                &context,
-                self.link.registration_purpose(),
-            )
+            .finish(challenge_id, response, name, &context, self.link.finish())
             .await?;
         // A registration started since the link was redeemed may belong to whoever holds a lost
         // passkey or a stolen session, so it must not outlive the one the link started.

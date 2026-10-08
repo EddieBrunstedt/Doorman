@@ -14,7 +14,6 @@ use doorman_core::recovery::RecoveryConfig;
 use doorman_core::security_notice::{NoticePolicy, OperatorNotice};
 use doorman_core::session::SessionContext;
 use doorman_core::signup::SignupConfig;
-use doorman_core::storage::UserId;
 use doorman_core::user::UserConfig;
 use doorman_test_support::CapturingEmailSender;
 
@@ -83,14 +82,6 @@ async fn service_drives_the_managers_the_core_assembled() {
         1,
         "signup request should enqueue exactly one link email via the core's transport"
     );
-
-    let summaries = auth
-        .state()
-        .passkey()
-        .list_passkeys(UserId::new())
-        .await
-        .expect("list summaries");
-    assert!(summaries.is_empty());
 }
 
 #[test]

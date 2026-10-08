@@ -49,7 +49,7 @@ pub struct ReauthProof {
 }
 
 #[derive(Clone)]
-pub struct ReauthManager {
+pub(crate) struct ReauthManager {
     challenges: PasskeyChallenges,
     assertions: AssertionVerifier,
     audit: AuditDispatch,
@@ -65,7 +65,7 @@ impl ReauthManager {
     }
 
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id))]
-    pub async fn start(
+    pub(crate) async fn start(
         &self,
         session: &ResolvedSession,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {

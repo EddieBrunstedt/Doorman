@@ -46,7 +46,7 @@ impl BulkRevocation {
             Self::RevokeOthers => DestructiveAction::RevokeOtherSessions,
             Self::LogOutEverywhere => DestructiveAction::LogOutEverywhere,
         };
-        h.destructive_actions
+        h.session_manager
             .perform(session, action, None, SessionContext::default())
             .await
     }
@@ -136,7 +136,7 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
 
     let mut alice_ids: Vec<SessionId> = h
         .session_manager
-        .list(&third.session)
+        .list_sessions(&third.session)
         .await
         .expect("list alice")
         .into_iter()
@@ -189,7 +189,7 @@ async fn list_returns_only_the_users_live_sessions() {
 
     let listed = h
         .session_manager
-        .list(&alice.session.session)
+        .list_sessions(&alice.session.session)
         .await
         .expect("list");
     let mut ids: Vec<SessionId> = listed.iter().map(|s| s.id).collect();
@@ -203,7 +203,7 @@ async fn list_returns_only_the_users_live_sessions() {
 
     let listed_after = h
         .session_manager
-        .list(&fresh.session)
+        .list_sessions(&fresh.session)
         .await
         .expect("list after");
     let ids_after: Vec<SessionId> = listed_after.iter().map(|s| s.id).collect();
@@ -243,7 +243,7 @@ async fn revoke_others_keeps_only_the_acting_session_audits_and_notifies() {
     let current = &alice.session.session;
     let mail_before = h.email.sent().len();
 
-    h.destructive_actions
+    h.session_manager
         .perform(
             current,
             DestructiveAction::RevokeOtherSessions,
@@ -286,7 +286,7 @@ async fn log_out_everywhere_ends_every_session_of_the_user_only() {
     let mail_before = h.email.sent().len();
     let audited_before = h.audit.len();
 
-    h.destructive_actions
+    h.session_manager
         .perform(
             current,
             DestructiveAction::LogOutEverywhere,
@@ -361,7 +361,7 @@ async fn revoke_notifies_only_for_another_session() {
     let current = &alice.session.session;
     let mail_before = h.email.sent().len();
 
-    h.destructive_actions
+    h.session_manager
         .perform(
             current,
             DestructiveAction::RevokeSession {
@@ -379,7 +379,7 @@ async fn revoke_notifies_only_for_another_session() {
         "revoking another session notifies"
     );
 
-    h.destructive_actions
+    h.session_manager
         .perform(
             current,
             DestructiveAction::RevokeSession { id: current.id },
@@ -403,7 +403,7 @@ async fn revoke_hides_another_users_session() {
     let bob = sign_in(&h, "bob@example.com").await;
 
     let err = h
-        .destructive_actions
+        .session_manager
         .perform(
             &alice.session.session,
             DestructiveAction::RevokeSession {
@@ -426,7 +426,7 @@ async fn revoke_in_cool_down_is_refused_but_log_out_is_not() {
     let current = in_cool_down(&h, &alice.user).await;
 
     let err = h
-        .destructive_actions
+        .session_manager
         .perform(
             &current,
             DestructiveAction::RevokeSession {
@@ -444,7 +444,7 @@ async fn revoke_in_cool_down_is_refused_but_log_out_is_not() {
     );
 
     let err = h
-        .destructive_actions
+        .session_manager
         .perform(
             &current,
             DestructiveAction::RevokeSession { id: current.id },

@@ -106,9 +106,7 @@ pub struct AuthCore {
     pub signup: SignupManager,
     pub recovery: RecoveryManager,
     pub user: UserManager,
-    pub reauth: ReauthManager,
     pub operator: OperatorManager,
-    pub destructive_actions: DestructiveActions,
 }
 
 impl AuthCore {
@@ -283,14 +281,12 @@ impl AuthCoreBuilder {
             mailer,
             notices,
             limiter,
-            session_records.clone(),
+            session_records,
             self.storage,
         )
         .with_metrics(metrics);
 
         let reauth = ReauthManager::new(&deps, &passkey_config, webauthn.clone());
-
-        let sessions = SessionManager::new(&deps);
 
         let registrations = PasskeyRegistrations::new(
             &deps,
@@ -316,14 +312,15 @@ impl AuthCoreBuilder {
 
         let operator = OperatorManager::new(&deps, passkey.clone());
 
-        let destructive_actions = DestructiveActions::new(
-            session_records,
+        let destructive = DestructiveActions::new(
+            &deps,
             reauth.clone(),
             reauth_policy,
-            sessions.clone(),
             passkey.clone(),
             user.clone(),
         );
+
+        let sessions = SessionManager::new(&deps, passkey.clone(), reauth, destructive);
 
         Ok(AuthCore {
             sessions,
@@ -331,9 +328,7 @@ impl AuthCoreBuilder {
             signup,
             recovery,
             user,
-            reauth,
             operator,
-            destructive_actions,
         })
     }
 }

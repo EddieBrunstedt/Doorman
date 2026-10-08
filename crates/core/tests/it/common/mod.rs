@@ -11,7 +11,6 @@ use doorman_core::audit::{
     AuditEvent, AuditEventKind, AuditSink, RedemptionFailureReason, SecretKind,
 };
 use doorman_core::clock::Clock;
-use doorman_core::destructive::DestructiveActions;
 use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
 use doorman_core::error::StorageResult;
 use doorman_core::memory::{
@@ -22,7 +21,7 @@ use doorman_core::metrics::MetricSink;
 use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
-use doorman_core::reauth::{ReauthManager, ReauthPolicy};
+use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
 use doorman_core::security_notice::NoticePolicy;
 use doorman_core::session::hash_token;
@@ -238,9 +237,7 @@ pub struct Harness {
     pub signup: SignupManager,
     pub recovery: RecoveryManager,
     pub user: UserManager,
-    pub reauth: ReauthManager,
     pub operator: OperatorManager,
-    pub destructive_actions: DestructiveActions,
     pub session_manager: SessionManager,
     pub users: Arc<InMemoryUserStore>,
     pub user_store: Arc<CountingUserStore>,
@@ -420,9 +417,7 @@ impl HarnessBuilder {
             signup: core.signup,
             recovery: core.recovery,
             user: core.user,
-            reauth: core.reauth,
             operator: core.operator,
-            destructive_actions: core.destructive_actions,
             session_manager: core.sessions,
             users,
             user_store,
@@ -464,8 +459,8 @@ pub async fn session_count(h: &Harness, user_id: UserId) -> usize {
 }
 
 pub async fn passkey_count(h: &Harness, user_id: UserId) -> u64 {
-    h.passkey
-        .list_passkeys(user_id)
+    h.passkeys
+        .list_passkeys_for_user(user_id)
         .await
         .expect("list passkeys")
         .len() as u64
@@ -561,19 +556,15 @@ pub async fn register_passkey(
 ) -> StoredPasskey {
     let session = stored_session(h, user, None).await;
     let (challenge_id, ccr) = h
-        .passkey
-        .start_registration(&session)
+        .session_manager
+        .start_passkey_registration(&session)
         .await
         .expect("start_registration");
-    // The registering session is scaffolding; leave the user's session count as the test made it.
-    h.sessions
-        .delete_session(session.id)
-        .await
-        .expect("drop registering session");
     let response = wa.do_registration(ccr);
     let registered = h
-        .passkey
-        .finish_registration(
+        .session_manager
+        .finish_passkey_registration(
+            &session,
             challenge_id,
             &response,
             name.map(ToOwned::to_owned),
@@ -581,6 +572,11 @@ pub async fn register_passkey(
         )
         .await
         .expect("finish_registration");
+    // The registering session is scaffolding; leave the user's session count as the test made it.
+    h.sessions
+        .delete_session(session.id)
+        .await
+        .expect("drop registering session");
     h.passkeys
         .find_passkey_by_credential_id(&registered.credential_id)
         .await

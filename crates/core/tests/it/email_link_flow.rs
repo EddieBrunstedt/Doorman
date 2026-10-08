@@ -60,7 +60,7 @@ impl Link {
             }
             Link::EmailChange => {
                 let user = provision_user(h, "alice@example.com").await;
-                h.destructive_actions
+                h.session_manager
                     .perform(
                         &session_for(h, &user).await,
                         DestructiveAction::RequestEmailChange {

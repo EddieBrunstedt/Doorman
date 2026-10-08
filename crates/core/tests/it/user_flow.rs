@@ -18,7 +18,7 @@ async fn email_change_happy_path() {
     let session = session_for(&h, &user).await;
     let mail_before = h.email.sent().len();
 
-    h.destructive_actions
+    h.session_manager
         .perform(
             &session,
             DestructiveAction::RequestEmailChange {
@@ -106,7 +106,7 @@ async fn email_change_confirm_refuses_address_claimed_since_request() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
     let session = session_for(&h, &user).await;
-    h.destructive_actions
+    h.session_manager
         .perform(
             &session,
             DestructiveAction::RequestEmailChange {
@@ -140,7 +140,7 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
     let session = session_for(&h, &user).await;
-    h.destructive_actions
+    h.session_manager
         .perform(
             &session,
             DestructiveAction::RequestEmailChange {
@@ -198,7 +198,7 @@ async fn email_change_rejects_address_already_in_use() {
     let mail_before = h.email.sent().len();
 
     let err = h
-        .destructive_actions
+        .session_manager
         .perform(
             &session,
             DestructiveAction::RequestEmailChange {
@@ -226,7 +226,7 @@ async fn request_email_change_refused_during_recovery_cool_down() {
     let mail_before = h.email.sent().len();
 
     let err = h
-        .destructive_actions
+        .session_manager
         .perform(
             &in_cool_down,
             DestructiveAction::RequestEmailChange {
@@ -253,7 +253,7 @@ async fn delete_user_refused_during_recovery_cool_down() {
     let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
 
     let err = h
-        .destructive_actions
+        .session_manager
         .perform(
             &in_cool_down,
             DestructiveAction::DeleteUser,
@@ -286,7 +286,7 @@ async fn request_email_change_allowed_once_recovery_cool_down_lapses() {
     let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
 
     let err = h
-        .destructive_actions
+        .session_manager
         .perform(
             &in_cool_down,
             DestructiveAction::RequestEmailChange {
@@ -301,7 +301,7 @@ async fn request_email_change_allowed_once_recovery_cool_down_lapses() {
 
     h.clock.advance(chrono::Duration::hours(25));
     let mail_before = h.email.sent().len();
-    h.destructive_actions
+    h.session_manager
         .perform(
             &in_cool_down,
             DestructiveAction::RequestEmailChange {
@@ -330,7 +330,7 @@ async fn delete_user_allowed_once_recovery_cool_down_lapses() {
     let in_cool_down = session_in_cool_down_for(&h, &user, cool_down_until).await;
 
     let err = h
-        .destructive_actions
+        .session_manager
         .perform(
             &in_cool_down,
             DestructiveAction::DeleteUser,
@@ -342,7 +342,7 @@ async fn delete_user_allowed_once_recovery_cool_down_lapses() {
     assert!(matches!(err, Error::RecoveryCoolDownActive));
 
     h.clock.advance(chrono::Duration::hours(25));
-    h.destructive_actions
+    h.session_manager
         .perform(
             &in_cool_down,
             DestructiveAction::DeleteUser,
@@ -366,7 +366,7 @@ async fn confirm_refused_for_disabled_user() {
     let h = Harness::fresh();
     let user = provision_user(&h, "old@example.com").await;
     let session = session_for(&h, &user).await;
-    h.destructive_actions
+    h.session_manager
         .perform(
             &session,
             DestructiveAction::RequestEmailChange {
@@ -420,7 +420,7 @@ async fn delete_user_cascades_all_stores() {
     let user = provision_user(&h, "doomed@example.com").await;
     let session = session_for(&h, &user).await;
 
-    h.destructive_actions
+    h.session_manager
         .perform(
             &session,
             DestructiveAction::RequestEmailChange {
@@ -433,8 +433,8 @@ async fn delete_user_cascades_all_stores() {
         .expect("request email change");
     let email_change_token = last_email_change_token(&h);
     let (challenge_id, options) = h
-        .passkey
-        .start_registration(&session)
+        .session_manager
+        .start_passkey_registration(&session)
         .await
         .expect("start a pending registration");
     let attestation = authenticator().do_registration(options);
@@ -446,7 +446,7 @@ async fn delete_user_cascades_all_stores() {
     );
     assert_eq!(passkey_count(&h, user.id).await, 1, "signup left a passkey");
 
-    h.destructive_actions
+    h.session_manager
         .perform(
             &session,
             DestructiveAction::DeleteUser,
@@ -484,8 +484,14 @@ async fn delete_user_cascades_all_stores() {
     assert_last_redemption_unknown(&h, SecretKind::EmailChangeLink);
 
     let err = h
-        .passkey
-        .finish_registration(challenge_id, &attestation, None, SessionContext::default())
+        .session_manager
+        .finish_passkey_registration(
+            &session,
+            challenge_id,
+            &attestation,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect_err("the pending ceremony is gone");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
@@ -496,9 +502,10 @@ async fn delete_user_cascades_all_stores() {
 async fn registration_challenge_outliving_its_user_is_refused() {
     let h = Harness::fresh();
     let user = provision_user(&h, "racing@example.com").await;
+    let session = session_for(&h, &user).await;
     let (challenge_id, options) = h
-        .passkey
-        .start_registration(&session_for(&h, &user).await)
+        .session_manager
+        .start_passkey_registration(&session)
         .await
         .expect("start a pending registration");
     // Leaves the challenge behind, as a registration started while the delete runs can.
@@ -508,8 +515,14 @@ async fn registration_challenge_outliving_its_user_is_refused() {
     let audited_before = h.audit.events().len();
 
     let err = h
-        .passkey
-        .finish_registration(challenge_id, &attestation, None, SessionContext::default())
+        .session_manager
+        .finish_passkey_registration(
+            &session,
+            challenge_id,
+            &attestation,
+            None,
+            SessionContext::default(),
+        )
         .await
         .expect_err("a challenge whose user is gone is refused");
 

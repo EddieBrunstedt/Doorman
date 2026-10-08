@@ -1,8 +1,11 @@
+use crate::audit::Actor;
+use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::passkey::PasskeyManager;
 use crate::reauth::{ReauthAction, ReauthManager, ReauthPolicy, ReauthProof};
 use crate::recovery_cool_down::RecoveryCoolDown;
-use crate::session::{ResolvedSession, SessionContext, SessionManager};
+use crate::security_notice::{SecurityNotice, SecurityNotices};
+use crate::session::{ResolvedSession, SessionContext};
 use crate::session_records::SessionRecords;
 use crate::storage::SessionId;
 use crate::user::UserManager;
@@ -42,29 +45,28 @@ impl Cleared {
 }
 
 #[derive(Clone)]
-pub struct DestructiveActions {
+pub(crate) struct DestructiveActions {
     records: SessionRecords,
     reauth: ReauthManager,
     policy: ReauthPolicy,
-    sessions: SessionManager,
+    notices: SecurityNotices,
     passkey: PasskeyManager,
     user: UserManager,
 }
 
 impl DestructiveActions {
     pub(crate) fn new(
-        records: SessionRecords,
+        deps: &CoreDeps,
         reauth: ReauthManager,
         policy: ReauthPolicy,
-        sessions: SessionManager,
         passkey: PasskeyManager,
         user: UserManager,
     ) -> Self {
         Self {
-            records,
+            records: deps.sessions.clone(),
             reauth,
             policy,
-            sessions,
+            notices: deps.notices.clone(),
             passkey,
             user,
         }
@@ -74,7 +76,7 @@ impl DestructiveActions {
         skip_all,
         fields(user_id = %session.user_id, session_id = %session.id, action = ?action.reauth_action()),
     )]
-    pub async fn perform(
+    pub(crate) async fn perform(
         &self,
         session: &ResolvedSession,
         action: DestructiveAction,
@@ -96,9 +98,9 @@ impl DestructiveActions {
                     .remove_passkey(cleared, &credential_id, context)
                     .await
             }
-            DestructiveAction::RevokeSession { id } => self.sessions.revoke(cleared, id).await,
-            DestructiveAction::RevokeOtherSessions => self.sessions.revoke_others(cleared).await,
-            DestructiveAction::LogOutEverywhere => self.sessions.log_out_everywhere(cleared).await,
+            DestructiveAction::RevokeSession { id } => self.revoke(cleared, id).await,
+            DestructiveAction::RevokeOtherSessions => self.revoke_others(&cleared).await,
+            DestructiveAction::LogOutEverywhere => self.log_out_everywhere(cleared).await,
         }
     }
 
@@ -119,5 +121,41 @@ impl DestructiveActions {
             self.reauth.verify(&session, proof, context).await?;
         }
         Ok(Cleared { session })
+    }
+
+    async fn log_out_everywhere(&self, cleared: Cleared) -> Result<()> {
+        self.revoke_others(&cleared).await?;
+        let session = cleared.session();
+        self.records
+            .revoke_owned(session.user_id, session.id, Actor::of_session(session))
+            .await
+    }
+
+    async fn revoke(&self, cleared: Cleared, target: SessionId) -> Result<()> {
+        let session = cleared.session();
+        self.records
+            .revoke_owned(session.user_id, target, Actor::of_session(session))
+            .await?;
+        // Revoking the current session is logging out, so there is no other session to tell of.
+        if target != session.id {
+            self.notices
+                .send_to(session.user_id, SecurityNotice::OtherSessionRevoked)
+                .await;
+        }
+        Ok(())
+    }
+
+    async fn revoke_others(&self, cleared: &Cleared) -> Result<()> {
+        let session = cleared.session();
+        let count = self
+            .records
+            .revoke_others(session, Actor::of_session(session))
+            .await?;
+        if count > 0 {
+            self.notices
+                .send_to(session.user_id, SecurityNotice::OtherSessionsRevoked)
+                .await;
+        }
+        Ok(())
     }
 }

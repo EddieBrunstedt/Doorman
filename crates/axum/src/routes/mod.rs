@@ -74,7 +74,7 @@ pub(crate) async fn perform(
     let proof = reauth.map(ReauthProof::try_from).transpose()?;
     state
         .core
-        .destructive_actions
+        .sessions
         .perform(&auth.session, action, proof, context)
         .await?;
     Ok(())

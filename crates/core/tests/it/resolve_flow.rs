@@ -147,7 +147,7 @@ async fn the_user_read_is_fresh_in_every_process() {
     let found = other.sessions.find_user(&session).await.expect("find user");
     assert_eq!(found.email.as_deref(), Some("old@example.com"));
 
-    h.destructive_actions
+    h.session_manager
         .perform(
             &session,
             DestructiveAction::RequestEmailChange {
@@ -176,7 +176,7 @@ async fn a_security_notice_goes_to_the_address_changed_in_another_process() {
     alice.log_in_again(&h).await;
     let session = alice.session.session;
 
-    h.destructive_actions
+    h.session_manager
         .perform(
             &session,
             DestructiveAction::RequestEmailChange {
@@ -193,7 +193,7 @@ async fn a_security_notice_goes_to_the_address_changed_in_another_process() {
         .expect("confirm email change");
 
     other
-        .destructive_actions
+        .sessions
         .perform(
             &session,
             DestructiveAction::RevokeOtherSessions,

@@ -18,13 +18,14 @@ use crate::context::CoreDeps;
 use crate::destructive::Cleared;
 use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
-use crate::passkey_registration::{PasskeyRegistrations, RegisteredPasskey, RegistrationSource};
+use crate::passkey_registration::{
+    PasskeyRegistrations, RegisteredPasskey, RegistrationFinish, RegistrationSource,
+};
 use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::{IssuedSession, ResolvedSession, SessionContext};
 use crate::storage::{
-    PasskeyChallengeId, PasskeyStore, PasskeySummary, RegistrationPurpose, StoredPasskey, User,
-    UserId,
+    PasskeyChallengeId, PasskeyStore, PasskeySummary, StoredPasskey, User, UserId,
 };
 use crate::user_records::UserRecords;
 
@@ -155,7 +156,7 @@ impl PasskeyManager {
     }
 
     #[tracing::instrument(skip(self, session), fields(method = "passkey", user_id = %session.user_id))]
-    pub async fn start_registration(
+    pub(crate) async fn start_registration(
         &self,
         session: &ResolvedSession,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
@@ -167,11 +168,12 @@ impl PasskeyManager {
     }
 
     #[tracing::instrument(
-        skip(self, response, name, context),
+        skip(self, session, response, name, context),
         fields(method = "passkey", user_id = tracing::field::Empty),
     )]
-    pub async fn finish_registration(
+    pub(crate) async fn finish_registration(
         &self,
+        session: &ResolvedSession,
         challenge_id: PasskeyChallengeId,
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
@@ -184,7 +186,7 @@ impl PasskeyManager {
                 response,
                 name,
                 &context,
-                RegistrationPurpose::AddPasskey,
+                RegistrationFinish::Session(session),
             )
             .await?;
         self.notices
@@ -288,7 +290,7 @@ impl PasskeyManager {
     }
 
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
-    pub async fn list_passkeys(&self, user_id: UserId) -> Result<Vec<PasskeySummary>> {
+    pub(crate) async fn list_passkeys(&self, user_id: UserId) -> Result<Vec<PasskeySummary>> {
         let passkeys = self.passkeys.list_passkeys_for_user(user_id).await?;
         Ok(passkeys.into_iter().map(PasskeySummary::from).collect())
     }
@@ -308,7 +310,7 @@ impl PasskeyManager {
     }
 
     #[tracing::instrument(skip(self, session, credential_id, name, context), fields(user_id = %session.user_id))]
-    pub async fn rename_passkey(
+    pub(crate) async fn rename_passkey(
         &self,
         session: &ResolvedSession,
         credential_id: &[u8],

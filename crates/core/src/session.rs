@@ -5,14 +5,21 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
+use webauthn_rs::prelude::{
+    CreationChallengeResponse, RegisterPublicKeyCredential, RequestChallengeResponse,
+};
+
 use crate::audit::Actor;
 use crate::context::CoreDeps;
-use crate::destructive::Cleared;
+use crate::destructive::{DestructiveAction, DestructiveActions};
 use crate::error::Result;
+use crate::passkey::PasskeyManager;
+use crate::reauth::{ReauthManager, ReauthProof};
 use crate::recovery_cool_down::RecoveryCoolDown;
-use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session_records::SessionRecords;
-use crate::storage::{Session, SessionId, SessionSummary, TokenHash, User};
+use crate::storage::{
+    PasskeyChallengeId, PasskeySummary, Session, SessionSummary, TokenHash, User,
+};
 pub use crate::token::hash_token;
 use crate::user_records::UserRecords;
 
@@ -118,15 +125,24 @@ impl Deref for ResolvedSession {
 pub struct SessionManager {
     records: SessionRecords,
     users: UserRecords,
-    notices: SecurityNotices,
+    passkey: PasskeyManager,
+    reauth: ReauthManager,
+    destructive: DestructiveActions,
 }
 
 impl SessionManager {
-    pub(crate) fn new(deps: &CoreDeps) -> Self {
+    pub(crate) fn new(
+        deps: &CoreDeps,
+        passkey: PasskeyManager,
+        reauth: ReauthManager,
+        destructive: DestructiveActions,
+    ) -> Self {
         Self {
             records: deps.sessions.clone(),
             users: UserRecords::new(deps),
-            notices: deps.notices.clone(),
+            passkey,
+            reauth,
+            destructive,
         }
     }
 
@@ -140,7 +156,7 @@ impl SessionManager {
     }
 
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id))]
-    pub async fn list(&self, session: &ResolvedSession) -> Result<Vec<SessionSummary>> {
+    pub async fn list_sessions(&self, session: &ResolvedSession) -> Result<Vec<SessionSummary>> {
         self.records.list_summaries_for_user(session.user_id).await
     }
 
@@ -151,43 +167,59 @@ impl SessionManager {
             .await
     }
 
-    pub(crate) async fn log_out_everywhere(&self, cleared: Cleared) -> Result<()> {
-        let session = cleared.session();
-        self.revoke_others_of(session).await?;
-        self.records
-            .revoke_owned(session.user_id, session.id, Actor::of_session(session))
+    pub async fn start_passkey_registration(
+        &self,
+        session: &ResolvedSession,
+    ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
+        self.passkey.start_registration(session).await
+    }
+
+    pub async fn finish_passkey_registration(
+        &self,
+        session: &ResolvedSession,
+        challenge_id: PasskeyChallengeId,
+        response: &RegisterPublicKeyCredential,
+        name: Option<String>,
+        context: SessionContext,
+    ) -> Result<PasskeySummary> {
+        self.passkey
+            .finish_registration(session, challenge_id, response, name, context)
             .await
     }
 
-    pub(crate) async fn revoke(&self, cleared: Cleared, target: SessionId) -> Result<()> {
-        let session = cleared.session();
-        self.records
-            .revoke_owned(session.user_id, target, Actor::of_session(session))
-            .await?;
-        // Revoking the current session is logging out, so there is no other session to tell of.
-        if target != session.id {
-            self.notices
-                .send_to(session.user_id, SecurityNotice::OtherSessionRevoked)
-                .await;
-        }
-        Ok(())
+    pub async fn list_passkeys(&self, session: &ResolvedSession) -> Result<Vec<PasskeySummary>> {
+        self.passkey.list_passkeys(session.user_id).await
     }
 
-    pub(crate) async fn revoke_others(&self, cleared: Cleared) -> Result<()> {
-        self.revoke_others_of(cleared.session()).await
+    pub async fn rename_passkey(
+        &self,
+        session: &ResolvedSession,
+        credential_id: &[u8],
+        name: Option<String>,
+        context: SessionContext,
+    ) -> Result<PasskeySummary> {
+        self.passkey
+            .rename_passkey(session, credential_id, name, context)
+            .await
     }
 
-    async fn revoke_others_of(&self, session: &ResolvedSession) -> Result<()> {
-        let count = self
-            .records
-            .revoke_others(session, Actor::of_session(session))
-            .await?;
-        if count > 0 {
-            self.notices
-                .send_to(session.user_id, SecurityNotice::OtherSessionsRevoked)
-                .await;
-        }
-        Ok(())
+    pub async fn start_reauth(
+        &self,
+        session: &ResolvedSession,
+    ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
+        self.reauth.start(session).await
+    }
+
+    pub async fn perform(
+        &self,
+        session: &ResolvedSession,
+        action: DestructiveAction,
+        proof: Option<ReauthProof>,
+        context: SessionContext,
+    ) -> Result<()> {
+        self.destructive
+            .perform(session, action, proof, context)
+            .await
     }
 }
 
@@ -224,7 +256,7 @@ impl From<&Session> for SessionSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::UserId;
+    use crate::storage::{SessionId, UserId};
 
     #[test]
     fn default_config_builds() {

@@ -103,8 +103,8 @@ async fn me(
 ) -> std::result::Result<Json<serde_json::Value>, axum::http::StatusCode> {
     let passkeys = state
         .auth
-        .passkey()
-        .list_passkeys(user.id)
+        .sessions()
+        .list_passkeys(&auth.session)
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({

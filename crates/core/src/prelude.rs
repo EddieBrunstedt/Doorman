@@ -4,7 +4,7 @@ pub use crate::audit::{
     RecoveryFailureReason, RedemptionFailureReason, SecretKind,
 };
 pub use crate::clock::{Clock, SystemClock};
-pub use crate::destructive::{DestructiveAction, DestructiveActions};
+pub use crate::destructive::DestructiveAction;
 #[cfg(feature = "file-email")]
 pub use crate::email::FileEmailSender;
 pub use crate::email::{
@@ -21,7 +21,7 @@ pub use crate::purge::PurgeSummary;
 pub use crate::rate_limit::{
     NoopRateLimiter, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter,
 };
-pub use crate::reauth::{ReauthAction, ReauthManager, ReauthPolicy, ReauthProof};
+pub use crate::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
 pub use crate::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
 pub use crate::security_notice::{NoticePolicy, OperatorNotice};
 pub use crate::session::{

@@ -7,7 +7,6 @@ use axum::routing::{delete, get, post};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use doorman_core::destructive::DestructiveAction;
-use doorman_core::passkey::PasskeyManager;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use crate::dto::{
@@ -29,15 +28,15 @@ pub(crate) fn routes() -> Router<AuthState> {
         .route("/passkey/{credential_id}", delete(remove).patch(rename))
 }
 
-fn manager(state: &AuthState) -> &PasskeyManager {
-    &state.core.passkey
-}
-
 async fn register_start(
     State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ErrorResponse> {
-    let (id, options) = manager(&state).start_registration(&auth.session).await?;
+    let (id, options) = state
+        .core
+        .sessions
+        .start_passkey_registration(&auth.session)
+        .await?;
     Ok(Json(PasskeyChallenge {
         challenge_id: id.0.to_string(),
         options,
@@ -46,12 +45,21 @@ async fn register_start(
 
 async fn register_finish(
     State(state): State<AuthState>,
+    auth: AuthSession,
     RequestContext(context): RequestContext,
     Json(body): Json<RegistrationFinishRequest>,
 ) -> Result<Json<PasskeyDto>, ErrorResponse> {
     let challenge_id = parse_challenge_id(&body.challenge_id)?;
-    let passkey = manager(&state)
-        .finish_registration(challenge_id, &body.response, body.name, context)
+    let passkey = state
+        .core
+        .sessions
+        .finish_passkey_registration(
+            &auth.session,
+            challenge_id,
+            &body.response,
+            body.name,
+            context,
+        )
         .await?;
     Ok(Json(passkey.into()))
 }
@@ -60,7 +68,7 @@ async fn authenticate_start(
     State(state): State<AuthState>,
     RequestContext(context): RequestContext,
 ) -> Result<Json<PasskeyChallenge<RequestChallengeResponse>>, ErrorResponse> {
-    let (id, options) = manager(&state).start_authentication(context).await?;
+    let (id, options) = state.core.passkey.start_authentication(context).await?;
     Ok(Json(PasskeyChallenge {
         challenge_id: id.0.to_string(),
         options,
@@ -73,7 +81,9 @@ async fn authenticate_finish(
     Json(body): Json<PasskeyAuthenticateFinishRequest>,
 ) -> Result<Response, ErrorResponse> {
     let challenge_id = parse_challenge_id(&body.challenge_id)?;
-    let outcome = manager(&state)
+    let outcome = state
+        .core
+        .passkey
         .finish_authentication(challenge_id, &body.response, context)
         .await?;
     auth_success(
@@ -88,7 +98,7 @@ async fn list(
     State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Json<Vec<PasskeyDto>>, ErrorResponse> {
-    let passkeys = manager(&state).list_passkeys(auth.session.user_id).await?;
+    let passkeys = state.core.sessions.list_passkeys(&auth.session).await?;
     Ok(Json(passkeys.into_iter().map(PasskeyDto::from).collect()))
 }
 
@@ -118,7 +128,9 @@ async fn rename(
     let bytes = URL_SAFE_NO_PAD
         .decode(credential_id.as_bytes())
         .map_err(|_| ErrorResponse(doorman_core::Error::PasskeyNotFound))?;
-    let updated = manager(&state)
+    let updated = state
+        .core
+        .sessions
         .rename_passkey(&auth.session, &bytes, body.name, context)
         .await?;
     Ok(Json(updated.into()))

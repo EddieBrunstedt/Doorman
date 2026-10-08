@@ -55,7 +55,7 @@ async fn perform(
     action: DestructiveAction,
     proof: Option<ReauthProof>,
 ) -> Result<(), Error> {
-    h.destructive_actions
+    h.session_manager
         .perform(session, action, proof, SessionContext::default())
         .await
 }
@@ -65,7 +65,11 @@ async fn fresh_proof(
     session: &ResolvedSession,
     wa: &mut common::ResidentAuthenticator,
 ) -> ReauthProof {
-    let (challenge_id, options) = h.reauth.start(session).await.expect("reauth start");
+    let (challenge_id, options) = h
+        .session_manager
+        .start_reauth(session)
+        .await
+        .expect("reauth start");
     let assertion = wa.do_scoped_authentication(options);
     ReauthProof {
         challenge_id,
@@ -156,7 +160,7 @@ async fn gated_action_with_fresh_proof_succeeds_and_audits() {
     let session = session_for(&h, &user).await;
 
     let proof = fresh_proof(&h, &session, &mut wa).await;
-    h.destructive_actions
+    h.session_manager
         .perform(
             &session,
             DestructiveAction::DeleteUser,
@@ -275,10 +279,14 @@ async fn challenge_is_single_use() {
 
     let proof = fresh_proof(&h, &session, &mut wa).await;
     register_passkey(&h, user.id, &mut wa, Some("second")).await;
-    let passkeys = h.passkey.list_passkeys(user.id).await.expect("list");
+    let passkeys = h
+        .session_manager
+        .list_passkeys(&session)
+        .await
+        .expect("list");
     let target = passkeys[0].credential_id.clone();
 
-    h.destructive_actions
+    h.session_manager
         .perform(
             &session,
             DestructiveAction::RemovePasskey {
@@ -292,7 +300,7 @@ async fn challenge_is_single_use() {
 
     let other = passkeys[1].credential_id.clone();
     let err = h
-        .destructive_actions
+        .session_manager
         .perform(
             &session,
             DestructiveAction::RemovePasskey {
@@ -322,7 +330,7 @@ async fn login_challenge_is_not_a_reauth_proof() {
     let assertion = wa.do_authentication(options, &passkey.credential_id);
 
     let err = h
-        .destructive_actions
+        .session_manager
         .perform(
             &session,
             DestructiveAction::DeleteUser,
@@ -407,12 +415,16 @@ async fn expired_challenge_is_rejected() {
     register_passkey(&h, user.id, &mut wa, Some("device")).await;
     let session = session_for(&h, &user).await;
 
-    let (challenge_id, options) = h.reauth.start(&session).await.expect("reauth start");
+    let (challenge_id, options) = h
+        .session_manager
+        .start_reauth(&session)
+        .await
+        .expect("reauth start");
     let assertion = wa.do_scoped_authentication(options);
     h.clock.advance(chrono::Duration::minutes(6));
 
     let err = h
-        .destructive_actions
+        .session_manager
         .perform(
             &session,
             DestructiveAction::DeleteUser,
@@ -449,14 +461,22 @@ async fn assertion_from_another_users_passkey_is_rejected() {
     register_passkey(&h, attacker.id, &mut attacker_wa, Some("attacker device")).await;
     let owner_session = session_for(&h, &owner).await;
 
-    let attacker_passkey = h.passkey.list_passkeys(attacker.id).await.expect("list")[0]
+    let attacker_passkey = h
+        .passkeys
+        .list_passkeys_for_user(attacker.id)
+        .await
+        .expect("list")[0]
         .credential_id
         .clone();
-    let (challenge_id, options) = h.reauth.start(&owner_session).await.expect("reauth start");
+    let (challenge_id, options) = h
+        .session_manager
+        .start_reauth(&owner_session)
+        .await
+        .expect("reauth start");
     let assertion = attacker_wa.do_scoped_authentication(scoped_to(options, &attacker_passkey));
 
     let err = h
-        .destructive_actions
+        .session_manager
         .perform(
             &owner_session,
             DestructiveAction::DeleteUser,
