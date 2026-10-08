@@ -10,7 +10,7 @@ use doorman_core::session::{DEFAULT_SESSION_LIFETIME, SessionConfig};
 use doorman_core::storage::UserStatus;
 use doorman_test_support::MockClock;
 
-use crate::common::TestApp;
+use crate::common::{ResidentAuthenticator, TestApp, rp_origin};
 
 #[tokio::test]
 async fn a_login_sets_a_session_cookie_that_authenticates() {
@@ -33,28 +33,86 @@ async fn a_login_sets_a_session_cookie_that_authenticates() {
     assert_eq!(me.status, StatusCode::OK);
 }
 
+// Every request slides the session it carries, so each route below competes with a refresh of that
+// cookie.
+fn always_sliding_app() -> TestApp {
+    TestApp::with(
+        |b| {
+            b.session(SessionConfig {
+                idle_timeout: Some(IDLE),
+                slide_interval: Duration::ZERO,
+                ..SessionConfig::default()
+            })
+        },
+        |b| b,
+    )
+}
+
 #[tokio::test]
 async fn ending_a_session_clears_its_cookie() {
     for (method, path) in [
         (Method::POST, "/auth/logout"),
         (Method::POST, "/auth/logout-all"),
         (Method::DELETE, "/auth/user"),
+        (Method::DELETE, "/auth/sessions/{current}"),
     ] {
-        let app = TestApp::new();
+        let app = always_sliding_app();
         let session = app.session_for("alice@example.com").await;
+        let target = path.replace("{current}", &session.session.id.0.to_string());
 
         let reply = app
-            .call(method.clone(), path)
+            .call(method.clone(), &target)
             .cookie(&session.token)
             .send()
             .await;
         assert_eq!(reply.status, StatusCode::NO_CONTENT, "{method} {path}");
         let set_cookie = reply.set_cookie().expect("the cookie is cleared");
-        assert!(set_cookie.contains("doorman_session="), "{method} {path}");
+        assert!(set_cookie.contains("doorman_session=;"), "{method} {path}");
         assert!(set_cookie.contains("Max-Age=0"), "{method} {path}");
         assert!(
             !app.is_authenticated(&session.token).await,
             "{method} {path}"
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SessionStart {
+    Login,
+    Signup,
+    Recovery,
+}
+
+#[tokio::test]
+async fn starting_a_session_replaces_the_cookie_the_request_carried() {
+    for start in [
+        SessionStart::Login,
+        SessionStart::Signup,
+        SessionStart::Recovery,
+    ] {
+        let app = always_sliding_app();
+        let (_, mut bob) = app.signup("bob@example.com").await;
+        let alice = app.session_for("alice@example.com").await;
+        let app = app.default_header("cookie", &format!("doorman_session={}", alice.token));
+
+        let reply = match start {
+            SessionStart::Login => {
+                let credential_id = bob.credential_ids()[0].clone();
+                app.log_in(&mut bob, &credential_id).await
+            }
+            SessionStart::Signup => {
+                let mut carol = ResidentAuthenticator::new(&rp_origin());
+                app.finish_signup("carol@example.com", &mut carol).await
+            }
+            SessionStart::Recovery => app.finish_recovery("bob@example.com", &mut bob).await,
+        };
+
+        assert_eq!(reply.status, StatusCode::OK, "{start:?}");
+        let started: AuthResponse = reply.json();
+        let set_cookie = reply.set_cookie().expect("the new session's cookie is set");
+        assert!(
+            set_cookie.contains(&format!("doorman_session={};", started.token)),
+            "{start:?}: {set_cookie}"
         );
     }
 }

@@ -3,7 +3,7 @@ use crate::common;
 use doorman_core::Error;
 use doorman_core::audit::{AuditEventKind, AuthFailureReason, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
-use doorman_core::destructive::DestructiveAction;
+use doorman_core::destructive::{CurrentSession, DestructiveAction};
 use doorman_core::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
 use doorman_core::session::{ResolvedSession, SessionContext};
 use doorman_core::storage::{PasskeyStore, SessionId, StoredPasskey, UserStatus, UserStore};
@@ -54,7 +54,7 @@ async fn perform(
     session: &ResolvedSession,
     action: DestructiveAction,
     proof: Option<ReauthProof>,
-) -> Result<(), Error> {
+) -> Result<CurrentSession, Error> {
     h.session_manager
         .perform(session, action, proof, SessionContext::default())
         .await

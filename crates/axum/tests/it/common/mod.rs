@@ -115,9 +115,9 @@ impl TestApp {
         }
     }
 
-    pub fn default_header(mut self, name: &'static str, value: &'static str) -> Self {
+    pub fn default_header(mut self, name: &'static str, value: &str) -> Self {
         self.default_headers
-            .insert(name, HeaderValue::from_static(value));
+            .insert(name, HeaderValue::from_str(value).expect("header value"));
         self
     }
 
@@ -223,6 +223,16 @@ impl TestApp {
 
     pub async fn signup(&self, email: &str) -> (AuthResponse, ResidentAuthenticator) {
         let mut authenticator = ResidentAuthenticator::new(&rp_origin());
+        let finish = self.finish_signup(email, &mut authenticator).await;
+        assert_eq!(finish.status, StatusCode::OK);
+        (finish.json(), authenticator)
+    }
+
+    pub async fn finish_signup(
+        &self,
+        email: &str,
+        authenticator: &mut ResidentAuthenticator,
+    ) -> Reply {
         let request = self
             .post("/auth/signup/request")
             .json(&SignupRequest {
@@ -243,17 +253,14 @@ impl TestApp {
         assert_eq!(redeem.status, StatusCode::OK);
         let challenge: PasskeyChallenge<CreationChallengeResponse> = redeem.json();
 
-        let finish = self
-            .post("/auth/signup/finish")
+        self.post("/auth/signup/finish")
             .json(&RegistrationFinishRequest {
                 challenge_id: challenge.challenge_id,
                 response: authenticator.do_registration(challenge.options),
                 name: Some("first device".into()),
             })
             .send()
-            .await;
-        assert_eq!(finish.status, StatusCode::OK);
-        (finish.json(), authenticator)
+            .await
     }
 
     pub async fn recover(
@@ -261,6 +268,16 @@ impl TestApp {
         email: &str,
         authenticator: &mut ResidentAuthenticator,
     ) -> AuthResponse {
+        let finish = self.finish_recovery(email, authenticator).await;
+        assert_eq!(finish.status, StatusCode::OK);
+        finish.json()
+    }
+
+    pub async fn finish_recovery(
+        &self,
+        email: &str,
+        authenticator: &mut ResidentAuthenticator,
+    ) -> Reply {
         let request = self
             .post("/auth/recovery/request")
             .json(&RecoveryRequest {
@@ -280,17 +297,14 @@ impl TestApp {
         assert_eq!(redeem.status, StatusCode::OK);
         let challenge: PasskeyChallenge<CreationChallengeResponse> = redeem.json();
 
-        let finish = self
-            .post("/auth/recovery/finish")
+        self.post("/auth/recovery/finish")
             .json(&RegistrationFinishRequest {
                 challenge_id: challenge.challenge_id,
                 response: authenticator.do_registration(challenge.options),
                 name: Some("recovery device".into()),
             })
             .send()
-            .await;
-        assert_eq!(finish.status, StatusCode::OK);
-        finish.json()
+            .await
     }
 
     pub async fn register_passkey(
@@ -447,10 +461,16 @@ impl Reply {
             .to_owned()
     }
 
+    // The browser keeps whichever session cookie comes last, so doorman sends at most one.
     pub fn set_cookie(&self) -> Option<&str> {
-        self.headers
-            .get(SET_COOKIE)
-            .map(|v| v.to_str().expect("ascii cookie"))
+        let mut cookies = self.headers.get_all(SET_COOKIE).iter();
+        let cookie = cookies.next()?;
+        assert!(
+            cookies.next().is_none(),
+            "more than one Set-Cookie: {:?}",
+            self.headers
+        );
+        Some(cookie.to_str().expect("ascii cookie"))
     }
 }
 

@@ -11,7 +11,7 @@ use webauthn_rs::prelude::{
 
 use crate::audit::Actor;
 use crate::context::CoreDeps;
-use crate::destructive::{DestructiveAction, DestructiveActions};
+use crate::destructive::{CurrentSession, DestructiveAction, DestructiveActions};
 use crate::error::Result;
 use crate::passkey::PasskeyManager;
 use crate::reauth::{ReauthManager, ReauthProof};
@@ -216,7 +216,7 @@ impl SessionManager {
         action: DestructiveAction,
         proof: Option<ReauthProof>,
         context: SessionContext,
-    ) -> Result<()> {
+    ) -> Result<CurrentSession> {
         self.destructive
             .perform(session, action, proof, context)
             .await

@@ -1,7 +1,6 @@
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{delete, get, post};
 use base64::Engine;
@@ -15,7 +14,7 @@ use crate::dto::{
 };
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, RequestContext};
-use crate::routes::{auth_success, parse_challenge_id, perform};
+use crate::routes::{auth_success, no_content, parse_challenge_id, perform};
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
@@ -86,12 +85,11 @@ async fn authenticate_finish(
         .passkey
         .finish_authentication(challenge_id, &body.response, context)
         .await?;
-    auth_success(
-        state.cookie_config(),
+    Ok(auth_success(
         &outcome.user,
         outcome.passkey_count,
         outcome.session,
-    )
+    ))
 }
 
 async fn list(
@@ -108,14 +106,14 @@ async fn remove(
     RequestContext(context): RequestContext,
     Path(credential_id): Path<String>,
     body: Option<Json<DestructiveActionRequest>>,
-) -> Result<StatusCode, ErrorResponse> {
+) -> Result<Response, ErrorResponse> {
     let credential_id = URL_SAFE_NO_PAD
         .decode(credential_id.as_bytes())
         .map_err(|_| ErrorResponse(doorman_core::Error::PasskeyNotFound))?;
     let reauth = body.and_then(|Json(b)| b.reauthentication);
     let action = DestructiveAction::RemovePasskey { credential_id };
-    perform(&state, &auth, action, reauth, context).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let current = perform(&state, &auth, action, reauth, context).await?;
+    Ok(no_content(current))
 }
 
 async fn rename(

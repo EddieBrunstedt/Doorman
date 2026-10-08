@@ -4,12 +4,14 @@ use std::time::Duration;
 use chrono::Duration as ChronoDuration;
 use doorman_core::audit::AuditEventKind;
 use doorman_core::clock::Clock;
-use doorman_core::destructive::DestructiveAction;
+use doorman_core::destructive::{CurrentSession, DestructiveAction};
 use doorman_core::error::Error;
-use doorman_core::session::{ResolvedSession, SessionConfig, SessionContext, hash_token};
+use doorman_core::session::{
+    IssuedSession, ResolvedSession, SessionConfig, SessionContext, hash_token,
+};
 use doorman_core::storage::{SessionId, SessionStore, User};
 
-use crate::common::{Harness, kinds, session_in_cool_down_for, sign_in, sign_in_from};
+use crate::common::{Harness, SignedIn, kinds, session_in_cool_down_for, sign_in, sign_in_from};
 
 fn harness_with_lifetime(absolute_lifetime: Duration) -> Harness {
     Harness::builder()
@@ -41,7 +43,7 @@ enum BulkRevocation {
 impl BulkRevocation {
     const ALL: [Self; 2] = [Self::RevokeOthers, Self::LogOutEverywhere];
 
-    async fn run(self, h: &Harness, session: &ResolvedSession) -> Result<(), Error> {
+    async fn run(self, h: &Harness, session: &ResolvedSession) -> Result<CurrentSession, Error> {
         let action = match self {
             Self::RevokeOthers => DestructiveAction::RevokeOtherSessions,
             Self::LogOutEverywhere => DestructiveAction::LogOutEverywhere,
@@ -350,6 +352,81 @@ async fn bulk_revocations_are_refused_during_recovery_cool_down() {
             .await
             .unwrap_or_else(|err| panic!("{action:?} allowed once the cool-down lapses: {err:?}"));
         assert!(!session_exists(&h, other.session.id).await, "{action:?}");
+    }
+}
+
+type ActionFor = fn(&SignedIn, &IssuedSession) -> DestructiveAction;
+
+#[tokio::test]
+async fn a_destructive_action_reports_whether_it_ended_the_acting_session() {
+    let cases: [(&str, ActionFor, CurrentSession); 7] = [
+        (
+            "delete user",
+            |_, _| DestructiveAction::DeleteUser,
+            CurrentSession::Ended,
+        ),
+        (
+            "request email change",
+            |_, _| DestructiveAction::RequestEmailChange {
+                new_email: "new@example.com".into(),
+            },
+            CurrentSession::Kept,
+        ),
+        (
+            "remove passkey",
+            |alice, _| DestructiveAction::RemovePasskey {
+                credential_id: alice.credential_id.clone(),
+            },
+            CurrentSession::Kept,
+        ),
+        (
+            "revoke the acting session",
+            |alice, _| DestructiveAction::RevokeSession {
+                id: alice.session.session.id,
+            },
+            CurrentSession::Ended,
+        ),
+        (
+            "revoke another session",
+            |_, other| DestructiveAction::RevokeSession {
+                id: other.session.id,
+            },
+            CurrentSession::Kept,
+        ),
+        (
+            "revoke other sessions",
+            |_, _| DestructiveAction::RevokeOtherSessions,
+            CurrentSession::Kept,
+        ),
+        (
+            "log out everywhere",
+            |_, _| DestructiveAction::LogOutEverywhere,
+            CurrentSession::Ended,
+        ),
+    ];
+    for (name, action, expected) in cases {
+        let h = Harness::fresh();
+        let mut alice = sign_in(&h, "alice@example.com").await;
+        let other = alice.log_in_again(&h).await;
+        let current = &alice.session.session;
+
+        let reported = h
+            .session_manager
+            .perform(
+                current,
+                action(&alice, &other),
+                None,
+                SessionContext::default(),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("{name}: {err:?}"));
+
+        assert_eq!(reported, expected, "{name}");
+        assert_eq!(
+            session_exists(&h, current.id).await,
+            expected == CurrentSession::Kept,
+            "{name}: the report matches the store"
+        );
     }
 }
 

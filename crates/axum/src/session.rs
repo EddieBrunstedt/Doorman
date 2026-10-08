@@ -3,17 +3,17 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
-use axum::http::{HeaderMap, HeaderValue, Request, header};
-use axum::response::Response;
+use axum::http::{HeaderMap, Request, header};
+use axum::response::{IntoResponse, Response};
 use doorman_core::session::{ResolvedSession, SessionManager};
 use tower_layer::Layer;
 use tower_service::Service;
 use tracing::Instrument;
 
 use crate::config::CookieConfig;
-use crate::cookies::{bearer_token, read_cookie, session_cookie};
+use crate::cookies::{SessionCookie, bearer_token, read_cookie};
 use crate::csrf::{self, CsrfConfig};
-use crate::error::csrf_rejection_response;
+use crate::error::{ErrorResponse, csrf_rejection_response};
 
 #[derive(Clone)]
 pub struct AuthContext {
@@ -87,7 +87,7 @@ where
                     return Ok(csrf_rejection_response());
                 }
 
-                let mut cookie_refresh: Option<HeaderValue> = None;
+                let mut refresh: Option<SessionCookie> = None;
                 if let Some((token, source)) = extract_token(req.headers(), cookie_name)
                     && let Ok(resolved) = state.sessions.resolve(&token).await
                 {
@@ -95,13 +95,10 @@ where
                     span.record("session_id", tracing::field::display(resolved.id));
                     span.record("user_id", tracing::field::display(resolved.user_id));
                     if resolved.slid() && source == TokenSource::Cookie {
-                        let max_age = resolved.remaining_lifetime();
-                        match session_cookie(&state.cookie, &token, max_age) {
-                            Ok(cookie) => cookie_refresh = Some(cookie),
-                            Err(err) => {
-                                tracing::error!(error = %err, "session cookie refresh skipped");
-                            }
-                        }
+                        refresh = Some(SessionCookie::Issue {
+                            token: token.clone(),
+                            max_age: resolved.remaining_lifetime(),
+                        });
                     }
                     req.extensions_mut().insert(AuthContext {
                         session: resolved,
@@ -109,14 +106,40 @@ where
                         sessions: state.sessions.clone(),
                     });
                 }
-                let mut response = inner.call(req).await?;
-                if let Some(cookie) = cookie_refresh {
-                    response.headers_mut().append(header::SET_COOKIE, cookie);
-                }
-                Ok(response)
+                let response = inner.call(req).await?;
+                Ok(set_session_cookie(response, refresh, &state.cookie))
             }
             .instrument(span),
         )
+    }
+}
+
+// The handler ran after the slide and may have ended or replaced the session, so its decision
+// outranks the refresh.
+fn set_session_cookie(
+    mut response: Response,
+    refresh: Option<SessionCookie>,
+    config: &CookieConfig,
+) -> Response {
+    let (cookie, from_handler) = match response.extensions_mut().remove::<SessionCookie>() {
+        Some(decided) => (decided, true),
+        None => match refresh {
+            Some(refresh) => (refresh, false),
+            None => return response,
+        },
+    };
+    match cookie.header(config) {
+        Ok(value) => {
+            response.headers_mut().append(header::SET_COOKIE, value);
+            response
+        }
+        // Without a refresh the cookie only expires sooner; without the handler's cookie the
+        // response would claim a login or logout the browser never sees.
+        Err(err) if from_handler => ErrorResponse(err).into_response(),
+        Err(err) => {
+            tracing::error!(error = %err, "session cookie refresh skipped");
+            response
+        }
     }
 }
 

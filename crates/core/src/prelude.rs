@@ -4,7 +4,7 @@ pub use crate::audit::{
     RecoveryFailureReason, RedemptionFailureReason, SecretKind,
 };
 pub use crate::clock::{Clock, SystemClock};
-pub use crate::destructive::DestructiveAction;
+pub use crate::destructive::{CurrentSession, DestructiveAction};
 #[cfg(feature = "file-email")]
 pub use crate::email::FileEmailSender;
 pub use crate::email::{

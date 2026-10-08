@@ -57,5 +57,5 @@ async fn finish(
     let outcome = manager(&state)
         .finish_recovery(challenge_id, &body.response, body.name, context)
         .await?;
-    registration_success(&state, outcome)
+    Ok(registration_success(outcome))
 }

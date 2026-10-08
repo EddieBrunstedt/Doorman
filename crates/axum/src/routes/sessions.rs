@@ -1,17 +1,16 @@
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{delete, get, post};
-use doorman_core::destructive::DestructiveAction;
+use doorman_core::destructive::{CurrentSession, DestructiveAction};
 use doorman_core::storage::SessionId;
 use uuid::Uuid;
 
 use crate::dto::{DestructiveActionRequest, SessionDto};
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, RequestContext};
-use crate::routes::{no_content_clearing_session_cookie, perform};
+use crate::routes::{no_content, perform};
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
@@ -27,7 +26,7 @@ async fn logout(
     auth: AuthSession,
 ) -> Result<Response, ErrorResponse> {
     state.core.sessions.log_out(&auth.session).await?;
-    no_content_clearing_session_cookie(&state.cookie_config)
+    Ok(no_content(CurrentSession::Ended))
 }
 
 async fn logout_all(
@@ -38,8 +37,8 @@ async fn logout_all(
 ) -> Result<Response, ErrorResponse> {
     let reauth = body.and_then(|Json(b)| b.reauthentication);
     let action = DestructiveAction::LogOutEverywhere;
-    perform(&state, &auth, action, reauth, context).await?;
-    no_content_clearing_session_cookie(&state.cookie_config)
+    let current = perform(&state, &auth, action, reauth, context).await?;
+    Ok(no_content(current))
 }
 
 async fn list(
@@ -61,15 +60,15 @@ async fn remove(
     RequestContext(context): RequestContext,
     Path(raw_id): Path<String>,
     body: Option<Json<DestructiveActionRequest>>,
-) -> Result<StatusCode, ErrorResponse> {
+) -> Result<Response, ErrorResponse> {
     let id = Uuid::parse_str(&raw_id)
         .map(SessionId)
         .map_err(|_| ErrorResponse(doorman_core::Error::SessionNotFound))?;
 
     let reauth = body.and_then(|Json(b)| b.reauthentication);
     let action = DestructiveAction::RevokeSession { id };
-    perform(&state, &auth, action, reauth, context).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let current = perform(&state, &auth, action, reauth, context).await?;
+    Ok(no_content(current))
 }
 
 async fn remove_others(
@@ -77,9 +76,9 @@ async fn remove_others(
     auth: AuthSession,
     RequestContext(context): RequestContext,
     body: Option<Json<DestructiveActionRequest>>,
-) -> Result<StatusCode, ErrorResponse> {
+) -> Result<Response, ErrorResponse> {
     let reauth = body.and_then(|Json(b)| b.reauthentication);
     let action = DestructiveAction::RevokeOtherSessions;
-    perform(&state, &auth, action, reauth, context).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let current = perform(&state, &auth, action, reauth, context).await?;
+    Ok(no_content(current))
 }

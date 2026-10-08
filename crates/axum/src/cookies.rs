@@ -26,6 +26,23 @@ pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     if token.is_empty() { None } else { Some(token) }
 }
 
+// A handler leaves this on its response rather than writing the header, so SessionLayer writes the
+// one Set-Cookie for the session cookie and can rank it above a refresh of the session it resolved.
+#[derive(Clone)]
+pub(crate) enum SessionCookie {
+    Issue { token: String, max_age: Duration },
+    Clear,
+}
+
+impl SessionCookie {
+    pub(crate) fn header(&self, config: &CookieConfig) -> Result<HeaderValue, Error> {
+        match self {
+            Self::Issue { token, max_age } => session_cookie(config, token, *max_age),
+            Self::Clear => clear_session_cookie(config),
+        }
+    }
+}
+
 pub fn session_cookie(
     config: &CookieConfig,
     token: &str,
