@@ -225,13 +225,8 @@ async fn purge_expired_deletes_only_expired() {
     let long = sign_in(&h, "long@example.com").await.session;
 
     h.clock.advance(ChronoDuration::seconds(45));
-    let summary = h
-        .storage
-        .expiring
-        .purge_all_expired(h.clock.now())
-        .await
-        .expect("purge");
-    assert_eq!(summary.sessions, 1);
+    let summary = h.storage.expiring.purge_all_expired(h.clock.now()).await;
+    assert_eq!(summary.sessions.expect("purge sessions"), 1);
     assert!(!session_exists(&h, short.session.id).await);
     assert!(session_exists(&h, long.session.id).await);
 }

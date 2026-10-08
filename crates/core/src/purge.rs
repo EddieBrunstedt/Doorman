@@ -1,43 +1,114 @@
 use chrono::{DateTime, Utc};
 
-use crate::error::StorageResult;
+use crate::error::{StorageError, StorageResult};
 use crate::storage::ExpiringStores;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct PurgeSummary {
-    pub sessions: u64,
-    pub email_links: u64,
-    pub passkey_challenges: u64,
+    pub sessions: StorageResult<u64>,
+    pub email_links: StorageResult<u64>,
+    pub passkey_challenges: StorageResult<u64>,
 }
 
 impl PurgeSummary {
     pub fn total(&self) -> u64 {
-        self.sessions + self.email_links + self.passkey_challenges
+        self.outcomes()
+            .filter_map(|(_, outcome)| outcome.as_ref().ok())
+            .sum()
+    }
+
+    pub fn failures(&self) -> impl Iterator<Item = (&'static str, &StorageError)> {
+        self.outcomes()
+            .filter_map(|(store, outcome)| outcome.as_ref().err().map(|error| (store, error)))
+    }
+
+    pub fn outcomes(&self) -> impl Iterator<Item = (&'static str, &StorageResult<u64>)> {
+        [
+            ("sessions", &self.sessions),
+            ("email_links", &self.email_links),
+            ("passkey_challenges", &self.passkey_challenges),
+        ]
+        .into_iter()
     }
 }
 
 impl ExpiringStores {
-    pub async fn purge_all_expired(&self, now: DateTime<Utc>) -> StorageResult<PurgeSummary> {
-        let sessions = self.sessions.purge_expired(now).await?;
-        let email_links = self.email_links.purge_expired(now).await?;
-        let passkey_challenges = self.passkey_challenges.purge_expired(now).await?;
-        Ok(PurgeSummary {
-            sessions,
-            email_links,
-            passkey_challenges,
-        })
+    pub async fn purge_all_expired(&self, now: DateTime<Utc>) -> PurgeSummary {
+        // In sequence: SQLite and redb admit one writer at a time.
+        PurgeSummary {
+            sessions: self.sessions.purge_expired(now).await,
+            email_links: self.email_links.purge_expired(now).await,
+            passkey_challenges: self.passkey_challenges.purge_expired(now).await,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+
     use super::*;
     use crate::memory::InMemoryStorage;
     use crate::storage::{
         AuthenticationPurpose, EmailLink, EmailLinkPurpose, PasskeyChallengeId,
-        RegistrationPurpose, Session, SessionId, StoredPasskeyAuthentication,
+        RegistrationPurpose, Session, SessionId, SessionStore, StoredPasskeyAuthentication,
         StoredPasskeyRegistration, TokenHash, UserId,
     };
+
+    struct UnavailableSessionStore;
+
+    fn unavailable<T>() -> StorageResult<T> {
+        Err(StorageError::msg("session store unavailable"))
+    }
+
+    #[async_trait]
+    impl SessionStore for UnavailableSessionStore {
+        async fn create_session(&self, _: Session) -> StorageResult<()> {
+            unavailable()
+        }
+
+        async fn touch_session(
+            &self,
+            _: SessionId,
+            _: DateTime<Utc>,
+            _: DateTime<Utc>,
+        ) -> StorageResult<()> {
+            unavailable()
+        }
+
+        async fn find_session_by_token_hash(
+            &self,
+            _: &TokenHash,
+        ) -> StorageResult<Option<Session>> {
+            unavailable()
+        }
+
+        async fn find_session_by_id(&self, _: SessionId) -> StorageResult<Option<Session>> {
+            unavailable()
+        }
+
+        async fn list_for_user(&self, _: UserId) -> StorageResult<Vec<Session>> {
+            unavailable()
+        }
+
+        async fn delete_session(&self, _: SessionId) -> StorageResult<()> {
+            unavailable()
+        }
+
+        async fn delete_sessions_for_user(
+            &self,
+            _: UserId,
+            _: Option<SessionId>,
+        ) -> StorageResult<u64> {
+            unavailable()
+        }
+
+        async fn purge_expired(&self, _: DateTime<Utc>) -> StorageResult<u64> {
+            unavailable()
+        }
+    }
 
     fn ts(secs: i64) -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp(secs, 0).expect("valid timestamp")
@@ -128,14 +199,40 @@ mod tests {
         let stores = InMemoryStorage::new().expiring();
         seed(&stores, UserId::new(), now).await;
 
-        let summary = stores.purge_all_expired(now).await.expect("purge");
+        let summary = stores.purge_all_expired(now).await;
 
-        assert_eq!(summary.sessions, 1);
-        assert_eq!(summary.email_links, 1);
-        assert_eq!(summary.passkey_challenges, 2);
-        assert_eq!(summary.total(), 4);
+        assert_eq!(summary.sessions.expect("sessions"), 1);
+        assert_eq!(summary.email_links.expect("email links"), 1);
+        assert_eq!(summary.passkey_challenges.expect("passkey challenges"), 2);
 
-        let second = stores.purge_all_expired(now).await.expect("second purge");
+        let second = stores.purge_all_expired(now).await;
+        assert_eq!(second.failures().count(), 0);
         assert_eq!(second.total(), 0);
+    }
+
+    #[tokio::test]
+    async fn purge_all_expired_sweeps_the_other_stores_when_one_fails() {
+        let now = ts(1_000_000);
+        let healthy = InMemoryStorage::new().expiring();
+        seed(&healthy, UserId::new(), now).await;
+        let stores = ExpiringStores {
+            sessions: Arc::new(UnavailableSessionStore),
+            ..healthy
+        };
+
+        let summary = stores.purge_all_expired(now).await;
+
+        assert!(summary.sessions.is_err());
+        assert_eq!(summary.email_links.as_ref().expect("email links"), &1);
+        assert_eq!(
+            summary
+                .passkey_challenges
+                .as_ref()
+                .expect("passkey challenges"),
+            &2
+        );
+        assert_eq!(summary.total(), 3);
+        let failed: Vec<_> = summary.failures().map(|(store, _)| store).collect();
+        assert_eq!(failed, ["sessions"]);
     }
 }
