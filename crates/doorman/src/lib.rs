@@ -9,7 +9,6 @@
 
 pub use doorman_core as core;
 
-#[cfg(feature = "purge-runner")]
 pub mod ops;
 
 #[cfg(feature = "axum")]

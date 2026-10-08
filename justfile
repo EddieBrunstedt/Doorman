@@ -80,10 +80,10 @@ doc:
 # adapters pulling a shared dep at odds). The all-features run sees none of
 # these. Needs cargo-hack (`cargo install cargo-hack`).
 #
-# `--depth 2` is the deliberate cut: the umbrella crate has 11 features, so a
-# full powerset is 2^11 combinations, but feature-unification breaks surface
+# `--depth 2` is the deliberate cut: the umbrella crate has 10 features, so a
+# full powerset is 2^10 combinations, but feature-unification breaks surface
 # pairwise (two adapters, or one adapter + a transport), and every pair is
-# covered at depth 2 (78 combos) — a triple breaking when all its pairs build is
+# covered at depth 2 (66 combos) — a triple breaking when all its pairs build is
 # vanishingly unlikely. doorman-sqlx has only three driver features, so it gets
 # the full powerset for free.
 #

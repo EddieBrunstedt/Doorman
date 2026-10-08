@@ -23,13 +23,12 @@ dynamodb = ["dep:doorman-dynamodb"]
 mongodb = ["dep:doorman-mongodb"]
 redb = ["dep:doorman-redb"]
 file-email = ["doorman-core/file-email", "doorman-axum?/file-email"]
-purge-runner = ["dep:chrono"]
 
 [lints]
 workspace = true
 
 [dependencies]
-chrono = { workspace = true, optional = true }
+chrono.workspace = true
 doorman-axum = { path = "../axum", version = "0.1.0", optional = true }
 doorman-core = { path = "../core", version = "0.1.0" }
 doorman-dynamodb = { path = "../dynamodb", version = "0.1.0", optional = true }
@@ -37,10 +36,13 @@ doorman-mongodb = { path = "../mongodb", version = "0.1.0", optional = true }
 doorman-redb = { path = "../redb", version = "0.1.0", optional = true }
 doorman-redis = { path = "../redis", version = "0.1.0", optional = true }
 doorman-sqlx = { path = "../sqlx", version = "0.1.0", optional = true }
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
 
 [dev-dependencies]
 axum = "0.8"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+doorman-test-support = { path = "../test-support" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 url.workspace = true
 
 [package.metadata.docs.rs]

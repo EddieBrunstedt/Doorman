@@ -13,7 +13,6 @@ description = "Core authentication primitives for the doorman library: storage t
 
 [features]
 default = []
-background-purge = ["dep:tokio", "tokio/time", "tokio/rt"]
 file-email = ["dep:tokio", "tokio/fs", "tokio/io-util"]
 
 [dependencies]
@@ -42,4 +41,4 @@ all-features = true
 [dev-dependencies]
 doorman-test-support = { path = "../test-support" }
 proptest.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
+tokio.workspace = true

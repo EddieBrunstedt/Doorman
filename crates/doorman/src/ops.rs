@@ -1,7 +1,10 @@
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
+use crate::core::clock::Clock;
 use crate::core::error::StorageError;
 use crate::core::purge::PurgeSummary;
 use crate::core::storage::ExpiringStores;
@@ -17,6 +20,34 @@ pub async fn run_purge(stores: ExpiringStores) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+pub fn spawn_purge_task(
+    stores: ExpiringStores,
+    clock: Arc<dyn Clock>,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            let now = clock.now();
+            match stores.purge_all_expired(now).await {
+                Ok(summary) => {
+                    tracing::debug!(
+                        sessions = summary.sessions,
+                        email_links = summary.email_links,
+                        passkey_challenges = summary.passkey_challenges,
+                        total = summary.total(),
+                        "purged expired rows",
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "background purge sweep failed");
+                }
+            }
+        }
+    })
 }
 
 struct Options {
@@ -120,9 +151,34 @@ mod tests {
     use super::*;
     use crate::core::memory::InMemoryStorage;
     use crate::core::storage::{Session, SessionId, TokenHash, UserId};
+    use doorman_test_support::MockClock;
 
     fn args(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    async fn seed_sessions(stores: &ExpiringStores, user_id: UserId, now: DateTime<Utc>) {
+        let mk_session = |tag: u8, expires_at: DateTime<Utc>| Session {
+            id: SessionId::new(),
+            user_id,
+            token_hash: TokenHash([tag; 32]),
+            created_at: now - chrono::Duration::hours(2),
+            last_used_at: now - chrono::Duration::hours(2),
+            expires_at,
+            ip: None,
+            user_agent: None,
+            recovery_cool_down_until: None,
+        };
+        stores
+            .sessions
+            .create_session(mk_session(1, now - chrono::Duration::hours(1)))
+            .await
+            .expect("expired session");
+        stores
+            .sessions
+            .create_session(mk_session(2, now + chrono::Duration::hours(1)))
+            .await
+            .expect("live session");
     }
 
     #[test]
@@ -181,29 +237,7 @@ mod tests {
     async fn execute_sweeps_the_storage_and_reports_counts() {
         let now = DateTime::<Utc>::from_timestamp(1_000_000, 0).expect("timestamp");
         let stores = InMemoryStorage::new().expiring();
-
-        let user_id = UserId::new();
-        let mk_session = |tag: u8, expires_at: DateTime<Utc>| Session {
-            id: SessionId::new(),
-            user_id,
-            token_hash: TokenHash([tag; 32]),
-            created_at: now - chrono::Duration::hours(2),
-            last_used_at: now - chrono::Duration::hours(2),
-            expires_at,
-            ip: None,
-            user_agent: None,
-            recovery_cool_down_until: None,
-        };
-        stores
-            .sessions
-            .create_session(mk_session(1, now - chrono::Duration::hours(1)))
-            .await
-            .expect("expired session");
-        stores
-            .sessions
-            .create_session(mk_session(2, now + chrono::Duration::hours(1)))
-            .await
-            .expect("live session");
+        seed_sessions(&stores, UserId::new(), now).await;
 
         let (options, summary) = execute(stores, args(&["--now", &now.to_rfc3339(), "--json"]))
             .await
@@ -222,5 +256,28 @@ mod tests {
             execute(stores, args(&["--when", "now"])).await,
             Err(PurgeError::Args(_))
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn spawn_purge_task_sweeps_on_its_interval() {
+        let now = DateTime::<Utc>::from_timestamp(2_000_000, 0).expect("timestamp");
+        let user_id = UserId::new();
+        let stores = InMemoryStorage::new().expiring();
+        seed_sessions(&stores, user_id, now).await;
+
+        let handle = spawn_purge_task(
+            stores.clone(),
+            Arc::new(MockClock::new(now)),
+            Duration::from_secs(3600),
+        );
+
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        handle.abort();
+
+        let remaining = stores.sessions.list_for_user(user_id).await.expect("list");
+        assert_eq!(remaining.len(), 1, "background task swept the expired row");
+        assert!(remaining[0].expires_at > now);
     }
 }

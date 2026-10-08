@@ -29,35 +29,6 @@ impl ExpiringStores {
     }
 }
 
-#[cfg(feature = "background-purge")]
-pub fn spawn_purge_task(
-    stores: ExpiringStores,
-    clock: std::sync::Arc<dyn crate::clock::Clock>,
-    interval: std::time::Duration,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        loop {
-            ticker.tick().await;
-            let now = clock.now();
-            match stores.purge_all_expired(now).await {
-                Ok(summary) => {
-                    tracing::debug!(
-                        sessions = summary.sessions,
-                        email_links = summary.email_links,
-                        passkey_challenges = summary.passkey_challenges,
-                        total = summary.total(),
-                        "purged expired rows",
-                    );
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "background purge sweep failed");
-                }
-            }
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,38 +137,5 @@ mod tests {
 
         let second = stores.purge_all_expired(now).await.expect("second purge");
         assert_eq!(second.total(), 0);
-    }
-
-    #[cfg(feature = "background-purge")]
-    #[tokio::test(start_paused = true)]
-    async fn spawn_purge_task_sweeps_on_its_interval() {
-        use crate::clock::Clock;
-
-        struct FixedClock(DateTime<Utc>);
-        impl Clock for FixedClock {
-            fn now(&self) -> DateTime<Utc> {
-                self.0
-            }
-        }
-
-        let now = ts(2_000_000);
-        let user_id = UserId::new();
-        let stores = InMemoryStorage::new().expiring();
-        seed(&stores, user_id, now).await;
-
-        let handle = spawn_purge_task(
-            stores.clone(),
-            std::sync::Arc::new(FixedClock(now)),
-            std::time::Duration::from_secs(3600),
-        );
-
-        for _ in 0..8 {
-            tokio::task::yield_now().await;
-        }
-        handle.abort();
-
-        let remaining = stores.sessions.list_for_user(user_id).await.expect("list");
-        assert_eq!(remaining.len(), 1, "background task swept the expired row");
-        assert!(remaining[0].expires_at > now);
     }
 }
