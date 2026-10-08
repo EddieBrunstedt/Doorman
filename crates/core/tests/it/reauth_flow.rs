@@ -6,10 +6,12 @@ use doorman_core::clock::Clock;
 use doorman_core::destructive::{CurrentSession, DestructiveAction};
 use doorman_core::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
 use doorman_core::session::{ResolvedSession, SessionContext};
-use doorman_core::storage::{PasskeyStore, SessionId, StoredPasskey, UserStatus, UserStore};
+use doorman_core::storage::{
+    PasskeyStore, SessionId, SessionStore, StoredPasskey, UserStatus, UserStore,
+};
 
 use crate::common::{
-    Harness, authenticator, kinds, make_user, register_passkey, session_count, session_for,
+    Harness, authenticator, kinds, make_user, register_passkey, session_for,
     session_in_cool_down_for, sign_in,
 };
 
@@ -521,25 +523,56 @@ fn scoped_to(
     options
 }
 
+#[derive(Debug, Clone, Copy)]
+enum EndActingSession {
+    LogOut,
+    RevokeIt,
+}
+
 #[tokio::test]
-async fn revoking_the_current_session_is_gated_like_any_other() {
-    let h = gated_harness();
-    let mut alice = sign_in(&h, "owner@example.com").await;
-    let current = alice.session.session.clone();
-    let action = DestructiveAction::RevokeSession { id: current.id };
+async fn ending_the_acting_session_passes_no_gate() {
+    for way in [EndActingSession::LogOut, EndActingSession::RevokeIt] {
+        for in_cool_down in [false, true] {
+            let h = gated_harness();
+            let alice = sign_in(&h, "owner@example.com").await;
+            let current = if in_cool_down {
+                let until = h.clock.now() + chrono::Duration::hours(1);
+                session_in_cool_down_for(&h, &alice.user, until).await
+            } else {
+                alice.session.session.clone()
+            };
+            let mail_before = h.email.sent().len();
 
-    let err = perform(&h, &current, action.clone(), None).await;
-    assert!(matches!(err, Err(Error::ReauthRequired)), "got: {err:?}");
+            let ended = match way {
+                EndActingSession::LogOut => h
+                    .session_manager
+                    .log_out(&current)
+                    .await
+                    .map(|()| CurrentSession::Ended),
+                EndActingSession::RevokeIt => {
+                    let action = DestructiveAction::RevokeSession { id: current.id };
+                    perform(&h, &current, action, None).await
+                }
+            };
 
-    let mail_before = h.email.sent().len();
-    let proof = fresh_proof(&h, &current, &mut alice.authenticator).await;
-    perform(&h, &current, action, Some(proof))
-        .await
-        .expect("revoke the current session with a fresh proof");
-    assert_eq!(session_count(&h, alice.user.id).await, 0);
-    assert_eq!(
-        h.email.sent().len(),
-        mail_before,
-        "revoking the current session sends no other-session notice"
-    );
+            let case = format!("{way:?}, in cool-down: {in_cool_down}");
+            assert!(
+                matches!(ended, Ok(CurrentSession::Ended)),
+                "{case}: {ended:?}"
+            );
+            assert!(
+                h.sessions
+                    .find_session_by_id(current.id)
+                    .await
+                    .expect("find session")
+                    .is_none(),
+                "{case}: the acting session is gone"
+            );
+            assert_eq!(
+                h.email.sent().len(),
+                mail_before,
+                "{case}: no other-session notice"
+            );
+        }
+    }
 }

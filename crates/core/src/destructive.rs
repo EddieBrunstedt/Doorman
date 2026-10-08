@@ -89,6 +89,12 @@ impl DestructiveActions {
         proof: Option<ReauthProof>,
         context: SessionContext,
     ) -> Result<CurrentSession> {
+        // Revoking the acting session is logging out, which can't lock anyone out, so it passes
+        // no gate.
+        if action == (DestructiveAction::RevokeSession { id: session.id }) {
+            self.records.log_out(session).await?;
+            return Ok(CurrentSession::Ended);
+        }
         let cleared = self
             .clear(action.reauth_action(), session, proof.as_ref(), &context)
             .await?;
@@ -109,7 +115,10 @@ impl DestructiveActions {
                     .await?;
                 Ok(CurrentSession::Kept)
             }
-            DestructiveAction::RevokeSession { id } => self.revoke(cleared, id).await,
+            DestructiveAction::RevokeSession { id } => {
+                self.revoke_other(cleared, id).await?;
+                Ok(CurrentSession::Kept)
+            }
             DestructiveAction::RevokeOtherSessions => {
                 self.revoke_others(&cleared).await?;
                 Ok(CurrentSession::Kept)
@@ -142,25 +151,18 @@ impl DestructiveActions {
 
     async fn log_out_everywhere(&self, cleared: Cleared) -> Result<()> {
         self.revoke_others(&cleared).await?;
-        let session = cleared.session();
-        self.records
-            .revoke_owned(session.user_id, session.id, Actor::of_session(session))
-            .await
+        self.records.log_out(cleared.session()).await
     }
 
-    async fn revoke(&self, cleared: Cleared, target: SessionId) -> Result<CurrentSession> {
+    async fn revoke_other(&self, cleared: Cleared, target: SessionId) -> Result<()> {
         let session = cleared.session();
         self.records
             .revoke_owned(session.user_id, target, Actor::of_session(session))
             .await?;
-        // Revoking the current session is logging out, so there is no other session to tell of.
-        if target == session.id {
-            return Ok(CurrentSession::Ended);
-        }
         self.notices
             .send_to(session.user_id, SecurityNotice::OtherSessionRevoked)
             .await;
-        Ok(CurrentSession::Kept)
+        Ok(())
     }
 
     async fn revoke_others(&self, cleared: &Cleared) -> Result<()> {

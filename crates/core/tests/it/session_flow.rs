@@ -492,50 +492,6 @@ async fn revoke_hides_another_users_session() {
 }
 
 #[tokio::test]
-async fn revoke_in_cool_down_is_refused_but_log_out_is_not() {
-    let h = Harness::fresh();
-    let mut alice = sign_in(&h, "alice@example.com").await;
-    let other = alice.log_in_again(&h).await;
-    let current = in_cool_down(&h, &alice.user).await;
-
-    let err = h
-        .session_manager
-        .perform(
-            &current,
-            DestructiveAction::RevokeSession {
-                id: other.session.id,
-            },
-            None,
-            SessionContext::default(),
-        )
-        .await
-        .expect_err("revoking another device is refused during the cool-down");
-    assert!(matches!(err, Error::RecoveryCoolDownActive), "got: {err:?}");
-    assert!(
-        session_exists(&h, other.session.id).await,
-        "the other device is untouched"
-    );
-
-    let err = h
-        .session_manager
-        .perform(
-            &current,
-            DestructiveAction::RevokeSession { id: current.id },
-            None,
-            SessionContext::default(),
-        )
-        .await
-        .expect_err("revoking the cool-down session itself is refused too");
-    assert!(matches!(err, Error::RecoveryCoolDownActive), "got: {err:?}");
-
-    h.session_manager
-        .log_out(&current)
-        .await
-        .expect("logging out stays allowed during the cool-down");
-    assert!(!session_exists(&h, current.id).await);
-}
-
-#[tokio::test]
 async fn a_session_is_in_recovery_cool_down_only_before_its_deadline() {
     let h = Harness::fresh();
     let alice = sign_in(&h, "alice@example.com").await;

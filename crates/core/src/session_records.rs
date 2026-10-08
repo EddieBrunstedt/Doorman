@@ -258,6 +258,11 @@ impl SessionRecords {
         Ok(count)
     }
 
+    pub(crate) async fn log_out(&self, session: &ResolvedSession) -> Result<()> {
+        self.revoke_owned(session.user_id, session.id, Actor::of_session(session))
+            .await
+    }
+
     pub(crate) async fn revoke_owned(
         &self,
         target_user_id: UserId,
