@@ -19,11 +19,11 @@ use crate::error::{Error, Result};
 use crate::passkey::{PasskeyConfig, decode_passkey};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::redeem::Redeemer;
-use crate::session::SessionContext;
+use crate::session::{ResolvedSession, SessionContext};
 use crate::storage::{
     AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore,
-    RegistrationPurpose, Session, SessionId, StoredPasskeyAuthentication,
-    StoredPasskeyRegistration, User, UserId,
+    RegistrationPurpose, SessionId, StoredPasskeyAuthentication, StoredPasskeyRegistration, User,
+    UserId,
 };
 
 pub(crate) struct RedeemedRegistration {
@@ -231,7 +231,7 @@ struct ReauthChallengeState {
 impl PasskeyChallenges {
     pub(crate) async fn issue_reauth(
         &self,
-        session: &Session,
+        session: &ResolvedSession,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
         let stored = self
             .passkeys
@@ -263,7 +263,7 @@ impl PasskeyChallenges {
     pub(crate) async fn redeem_reauth(
         &self,
         id: PasskeyChallengeId,
-        session: &Session,
+        session: &ResolvedSession,
         context: &SessionContext,
     ) -> Result<PendingAssertion> {
         let user_id = session.user_id;

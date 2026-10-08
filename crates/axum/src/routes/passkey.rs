@@ -11,8 +11,8 @@ use doorman_core::passkey::PasskeyManager;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use crate::dto::{
-    AuthResponse, DestructiveActionRequest, PasskeyAuthenticateFinishRequest, PasskeyChallenge,
-    PasskeyDto, PasskeyRenameRequest, RegistrationFinishRequest,
+    DestructiveActionRequest, PasskeyAuthenticateFinishRequest, PasskeyChallenge, PasskeyDto,
+    PasskeyRenameRequest, RegistrationFinishRequest,
 };
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, RequestContext};
@@ -50,10 +50,10 @@ async fn register_finish(
     Json(body): Json<RegistrationFinishRequest>,
 ) -> Result<Json<PasskeyDto>, ErrorResponse> {
     let challenge_id = parse_challenge_id(&body.challenge_id)?;
-    let stored = manager(&state)
+    let passkey = manager(&state)
         .finish_registration(challenge_id, &body.response, body.name, context)
         .await?;
-    Ok(Json(stored.into()))
+    Ok(Json(passkey.into()))
 }
 
 async fn authenticate_start(
@@ -76,11 +76,11 @@ async fn authenticate_finish(
     let outcome = manager(&state)
         .finish_authentication(challenge_id, &body.response, context)
         .await?;
-    let passkey_count = manager(&state).count_passkeys(outcome.user.id).await?;
     auth_success(
-        StatusCode::OK,
         state.cookie_config(),
-        AuthResponse::from_issued(outcome.user, outcome.session, passkey_count),
+        &outcome.user,
+        outcome.passkey_count,
+        outcome.session,
     )
 }
 
@@ -88,9 +88,7 @@ async fn list(
     State(state): State<AuthState>,
     auth: AuthSession,
 ) -> Result<Json<Vec<PasskeyDto>>, ErrorResponse> {
-    let passkeys = manager(&state)
-        .list_passkey_summaries(auth.session.user_id)
-        .await?;
+    let passkeys = manager(&state).list_passkeys(auth.session.user_id).await?;
     Ok(Json(passkeys.into_iter().map(PasskeyDto::from).collect()))
 }
 

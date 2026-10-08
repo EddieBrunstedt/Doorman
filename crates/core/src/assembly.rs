@@ -320,7 +320,6 @@ impl AuthCoreBuilder {
             session_records,
             reauth.clone(),
             reauth_policy,
-            clock,
             sessions.clone(),
             passkey.clone(),
             user.clone(),

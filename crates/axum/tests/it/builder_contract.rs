@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use doorman_axum::config::CookieConfig;
 use doorman_axum::csrf::CsrfConfig;
@@ -13,7 +12,7 @@ use doorman_core::rate_limit::NoopRateLimiter;
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::RecoveryConfig;
 use doorman_core::security_notice::{NoticePolicy, OperatorNotice};
-use doorman_core::session::{SessionConfig, SessionContext};
+use doorman_core::session::SessionContext;
 use doorman_core::signup::SignupConfig;
 use doorman_core::storage::UserId;
 use doorman_core::user::UserConfig;
@@ -88,7 +87,7 @@ async fn service_drives_the_managers_the_core_assembled() {
     let summaries = auth
         .state()
         .passkey()
-        .list_passkey_summaries(UserId::new())
+        .list_passkeys(UserId::new())
         .await
         .expect("list summaries");
     assert!(summaries.is_empty());
@@ -221,60 +220,5 @@ fn cookie_attributes_a_header_cannot_carry_are_rejected() {
     assert!(
         matches!(err, Some(BuilderError::InvalidCookieAttributes)),
         "expected InvalidCookieAttributes for a path with a newline, got: {err:?}"
-    );
-}
-
-#[test]
-fn cookie_max_age_exceeding_session_lifetime_is_rejected() {
-    let core = core_builder(Arc::new(CapturingEmailSender::new()))
-        .session(SessionConfig {
-            absolute_lifetime: Duration::from_secs(60 * 60),
-            ..SessionConfig::default()
-        })
-        .build()
-        .expect("core");
-    let err = AuthService::builder(core)
-        .csrf(CsrfConfig::disabled())
-        .cookie(CookieConfig {
-            session_max_age: Duration::from_secs(60 * 60 * 2),
-            ..CookieConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::CookieMaxAgeExceedsSessionLifetime { .. })
-        ),
-        "expected CookieMaxAgeExceedsSessionLifetime, got: {err:?}"
-    );
-}
-
-#[test]
-fn cookie_max_age_is_bounded_by_the_idle_window_when_sliding() {
-    let idle = Duration::from_secs(60 * 60);
-    let core = core_builder(Arc::new(CapturingEmailSender::new()))
-        .session(SessionConfig {
-            absolute_lifetime: Duration::from_secs(60 * 60 * 24),
-            idle_timeout: Some(idle),
-            ..SessionConfig::default()
-        })
-        .build()
-        .expect("core");
-    let err = AuthService::builder(core)
-        .csrf(CsrfConfig::disabled())
-        .cookie(CookieConfig {
-            session_max_age: idle * 2,
-            ..CookieConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::CookieMaxAgeExceedsSessionLifetime { session_lifetime, .. })
-                if session_lifetime == idle
-        ),
-        "expected CookieMaxAgeExceedsSessionLifetime against the idle window, got: {err:?}"
     );
 }

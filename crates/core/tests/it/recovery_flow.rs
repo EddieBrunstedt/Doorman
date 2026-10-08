@@ -589,7 +589,7 @@ async fn recovery_created_passkey_login_inherits_active_cool_down() {
         issued.session.recovery_cool_down_until,
         outcome.session.session.recovery_cool_down_until,
     );
-    assert!(issued.session.is_in_recovery_cool_down(h.clock.now()));
+    assert!(issued.session.is_in_recovery_cool_down());
 }
 
 #[tokio::test]
@@ -628,12 +628,7 @@ async fn pre_existing_passkey_login_stays_outside_recovery_cool_down() {
         )
         .await
         .expect("finish");
-    assert!(
-        outcome
-            .session
-            .session
-            .is_in_recovery_cool_down(h.clock.now())
-    );
+    assert!(outcome.session.session.is_in_recovery_cool_down());
 
     let (auth_id, options) = h
         .passkey
@@ -686,12 +681,7 @@ async fn recovery_created_passkey_login_after_cool_down_carries_no_cool_down() {
         .await
         .expect("finish");
     assert_eq!(outcome.user.id, user.id);
-    assert!(
-        outcome
-            .session
-            .session
-            .is_in_recovery_cool_down(h.clock.now())
-    );
+    assert!(outcome.session.session.is_in_recovery_cool_down());
 
     h.clock
         .advance(ChronoDuration::hours(24) + ChronoDuration::seconds(1));
@@ -710,56 +700,6 @@ async fn recovery_created_passkey_login_after_cool_down_carries_no_cool_down() {
         .session;
 
     assert_eq!(issued.session.recovery_cool_down_until, None);
-}
-
-#[tokio::test]
-async fn recovery_cool_down_expires_after_window() {
-    let h = Harness::fresh();
-    let _ = provision_user(&h, "alice@example.com").await;
-    h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
-        .await
-        .expect("request");
-    let link = h
-        .email
-        .sent()
-        .into_iter()
-        .rev()
-        .find(|e| e.subject == "Recover access with a new passkey")
-        .expect("link queued");
-    let token = token_from_email(&link.body_text, RECOVERY_URL);
-    let started = h
-        .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect("redeem");
-    let mut wa = authenticator();
-    let attestation = wa.do_registration(started.options);
-    let outcome = h
-        .recovery
-        .finish_recovery(
-            started.challenge_id,
-            &attestation,
-            None,
-            SessionContext::default(),
-        )
-        .await
-        .expect("finish");
-
-    assert!(
-        outcome
-            .session
-            .session
-            .is_in_recovery_cool_down(h.clock.now())
-    );
-    h.clock
-        .advance(ChronoDuration::hours(24) + ChronoDuration::seconds(1));
-    assert!(
-        !outcome
-            .session
-            .session
-            .is_in_recovery_cool_down(h.clock.now())
-    );
 }
 
 #[tokio::test]
@@ -826,7 +766,7 @@ async fn passkey_registered_after_cool_down_carries_no_cool_down() {
         .await
         .expect("the recovery session outlives its cool-down");
     assert!(resolved.recovery_cool_down_until.is_some());
-    assert!(!resolved.is_in_recovery_cool_down(h.clock.now()));
+    assert!(!resolved.is_in_recovery_cool_down());
 
     let mut wa = authenticator();
     let (challenge_id, ccr) = h
@@ -901,19 +841,16 @@ async fn recovery_config_with_subhour_cool_down_honors_configured_cool_down() {
     );
     assert_eq!(outcome.passkey.recovery_cool_down_until, Some(expected));
     assert!(
-        outcome
-            .session
-            .session
-            .is_in_recovery_cool_down(h.clock.now()),
+        outcome.session.session.is_in_recovery_cool_down(),
         "the cool-down is active immediately after finish",
     );
     h.clock.advance(ChronoDuration::seconds(61));
-    assert!(
-        !outcome
-            .session
-            .session
-            .is_in_recovery_cool_down(h.clock.now())
-    );
+    let resolved = h
+        .session_manager
+        .resolve(&outcome.session.token)
+        .await
+        .expect("the recovery session outlives its cool-down");
+    assert!(!resolved.is_in_recovery_cool_down());
 }
 
 #[tokio::test]
@@ -940,10 +877,7 @@ async fn recovery_config_with_zero_cool_down_yields_inactive_deadline() {
         "the session inherits no cool-down that is already over",
     );
     assert!(
-        !outcome
-            .session
-            .session
-            .is_in_recovery_cool_down(h.clock.now()),
+        !outcome.session.session.is_in_recovery_cool_down(),
         "a zero cool-down is already inactive",
     );
 }

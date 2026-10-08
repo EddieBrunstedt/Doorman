@@ -39,13 +39,15 @@ async fn confirm_email_change(
     RequestContext(context): RequestContext,
     Json(body): Json<EmailChangeConfirmRequest>,
 ) -> Result<Json<UserDto>, ErrorResponse> {
-    let user = state
+    let outcome = state
         .core
         .user
         .confirm_email_change(&body.token, context)
         .await?;
-    let passkey_count = state.core.passkey.count_passkeys(user.id).await?;
-    Ok(Json(UserDto::from_user(&user, passkey_count)))
+    Ok(Json(UserDto::from_user(
+        &outcome.user,
+        outcome.passkey_count,
+    )))
 }
 
 async fn delete_user(

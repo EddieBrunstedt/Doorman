@@ -101,6 +101,7 @@ impl PasskeyConfig {
 #[derive(Debug, Clone)]
 pub struct AuthenticationOutcome {
     pub user: User,
+    pub passkey_count: u64,
     pub session: IssuedSession,
 }
 
@@ -113,8 +114,9 @@ pub struct StartedRegistration {
 #[derive(Debug, Clone)]
 pub struct RegistrationOutcome {
     pub user: User,
+    pub passkey_count: u64,
     pub session: IssuedSession,
-    pub passkey: StoredPasskey,
+    pub passkey: PasskeySummary,
 }
 
 #[derive(Clone)]
@@ -174,8 +176,8 @@ impl PasskeyManager {
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
         context: SessionContext,
-    ) -> Result<StoredPasskey> {
-        let RegisteredPasskey { user, passkey } = self
+    ) -> Result<PasskeySummary> {
+        let RegisteredPasskey { user, passkey, .. } = self
             .registrations
             .finish(
                 challenge_id,
@@ -193,7 +195,7 @@ impl PasskeyManager {
                 },
             )
             .await;
-        Ok(passkey)
+        Ok(PasskeySummary::from(passkey))
     }
 
     #[tracing::instrument(skip(self, context), fields(method = "passkey"))]
@@ -273,26 +275,20 @@ impl PasskeyManager {
             .records
             .issue_session(&passkey, context.clone())
             .await?;
+        let passkey_count = self.records.count_passkeys(user_id).await?;
         self.metrics.record(MetricEvent::LoginSucceeded);
         self.audit
             .emit(&context, AuditEventKind::LoginSucceeded { user_id })
             .await;
-        Ok(AuthenticationOutcome { user, session })
+        Ok(AuthenticationOutcome {
+            user,
+            passkey_count,
+            session,
+        })
     }
 
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
-    pub async fn list_passkeys(&self, user_id: UserId) -> Result<Vec<StoredPasskey>> {
-        Ok(self.passkeys.list_passkeys_for_user(user_id).await?)
-    }
-
-    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
-    pub async fn count_passkeys(&self, user_id: UserId) -> Result<u64> {
-        let passkeys = self.passkeys.list_passkeys_for_user(user_id).await?;
-        Ok(passkeys.len() as u64)
-    }
-
-    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
-    pub async fn list_passkey_summaries(&self, user_id: UserId) -> Result<Vec<PasskeySummary>> {
+    pub async fn list_passkeys(&self, user_id: UserId) -> Result<Vec<PasskeySummary>> {
         let passkeys = self.passkeys.list_passkeys_for_user(user_id).await?;
         Ok(passkeys.into_iter().map(PasskeySummary::from).collect())
     }
@@ -318,7 +314,7 @@ impl PasskeyManager {
         credential_id: &[u8],
         name: Option<String>,
         context: SessionContext,
-    ) -> Result<StoredPasskey> {
+    ) -> Result<PasskeySummary> {
         let user_id = session.user_id;
         let mut passkey =
             find_owned_passkey(self.passkeys.as_ref(), user_id, credential_id).await?;
@@ -329,7 +325,7 @@ impl PasskeyManager {
         self.audit
             .emit(&context, AuditEventKind::PasskeyRenamed { user_id })
             .await;
-        Ok(passkey)
+        Ok(PasskeySummary::from(passkey))
     }
 
     pub(crate) async fn remove_passkey_for(

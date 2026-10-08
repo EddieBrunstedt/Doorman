@@ -32,8 +32,8 @@ pub use crate::signup::{
 };
 pub use crate::storage::{
     AuthenticationPurpose, EmailLink, EmailLinkPurpose, EmailLinkStore, PasskeyChallengeId,
-    PasskeyChallengeStore, PasskeyStore, RegistrationPurpose, Session, SessionId, SessionStore,
-    Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash,
-    User, UserId, UserStore,
+    PasskeyChallengeStore, PasskeyStore, PasskeySummary, RegistrationPurpose, Session, SessionId,
+    SessionStore, SessionSummary, Storage, StoredPasskey, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
 };
-pub use crate::user::{UserConfig, UserManager};
+pub use crate::user::{EmailChangeOutcome, UserConfig, UserManager};

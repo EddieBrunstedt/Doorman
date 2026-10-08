@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 
 use crate::error::{Error, Result};
-use crate::storage::{Session, StoredPasskey, StoredPasskeyRegistration};
+use crate::session::ResolvedSession;
+use crate::storage::{SessionSummary, StoredPasskey, StoredPasskeyRegistration};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct RecoveryCoolDown(Option<DateTime<Utc>>);
@@ -16,7 +17,7 @@ impl RecoveryCoolDown {
         ))
     }
 
-    pub(crate) fn of_session(session: &Session, now: DateTime<Utc>) -> Self {
+    pub(crate) fn of_session(session: &SessionSummary, now: DateTime<Utc>) -> Self {
         Self(session.recovery_cool_down_until).in_force(now)
     }
 
@@ -36,8 +37,8 @@ impl RecoveryCoolDown {
         self.0
     }
 
-    pub(crate) fn refuse_destructive_action(session: &Session, now: DateTime<Utc>) -> Result<()> {
-        if session.is_in_recovery_cool_down(now) {
+    pub(crate) fn refuse_destructive_action(session: &ResolvedSession) -> Result<()> {
+        if session.is_in_recovery_cool_down() {
             return Err(Error::RecoveryCoolDownActive);
         }
         Ok(())
@@ -45,18 +46,6 @@ impl RecoveryCoolDown {
 
     fn in_force(self, now: DateTime<Utc>) -> Self {
         Self(self.0.filter(|&until| now < until))
-    }
-}
-
-impl Session {
-    pub fn is_in_recovery_cool_down(&self, now: DateTime<Utc>) -> bool {
-        RecoveryCoolDown::of_session(self, now) != RecoveryCoolDown::NONE
-    }
-}
-
-impl StoredPasskey {
-    pub fn is_in_recovery_cool_down(&self, now: DateTime<Utc>) -> bool {
-        RecoveryCoolDown::of_passkey(self, now) != RecoveryCoolDown::NONE
     }
 }
 

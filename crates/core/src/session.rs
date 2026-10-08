@@ -1,17 +1,18 @@
 use std::fmt;
 use std::num::NonZeroU32;
 use std::ops::Deref;
-use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
+
 use crate::audit::Actor;
-use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
 use crate::error::Result;
+use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session_records::SessionRecords;
-use crate::storage::{Session, SessionId, SessionSummary, User};
+use crate::storage::{Session, SessionId, SessionSummary, TokenHash, User};
 pub use crate::token::hash_token;
 use crate::user_records::UserRecords;
 
@@ -60,28 +61,56 @@ pub struct SessionContext {
 }
 
 // Only core builds one, so a method that takes it acts on a session core resolved or issued, with
-// its real recovery cool-down, never on a row the caller made up.
+// its real recovery cool-down, never on a row the caller made up. Its remaining lifetime and
+// cool-down hold as of that moment, so a request needs no clock of its own.
 #[derive(Debug, Clone)]
 pub struct ResolvedSession {
-    session: Session,
+    summary: SessionSummary,
+    token_hash: TokenHash,
     slid: bool,
+    remaining_lifetime: Duration,
+    in_recovery_cool_down: bool,
 }
 
 impl ResolvedSession {
-    pub(crate) fn new(session: Session, slid: bool) -> Self {
-        Self { session, slid }
+    pub(crate) fn new(session: Session, slid: bool, now: DateTime<Utc>) -> Self {
+        let remaining_lifetime = (session.expires_at - now)
+            .to_std()
+            .unwrap_or(Duration::ZERO);
+        let token_hash = session.token_hash;
+        let summary = SessionSummary::from(session);
+        Self {
+            in_recovery_cool_down: RecoveryCoolDown::of_session(&summary, now)
+                != RecoveryCoolDown::NONE,
+            summary,
+            token_hash,
+            slid,
+            remaining_lifetime,
+        }
     }
 
     pub fn slid(&self) -> bool {
         self.slid
     }
+
+    pub fn remaining_lifetime(&self) -> Duration {
+        self.remaining_lifetime
+    }
+
+    pub fn is_in_recovery_cool_down(&self) -> bool {
+        self.in_recovery_cool_down
+    }
+
+    pub(crate) fn token_hash(&self) -> &TokenHash {
+        &self.token_hash
+    }
 }
 
 impl Deref for ResolvedSession {
-    type Target = Session;
+    type Target = SessionSummary;
 
-    fn deref(&self) -> &Session {
-        &self.session
+    fn deref(&self) -> &SessionSummary {
+        &self.summary
     }
 }
 
@@ -99,14 +128,6 @@ impl SessionManager {
             users: UserRecords::new(deps),
             notices: deps.notices.clone(),
         }
-    }
-
-    pub fn unused_lifetime(&self) -> Duration {
-        self.records.unused_lifetime()
-    }
-
-    pub fn clock(&self) -> &Arc<dyn Clock> {
-        self.records.clock()
     }
 
     pub async fn resolve(&self, token: &str) -> Result<ResolvedSession> {
@@ -156,7 +177,7 @@ impl SessionManager {
         self.revoke_others_of(cleared.session()).await
     }
 
-    async fn revoke_others_of(&self, session: &Session) -> Result<()> {
+    async fn revoke_others_of(&self, session: &ResolvedSession) -> Result<()> {
         let count = self
             .records
             .revoke_others(session, Actor::of_session(session))
@@ -261,7 +282,7 @@ mod tests {
             recovery_cool_down_until: None,
         };
         let issued = IssuedSession {
-            session: ResolvedSession::new(session, false),
+            session: ResolvedSession::new(session, false, now),
             token: "super-secret-bearer-token".to_string(),
         };
 

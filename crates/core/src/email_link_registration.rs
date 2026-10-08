@@ -11,7 +11,9 @@ use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::{PasskeyRegistrations, RegisteredPasskey, RegistrationSource};
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
-use crate::storage::{EmailLinkPurpose, PasskeyChallengeId, RegistrationPurpose, User, UserId};
+use crate::storage::{
+    EmailLinkPurpose, PasskeyChallengeId, PasskeySummary, RegistrationPurpose, User, UserId,
+};
 use crate::user_records::UserRecords;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +108,11 @@ impl EmailLinkRegistration {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<RegistrationOutcome> {
-        let RegisteredPasskey { user, passkey } = self
+        let RegisteredPasskey {
+            user,
+            passkey,
+            passkey_count,
+        } = self
             .registrations
             .finish(
                 challenge_id,
@@ -144,8 +150,9 @@ impl EmailLinkRegistration {
         tracing::info!(outcome = "succeeded", "email-link registration finished");
         Ok(RegistrationOutcome {
             user,
+            passkey_count,
             session,
-            passkey,
+            passkey: PasskeySummary::from(passkey),
         })
     }
 }

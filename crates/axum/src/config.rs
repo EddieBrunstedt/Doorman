@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use cookie::SameSite;
 
 #[derive(Debug, Clone)]
@@ -9,7 +7,6 @@ pub struct CookieConfig {
     pub path: String,
     pub secure: bool,
     pub same_site: SameSite,
-    pub session_max_age: Duration,
 }
 
 impl Default for CookieConfig {
@@ -20,7 +17,6 @@ impl Default for CookieConfig {
             path: "/".to_string(),
             secure: true,
             same_site: SameSite::Lax,
-            session_max_age: doorman_core::session::DEFAULT_SESSION_LIFETIME,
         }
     }
 }

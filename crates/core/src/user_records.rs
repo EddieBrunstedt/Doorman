@@ -6,7 +6,7 @@ use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result, StorageErrorKind};
-use crate::session::{IssuedSession, ResolvedSession, SessionContext};
+use crate::session::{IssuedSession, SessionContext};
 use crate::session_records::SessionRecords;
 use crate::storage::{
     EmailLinkStore, PasskeyChallengeStore, PasskeyStore, StoredPasskey, User, UserId, UserStatus,
@@ -55,6 +55,11 @@ impl UserRecords {
         } else {
             Err(Error::UserDisabled)
         }
+    }
+
+    pub(crate) async fn count_passkeys(&self, user_id: UserId) -> Result<u64> {
+        let passkeys = self.passkeys.list_passkeys_for_user(user_id).await?;
+        Ok(passkeys.len() as u64)
     }
 
     pub(crate) async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
@@ -131,10 +136,7 @@ impl UserRecords {
             )
             .await;
 
-        Ok(IssuedSession {
-            session: ResolvedSession::new(session, false),
-            token,
-        })
+        Ok(IssuedSession { session, token })
     }
 
     pub(crate) async fn enable(&self, user_id: UserId) -> Result<()> {

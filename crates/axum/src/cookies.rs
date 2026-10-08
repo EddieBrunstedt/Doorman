@@ -26,27 +26,15 @@ pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     if token.is_empty() { None } else { Some(token) }
 }
 
-pub fn session_cookie(config: &CookieConfig, value: &str) -> Result<HeaderValue, Error> {
-    encode(
-        build_cookie(
-            &config.session_cookie_name,
-            value.to_owned(),
-            config,
-            Some(config.session_max_age),
-        )
-        .build(),
-    )
-}
-
-pub fn session_cookie_with_max_age(
+pub fn session_cookie(
     config: &CookieConfig,
-    value: &str,
+    token: &str,
     max_age: Duration,
 ) -> Result<HeaderValue, Error> {
     encode(
         build_cookie(
             &config.session_cookie_name,
-            value.to_owned(),
+            token.to_owned(),
             config,
             Some(max_age),
         )
@@ -162,19 +150,19 @@ mod tests {
 
     #[test]
     fn session_cookie_has_expected_attributes() {
-        let value = session_cookie(&cfg(), "tok").expect("encodes");
+        let value = session_cookie(&cfg(), "tok", Duration::from_secs(60)).expect("encodes");
         let s = value.to_str().expect("ascii header value");
         assert!(s.contains("doorman_session=tok"));
         assert!(s.contains("HttpOnly"));
         assert!(s.contains("Path=/"));
         assert!(s.contains("SameSite=Lax"));
-        assert!(s.contains("Max-Age="));
+        assert!(s.contains("Max-Age=60"));
         assert!(!s.contains("Secure"));
     }
 
     #[test]
     fn session_cookie_is_secure_when_configured() {
-        let value = session_cookie(&secure_cfg(), "tok").expect("encodes");
+        let value = session_cookie(&secure_cfg(), "tok", Duration::from_secs(60)).expect("encodes");
         let s = value.to_str().expect("ascii header value");
         assert!(s.contains("doorman_session=tok"));
         assert!(s.contains("Secure"));

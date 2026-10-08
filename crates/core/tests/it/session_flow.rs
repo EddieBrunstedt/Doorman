@@ -7,9 +7,9 @@ use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::error::Error;
 use doorman_core::session::{ResolvedSession, SessionConfig, SessionContext, hash_token};
-use doorman_core::storage::{Session, SessionId, SessionStore, StoredPasskey, User, UserId};
+use doorman_core::storage::{SessionId, SessionStore, User};
 
-use crate::common::{Harness, kinds, session_in_cool_down_for, sign_in, sign_in_from, ts};
+use crate::common::{Harness, kinds, session_in_cool_down_for, sign_in, sign_in_from};
 
 fn harness_with_lifetime(absolute_lifetime: Duration) -> Harness {
     Harness::builder()
@@ -65,7 +65,13 @@ async fn a_login_issues_a_session_bound_to_its_token() {
     assert_eq!(h.sessions.len(), 1);
     assert_eq!(issued.session.user_id, alice.user.id);
     assert_eq!(issued.session.ip.as_deref(), Some("1.2.3.4"));
-    assert_eq!(hash_token(&issued.token), issued.session.token_hash);
+    let stored = h
+        .sessions
+        .find_session_by_id(issued.session.id)
+        .await
+        .expect("find session")
+        .expect("session stored");
+    assert_eq!(hash_token(&issued.token), stored.token_hash);
 
     let resolved = h
         .session_manager
@@ -456,61 +462,21 @@ async fn revoke_in_cool_down_is_refused_but_log_out_is_not() {
     assert!(!session_exists(&h, current.id).await);
 }
 
-#[test]
-fn session_recovery_cool_down_ignores_expired_deadlines() {
-    let now = ts(2026, 1, 1);
-    let active_until = now + ChronoDuration::minutes(10);
-    let session = Session {
-        id: SessionId::new(),
-        user_id: UserId::new(),
-        token_hash: hash_token("cool-down"),
-        created_at: now,
-        last_used_at: now,
-        expires_at: now + ChronoDuration::hours(1),
-        ip: None,
-        user_agent: None,
-        recovery_cool_down_until: Some(active_until),
-    };
-
-    assert!(session.is_in_recovery_cool_down(now));
-
-    let expired = Session {
-        recovery_cool_down_until: Some(now - ChronoDuration::seconds(1)),
-        ..session.clone()
-    };
-    assert!(!expired.is_in_recovery_cool_down(now));
-
-    let outside_cool_down = Session {
-        recovery_cool_down_until: None,
-        ..session
-    };
-    assert!(!outside_cool_down.is_in_recovery_cool_down(now));
-}
-
-#[test]
-fn stored_passkey_cool_down_predicate_mirrors_session() {
-    let now = ts(2026, 1, 1);
-    let active_until = now + ChronoDuration::hours(24);
-    let passkey = StoredPasskey {
-        credential_id: vec![1, 2, 3],
-        user_id: UserId::new(),
-        passkey: b"opaque-blob".to_vec(),
-        name: None,
-        created_at: now,
-        last_used_at: None,
-        aaguid: None,
-        transports: Vec::new(),
-        backup_eligible: false,
-        backup_state: false,
-        recovery_cool_down_until: Some(active_until),
-    };
-
-    assert!(passkey.is_in_recovery_cool_down(now));
-    assert!(!passkey.is_in_recovery_cool_down(active_until));
-
-    let outside_cool_down = StoredPasskey {
-        recovery_cool_down_until: None,
-        ..passkey
-    };
-    assert!(!outside_cool_down.is_in_recovery_cool_down(now));
+#[tokio::test]
+async fn a_session_is_in_recovery_cool_down_only_before_its_deadline() {
+    let h = Harness::fresh();
+    let alice = sign_in(&h, "alice@example.com").await;
+    let now = h.clock.now();
+    for (until, in_cool_down) in [
+        (now + ChronoDuration::minutes(10), true),
+        (now, false),
+        (now - ChronoDuration::seconds(1), false),
+    ] {
+        let session = session_in_cool_down_for(&h, &alice.user, until).await;
+        assert_eq!(
+            session.is_in_recovery_cool_down(),
+            in_cool_down,
+            "cool-down until {until}",
+        );
+    }
 }

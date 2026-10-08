@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use doorman_core::assembly::AuthCore;
 
@@ -26,13 +25,6 @@ pub enum BuilderError {
     },
     #[error("the session cookie name, path or domain contains a control character")]
     InvalidCookieAttributes,
-    #[error(
-        "cookie Max-Age ({cookie_max_age:?}) exceeds the session lifetime ({session_lifetime:?})"
-    )]
-    CookieMaxAgeExceedsSessionLifetime {
-        cookie_max_age: Duration,
-        session_lifetime: Duration,
-    },
 }
 
 pub struct AuthServiceBuilder {
@@ -73,14 +65,6 @@ impl AuthServiceBuilder {
         validate_cookie_prefix(&cookie_config)?;
         if clear_session_cookie(&cookie_config).is_err() {
             return Err(BuilderError::InvalidCookieAttributes);
-        }
-
-        let session_lifetime = core.sessions.unused_lifetime();
-        if cookie_config.session_max_age > session_lifetime {
-            return Err(BuilderError::CookieMaxAgeExceedsSessionLifetime {
-                cookie_max_age: cookie_config.session_max_age,
-                session_lifetime,
-            });
         }
 
         let csrf_config = match (self.csrf_config, self.external_origin) {

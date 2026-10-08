@@ -10,9 +10,9 @@ use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::passkey::{PasskeyConfig, PasskeyMetadata, StartedRegistration, encode_passkey};
 use crate::recovery_cool_down::RecoveryCoolDown;
-use crate::session::SessionContext;
+use crate::session::{ResolvedSession, SessionContext};
 use crate::storage::{
-    PasskeyChallengeId, PasskeyStore, RegistrationPurpose, Session, StoredPasskey, User, UserId,
+    PasskeyChallengeId, PasskeyStore, RegistrationPurpose, StoredPasskey, User, UserId,
 };
 use crate::user_records::UserRecords;
 
@@ -20,7 +20,7 @@ use crate::user_records::UserRecords;
 pub(crate) enum RegistrationSource<'a> {
     SignupLink(&'a User),
     RecoveryLink(&'a User),
-    Session(&'a Session),
+    Session(&'a ResolvedSession),
 }
 
 impl RegistrationSource<'_> {
@@ -36,6 +36,7 @@ impl RegistrationSource<'_> {
 pub(crate) struct RegisteredPasskey {
     pub user: User,
     pub passkey: StoredPasskey,
+    pub passkey_count: u64,
 }
 
 #[derive(Clone)]
@@ -111,10 +112,11 @@ impl PasskeyRegistrations {
             .await?;
         let user_id = redeemed.user.id;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
+        let held = self.passkeys.list_passkeys_for_user(user_id).await?.len() as u64;
         // A user who has lost their passkeys may still sit at the cap, and recovery is their way
         // back.
         if purpose != RegistrationPurpose::Recovery {
-            self.enforce_passkey_cap(user_id).await?;
+            self.enforce_passkey_cap(user_id, held)?;
         }
         let cool_down = match purpose {
             // A recovery starts its cool-down again when the registration finishes, so a slow
@@ -133,6 +135,7 @@ impl PasskeyRegistrations {
         Ok(RegisteredPasskey {
             user: redeemed.user,
             passkey,
+            passkey_count: held + 1,
         })
     }
 
@@ -140,12 +143,11 @@ impl PasskeyRegistrations {
         self.challenges.invalidate_registrations(user_id).await
     }
 
-    async fn enforce_passkey_cap(&self, user_id: UserId) -> Result<()> {
+    fn enforce_passkey_cap(&self, user_id: UserId, held: u64) -> Result<()> {
         let Some(max) = self.max_passkeys_per_user else {
             return Ok(());
         };
-        let count = self.passkeys.list_passkeys_for_user(user_id).await?.len();
-        if count >= max.get() as usize {
+        if held >= u64::from(max.get()) {
             tracing::warn!(%user_id, max = max.get(), "passkey registration rejected: passkey cap reached");
             return Err(Error::ResourceLimitExceeded {
                 resource: "passkeys",

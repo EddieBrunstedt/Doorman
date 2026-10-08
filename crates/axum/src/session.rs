@@ -1,19 +1,17 @@
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Request, header};
 use axum::response::Response;
-use doorman_core::clock::Clock;
 use doorman_core::session::{ResolvedSession, SessionManager};
 use tower_layer::Layer;
 use tower_service::Service;
 use tracing::Instrument;
 
 use crate::config::CookieConfig;
-use crate::cookies::{bearer_token, read_cookie, session_cookie_with_max_age};
+use crate::cookies::{bearer_token, read_cookie, session_cookie};
 use crate::csrf::{self, CsrfConfig};
 use crate::error::csrf_rejection_response;
 
@@ -21,7 +19,6 @@ use crate::error::csrf_rejection_response;
 pub struct AuthContext {
     pub session: ResolvedSession,
     pub token: String,
-    pub(crate) clock: Arc<dyn Clock>,
     pub(crate) sessions: SessionManager,
 }
 
@@ -98,10 +95,8 @@ where
                     span.record("session_id", tracing::field::display(resolved.id));
                     span.record("user_id", tracing::field::display(resolved.user_id));
                     if resolved.slid() && source == TokenSource::Cookie {
-                        let remaining = (resolved.expires_at - state.sessions.clock().now())
-                            .to_std()
-                            .unwrap_or(Duration::ZERO);
-                        match session_cookie_with_max_age(&state.cookie, &token, remaining) {
+                        let max_age = resolved.remaining_lifetime();
+                        match session_cookie(&state.cookie, &token, max_age) {
                             Ok(cookie) => cookie_refresh = Some(cookie),
                             Err(err) => {
                                 tracing::error!(error = %err, "session cookie refresh skipped");
@@ -111,7 +106,6 @@ where
                     req.extensions_mut().insert(AuthContext {
                         session: resolved,
                         token,
-                        clock: state.sessions.clock().clone(),
                         sessions: state.sessions.clone(),
                     });
                 }

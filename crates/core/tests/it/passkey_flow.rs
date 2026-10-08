@@ -18,8 +18,9 @@ use doorman_test_support::MockClock;
 
 use crate::common::{
     Harness, RP_ID, RP_NAME, assert_discoverable_request_options,
-    assert_resident_registration_options, authenticator, kinds, make_user, passkey_count,
-    register_passkey, rp_origin, session_count, session_for, session_in_cool_down_for, ts,
+    assert_resident_registration_options, authenticator, kinds, last_email_change_token, make_user,
+    passkey_count, register_passkey, rp_origin, session_count, session_for,
+    session_in_cool_down_for, ts,
 };
 
 fn base_passkey_config() -> PasskeyConfig {
@@ -129,7 +130,7 @@ async fn registration_captures_device_metadata_and_surfaces_it_in_summary() {
 
     let summaries = h
         .passkey
-        .list_passkey_summaries(user.id)
+        .list_passkeys(user.id)
         .await
         .expect("list summaries");
     assert_eq!(summaries.len(), 1);
@@ -1513,4 +1514,44 @@ async fn failed_login_records_auth_failure_and_latency_metrics() {
         h.metrics.has_latency(),
         "auth ceremony latency recorded even on rejection"
     );
+}
+
+#[tokio::test]
+async fn login_and_email_change_report_the_users_passkey_count() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "alice@example.com").await;
+    let mut wa = authenticator();
+    let first = register_passkey(&h, user.id, &mut wa, None).await;
+    register_passkey(&h, user.id, &mut wa, Some("second")).await;
+
+    let (challenge_id, options) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start login");
+    let assertion = wa.do_authentication(options, &first.credential_id);
+    let login = h
+        .passkey
+        .finish_authentication(challenge_id, &assertion, SessionContext::default())
+        .await
+        .expect("finish login");
+    assert_eq!(login.passkey_count, 2);
+
+    h.destructive_actions
+        .perform(
+            &login.session.session,
+            DestructiveAction::RequestEmailChange {
+                new_email: "new@example.com".into(),
+            },
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("request email change");
+    let confirmed = h
+        .user
+        .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
+        .await
+        .expect("confirm email change");
+    assert_eq!(confirmed.passkey_count, 2);
 }

@@ -1,13 +1,10 @@
-use std::sync::Arc;
-
-use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::passkey::PasskeyManager;
 use crate::reauth::{ReauthAction, ReauthManager, ReauthPolicy, ReauthProof};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::{ResolvedSession, SessionContext, SessionManager};
 use crate::session_records::SessionRecords;
-use crate::storage::{Session, SessionId};
+use crate::storage::SessionId;
 use crate::user::UserManager;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,11 +32,11 @@ impl DestructiveAction {
 // Only the gate builds one, and every destructive action's implementation takes one, so none of
 // them can run without passing it.
 pub(crate) struct Cleared {
-    session: Session,
+    session: ResolvedSession,
 }
 
 impl Cleared {
-    pub(crate) fn session(&self) -> &Session {
+    pub(crate) fn session(&self) -> &ResolvedSession {
         &self.session
     }
 }
@@ -49,7 +46,6 @@ pub struct DestructiveActions {
     records: SessionRecords,
     reauth: ReauthManager,
     policy: ReauthPolicy,
-    clock: Arc<dyn Clock>,
     sessions: SessionManager,
     passkey: PasskeyManager,
     user: UserManager,
@@ -60,7 +56,6 @@ impl DestructiveActions {
         records: SessionRecords,
         reauth: ReauthManager,
         policy: ReauthPolicy,
-        clock: Arc<dyn Clock>,
         sessions: SessionManager,
         passkey: PasskeyManager,
         user: UserManager,
@@ -69,7 +64,6 @@ impl DestructiveActions {
             records,
             reauth,
             policy,
-            clock,
             sessions,
             passkey,
             user,
@@ -116,7 +110,7 @@ impl DestructiveActions {
         context: &SessionContext,
     ) -> Result<Cleared> {
         let session = self.records.reread(session).await?;
-        RecoveryCoolDown::refuse_destructive_action(&session, self.clock.now())?;
+        RecoveryCoolDown::refuse_destructive_action(&session)?;
         if self.policy.requires(action) {
             let Some(proof) = proof else {
                 tracing::info!(outcome = "proof_required", "reauth required");

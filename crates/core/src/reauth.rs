@@ -10,7 +10,7 @@ use crate::context::CoreDeps;
 use crate::error::Result;
 use crate::passkey::PasskeyConfig;
 use crate::session::{ResolvedSession, SessionContext};
-use crate::storage::{PasskeyChallengeId, Session};
+use crate::storage::PasskeyChallengeId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ReauthAction {
@@ -76,7 +76,7 @@ impl ReauthManager {
 
     pub(crate) async fn verify(
         &self,
-        session: &Session,
+        session: &ResolvedSession,
         proof: &ReauthProof,
         context: &SessionContext,
     ) -> Result<()> {

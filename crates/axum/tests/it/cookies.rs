@@ -6,7 +6,7 @@ use chrono::Utc;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::dto::AuthResponse;
 use doorman_core::clock::Clock;
-use doorman_core::session::SessionConfig;
+use doorman_core::session::{DEFAULT_SESSION_LIFETIME, SessionConfig};
 use doorman_core::storage::UserStatus;
 use doorman_test_support::MockClock;
 
@@ -24,6 +24,10 @@ async fn a_login_sets_a_session_cookie_that_authenticates() {
     let set_cookie = login.set_cookie().expect("login sets the session cookie");
     assert!(set_cookie.contains(&format!("doorman_session={}", auth.token)));
     assert!(set_cookie.contains("HttpOnly"));
+    assert!(
+        set_cookie.contains(&format!("Max-Age={}", DEFAULT_SESSION_LIFETIME.as_secs())),
+        "the cookie lives as long as the session it carries: {set_cookie}",
+    );
 
     let me = app.get("/me").cookie(&auth.token).send().await;
     assert_eq!(me.status, StatusCode::OK);
@@ -84,7 +88,6 @@ fn sliding_app(clock: Arc<MockClock>) -> TestApp {
         |b| {
             b.cookie(CookieConfig {
                 secure: false,
-                session_max_age: IDLE,
                 ..CookieConfig::default()
             })
         },

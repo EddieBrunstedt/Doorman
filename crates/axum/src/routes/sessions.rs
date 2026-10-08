@@ -50,7 +50,7 @@ async fn list(
     let sessions = state.core.sessions.list(&auth.session).await?;
     let dtos = sessions
         .iter()
-        .map(|s| SessionDto::from_summary(s, s.id == current_id))
+        .map(|s| SessionDto::new(s, s.id == current_id))
         .collect();
     Ok(Json(dtos))
 }

@@ -5,8 +5,8 @@ use axum::response::{IntoResponse, Response};
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::passkey::{RegistrationOutcome, StartedRegistration};
 use doorman_core::reauth::ReauthProof;
-use doorman_core::session::SessionContext;
-use doorman_core::storage::PasskeyChallengeId;
+use doorman_core::session::{IssuedSession, SessionContext};
+use doorman_core::storage::{PasskeyChallengeId, User};
 use uuid::Uuid;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
@@ -25,12 +25,15 @@ pub(crate) mod signup;
 pub(crate) mod user;
 
 pub(crate) fn auth_success(
-    status: StatusCode,
     cookie_config: &CookieConfig,
-    body: AuthResponse,
+    user: &User,
+    passkey_count: u64,
+    issued: IssuedSession,
 ) -> Result<Response, ErrorResponse> {
-    let cookie = session_cookie(cookie_config, &body.token)?;
-    let mut response = (status, Json(body)).into_response();
+    let max_age = issued.session.remaining_lifetime();
+    let cookie = session_cookie(cookie_config, &issued.token, max_age)?;
+    let body = AuthResponse::from_issued(user, passkey_count, issued);
+    let mut response = Json(body).into_response();
     response.headers_mut().insert(header::SET_COOKIE, cookie);
     Ok(response)
 }
@@ -86,15 +89,15 @@ pub(crate) fn redeem_response(
     })
 }
 
-pub(crate) async fn registration_success(
+pub(crate) fn registration_success(
     state: &AuthState,
     outcome: RegistrationOutcome,
 ) -> Result<Response, ErrorResponse> {
-    let passkey_count = state.core.passkey.count_passkeys(outcome.user.id).await?;
     auth_success(
-        StatusCode::OK,
         state.cookie_config(),
-        AuthResponse::from_issued(outcome.user, outcome.session, passkey_count),
+        &outcome.user,
+        outcome.passkey_count,
+        outcome.session,
     )
 }
 

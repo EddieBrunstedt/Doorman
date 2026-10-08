@@ -45,16 +45,6 @@ impl SessionRecords {
         })
     }
 
-    pub(crate) fn unused_lifetime(&self) -> Duration {
-        self.config
-            .idle_timeout
-            .unwrap_or(self.config.absolute_lifetime)
-    }
-
-    pub(crate) fn clock(&self) -> &Arc<dyn Clock> {
-        &self.clock
-    }
-
     #[tracing::instrument(
         skip_all,
         fields(session_id = tracing::field::Empty, user_id = tracing::field::Empty),
@@ -64,8 +54,9 @@ impl SessionRecords {
         let span = tracing::Span::current();
         span.record("session_id", tracing::field::display(session.id));
         span.record("user_id", tracing::field::display(session.user_id));
-        let (session, slid) = self.slide(session, self.clock.now()).await;
-        Ok(ResolvedSession::new(session, slid))
+        let now = self.clock.now();
+        let (session, slid) = self.slide(session, now).await;
+        Ok(ResolvedSession::new(session, slid, now))
     }
 
     // Only `UserRecords::issue_session` calls this: it checks the user once the row is written,
@@ -74,7 +65,7 @@ impl SessionRecords {
         &self,
         passkey: &StoredPasskey,
         context: &SessionContext,
-    ) -> Result<(Session, String)> {
+    ) -> Result<(ResolvedSession, String)> {
         let user_id = passkey.user_id;
         if let Some(max) = self.config.max_sessions_per_user {
             self.enforce_session_cap(user_id, max.get()).await?;
@@ -96,10 +87,10 @@ impl SessionRecords {
         };
 
         self.sessions.create_session(session.clone()).await?;
-        Ok((session, token))
+        Ok((ResolvedSession::new(session, false, now), token))
     }
 
-    pub(crate) async fn discard(&self, session: &Session) {
+    pub(crate) async fn discard(&self, session: &ResolvedSession) {
         if let Err(error) = self.sessions.delete_session(session.id).await {
             tracing::warn!(
                 session_id = %session.id,
@@ -110,7 +101,7 @@ impl SessionRecords {
     }
 
     async fn enforce_session_cap(&self, user_id: UserId, max: u32) -> Result<()> {
-        let mut active = self.list_for_user(user_id).await?;
+        let mut active = self.list_summaries_for_user(user_id).await?;
         let max = max as usize;
         if active.len() < max {
             return Ok(());
@@ -140,13 +131,14 @@ impl SessionRecords {
 
     // A destructive action reads its session again, so one revoked or expired since it was
     // resolved no longer passes the gate.
-    pub(crate) async fn reread(&self, session: &Session) -> Result<Session> {
+    pub(crate) async fn reread(&self, session: &ResolvedSession) -> Result<ResolvedSession> {
         let stored = self
             .sessions
             .find_session_by_id(session.id)
             .await?
-            .filter(|stored| stored.token_hash == session.token_hash);
-        self.live(stored).await
+            .filter(|stored| stored.token_hash == *session.token_hash());
+        let stored = self.live(stored).await?;
+        Ok(ResolvedSession::new(stored, false, self.clock.now()))
     }
 
     #[tracing::instrument(skip(self, hash), fields(user_id = tracing::field::Empty, session_id = tracing::field::Empty))]
@@ -168,7 +160,7 @@ impl SessionRecords {
         if session.expires_at <= now {
             self.audit
                 .emit(
-                    Actor::of_session(&session),
+                    Actor::of_session(&SessionSummary::from(&session)),
                     AuditEventKind::SessionExpired {
                         user_id: session.user_id,
                         session_id: session.id,
@@ -243,7 +235,7 @@ impl SessionRecords {
         Ok(sessions.iter().map(SessionSummary::from).collect())
     }
 
-    pub(crate) async fn revoke_others(&self, keep: &Session, actor: Actor) -> Result<u64> {
+    pub(crate) async fn revoke_others(&self, keep: &SessionSummary, actor: Actor) -> Result<u64> {
         let user_id = keep.user_id;
         let count = self
             .sessions
@@ -280,10 +272,11 @@ impl SessionRecords {
             tracing::warn!(outcome = "not_owned", "session revoke failed");
             return Err(Error::SessionNotFound);
         }
-        self.revoke_session(&session, actor).await
+        self.revoke_session(&SessionSummary::from(session), actor)
+            .await
     }
 
-    async fn revoke_session(&self, session: &Session, actor: Actor) -> Result<()> {
+    async fn revoke_session(&self, session: &SessionSummary, actor: Actor) -> Result<()> {
         self.sessions.delete_session(session.id).await?;
         self.audit
             .emit(

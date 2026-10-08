@@ -65,9 +65,9 @@ async fn email_change_happy_path() {
         .confirm_email_change(&token, SessionContext::default())
         .await
         .expect("confirm email change");
-    assert_eq!(updated.email.as_deref(), Some("new@example.com"));
+    assert_eq!(updated.user.email.as_deref(), Some("new@example.com"));
     assert!(
-        updated.email_verified_at.is_some(),
+        updated.user.email_verified_at.is_some(),
         "confirming the link verifies the new address",
     );
 
@@ -171,7 +171,7 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
     .await;
 
     let updated = confirmed.expect("the confirm lands first");
-    assert_eq!(updated.email.as_deref(), Some("wanted@example.com"));
+    assert_eq!(updated.user.email.as_deref(), Some("wanted@example.com"));
     signed_up.expect("the signup that lost the race still succeeds");
     assert!(
         h.email

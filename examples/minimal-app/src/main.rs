@@ -101,16 +101,15 @@ async fn me(
     auth: AuthSession,
     AuthUser(user): AuthUser,
 ) -> std::result::Result<Json<serde_json::Value>, axum::http::StatusCode> {
-    let cool_down = auth.is_in_recovery_cool_down();
-    let passkey_count = state
+    let passkeys = state
         .auth
         .passkey()
-        .count_passkeys(user.id)
+        .list_passkeys(user.id)
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({
-        "user": UserDto::from_user(&user, passkey_count),
-        "session": SessionDto::from_session(&auth.session, true),
-        "recovery_cool_down_active": cool_down,
+        "user": UserDto::from_user(&user, passkeys.len() as u64),
+        "session": SessionDto::new(&auth.session, true),
+        "recovery_cool_down_active": auth.session.is_in_recovery_cool_down(),
     })))
 }

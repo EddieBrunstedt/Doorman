@@ -31,8 +31,8 @@ use doorman_core::session::{
 };
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use doorman_core::storage::{
-    Session, SessionId, SessionStore, Storage, StoredPasskey, TokenHash, User, UserId, UserStatus,
-    UserStore,
+    PasskeyStore, Session, SessionId, SessionStore, Storage, StoredPasskey, TokenHash, User,
+    UserId, UserStatus, UserStore,
 };
 use doorman_core::user::{UserConfig, UserManager};
 pub use doorman_test_support::token_from_email;
@@ -465,9 +465,10 @@ pub async fn session_count(h: &Harness, user_id: UserId) -> usize {
 
 pub async fn passkey_count(h: &Harness, user_id: UserId) -> u64 {
     h.passkey
-        .count_passkeys(user_id)
+        .list_passkeys(user_id)
         .await
-        .expect("count passkeys")
+        .expect("list passkeys")
+        .len() as u64
 }
 
 pub fn last_email_change_token(h: &Harness) -> String {
@@ -570,7 +571,8 @@ pub async fn register_passkey(
         .await
         .expect("drop registering session");
     let response = wa.do_registration(ccr);
-    h.passkey
+    let registered = h
+        .passkey
         .finish_registration(
             challenge_id,
             &response,
@@ -578,7 +580,12 @@ pub async fn register_passkey(
             SessionContext::default(),
         )
         .await
-        .expect("finish_registration")
+        .expect("finish_registration");
+    h.passkeys
+        .find_passkey_by_credential_id(&registered.credential_id)
+        .await
+        .expect("find passkey")
+        .expect("passkey persisted")
 }
 
 pub async fn provision_user(h: &Harness, email: &str) -> User {

@@ -168,7 +168,7 @@ impl OperatorManager {
     ) -> Result<Vec<PasskeySummary>> {
         self.resolve_subject(target_user_id).await?;
 
-        let summaries = self.passkey.list_passkey_summaries(target_user_id).await?;
+        let summaries = self.passkey.list_passkeys(target_user_id).await?;
 
         self.audit
             .emit(

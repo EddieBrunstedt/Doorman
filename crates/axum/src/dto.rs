@@ -2,9 +2,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use doorman_core::session::IssuedSession;
-use doorman_core::storage::{
-    PasskeySummary, Session, SessionId, SessionSummary, StoredPasskey, User, UserId,
-};
+use doorman_core::storage::{PasskeySummary, SessionId, SessionSummary, User, UserId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,11 +38,7 @@ pub struct SessionDto {
 }
 
 impl SessionDto {
-    pub fn from_session(value: &Session, is_current: bool) -> Self {
-        Self::from_summary(&SessionSummary::from(value), is_current)
-    }
-
-    pub fn from_summary(value: &SessionSummary, is_current: bool) -> Self {
+    pub fn new(value: &SessionSummary, is_current: bool) -> Self {
         Self {
             id: value.id,
             created_at: value.created_at,
@@ -112,10 +106,10 @@ impl std::fmt::Debug for AuthResponse {
 }
 
 impl AuthResponse {
-    pub fn from_issued(user: User, issued: IssuedSession, passkey_count: u64) -> Self {
+    pub fn from_issued(user: &User, passkey_count: u64, issued: IssuedSession) -> Self {
         Self {
-            user: UserDto::from_user(&user, passkey_count),
-            session: SessionDto::from_session(&issued.session, true),
+            user: UserDto::from_user(user, passkey_count),
+            session: SessionDto::new(&issued.session, true),
             token: issued.token,
         }
     }
@@ -131,12 +125,6 @@ pub struct PasskeyDto {
     pub transports: Vec<String>,
     pub backup_eligible: bool,
     pub backup_state: bool,
-}
-
-impl From<StoredPasskey> for PasskeyDto {
-    fn from(value: StoredPasskey) -> Self {
-        PasskeySummary::from(value).into()
-    }
 }
 
 impl From<PasskeySummary> for PasskeyDto {
@@ -230,17 +218,14 @@ pub struct PasskeyAuthenticateFinishRequest {
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use doorman_core::storage::{Session, SessionId, TokenHash, UserId};
-
-    fn session_with_ua(ua: Option<&str>) -> Session {
+    fn session_with_ua(ua: Option<&str>) -> SessionSummary {
         let now = Utc
             .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
             .single()
             .expect("valid timestamp");
-        Session {
+        SessionSummary {
             id: SessionId::new(),
             user_id: UserId::new(),
-            token_hash: TokenHash([0u8; 32]),
             created_at: now,
             last_used_at: now,
             expires_at: now,
@@ -264,7 +249,7 @@ mod tests {
                 created_at: now,
                 passkey_count: 1,
             },
-            session: SessionDto::from_session(&session_with_ua(None), true),
+            session: SessionDto::new(&session_with_ua(None), true),
             token: "super-secret-bearer-token".to_string(),
         };
 
@@ -309,10 +294,10 @@ mod tests {
     fn session_dto_populates_device_label_from_user_agent() {
         let chrome_mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
              (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-        let dto = SessionDto::from_session(&session_with_ua(Some(chrome_mac)), true);
+        let dto = SessionDto::new(&session_with_ua(Some(chrome_mac)), true);
         assert_eq!(dto.device_label.as_deref(), Some("Chrome on macOS"));
 
-        let dto = SessionDto::from_session(&session_with_ua(None), false);
+        let dto = SessionDto::new(&session_with_ua(None), false);
         assert_eq!(dto.device_label, None);
     }
 }

@@ -31,6 +31,12 @@ impl Default for UserConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct EmailChangeOutcome {
+    pub user: User,
+    pub passkey_count: u64,
+}
+
 #[derive(Clone)]
 pub struct UserManager {
     records: UserRecords,
@@ -103,7 +109,11 @@ impl UserManager {
     }
 
     #[tracing::instrument(skip(self, token, context), fields(user_id = tracing::field::Empty))]
-    pub async fn confirm_email_change(&self, token: &str, context: SessionContext) -> Result<User> {
+    pub async fn confirm_email_change(
+        &self,
+        token: &str,
+        context: SessionContext,
+    ) -> Result<EmailChangeOutcome> {
         let (user, new_email) = self.link.redeem(token, &context).await?;
         let new_email = new_email
             .ok_or_else(|| Error::Internal("email-change link carries no new email".to_string()))?;
@@ -117,10 +127,14 @@ impl UserManager {
             }
         };
 
+        let passkey_count = self.records.count_passkeys(user_id).await?;
         self.audit
             .emit(&context, AuditEventKind::EmailChangeCompleted { user_id })
             .await;
-        Ok(user)
+        Ok(EmailChangeOutcome {
+            user,
+            passkey_count,
+        })
     }
 
     pub(crate) async fn delete_user(
