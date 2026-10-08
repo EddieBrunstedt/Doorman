@@ -712,6 +712,7 @@ async fn passkey_registered_during_cool_down_inherits_its_deadline() {
         .session_manager
         .resolve(&outcome.session.token)
         .await
+        .expect("resolve")
         .expect("the recovery session is live");
 
     let mut wa = authenticator();
@@ -770,6 +771,7 @@ async fn passkey_registered_after_cool_down_carries_no_cool_down() {
         .session_manager
         .resolve(&outcome.session.token)
         .await
+        .expect("resolve")
         .expect("the recovery session outlives its cool-down");
     assert!(resolved.recovery_cool_down_until.is_some());
     assert!(!resolved.is_in_recovery_cool_down());
@@ -861,6 +863,7 @@ async fn recovery_config_with_subhour_cool_down_honors_configured_cool_down() {
         .session_manager
         .resolve(&outcome.session.token)
         .await
+        .expect("resolve")
         .expect("the recovery session outlives its cool-down");
     assert!(!resolved.is_in_recovery_cool_down());
 }

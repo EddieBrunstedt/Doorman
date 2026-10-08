@@ -69,7 +69,6 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
         Error::Email(_) => (StatusCode::INTERNAL_SERVER_ERROR, "email_error"),
         Error::SessionNotFound => (StatusCode::UNAUTHORIZED, "session_not_found"),
-        Error::SessionExpired => (StatusCode::UNAUTHORIZED, "session_expired"),
         Error::UserNotFound => (StatusCode::NOT_FOUND, "user_not_found"),
         Error::InvalidEmail => (StatusCode::BAD_REQUEST, "invalid_email"),
         Error::EmailAlreadyInUse => (StatusCode::CONFLICT, "email_already_in_use"),
@@ -135,7 +134,6 @@ mod tests {
                 "email_error",
             ),
             (Error::SessionNotFound, S::UNAUTHORIZED, "session_not_found"),
-            (Error::SessionExpired, S::UNAUTHORIZED, "session_expired"),
             (Error::UserNotFound, S::NOT_FOUND, "user_not_found"),
             (Error::InvalidEmail, S::BAD_REQUEST, "invalid_email"),
             (

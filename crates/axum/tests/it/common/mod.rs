@@ -26,7 +26,7 @@ use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use doorman_core::session::SessionManager;
 use doorman_core::signup::{SignupConfig, SignupRateLimits};
-use doorman_core::storage::{UserId, UserStatus, UserStore};
+use doorman_core::storage::{Storage, UserId, UserStatus, UserStore};
 use doorman_core::user::UserConfig;
 pub use doorman_test_support::ResidentAuthenticator;
 use doorman_test_support::{CapturingEmailSender, token_from_email};
@@ -62,10 +62,21 @@ impl TestApp {
         customise_core: impl FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
         customise_http: impl FnOnce(AuthServiceBuilder) -> AuthServiceBuilder,
     ) -> Self {
+        Self::with_storage(
+            InMemoryStorage::new().all_stores(),
+            customise_core,
+            customise_http,
+        )
+    }
+
+    pub fn with_storage(
+        storage: Storage,
+        customise_core: impl FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
+        customise_http: impl FnOnce(AuthServiceBuilder) -> AuthServiceBuilder,
+    ) -> Self {
         let email = Arc::new(CapturingEmailSender::new());
-        let memory = InMemoryStorage::new();
-        let users = memory.records().users;
-        let core = AuthCore::builder(memory.all_stores())
+        let users = storage.records.users.clone();
+        let core = AuthCore::builder(storage)
             .email(email.clone() as Arc<dyn EmailSender>)
             .passkey(PasskeyConfig::new(
                 "localhost",

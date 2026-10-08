@@ -9,9 +9,7 @@ use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::{ResolvedSession, SessionConfig, SessionContext, hash_token};
-use crate::storage::{
-    Session, SessionId, SessionStore, SessionSummary, StoredPasskey, TokenHash, UserId,
-};
+use crate::storage::{Session, SessionId, SessionStore, SessionSummary, StoredPasskey, UserId};
 use crate::token::generate_token;
 
 #[derive(Clone)]
@@ -49,14 +47,17 @@ impl SessionRecords {
         skip_all,
         fields(session_id = tracing::field::Empty, user_id = tracing::field::Empty),
     )]
-    pub(crate) async fn resolve(&self, token: &str) -> Result<ResolvedSession> {
-        let session = self.validate_by_hash(&hash_token(token)).await?;
-        let span = tracing::Span::current();
-        span.record("session_id", tracing::field::display(session.id));
-        span.record("user_id", tracing::field::display(session.user_id));
+    pub(crate) async fn resolve(&self, token: &str) -> Result<Option<ResolvedSession>> {
+        let stored = self
+            .sessions
+            .find_session_by_token_hash(&hash_token(token))
+            .await?;
         let now = self.clock.now();
+        let Some(session) = live(stored, now) else {
+            return Ok(None);
+        };
         let (session, slid) = self.slide(session, now).await;
-        Ok(ResolvedSession::new(session, slid, now))
+        Ok(Some(ResolvedSession::new(session, slid, now)))
     }
 
     // Only `UserRecords::issue_session` calls this: it checks the user once the row is written,
@@ -137,40 +138,9 @@ impl SessionRecords {
             .find_session_by_id(session.id)
             .await?
             .filter(|stored| stored.token_hash == *session.token_hash());
-        let stored = self.live(stored).await?;
-        Ok(ResolvedSession::new(stored, false, self.clock.now()))
-    }
-
-    #[tracing::instrument(skip(self, hash), fields(user_id = tracing::field::Empty, session_id = tracing::field::Empty))]
-    async fn validate_by_hash(&self, hash: &TokenHash) -> Result<Session> {
-        let stored = self.sessions.find_session_by_token_hash(hash).await?;
-        self.live(stored).await
-    }
-
-    async fn live(&self, stored: Option<Session>) -> Result<Session> {
-        let Some(session) = stored else {
-            tracing::warn!(outcome = "not_found", "session validate failed");
-            return Err(Error::SessionNotFound);
-        };
-        let span = tracing::Span::current();
-        span.record("user_id", tracing::field::display(session.user_id));
-        span.record("session_id", tracing::field::display(session.id));
-
         let now = self.clock.now();
-        if session.expires_at <= now {
-            self.audit
-                .emit(
-                    Actor::of_session(&SessionSummary::from(&session)),
-                    AuditEventKind::SessionExpired {
-                        user_id: session.user_id,
-                        session_id: session.id,
-                    },
-                )
-                .await;
-            return Err(Error::SessionExpired);
-        }
-
-        Ok(session)
+        let stored = live(stored, now).ok_or(Error::SessionNotFound)?;
+        Ok(ResolvedSession::new(stored, false, now))
     }
 
     fn slide_due(&self, session: &Session, now: DateTime<Utc>) -> bool {
@@ -294,4 +264,21 @@ impl SessionRecords {
             .await;
         Ok(())
     }
+}
+
+// An expired row reads like a missing one, so the answer doesn't depend on whether the store has
+// dropped it yet.
+fn live(stored: Option<Session>, now: DateTime<Utc>) -> Option<Session> {
+    let Some(session) = stored else {
+        tracing::warn!(outcome = "not_found", "session validate failed");
+        return None;
+    };
+    let span = tracing::Span::current();
+    span.record("user_id", tracing::field::display(session.user_id));
+    span.record("session_id", tracing::field::display(session.id));
+    if session.expires_at <= now {
+        tracing::warn!(outcome = "expired", "session validate failed");
+        return None;
+    }
+    Some(session)
 }

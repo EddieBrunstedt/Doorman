@@ -152,7 +152,6 @@ export const ERROR_GUIDANCE: Record<string, string> = {
   csrf_origin_mismatch:
     "The request was blocked by the cross-origin check. Make sure you are using the app's real address.",
   session_not_found: "You are logged out. Log in with a passkey to continue.",
-  session_expired: "Your session expired. Log in with a passkey again.",
   email_already_in_use: "That email already belongs to another user.",
   invalid_email: "That does not look like a valid email address.",
   invalid_email_link: "This link is invalid or has already been used. Request a new one.",

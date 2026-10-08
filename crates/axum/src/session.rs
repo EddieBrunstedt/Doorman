@@ -22,6 +22,11 @@ pub struct AuthContext {
     pub(crate) sessions: SessionManager,
 }
 
+// The session store failed while resolving the request's token, so whether the request has a
+// session is unknown; the extractors refuse rather than answer as if it had none.
+#[derive(Clone, Copy)]
+pub(crate) struct SessionUnresolved;
+
 pub(crate) struct SessionLayerState {
     pub(crate) sessions: SessionManager,
     pub(crate) cookie: CookieConfig,
@@ -87,44 +92,56 @@ where
                     return Ok(csrf_rejection_response());
                 }
 
-                let mut refresh: Option<SessionCookie> = None;
-                if let Some((token, source)) = extract_token(req.headers(), cookie_name)
-                    && let Ok(resolved) = state.sessions.resolve(&token).await
-                {
-                    let span = tracing::Span::current();
-                    span.record("session_id", tracing::field::display(resolved.id));
-                    span.record("user_id", tracing::field::display(resolved.user_id));
-                    if resolved.slid() && source == TokenSource::Cookie {
-                        refresh = Some(SessionCookie::Issue {
-                            token: token.clone(),
-                            max_age: resolved.remaining_lifetime(),
-                        });
+                let mut own_cookie: Option<SessionCookie> = None;
+                if let Some((token, source)) = extract_token(req.headers(), cookie_name) {
+                    match state.sessions.resolve(&token).await {
+                        Ok(Some(resolved)) => {
+                            let span = tracing::Span::current();
+                            span.record("session_id", tracing::field::display(resolved.id));
+                            span.record("user_id", tracing::field::display(resolved.user_id));
+                            if resolved.slid() && source == TokenSource::Cookie {
+                                own_cookie = Some(SessionCookie::Issue {
+                                    token: token.clone(),
+                                    max_age: resolved.remaining_lifetime(),
+                                });
+                            }
+                            req.extensions_mut().insert(AuthContext {
+                                session: resolved,
+                                token,
+                                sessions: state.sessions.clone(),
+                            });
+                        }
+                        Ok(None) => {
+                            if source == TokenSource::Cookie {
+                                own_cookie = Some(SessionCookie::Clear);
+                            }
+                        }
+                        // The cookie may still name a live session, so it stays.
+                        Err(error) => {
+                            tracing::warn!(%error, "session resolve failed");
+                            req.extensions_mut().insert(SessionUnresolved);
+                        }
                     }
-                    req.extensions_mut().insert(AuthContext {
-                        session: resolved,
-                        token,
-                        sessions: state.sessions.clone(),
-                    });
                 }
                 let response = inner.call(req).await?;
-                Ok(set_session_cookie(response, refresh, &state.cookie))
+                Ok(set_session_cookie(response, own_cookie, &state.cookie))
             }
             .instrument(span),
         )
     }
 }
 
-// The handler ran after the slide and may have ended or replaced the session, so its decision
-// outranks the refresh.
+// The handler ran after the resolve and may have ended or replaced the session, so its decision
+// outranks the layer's own refresh or clear.
 fn set_session_cookie(
     mut response: Response,
-    refresh: Option<SessionCookie>,
+    own_cookie: Option<SessionCookie>,
     config: &CookieConfig,
 ) -> Response {
     let (cookie, from_handler) = match response.extensions_mut().remove::<SessionCookie>() {
         Some(decided) => (decided, true),
-        None => match refresh {
-            Some(refresh) => (refresh, false),
+        None => match own_cookie {
+            Some(own) => (own, false),
             None => return response,
         },
     };
@@ -133,11 +150,11 @@ fn set_session_cookie(
             response.headers_mut().append(header::SET_COOKIE, value);
             response
         }
-        // Without a refresh the cookie only expires sooner; without the handler's cookie the
-        // response would claim a login or logout the browser never sees.
+        // Skipping the layer's own cookie only lets a refresh lapse or a dead cookie linger;
+        // without the handler's the response would claim a login or logout it never sees.
         Err(err) if from_handler => ErrorResponse(err).into_response(),
         Err(err) => {
-            tracing::error!(error = %err, "session cookie refresh skipped");
+            tracing::error!(error = %err, "session cookie refresh or clear skipped");
             response
         }
     }

@@ -138,7 +138,7 @@ async fn the_gate_refuses_a_session_that_ended_after_it_was_resolved() {
     let session = expired.session.session.clone();
     h.clock.advance(chrono::Duration::hours(2));
     let err = perform(&h, &session, DestructiveAction::DeleteUser, None).await;
-    assert!(matches!(err, Err(Error::SessionExpired)), "got {err:?}");
+    assert!(matches!(err, Err(Error::SessionNotFound)), "got {err:?}");
 
     for user in [&revoked.user, &expired.user] {
         assert!(

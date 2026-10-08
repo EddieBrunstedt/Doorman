@@ -145,7 +145,7 @@ impl SessionManager {
         }
     }
 
-    pub async fn resolve(&self, token: &str) -> Result<ResolvedSession> {
+    pub async fn resolve(&self, token: &str) -> Result<Option<ResolvedSession>> {
         self.records.resolve(token).await
     }
 

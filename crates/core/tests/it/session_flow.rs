@@ -79,7 +79,8 @@ async fn a_login_issues_a_session_bound_to_its_token() {
         .session_manager
         .resolve(&issued.token)
         .await
-        .expect("resolve");
+        .expect("resolve")
+        .expect("a live session");
     assert_eq!(resolved.id, issued.session.id);
     assert!(
         kinds(&h.audit.events()).contains(&AuditEventKind::SessionCreated {
@@ -99,8 +100,12 @@ async fn log_out_deletes_the_session_and_audits_it() {
     h.session_manager.log_out(session).await.expect("log out");
     assert!(h.sessions.is_empty());
 
-    let err = h.session_manager.resolve(&alice.session.token).await.err();
-    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
+    let resolved = h
+        .session_manager
+        .resolve(&alice.session.token)
+        .await
+        .expect("resolve");
+    assert!(resolved.is_none(), "got {resolved:?}");
     assert_eq!(
         kinds(&h.audit.events()).last(),
         Some(&AuditEventKind::SessionRevoked {
@@ -149,10 +154,14 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
     expected.sort_by_key(|id| id.0);
     assert_eq!(alice_ids, expected, "cap keeps the two newest sessions");
 
-    let err = h.session_manager.resolve(&first.token).await.err();
+    let resolved = h
+        .session_manager
+        .resolve(&first.token)
+        .await
+        .expect("resolve");
     assert!(
-        matches!(err, Some(Error::SessionNotFound)),
-        "evicted session is gone, got {err:?}"
+        resolved.is_none(),
+        "evicted session is gone, got {resolved:?}"
     );
 
     assert!(
@@ -164,21 +173,6 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
     );
 
     assert!(session_exists(&h, bob.session.session.id).await);
-}
-
-#[tokio::test]
-async fn an_expired_session_is_refused_and_audited() {
-    let h = harness_with_lifetime(Duration::from_secs(60));
-    let alice = sign_in(&h, "alice@example.com").await;
-
-    h.clock.advance(ChronoDuration::seconds(120));
-
-    let err = h.session_manager.resolve(&alice.session.token).await.err();
-    assert!(matches!(err, Some(Error::SessionExpired)), "got {err:?}");
-    assert!(matches!(
-        kinds(&h.audit.events()).last(),
-        Some(AuditEventKind::SessionExpired { .. })
-    ));
 }
 
 #[tokio::test]

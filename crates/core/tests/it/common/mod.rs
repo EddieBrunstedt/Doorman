@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -12,7 +12,7 @@ use doorman_core::audit::{
 };
 use doorman_core::clock::Clock;
 use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
-use doorman_core::error::StorageResult;
+use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::memory::{
     InMemoryEmailLinkStore, InMemoryPasskeyChallengeStore, InMemoryPasskeyStore,
     InMemorySessionStore, InMemoryUserStore,
@@ -156,6 +156,7 @@ impl UserStore for CountingUserStore {
 pub struct CountingSessionStore {
     inner: Arc<InMemorySessionStore>,
     reads: AtomicUsize,
+    failing_reads: AtomicBool,
     write_hold: Mutex<Option<Arc<Barrier>>>,
 }
 
@@ -174,8 +175,16 @@ impl CountingSessionStore {
         barrier
     }
 
-    fn read(&self) {
+    pub fn fail_reads(&self) {
+        self.failing_reads.store(true, Ordering::SeqCst);
+    }
+
+    fn read(&self) -> StorageResult<()> {
         self.reads.fetch_add(1, Ordering::SeqCst);
+        if self.failing_reads.load(Ordering::SeqCst) {
+            return Err(StorageError::msg("session store unavailable"));
+        }
+        Ok(())
     }
 }
 
@@ -201,17 +210,17 @@ impl SessionStore for CountingSessionStore {
     }
 
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
-        self.read();
+        self.read()?;
         self.inner.find_session_by_token_hash(hash).await
     }
 
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>> {
-        self.read();
+        self.read()?;
         self.inner.find_session_by_id(id).await
     }
 
     async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
-        self.read();
+        self.read()?;
         self.inner.list_for_user(user_id).await
     }
 
@@ -381,6 +390,7 @@ impl HarnessBuilder {
         let session_store = Arc::new(CountingSessionStore {
             inner: sessions.clone(),
             reads: AtomicUsize::new(0),
+            failing_reads: AtomicBool::new(false),
             write_hold: Mutex::new(None),
         });
 
@@ -549,6 +559,7 @@ async fn stored_session(
     h.session_manager
         .resolve(&token)
         .await
+        .expect("resolve")
         .expect("resolve stored session")
 }
 

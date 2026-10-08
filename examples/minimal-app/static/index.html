@@ -295,7 +295,6 @@
         recovery_cool_down_active: "Recovery cool-down is active — destructive actions are blocked for now.",
         csrf_origin_mismatch: "Origin check failed. Open the app from its configured public origin.",
         session_not_found: "You are logged out. Log in with a passkey to continue.",
-        session_expired: "Your session expired. Log in again.",
         email_already_in_use: "That email already belongs to another user.",
         invalid_email: "Enter a valid email address.",
         invalid_email_link: "This link is invalid or already used. Request a new one.",
@@ -417,7 +416,7 @@
         let cls = "err";
         if (ok) cls = "ok";
         else if (code === "reauth_required") cls = "warn";
-        else if (code === "session_not_found" || code === "session_expired") cls = "muted";
+        else if (code === "session_not_found") cls = "muted";
         const tag = path.startsWith("/api/") ? "app" : "doorman";
         const head = `<b>${escapeHtml(method)}</b>${escapeHtml(path)}`;
         const label = ok ? String(status) : `${status}${code ? " · " + code : ""}`;

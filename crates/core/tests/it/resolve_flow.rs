@@ -44,7 +44,12 @@ async fn a_request_reads_its_session_row_and_nothing_else() {
         h.clock.advance(ChronoDuration::seconds(advance));
         h.session_store.clear_reads();
         h.user_store.clear_reads();
-        let resolved = h.session_manager.resolve(&token).await.expect("resolve");
+        let resolved = h
+            .session_manager
+            .resolve(&token)
+            .await
+            .expect("resolve")
+            .expect("a live session");
         assert_eq!(resolved.user_id, user.id);
         assert_eq!(resolved.slid(), advance > 0);
         assert_eq!(h.session_store.reads(), 1, "one session read");
@@ -53,14 +58,18 @@ async fn a_request_reads_its_session_row_and_nothing_else() {
 }
 
 #[tokio::test]
-async fn unknown_token_is_refused() {
+async fn an_unknown_token_is_no_session() {
     let h = Harness::fresh();
-    let err = h.session_manager.resolve("not-a-session").await.err();
-    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
+    let resolved = h
+        .session_manager
+        .resolve("not-a-session")
+        .await
+        .expect("resolve");
+    assert!(resolved.is_none(), "got {resolved:?}");
 }
 
 #[tokio::test]
-async fn a_session_past_its_deadline_is_refused() {
+async fn a_session_past_its_deadline_is_no_session_and_is_not_audited() {
     let h = Harness::builder()
         .session_config(SessionConfig {
             absolute_lifetime: Duration::from_secs(30),
@@ -68,11 +77,27 @@ async fn a_session_past_its_deadline_is_refused() {
         })
         .build();
     let (_, token) = signed_in(&h, "alice@example.com").await;
-    h.session_manager.resolve(&token).await.expect("resolve");
+    h.session_manager
+        .resolve(&token)
+        .await
+        .expect("resolve")
+        .expect("a live session");
 
     h.clock.advance(ChronoDuration::seconds(30));
+    let audited = h.audit.len();
+    let resolved = h.session_manager.resolve(&token).await.expect("resolve");
+    assert!(resolved.is_none(), "got {resolved:?}");
+    assert_eq!(h.audit.len(), audited, "an expiry is not audited");
+}
+
+#[tokio::test]
+async fn a_failing_session_store_is_an_error_not_no_session() {
+    let h = Harness::fresh();
+    let (_, token) = signed_in(&h, "alice@example.com").await;
+
+    h.session_store.fail_reads();
     let err = h.session_manager.resolve(&token).await.err();
-    assert!(matches!(err, Some(Error::SessionExpired)), "got {err:?}");
+    assert!(matches!(err, Some(Error::Storage(_))), "got {err:?}");
 }
 
 #[tokio::test]
@@ -84,12 +109,18 @@ async fn a_revocation_reaches_another_process_at_once() {
         .sessions
         .resolve(&token)
         .await
+        .expect("resolve")
         .expect("the other process resolves the session");
 
-    let session = h.session_manager.resolve(&token).await.expect("resolve");
+    let session = h
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("resolve")
+        .expect("a live session");
     h.session_manager.log_out(&session).await.expect("log out");
-    let err = other.sessions.resolve(&token).await.err();
-    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
+    let resolved = other.sessions.resolve(&token).await.expect("resolve");
+    assert!(resolved.is_none(), "got {resolved:?}");
 }
 
 #[tokio::test]
@@ -97,14 +128,19 @@ async fn a_disable_reaches_another_process_at_once() {
     let h = Harness::fresh();
     let other = h.another_process();
     let (user, token) = signed_in(&h, "alice@example.com").await;
-    other.sessions.resolve(&token).await.expect("resolve");
+    other
+        .sessions
+        .resolve(&token)
+        .await
+        .expect("resolve")
+        .expect("a live session");
 
     h.operator
         .disable(user.id, operator())
         .await
         .expect("disable");
-    let err = other.sessions.resolve(&token).await.err();
-    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
+    let resolved = other.sessions.resolve(&token).await.expect("resolve");
+    assert!(resolved.is_none(), "got {resolved:?}");
 }
 
 #[tokio::test]
@@ -112,14 +148,19 @@ async fn a_delete_reaches_another_process_at_once() {
     let h = Harness::fresh();
     let other = h.another_process();
     let (user, token) = signed_in(&h, "alice@example.com").await;
-    other.sessions.resolve(&token).await.expect("resolve");
+    other
+        .sessions
+        .resolve(&token)
+        .await
+        .expect("resolve")
+        .expect("a live session");
 
     h.operator
         .delete_user(user.id, operator())
         .await
         .expect("delete");
-    let err = other.sessions.resolve(&token).await.err();
-    assert!(matches!(err, Some(Error::SessionNotFound)), "got {err:?}");
+    let resolved = other.sessions.resolve(&token).await.expect("resolve");
+    assert!(resolved.is_none(), "got {resolved:?}");
 }
 
 #[tokio::test]
@@ -135,6 +176,7 @@ async fn access_is_the_session_row_whatever_the_user_row_says() {
     h.session_manager
         .resolve(&token)
         .await
+        .expect("resolve")
         .expect("a status written outside doorman leaves the session in place");
 }
 
@@ -143,7 +185,12 @@ async fn the_user_read_is_fresh_in_every_process() {
     let h = Harness::fresh();
     let other = h.another_process();
     let (user, token) = signed_in(&h, "old@example.com").await;
-    let session = h.session_manager.resolve(&token).await.expect("resolve");
+    let session = h
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("resolve")
+        .expect("a live session");
     let found = other.sessions.find_user(&session).await.expect("find user");
     assert_eq!(found.email.as_deref(), Some("old@example.com"));
 
@@ -213,7 +260,12 @@ async fn a_request_after_the_slide_interval_slides_and_reports_it() {
 
     h.clock.advance(ChronoDuration::seconds(90));
     let now = h.clock.now();
-    let resolved = h.session_manager.resolve(&token).await.expect("resolve");
+    let resolved = h
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("resolve")
+        .expect("a live session");
     assert!(resolved.slid(), "the deadline moved");
     assert_eq!(resolved.last_used_at, now);
     assert_eq!(resolved.expires_at, now + ChronoDuration::minutes(10));
@@ -233,10 +285,20 @@ async fn read_within_the_slide_interval_does_not_slide() {
     let h = sliding_harness();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     h.clock.advance(ChronoDuration::seconds(90));
-    let first = h.session_manager.resolve(&token).await.expect("slide");
+    let first = h
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("resolve")
+        .expect("a live session");
 
     h.clock.advance(ChronoDuration::seconds(30));
-    let second = h.session_manager.resolve(&token).await.expect("read");
+    let second = h
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("resolve")
+        .expect("a live session");
     assert!(!second.slid());
     assert_eq!(second.expires_at, first.expires_at);
     assert_eq!(second.last_used_at, first.last_used_at);
@@ -252,7 +314,12 @@ async fn slide_is_clamped_at_the_absolute_cap() {
     let mut last = None;
     for _ in 0..11 {
         h.clock.advance(ChronoDuration::minutes(5));
-        let resolved = h.session_manager.resolve(&token).await.expect("resolve");
+        let resolved = h
+            .session_manager
+            .resolve(&token)
+            .await
+            .expect("resolve")
+            .expect("a live session");
         assert!(resolved.expires_at <= cap);
         last = Some(resolved);
     }
@@ -272,7 +339,12 @@ async fn without_an_idle_timeout_nothing_slides() {
         .expect("present");
 
     h.clock.advance(ChronoDuration::minutes(30));
-    let resolved = h.session_manager.resolve(&token).await.expect("resolve");
+    let resolved = h
+        .session_manager
+        .resolve(&token)
+        .await
+        .expect("resolve")
+        .expect("a live session");
     assert!(!resolved.slid());
     assert_eq!(resolved.expires_at, issued.expires_at);
     assert_eq!(resolved.last_used_at, issued.last_used_at);

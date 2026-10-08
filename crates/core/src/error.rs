@@ -18,9 +18,6 @@ pub enum Error {
     #[error("session not found")]
     SessionNotFound,
 
-    #[error("session expired")]
-    SessionExpired,
-
     #[error("user not found")]
     UserNotFound,
 

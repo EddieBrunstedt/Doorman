@@ -1,14 +1,16 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::extract::{ConnectInfo, FromRequestParts};
+use axum::http::Extensions;
 use axum::http::header::USER_AGENT;
 use axum::http::request::Parts;
 use doorman_core::Error;
+use doorman_core::error::StorageError;
 use doorman_core::session::{ResolvedSession, SessionContext};
 use doorman_core::storage::User;
 
 use crate::error::ErrorResponse;
-use crate::session::AuthContext;
+use crate::session::{AuthContext, SessionUnresolved};
 
 #[derive(Clone)]
 pub struct AuthSession {
@@ -29,7 +31,7 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthSession {
     type Rejection = ErrorResponse;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        match parts.extensions.get::<AuthContext>() {
+        match auth_context(&parts.extensions)? {
             Some(ctx) => Ok(AuthSession {
                 session: ctx.session.clone(),
                 token: ctx.token.clone(),
@@ -46,7 +48,7 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthUser {
     type Rejection = ErrorResponse;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let Some(ctx) = parts.extensions.get::<AuthContext>() else {
+        let Some(ctx) = auth_context(&parts.extensions)? else {
             return Err(ErrorResponse(Error::SessionNotFound));
         };
         Ok(AuthUser(ctx.sessions.find_user(&ctx.session).await?))
@@ -60,13 +62,22 @@ impl<S: Send + Sync> FromRequestParts<S> for OptionalAuthUser {
     type Rejection = ErrorResponse;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let Some(ctx) = parts.extensions.get::<AuthContext>() else {
+        let Some(ctx) = auth_context(&parts.extensions)? else {
             return Ok(OptionalAuthUser(None));
         };
         Ok(OptionalAuthUser(Some(
             ctx.sessions.find_user(&ctx.session).await?,
         )))
     }
+}
+
+fn auth_context(extensions: &Extensions) -> Result<Option<&AuthContext>, ErrorResponse> {
+    if extensions.get::<SessionUnresolved>().is_some() {
+        return Err(ErrorResponse(Error::Storage(StorageError::msg(
+            "the request's session could not be resolved",
+        ))));
+    }
+    Ok(extensions.get::<AuthContext>())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

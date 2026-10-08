@@ -142,10 +142,6 @@ pub enum AuditEventKind {
         user_id: UserId,
         session_id: SessionId,
     },
-    SessionExpired {
-        user_id: UserId,
-        session_id: SessionId,
-    },
     LoginSucceeded {
         user_id: UserId,
     },
@@ -233,7 +229,6 @@ impl AuditEventKind {
         match self {
             Self::SessionCreated { user_id, .. }
             | Self::SessionRevoked { user_id, .. }
-            | Self::SessionExpired { user_id, .. }
             | Self::LoginSucceeded { user_id }
             | Self::PasskeyAdded { user_id }
             | Self::PasskeyRemoved { user_id }
@@ -266,7 +261,6 @@ impl AuditEventKind {
             | Self::RecoveryFailed { .. }
             | Self::ReauthFailed { .. }
             | Self::RedemptionFailed { .. }
-            | Self::SessionExpired { .. }
             | Self::SignupDenied => AuditSeverity::Warn,
             _ => AuditSeverity::Info,
         }
