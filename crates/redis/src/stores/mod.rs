@@ -38,7 +38,7 @@ pub(crate) async fn insert_absent(
     }
     invocation
         .arg(rows.len())
-        .arg(client::ttl_at_ms(expires_at).unwrap_or(0));
+        .arg(expires_at.timestamp_millis());
     for (_, value) in rows {
         invocation.arg(*value);
     }

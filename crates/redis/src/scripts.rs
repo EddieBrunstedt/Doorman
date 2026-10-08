@@ -45,10 +45,7 @@ end
 
 local pxat = tonumber(ARGV[2])
 for i = 1, claimed do
-    redis.call('SET', KEYS[i], ARGV[i + 2])
-    if pxat > 0 then
-        redis.call('PEXPIREAT', KEYS[i], pxat)
-    end
+    redis.call('SET', KEYS[i], ARGV[i + 2], 'PXAT', pxat)
 end
 if #KEYS > claimed then
     redis.call('SADD', KEYS[claimed + 1], ARGV[claimed + 3])

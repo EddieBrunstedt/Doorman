@@ -9,10 +9,16 @@ use doorman_core::storage::{
     StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, UserStatus,
 };
 
-fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
+// After any real date a run happens on: a backend that expires rows by its own
+// clock must not drop a fixture before the check reaches it.
+fn present() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0)
         .single()
         .expect("valid timestamp")
+}
+
+fn days(n: i64) -> DateTime<Utc> {
+    present() + Duration::days(n)
 }
 
 #[track_caller]
@@ -33,8 +39,8 @@ fn user(id: UserId, email: &str) -> User {
         email: Some(email.to_string()),
         email_verified_at: None,
         status: UserStatus::Active,
-        created_at: ts(2026, 1, 1),
-        updated_at: ts(2026, 1, 1),
+        created_at: present(),
+        updated_at: present(),
     }
 }
 
@@ -108,12 +114,12 @@ async fn users_round_trip(stores: &RecordStores) {
     );
 
     users
-        .mark_email_verified(id, ts(2026, 2, 1))
+        .mark_email_verified(id, days(31))
         .await
         .expect("mark verified");
     let verified = User {
-        email_verified_at: Some(ts(2026, 2, 1)),
-        updated_at: ts(2026, 2, 1),
+        email_verified_at: Some(days(31)),
+        updated_at: days(31),
         ..record
     };
     assert_eq!(
@@ -121,7 +127,7 @@ async fn users_round_trip(stores: &RecordStores) {
         Some(verified.clone()),
     );
 
-    let disabled_at = ts(2026, 2, 15);
+    let disabled_at = days(45);
     users
         .set_user_status(id, UserStatus::Disabled { at: disabled_at }, disabled_at)
         .await
@@ -140,7 +146,7 @@ async fn users_round_trip(stores: &RecordStores) {
     assert!(!reread.status.is_active(), "disabled user is not active");
 
     users
-        .set_user_status(id, UserStatus::Active, ts(2026, 2, 20))
+        .set_user_status(id, UserStatus::Active, days(50))
         .await
         .expect("reactivate");
     let reread = users
@@ -152,7 +158,7 @@ async fn users_round_trip(stores: &RecordStores) {
         reread,
         User {
             status: UserStatus::Active,
-            updated_at: ts(2026, 2, 20),
+            updated_at: days(50),
             ..disabled
         },
         "reactivation clears the disabled timestamp",
@@ -188,7 +194,7 @@ async fn users_email_change(stores: &RecordStores) {
         .await
         .expect("create other");
 
-    let at = ts(2026, 3, 1);
+    let at = days(59);
     users
         .set_user_email(id, "after-change@example.com", at)
         .await
@@ -217,7 +223,7 @@ async fn users_email_change(stores: &RecordStores) {
 
     assert_refused(
         users
-            .set_user_email(id, "taken@example.com", ts(2026, 3, 2))
+            .set_user_email(id, "taken@example.com", days(60))
             .await,
         StorageErrorKind::Conflict,
         "an address another user holds is refused",
@@ -242,14 +248,14 @@ async fn users_email_change(stores: &RecordStores) {
     );
 
     users
-        .set_user_email(id, "after-change@example.com", ts(2026, 3, 3))
+        .set_user_email(id, "after-change@example.com", days(61))
         .await
         .expect("re-set own address");
 }
 
 async fn users_field_changes_compose(stores: &RecordStores) {
     let users = &stores.users;
-    let disabled = UserStatus::Disabled { at: ts(2026, 4, 1) };
+    let disabled = UserStatus::Disabled { at: days(90) };
 
     let status_first = UserId::new();
     users
@@ -257,11 +263,11 @@ async fn users_field_changes_compose(stores: &RecordStores) {
         .await
         .expect("create");
     users
-        .set_user_status(status_first, disabled.clone(), ts(2026, 4, 1))
+        .set_user_status(status_first, disabled.clone(), days(90))
         .await
         .expect("disable");
     users
-        .set_user_email(status_first, "status-first-new@example.com", ts(2026, 4, 2))
+        .set_user_email(status_first, "status-first-new@example.com", days(91))
         .await
         .expect("change email");
     let reread = users
@@ -281,11 +287,11 @@ async fn users_field_changes_compose(stores: &RecordStores) {
         .await
         .expect("create");
     users
-        .set_user_email(email_first, "email-first-new@example.com", ts(2026, 4, 1))
+        .set_user_email(email_first, "email-first-new@example.com", days(90))
         .await
         .expect("change email");
     users
-        .set_user_status(email_first, disabled.clone(), ts(2026, 4, 2))
+        .set_user_status(email_first, disabled.clone(), days(91))
         .await
         .expect("disable");
     let reread = users
@@ -299,7 +305,7 @@ async fn users_field_changes_compose(stores: &RecordStores) {
         Some("email-first-new@example.com"),
         "disable kept the email change",
     );
-    assert_eq!(reread.email_verified_at, Some(ts(2026, 4, 1)));
+    assert_eq!(reread.email_verified_at, Some(days(90)));
 }
 
 async fn users_setters_refuse_missing_user(stores: &RecordStores) {
@@ -307,20 +313,20 @@ async fn users_setters_refuse_missing_user(stores: &RecordStores) {
     let missing = UserId::new();
     assert_refused(
         users
-            .set_user_status(missing, UserStatus::Active, ts(2026, 5, 1))
+            .set_user_status(missing, UserStatus::Active, days(120))
             .await,
         StorageErrorKind::NotFound,
         "status of a missing user",
     );
     assert_refused(
         users
-            .set_user_email(missing, "ghost@example.com", ts(2026, 5, 1))
+            .set_user_email(missing, "ghost@example.com", days(120))
             .await,
         StorageErrorKind::NotFound,
         "email of a missing user",
     );
     assert_refused(
-        users.mark_email_verified(missing, ts(2026, 5, 1)).await,
+        users.mark_email_verified(missing, days(120)).await,
         StorageErrorKind::NotFound,
         "verify a missing user",
     );
@@ -353,8 +359,8 @@ async fn email_link_single_use(stores: &ExpiringStores) {
             user_id,
             purpose: EmailLinkPurpose::Signup,
             new_email: None,
-            created_at: ts(2026, 1, 1),
-            expires_at: ts(2099, 1, 1),
+            created_at: present(),
+            expires_at: days(365),
         })
         .await
         .expect("create");
@@ -383,8 +389,8 @@ async fn email_link_single_use(stores: &ExpiringStores) {
             user_id,
             purpose: EmailLinkPurpose::Signup,
             new_email: None,
-            created_at: ts(2026, 1, 1),
-            expires_at: ts(2099, 1, 1),
+            created_at: present(),
+            expires_at: days(365),
         })
         .await
         .expect("create scoped");
@@ -411,8 +417,8 @@ async fn email_link_email_change_payload(stores: &ExpiringStores) {
             user_id,
             purpose: EmailLinkPurpose::EmailChange,
             new_email: Some("new-address@example.com".to_string()),
-            created_at: ts(2026, 1, 1),
-            expires_at: ts(2099, 1, 1),
+            created_at: present(),
+            expires_at: days(365),
         })
         .await
         .expect("create email-change token");
@@ -436,8 +442,8 @@ fn link(raw: &str, user_id: UserId, purpose: EmailLinkPurpose) -> EmailLink {
         user_id,
         purpose,
         new_email: None,
-        created_at: ts(2026, 1, 1),
-        expires_at: ts(2099, 1, 1),
+        created_at: present(),
+        expires_at: days(365),
     }
 }
 
@@ -525,15 +531,15 @@ async fn email_link_purge_and_delete(stores: &ExpiringStores) {
     );
 
     let expired = EmailLink {
-        created_at: ts(2020, 1, 1),
-        expires_at: ts(2020, 1, 2),
+        created_at: days(-2),
+        expires_at: days(-1),
         ..link("expired-token", user_id, EmailLinkPurpose::Signup)
     };
     tokens
         .replace_link(expired.clone())
         .await
         .expect("create expired");
-    let purged = tokens.purge_expired(ts(2026, 1, 1)).await.expect("purge");
+    let purged = tokens.purge_expired(present()).await.expect("purge");
     assert!(purged >= 1, "at least the expired token was purged");
     assert!(
         tokens
@@ -546,7 +552,7 @@ async fn email_link_purge_and_delete(stores: &ExpiringStores) {
 }
 
 async fn sessions_crud_and_queries(stores: &ExpiringStores) {
-    let now = ts(2026, 1, 1);
+    let now = present();
     let user_id = UserId::new();
     let other_user = UserId::new();
 
@@ -645,7 +651,7 @@ async fn sessions_crud_and_queries(stores: &ExpiringStores) {
 }
 
 async fn sessions_purge_expired(stores: &ExpiringStores) {
-    let now = ts(2026, 1, 1);
+    let now = present();
     let user_id = UserId::new();
 
     let sessions = &stores.sessions;
@@ -701,7 +707,7 @@ async fn sessions_purge_expired(stores: &ExpiringStores) {
 }
 
 async fn session_touch_slides_deadline(stores: &ExpiringStores) {
-    let created_at = ts(2026, 1, 1);
+    let created_at = present();
     let user_id = UserId::new();
 
     let sessions = &stores.sessions;
@@ -712,18 +718,18 @@ async fn session_touch_slides_deadline(stores: &ExpiringStores) {
         token_hash,
         created_at,
         last_used_at: created_at,
-        expires_at: ts(2099, 1, 1),
+        expires_at: days(365),
         ip: Some("203.0.113.9".into()),
         user_agent: Some("touch-agent".into()),
-        recovery_cool_down_until: Some(ts(2099, 6, 1)),
+        recovery_cool_down_until: Some(days(516)),
     };
     sessions
         .create_session(original.clone())
         .await
         .expect("create session");
 
-    let new_last_used_at = ts(2026, 2, 1);
-    let new_expires_at = ts(2099, 3, 1);
+    let new_last_used_at = days(31);
+    let new_expires_at = days(424);
     sessions
         .touch_session(original.id, new_last_used_at, new_expires_at)
         .await
@@ -762,7 +768,7 @@ async fn session_touch_slides_deadline(stores: &ExpiringStores) {
 }
 
 async fn session_touch_does_not_resurrect(stores: &ExpiringStores) {
-    let created_at = ts(2026, 1, 1);
+    let created_at = present();
     let user_id = UserId::new();
 
     let sessions = &stores.sessions;
@@ -773,13 +779,13 @@ async fn session_touch_does_not_resurrect(stores: &ExpiringStores) {
         token_hash: hash_token("touch-never-created"),
         created_at,
         last_used_at: created_at,
-        expires_at: ts(2099, 1, 1),
+        expires_at: days(365),
         ip: None,
         user_agent: None,
         recovery_cool_down_until: None,
     };
     sessions
-        .touch_session(phantom.id, created_at, ts(2099, 2, 1))
+        .touch_session(phantom.id, created_at, days(396))
         .await
         .expect("touch of never-created id is Ok");
     assert!(
@@ -808,7 +814,7 @@ async fn session_touch_does_not_resurrect(stores: &ExpiringStores) {
         .await
         .expect("delete revoked");
     sessions
-        .touch_session(revoked.id, created_at, ts(2099, 2, 1))
+        .touch_session(revoked.id, created_at, days(396))
         .await
         .expect("touch of deleted id is Ok");
     assert!(
@@ -832,7 +838,7 @@ async fn session_touch_does_not_resurrect(stores: &ExpiringStores) {
 const REVOKE_ROUNDS: usize = 8;
 
 async fn session_revoke_races_creation(stores: &ExpiringStores) {
-    let now = ts(2026, 1, 1);
+    let now = present();
     let user_id = UserId::new();
 
     let session = |token: String| Session {
@@ -841,7 +847,7 @@ async fn session_revoke_races_creation(stores: &ExpiringStores) {
         token_hash: hash_token(&token),
         created_at: now,
         last_used_at: now,
-        expires_at: ts(2099, 1, 1),
+        expires_at: days(365),
         ip: None,
         user_agent: None,
         recovery_cool_down_until: None,
@@ -943,7 +949,7 @@ async fn session_revoke_races_creation(stores: &ExpiringStores) {
 }
 
 async fn passkeys_cool_down_round_trip(stores: &RecordStores) {
-    let now = ts(2026, 1, 1);
+    let now = present();
     let user_id = UserId::new();
 
     let credential_id = b"conformance-passkey-id".to_vec();
@@ -1082,8 +1088,8 @@ fn passkey(user_id: UserId, credential_id: &[u8], created_at: DateTime<Utc>) -> 
 }
 
 async fn passkey_field_changes_compose(stores: &RecordStores) {
-    let created_at = ts(2026, 6, 1);
-    let used_at = ts(2026, 6, 2);
+    let created_at = days(151);
+    let used_at = days(152);
     let user_id = UserId::new();
     let passkeys = &stores.passkeys;
     let used = || PasskeyUse {
@@ -1163,7 +1169,7 @@ async fn passkey_writes_refuse_missing_passkey(stores: &RecordStores) {
                     passkey: b"ghost-blob".to_vec(),
                     backup_eligible: false,
                     backup_state: false,
-                    used_at: ts(2026, 6, 1),
+                    used_at: days(151),
                 },
             )
             .await,
@@ -1186,7 +1192,7 @@ async fn passkey_writes_refuse_missing_passkey(stores: &RecordStores) {
 }
 
 async fn passkeys_bulk_delete_for_user(stores: &RecordStores) {
-    let now = ts(2026, 1, 1);
+    let now = present();
     let target = UserId::new();
     let bystander = UserId::new();
 
@@ -1268,7 +1274,7 @@ async fn passkeys_bulk_delete_for_user(stores: &RecordStores) {
 }
 
 async fn passkey_registration_round_trip(stores: &ExpiringStores) {
-    let now = ts(2026, 1, 1);
+    let now = present();
     let user_id = UserId::new();
 
     let state_blob = b"opaque-serialised-registration-state".to_vec();
@@ -1322,7 +1328,7 @@ async fn passkey_registration_round_trip(stores: &ExpiringStores) {
 }
 
 async fn passkey_registration_delete_for_user(stores: &ExpiringStores) {
-    let now = ts(2026, 1, 1);
+    let now = present();
     let target = UserId::new();
     let bystander = UserId::new();
 
@@ -1420,7 +1426,7 @@ async fn passkey_registration_delete_for_user(stores: &ExpiringStores) {
 }
 
 async fn passkey_authentication_single_use(stores: &ExpiringStores) {
-    let now = ts(2026, 1, 1);
+    let now = present();
     for purpose in [AuthenticationPurpose::Login, AuthenticationPurpose::Reauth] {
         let challenge_id = PasskeyChallengeId::new();
         let state_blob = b"opaque-serialised-authentication-state".to_vec();
@@ -1463,7 +1469,7 @@ async fn passkey_authentication_single_use(stores: &ExpiringStores) {
 }
 
 async fn passkey_challenge_purge_expired(stores: &ExpiringStores) {
-    let now = ts(2026, 1, 1);
+    let now = present();
     let user_id = UserId::new();
 
     let challenges = &stores.passkey_challenges;
@@ -1474,8 +1480,8 @@ async fn passkey_challenge_purge_expired(stores: &ExpiringStores) {
             purpose: RegistrationPurpose::AddPasskey,
             user_id,
             state: b"expired-registration".to_vec(),
-            created_at: ts(2020, 1, 1),
-            expires_at: ts(2020, 1, 2),
+            created_at: days(-2),
+            expires_at: days(-1),
             recovery_cool_down_until: None,
         })
         .await
@@ -1486,8 +1492,8 @@ async fn passkey_challenge_purge_expired(stores: &ExpiringStores) {
             id: expired_authentication,
             purpose: AuthenticationPurpose::Login,
             state: b"expired-authentication".to_vec(),
-            created_at: ts(2020, 1, 1),
-            expires_at: ts(2020, 1, 2),
+            created_at: days(-2),
+            expires_at: days(-1),
         })
         .await
         .expect("put expired authentication");
@@ -1499,7 +1505,7 @@ async fn passkey_challenge_purge_expired(stores: &ExpiringStores) {
             user_id,
             state: b"live-registration".to_vec(),
             created_at: now,
-            expires_at: ts(2099, 1, 1),
+            expires_at: days(365),
             recovery_cool_down_until: None,
         })
         .await
@@ -1549,7 +1555,7 @@ where
 }
 
 async fn single_use_under_concurrency(stores: &ExpiringStores) {
-    let now = ts(2026, 1, 1);
+    let now = present();
     let user_id = UserId::new();
 
     let hash = hash_token("race-redeem-token");
@@ -1561,7 +1567,7 @@ async fn single_use_under_concurrency(stores: &ExpiringStores) {
             purpose: EmailLinkPurpose::Signup,
             new_email: None,
             created_at: now,
-            expires_at: ts(2099, 1, 1),
+            expires_at: days(365),
         })
         .await
         .expect("create token");
@@ -1581,7 +1587,7 @@ async fn single_use_under_concurrency(stores: &ExpiringStores) {
             user_id,
             state: b"race-registration".to_vec(),
             created_at: now,
-            expires_at: ts(2099, 1, 1),
+            expires_at: days(365),
             recovery_cool_down_until: None,
         })
         .await
@@ -1607,7 +1613,7 @@ async fn single_use_under_concurrency(stores: &ExpiringStores) {
             purpose: AuthenticationPurpose::Login,
             state: b"race-authentication".to_vec(),
             created_at: now,
-            expires_at: ts(2099, 1, 1),
+            expires_at: days(365),
         })
         .await
         .expect("put authentication");
@@ -1626,7 +1632,7 @@ async fn single_use_under_concurrency(stores: &ExpiringStores) {
 }
 
 async fn owner_indexes_track_removals(stores: &ExpiringStores) {
-    let now = ts(2026, 1, 1);
+    let now = present();
     let user_id = UserId::new();
 
     let sessions = &stores.sessions;
@@ -1634,17 +1640,17 @@ async fn owner_indexes_track_removals(stores: &ExpiringStores) {
         id: SessionId::new(),
         user_id,
         token_hash: hash_token(token),
-        created_at: ts(2020, 1, 1),
-        last_used_at: ts(2020, 1, 1),
+        created_at: days(-2),
+        last_used_at: days(-2),
         expires_at,
         ip: None,
         user_agent: None,
         recovery_cool_down_until: None,
     };
-    let deleted = session("index-deleted-session", ts(2099, 1, 1));
-    let expired = session("index-expired-session", ts(2020, 1, 2));
-    let kept = session("index-kept-session", ts(2099, 1, 1));
-    let other = session("index-other-session", ts(2099, 1, 1));
+    let deleted = session("index-deleted-session", days(365));
+    let expired = session("index-expired-session", days(-1));
+    let kept = session("index-kept-session", days(365));
+    let other = session("index-other-session", days(365));
     for s in [&deleted, &expired, &kept, &other] {
         sessions
             .create_session(s.clone())
@@ -1678,29 +1684,17 @@ async fn owner_indexes_track_removals(stores: &ExpiringStores) {
 
     let tokens = &stores.email_links;
     let token = |raw: &str, purpose, expires_at| EmailLink {
-        created_at: ts(2020, 1, 1),
+        created_at: days(-2),
         expires_at,
         ..link(raw, user_id, purpose)
     };
-    let replaced = token(
-        "index-replaced-token",
-        EmailLinkPurpose::Signup,
-        ts(2099, 1, 1),
-    );
-    let redeemed = token(
-        "index-redeemed-token",
-        EmailLinkPurpose::Signup,
-        ts(2099, 1, 1),
-    );
-    let expired = token(
-        "index-expired-token",
-        EmailLinkPurpose::Recovery,
-        ts(2020, 1, 2),
-    );
+    let replaced = token("index-replaced-token", EmailLinkPurpose::Signup, days(365));
+    let redeemed = token("index-redeemed-token", EmailLinkPurpose::Signup, days(365));
+    let expired = token("index-expired-token", EmailLinkPurpose::Recovery, days(-1));
     let remaining = token(
         "index-remaining-token",
         EmailLinkPurpose::EmailChange,
-        ts(2099, 1, 1),
+        days(365),
     );
     for t in [&replaced, &redeemed, &expired, &remaining] {
         tokens.replace_link(t.clone()).await.expect("create token");
@@ -1732,13 +1726,13 @@ async fn owner_indexes_track_removals(stores: &ExpiringStores) {
         purpose: RegistrationPurpose::AddPasskey,
         user_id,
         state: b"index-registration".to_vec(),
-        created_at: ts(2020, 1, 1),
+        created_at: days(-2),
         expires_at,
         recovery_cool_down_until: None,
     };
-    let taken = registration(ts(2099, 1, 1));
-    let expired = registration(ts(2020, 1, 2));
-    let remaining = registration(ts(2099, 1, 1));
+    let taken = registration(days(365));
+    let expired = registration(days(-1));
+    let remaining = registration(days(365));
     for r in [&taken, &expired, &remaining] {
         challenges
             .put_registration(r.clone())
@@ -1835,7 +1829,7 @@ async fn absent_lookups_return_none(stores: &ExpiringStores) {
 }
 
 async fn inserts_refuse_duplicate_keys(stores: &ExpiringStores) {
-    let now = ts(2026, 1, 1);
+    let now = present();
     let owner = UserId::new();
     let intruder = UserId::new();
 
@@ -1846,7 +1840,7 @@ async fn inserts_refuse_duplicate_keys(stores: &ExpiringStores) {
         token_hash: hash_token(token),
         created_at: now,
         last_used_at: now,
-        expires_at: ts(2099, 1, 1),
+        expires_at: days(365),
         ip: None,
         user_agent: None,
         recovery_cool_down_until: None,
@@ -1907,7 +1901,7 @@ async fn inserts_refuse_duplicate_keys(stores: &ExpiringStores) {
         purpose: EmailLinkPurpose::Signup,
         new_email: None,
         created_at: now,
-        expires_at: ts(2099, 1, 1),
+        expires_at: days(365),
     };
     stores
         .email_links
@@ -1952,7 +1946,7 @@ async fn inserts_refuse_duplicate_keys(stores: &ExpiringStores) {
         user_id: owner,
         state: b"duplicate-registration".to_vec(),
         created_at: now,
-        expires_at: ts(2099, 1, 1),
+        expires_at: days(365),
         recovery_cool_down_until: None,
     };
     challenges
@@ -1994,7 +1988,7 @@ async fn inserts_refuse_duplicate_keys(stores: &ExpiringStores) {
         purpose: AuthenticationPurpose::Login,
         state: b"duplicate-authentication".to_vec(),
         created_at: now,
-        expires_at: ts(2099, 1, 1),
+        expires_at: days(365),
     };
     challenges
         .put_authentication(authentication.clone())

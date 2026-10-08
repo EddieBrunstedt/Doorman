@@ -101,9 +101,7 @@ fn put_opt_s(item: &mut Item, key: &str, value: Option<&str>) {
 }
 
 fn put_ttl(item: &mut Item, expires_at: DateTime<Utc>) {
-    if let Some(value) = client::ttl_attr(expires_at) {
-        item.insert(client::TTL.to_string(), value);
-    }
+    item.insert(client::TTL.to_string(), client::ttl_attr(expires_at));
 }
 
 pub(crate) fn user_item(user: &User) -> Item {

@@ -149,29 +149,23 @@ impl SessionStore for DynamoSessionStore {
         last_used_at: DateTime<Utc>,
         expires_at: DateTime<Utc>,
     ) -> StorageResult<()> {
-        let mut request = self
+        let request = self
             .client
             .inner()
             .update_item()
             .table_name(self.client.table())
             .key(PK, client::s(model::session_pk(id)))
             .condition_expression("attribute_exists(#pk)")
+            .update_expression(
+                "SET #last_used_at = :last_used_at, #expires_at = :expires_at, #ttl = :ttl",
+            )
             .expression_attribute_names("#pk", PK)
             .expression_attribute_names("#last_used_at", "last_used_at")
             .expression_attribute_names("#expires_at", client::EXPIRES_AT)
             .expression_attribute_names("#ttl", client::TTL)
             .expression_attribute_values(":last_used_at", client::s(client::fmt_ts(last_used_at)))
-            .expression_attribute_values(":expires_at", client::s(client::fmt_ts(expires_at)));
-        request = match client::ttl_attr(expires_at) {
-            Some(ttl) => request
-                .update_expression(
-                    "SET #last_used_at = :last_used_at, #expires_at = :expires_at, #ttl = :ttl",
-                )
-                .expression_attribute_values(":ttl", ttl),
-            None => request.update_expression(
-                "SET #last_used_at = :last_used_at, #expires_at = :expires_at REMOVE #ttl",
-            ),
-        };
+            .expression_attribute_values(":expires_at", client::s(client::fmt_ts(expires_at)))
+            .expression_attribute_values(":ttl", client::ttl_attr(expires_at));
         match request.send().await {
             Ok(_) => Ok(()),
             Err(e)

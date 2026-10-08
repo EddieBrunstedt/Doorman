@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use redis::aio::ConnectionManager;
 use serde::Serialize;
@@ -49,10 +48,6 @@ pub(crate) fn to_json<T: Serialize>(value: &T) -> StorageResult<String> {
 
 pub(crate) fn from_json<T: DeserializeOwned>(raw: &str) -> StorageResult<T> {
     serde_json::from_str(raw).map_err(StorageError::new)
-}
-
-pub(crate) fn ttl_at_ms(expires_at: DateTime<Utc>) -> Option<i64> {
-    (expires_at > Utc::now()).then(|| expires_at.timestamp_millis())
 }
 
 pub(crate) async fn get_string(

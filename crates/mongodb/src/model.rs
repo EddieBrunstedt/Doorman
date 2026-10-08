@@ -25,10 +25,6 @@ fn from_bson_dt(key: &str, dt: BsonDateTime) -> StorageResult<DateTime<Utc>> {
         .ok_or_else(|| StorageError::msg(format!("field `{key}` is out of chrono's date range")))
 }
 
-pub(crate) fn ttl_bson(expires_at: DateTime<Utc>) -> Option<BsonDateTime> {
-    (expires_at > Utc::now()).then(|| to_bson_dt(expires_at))
-}
-
 fn to_binary(bytes: Vec<u8>) -> Binary {
     Binary {
         subtype: BinarySubtype::Generic,
@@ -201,9 +197,6 @@ pub(crate) fn session_to_doc(session: &Session) -> Document {
     if let Some(ts) = session.recovery_cool_down_until {
         doc.insert("recovery_cool_down_until", to_bson_dt(ts));
     }
-    if let Some(ttl) = ttl_bson(session.expires_at) {
-        doc.insert("ttl", ttl);
-    }
     doc
 }
 
@@ -232,9 +225,6 @@ pub(crate) fn email_link_to_doc(token: &EmailLink) -> Document {
     };
     if let Some(email) = &token.new_email {
         doc.insert("new_email", email.clone());
-    }
-    if let Some(ttl) = ttl_bson(token.expires_at) {
-        doc.insert("ttl", ttl);
     }
     doc
 }
@@ -312,9 +302,6 @@ pub(crate) fn pkreg_to_doc(value: &StoredPasskeyRegistration) -> Document {
     if let Some(ts) = value.recovery_cool_down_until {
         doc.insert("recovery_cool_down_until", to_bson_dt(ts));
     }
-    if let Some(ttl) = ttl_bson(value.expires_at) {
-        doc.insert("ttl", ttl);
-    }
     doc
 }
 
@@ -332,17 +319,13 @@ pub(crate) fn pkreg_from_doc(doc: &Document) -> StorageResult<StoredPasskeyRegis
 
 pub(crate) fn pkauth_to_doc(value: &StoredPasskeyAuthentication) -> Document {
     let state_bin = to_binary(value.state.clone());
-    let mut doc = doc! {
+    doc! {
         "_id": challenge_id_str(value.id),
         "purpose": authentication_purpose_to_str(value.purpose),
         "state": state_bin,
         "created_at": to_bson_dt(value.created_at),
         "expires_at": to_bson_dt(value.expires_at),
-    };
-    if let Some(ttl) = ttl_bson(value.expires_at) {
-        doc.insert("ttl", ttl);
     }
-    doc
 }
 
 pub(crate) fn pkauth_from_doc(doc: &Document) -> StorageResult<StoredPasskeyAuthentication> {

@@ -60,22 +60,15 @@ impl SessionStore for RedisSessionStore {
 
         let mut pipe = redis::pipe();
         pipe.atomic();
-        if let Some(ms) = client::ttl_at_ms(current.expires_at) {
-            pipe.cmd("SET")
-                .arg(&session_key)
-                .arg(&json)
-                .arg("XX")
-                .arg("PXAT")
-                .arg(ms)
-                .ignore();
-            pipe.cmd("PEXPIREAT").arg(&hash_key).arg(ms).ignore();
-        } else {
-            pipe.cmd("SET")
-                .arg(&session_key)
-                .arg(&json)
-                .arg("XX")
-                .ignore();
-        }
+        let pxat = current.expires_at.timestamp_millis();
+        pipe.cmd("SET")
+            .arg(&session_key)
+            .arg(&json)
+            .arg("XX")
+            .arg("PXAT")
+            .arg(pxat)
+            .ignore();
+        pipe.cmd("PEXPIREAT").arg(&hash_key).arg(pxat).ignore();
         let _: () = pipe
             .query_async(&mut conn)
             .await

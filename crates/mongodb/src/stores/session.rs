@@ -35,20 +35,12 @@ impl SessionStore for MongoSessionStore {
         expires_at: DateTime<Utc>,
     ) -> StorageResult<()> {
         let filter = doc! { "_id": model::session_id_str(id) };
-        let mut set = doc! {
-            "last_used_at": to_bson_dt(last_used_at),
-            "expires_at": to_bson_dt(expires_at),
+        let update = doc! {
+            "$set": {
+                "last_used_at": to_bson_dt(last_used_at),
+                "expires_at": to_bson_dt(expires_at),
+            },
         };
-        let mut update = doc! {};
-        match model::ttl_bson(expires_at) {
-            Some(ttl) => {
-                set.insert("ttl", ttl);
-            }
-            None => {
-                update.insert("$unset", doc! { "ttl": "" });
-            }
-        }
-        update.insert("$set", set);
         self.coll.update_one(filter, update).await.map_err(err)?;
         Ok(())
     }

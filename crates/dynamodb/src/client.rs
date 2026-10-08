@@ -94,8 +94,8 @@ pub(crate) fn ss(items: impl IntoIterator<Item = String>) -> AttributeValue {
     AttributeValue::Ss(items.into_iter().collect())
 }
 
-pub(crate) fn ttl_attr(expires_at: DateTime<Utc>) -> Option<AttributeValue> {
-    (expires_at > Utc::now()).then(|| n(expires_at.timestamp()))
+pub(crate) fn ttl_attr(expires_at: DateTime<Utc>) -> AttributeValue {
+    n(expires_at.timestamp())
 }
 
 fn missing(key: &str) -> StorageError {

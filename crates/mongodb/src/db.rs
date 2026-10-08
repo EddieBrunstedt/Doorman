@@ -103,10 +103,10 @@ impl MongoDb {
                     )
                     .build(),
                 IndexModel::builder()
-                    .keys(doc! { "ttl": 1 })
+                    .keys(doc! { "expires_at": 1 })
                     .options(
                         IndexOptions::builder()
-                            .name("idx_sessions_ttl".to_string())
+                            .name("idx_sessions_expires_at".to_string())
                             .expire_after(Duration::ZERO)
                             .build(),
                     )
@@ -138,10 +138,10 @@ impl MongoDb {
                     )
                     .build(),
                 IndexModel::builder()
-                    .keys(doc! { "ttl": 1 })
+                    .keys(doc! { "expires_at": 1 })
                     .options(
                         IndexOptions::builder()
-                            .name("idx_email_links_ttl".to_string())
+                            .name("idx_email_links_expires_at".to_string())
                             .expire_after(Duration::ZERO)
                             .build(),
                     )
@@ -181,10 +181,10 @@ impl MongoDb {
                     )
                     .build(),
                 IndexModel::builder()
-                    .keys(doc! { "ttl": 1 })
+                    .keys(doc! { "expires_at": 1 })
                     .options(
                         IndexOptions::builder()
-                            .name("idx_pkreg_ttl".to_string())
+                            .name("idx_pkreg_expires_at".to_string())
                             .expire_after(Duration::ZERO)
                             .build(),
                     )
@@ -199,10 +199,10 @@ impl MongoDb {
         self.passkey_authentications()
             .create_index(
                 IndexModel::builder()
-                    .keys(doc! { "ttl": 1 })
+                    .keys(doc! { "expires_at": 1 })
                     .options(
                         IndexOptions::builder()
-                            .name("idx_pkauth_ttl".to_string())
+                            .name("idx_pkauth_expires_at".to_string())
                             .expire_after(Duration::ZERO)
                             .build(),
                     )
