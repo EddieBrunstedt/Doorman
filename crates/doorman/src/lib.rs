@@ -20,9 +20,6 @@ pub use doorman_sqlx as sqlx;
 #[cfg(feature = "redis")]
 pub use doorman_redis as redis;
 
-#[cfg(feature = "dynamodb")]
-pub use doorman_dynamodb as dynamodb;
-
 #[cfg(feature = "mongodb")]
 pub use doorman_mongodb as mongodb;
 
@@ -41,9 +38,6 @@ pub mod prelude {
 
     #[cfg(feature = "redis")]
     pub use doorman_redis::*;
-
-    #[cfg(feature = "dynamodb")]
-    pub use doorman_dynamodb::*;
 
     #[cfg(feature = "mongodb")]
     pub use doorman_mongodb::*;

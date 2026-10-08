@@ -38,10 +38,6 @@ test-mysql *args:
 test-postgres *args:
     cargo nextest run -p doorman-sqlx --features postgres {{ args }}
 
-# Run only the doorman-dynamodb conformance suite.
-test-dynamodb *args:
-    cargo nextest run -p doorman-dynamodb {{ args }}
-
 # Run only the doorman-mongodb conformance suite.
 test-mongodb *args:
     cargo nextest run -p doorman-mongodb {{ args }}

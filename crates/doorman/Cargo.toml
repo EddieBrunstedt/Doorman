@@ -9,7 +9,7 @@ keywords = ["authentication", "passkey", "webauthn", "axum", "auth"]
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Opinionated passkey-only authentication for Rust web apps. Umbrella crate re-exporting doorman-core, doorman-axum, doorman-sqlx, doorman-redis, doorman-dynamodb, doorman-mongodb, and doorman-redb behind features."
+description = "Opinionated passkey-only authentication for Rust web apps. Umbrella crate re-exporting doorman-core, doorman-axum, doorman-sqlx, doorman-redis, doorman-mongodb, and doorman-redb behind features."
 
 [features]
 default = []
@@ -19,7 +19,6 @@ postgres = ["dep:doorman-sqlx", "doorman-sqlx/postgres"]
 mysql = ["dep:doorman-sqlx", "doorman-sqlx/mysql"]
 redis = ["dep:doorman-redis"]
 valkey = ["redis"]
-dynamodb = ["dep:doorman-dynamodb"]
 mongodb = ["dep:doorman-mongodb"]
 redb = ["dep:doorman-redb"]
 file-email = ["doorman-core/file-email", "doorman-axum?/file-email"]
@@ -31,7 +30,6 @@ workspace = true
 chrono.workspace = true
 doorman-axum = { path = "../axum", version = "0.1.0", optional = true }
 doorman-core = { path = "../core", version = "0.1.0" }
-doorman-dynamodb = { path = "../dynamodb", version = "0.1.0", optional = true }
 doorman-mongodb = { path = "../mongodb", version = "0.1.0", optional = true }
 doorman-redb = { path = "../redb", version = "0.1.0", optional = true }
 doorman-redis = { path = "../redis", version = "0.1.0", optional = true }
