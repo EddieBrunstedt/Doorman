@@ -4,10 +4,10 @@ use chrono::{DateTime, Utc};
 
 use crate::core::error::StorageError;
 use crate::core::purge::PurgeSummary;
-use crate::core::storage::Storage;
+use crate::core::storage::ExpiringStores;
 
-pub async fn run_purge(storage: Storage) -> ExitCode {
-    match execute(storage, std::env::args().skip(1)).await {
+pub async fn run_purge(stores: ExpiringStores) -> ExitCode {
+    match execute(stores, std::env::args().skip(1)).await {
         Ok((options, summary)) => {
             print_summary(options.now, options.json, &summary);
             ExitCode::SUCCESS
@@ -40,11 +40,11 @@ impl std::fmt::Display for PurgeError {
 }
 
 async fn execute(
-    storage: Storage,
+    stores: ExpiringStores,
     args: impl IntoIterator<Item = String>,
 ) -> Result<(Options, PurgeSummary), PurgeError> {
     let options = parse_args(args)?;
-    let summary = storage
+    let summary = stores
         .purge_all_expired(options.now)
         .await
         .map_err(PurgeError::Sweep)?;
@@ -180,7 +180,7 @@ mod tests {
     #[tokio::test]
     async fn execute_sweeps_the_storage_and_reports_counts() {
         let now = DateTime::<Utc>::from_timestamp(1_000_000, 0).expect("timestamp");
-        let storage = InMemoryStorage::new().all_stores();
+        let stores = InMemoryStorage::new().expiring();
 
         let user_id = UserId::new();
         let mk_session = |tag: u8, expires_at: DateTime<Utc>| Session {
@@ -194,18 +194,18 @@ mod tests {
             user_agent: None,
             recovery_cool_down_until: None,
         };
-        storage
+        stores
             .sessions
             .create_session(mk_session(1, now - chrono::Duration::hours(1)))
             .await
             .expect("expired session");
-        storage
+        stores
             .sessions
             .create_session(mk_session(2, now + chrono::Duration::hours(1)))
             .await
             .expect("live session");
 
-        let (options, summary) = execute(storage, args(&["--now", &now.to_rfc3339(), "--json"]))
+        let (options, summary) = execute(stores, args(&["--now", &now.to_rfc3339(), "--json"]))
             .await
             .expect("execute ok");
 
@@ -217,9 +217,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_surfaces_a_flag_error() {
-        let storage = InMemoryStorage::new().all_stores();
+        let stores = InMemoryStorage::new().expiring();
         assert!(matches!(
-            execute(storage, args(&["--when", "now"])).await,
+            execute(stores, args(&["--when", "now"])).await,
             Err(PurgeError::Args(_))
         ));
     }

@@ -1,5 +1,4 @@
-use doorman_core::memory::InMemoryStorage;
-use doorman_core::storage::Storage;
+use doorman_core::storage::ExpiringStores;
 use doorman_redis::RedisStorage;
 use redis::aio::MultiplexedConnection;
 use testcontainers_modules::redis::Redis;
@@ -41,14 +40,19 @@ pub async fn start(backend: Backend) -> (ContainerGuard, String) {
     }
 }
 
-pub async fn storage(backend: Backend) -> (ContainerGuard, Storage) {
-    let (guard, storage, _, _) = storage_with_raw(backend).await;
-    (guard, storage)
+pub async fn stores(backend: Backend) -> (ContainerGuard, ExpiringStores) {
+    let (guard, stores, _, _) = stores_with_raw(backend).await;
+    (guard, stores)
 }
 
-pub async fn storage_with_raw(
+pub async fn stores_with_raw(
     backend: Backend,
-) -> (ContainerGuard, Storage, MultiplexedConnection, String) {
+) -> (
+    ContainerGuard,
+    ExpiringStores,
+    MultiplexedConnection,
+    String,
+) {
     let (guard, url) = start(backend).await;
     let prefix = format!("doorman-test:{}:", Uuid::new_v4());
     let redis = RedisStorage::connect(&url)
@@ -60,13 +64,5 @@ pub async fn storage_with_raw(
         .get_multiplexed_async_connection()
         .await
         .expect("open raw redis connection");
-    let mem = InMemoryStorage::new();
-    let storage = Storage {
-        users: mem.user_store(),
-        passkeys: mem.passkey_store(),
-        sessions: redis.session_store(),
-        email_links: redis.email_link_store(),
-        passkey_challenges: redis.passkey_challenge_store(),
-    };
-    (guard, storage, raw, prefix)
+    (guard, redis.expiring(), raw, prefix)
 }

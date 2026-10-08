@@ -15,9 +15,7 @@ use std::sync::Arc;
 
 use aws_sdk_dynamodb::types::TransactWriteItem;
 use doorman_core::error::StorageResult;
-use doorman_core::storage::{
-    EmailLinkStore, PasskeyChallengeStore, PasskeyStore, Session, SessionStore, Storage, UserStore,
-};
+use doorman_core::storage::{ExpiringStores, RecordStores, Session, Storage};
 
 use crate::client::DynamoClient;
 
@@ -43,40 +41,32 @@ impl DynamoDbStorage {
 
     pub fn all_stores(&self) -> Storage {
         Storage {
-            users: self.user_store(),
-            sessions: self.session_store(),
-            email_links: self.email_link_store(),
-            passkeys: self.passkey_store(),
-            passkey_challenges: self.passkey_challenge_store(),
+            records: self.records(),
+            expiring: self.expiring(),
         }
     }
 
-    pub fn user_store(&self) -> Arc<dyn UserStore> {
-        Arc::new(stores::user::DynamoUserStore::new(self.client.clone()))
+    pub fn records(&self) -> RecordStores {
+        RecordStores {
+            users: Arc::new(stores::user::DynamoUserStore::new(self.client.clone())),
+            passkeys: Arc::new(stores::passkey::DynamoPasskeyStore::new(
+                self.client.clone(),
+            )),
+        }
     }
 
-    pub fn session_store(&self) -> Arc<dyn SessionStore> {
-        Arc::new(stores::session::DynamoSessionStore::new(
-            self.client.clone(),
-        ))
-    }
-
-    pub fn email_link_store(&self) -> Arc<dyn EmailLinkStore> {
-        Arc::new(stores::email_link::DynamoEmailLinkStore::new(
-            self.client.clone(),
-        ))
-    }
-
-    pub fn passkey_store(&self) -> Arc<dyn PasskeyStore> {
-        Arc::new(stores::passkey::DynamoPasskeyStore::new(
-            self.client.clone(),
-        ))
-    }
-
-    pub fn passkey_challenge_store(&self) -> Arc<dyn PasskeyChallengeStore> {
-        Arc::new(stores::passkey_chal::DynamoPasskeyChallengeStore::new(
-            self.client.clone(),
-        ))
+    pub fn expiring(&self) -> ExpiringStores {
+        ExpiringStores {
+            sessions: Arc::new(stores::session::DynamoSessionStore::new(
+                self.client.clone(),
+            )),
+            email_links: Arc::new(stores::email_link::DynamoEmailLinkStore::new(
+                self.client.clone(),
+            )),
+            passkey_challenges: Arc::new(stores::passkey_chal::DynamoPasskeyChallengeStore::new(
+                self.client.clone(),
+            )),
+        }
     }
 }
 

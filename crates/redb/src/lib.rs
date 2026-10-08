@@ -14,9 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use doorman_core::error::StorageResult;
-use doorman_core::storage::{
-    EmailLinkStore, PasskeyChallengeStore, PasskeyStore, Session, SessionStore, Storage, UserStore,
-};
+use doorman_core::storage::{ExpiringStores, RecordStores, Session, Storage};
 use redb::{Database, WriteTransaction};
 
 use crate::db::RedbHandle;
@@ -43,36 +41,28 @@ impl RedbStorage {
 
     pub fn all_stores(&self) -> Storage {
         Storage {
-            users: self.user_store(),
-            sessions: self.session_store(),
-            email_links: self.email_link_store(),
-            passkeys: self.passkey_store(),
-            passkey_challenges: self.passkey_challenge_store(),
+            records: self.records(),
+            expiring: self.expiring(),
         }
     }
 
-    pub fn user_store(&self) -> Arc<dyn UserStore> {
-        Arc::new(stores::user::RedbUserStore::new(self.handle.clone()))
+    pub fn records(&self) -> RecordStores {
+        RecordStores {
+            users: Arc::new(stores::user::RedbUserStore::new(self.handle.clone())),
+            passkeys: Arc::new(stores::passkey::RedbPasskeyStore::new(self.handle.clone())),
+        }
     }
 
-    pub fn session_store(&self) -> Arc<dyn SessionStore> {
-        Arc::new(stores::session::RedbSessionStore::new(self.handle.clone()))
-    }
-
-    pub fn email_link_store(&self) -> Arc<dyn EmailLinkStore> {
-        Arc::new(stores::email_link::RedbEmailLinkStore::new(
-            self.handle.clone(),
-        ))
-    }
-
-    pub fn passkey_store(&self) -> Arc<dyn PasskeyStore> {
-        Arc::new(stores::passkey::RedbPasskeyStore::new(self.handle.clone()))
-    }
-
-    pub fn passkey_challenge_store(&self) -> Arc<dyn PasskeyChallengeStore> {
-        Arc::new(stores::passkey_chal::RedbPasskeyChallengeStore::new(
-            self.handle.clone(),
-        ))
+    pub fn expiring(&self) -> ExpiringStores {
+        ExpiringStores {
+            sessions: Arc::new(stores::session::RedbSessionStore::new(self.handle.clone())),
+            email_links: Arc::new(stores::email_link::RedbEmailLinkStore::new(
+                self.handle.clone(),
+            )),
+            passkey_challenges: Arc::new(stores::passkey_chal::RedbPasskeyChallengeStore::new(
+                self.handle.clone(),
+            )),
+        }
     }
 
     pub fn database(&self) -> Arc<Database> {

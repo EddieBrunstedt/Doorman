@@ -46,10 +46,10 @@ impl CoreDeps {
             rate_limiter,
             metrics: Arc::new(NoopMetricSink),
             sessions,
-            users: storage.users,
-            email_links: storage.email_links,
-            passkeys: storage.passkeys,
-            passkey_challenges: storage.passkey_challenges,
+            users: storage.records.users,
+            email_links: storage.expiring.email_links,
+            passkeys: storage.records.passkeys,
+            passkey_challenges: storage.expiring.passkey_challenges,
         }
     }
 

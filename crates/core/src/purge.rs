@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::error::StorageResult;
-use crate::storage::Storage;
+use crate::storage::ExpiringStores;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PurgeSummary {
@@ -16,7 +16,7 @@ impl PurgeSummary {
     }
 }
 
-impl Storage {
+impl ExpiringStores {
     pub async fn purge_all_expired(&self, now: DateTime<Utc>) -> StorageResult<PurgeSummary> {
         let sessions = self.sessions.purge_expired(now).await?;
         let email_links = self.email_links.purge_expired(now).await?;
@@ -31,7 +31,7 @@ impl Storage {
 
 #[cfg(feature = "background-purge")]
 pub fn spawn_purge_task(
-    storage: Storage,
+    stores: ExpiringStores,
     clock: std::sync::Arc<dyn crate::clock::Clock>,
     interval: std::time::Duration,
 ) -> tokio::task::JoinHandle<()> {
@@ -40,7 +40,7 @@ pub fn spawn_purge_task(
         loop {
             ticker.tick().await;
             let now = clock.now();
-            match storage.purge_all_expired(now).await {
+            match stores.purge_all_expired(now).await {
                 Ok(summary) => {
                     tracing::debug!(
                         sessions = summary.sessions,
@@ -72,7 +72,7 @@ mod tests {
         DateTime::<Utc>::from_timestamp(secs, 0).expect("valid timestamp")
     }
 
-    async fn seed(storage: &Storage, user_id: UserId, now: DateTime<Utc>) {
+    async fn seed(stores: &ExpiringStores, user_id: UserId, now: DateTime<Utc>) {
         let expired = now - chrono::Duration::hours(1);
         let live = now + chrono::Duration::hours(1);
 
@@ -87,12 +87,12 @@ mod tests {
             user_agent: None,
             recovery_cool_down_until: None,
         };
-        storage
+        stores
             .sessions
             .create_session(mk_session(1, expired))
             .await
             .expect("expired session");
-        storage
+        stores
             .sessions
             .create_session(mk_session(2, live))
             .await
@@ -106,12 +106,12 @@ mod tests {
             created_at: now - chrono::Duration::hours(2),
             expires_at,
         };
-        storage
+        stores
             .email_links
             .replace_link(mk_token(3, EmailLinkPurpose::Signup, expired))
             .await
             .expect("expired token");
-        storage
+        stores
             .email_links
             .replace_link(mk_token(4, EmailLinkPurpose::Recovery, live))
             .await
@@ -126,12 +126,12 @@ mod tests {
             expires_at,
             recovery_cool_down_until: None,
         };
-        storage
+        stores
             .passkey_challenges
             .put_registration(mk_reg(expired))
             .await
             .expect("expired registration");
-        storage
+        stores
             .passkey_challenges
             .put_registration(mk_reg(live))
             .await
@@ -144,7 +144,7 @@ mod tests {
             created_at: now - chrono::Duration::hours(2),
             expires_at: expired,
         };
-        storage
+        stores
             .passkey_challenges
             .put_authentication(expired_auth)
             .await
@@ -154,17 +154,17 @@ mod tests {
     #[tokio::test]
     async fn purge_all_expired_sweeps_every_store_and_reports_counts() {
         let now = ts(1_000_000);
-        let storage = InMemoryStorage::new().all_stores();
-        seed(&storage, UserId::new(), now).await;
+        let stores = InMemoryStorage::new().expiring();
+        seed(&stores, UserId::new(), now).await;
 
-        let summary = storage.purge_all_expired(now).await.expect("purge");
+        let summary = stores.purge_all_expired(now).await.expect("purge");
 
         assert_eq!(summary.sessions, 1);
         assert_eq!(summary.email_links, 1);
         assert_eq!(summary.passkey_challenges, 2);
         assert_eq!(summary.total(), 4);
 
-        let second = storage.purge_all_expired(now).await.expect("second purge");
+        let second = stores.purge_all_expired(now).await.expect("second purge");
         assert_eq!(second.total(), 0);
     }
 
@@ -182,11 +182,11 @@ mod tests {
 
         let now = ts(2_000_000);
         let user_id = UserId::new();
-        let storage = InMemoryStorage::new().all_stores();
-        seed(&storage, user_id, now).await;
+        let stores = InMemoryStorage::new().expiring();
+        seed(&stores, user_id, now).await;
 
         let handle = spawn_purge_task(
-            storage.clone(),
+            stores.clone(),
             std::sync::Arc::new(FixedClock(now)),
             std::time::Duration::from_secs(3600),
         );
@@ -196,7 +196,7 @@ mod tests {
         }
         handle.abort();
 
-        let remaining = storage.sessions.list_for_user(user_id).await.expect("list");
+        let remaining = stores.sessions.list_for_user(user_id).await.expect("list");
         assert_eq!(remaining.len(), 1, "background task swept the expired row");
         assert!(remaining[0].expires_at > now);
     }

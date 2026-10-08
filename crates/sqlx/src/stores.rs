@@ -11,52 +11,34 @@ macro_rules! sqlx_stores {
         impl $storage {
             pub fn all_stores(&self) -> $crate::stores::__reexport::Storage {
                 $crate::stores::__reexport::Storage {
-                    users: self.user_store(),
-                    sessions: self.session_store(),
-                    email_links: self.email_link_store(),
-                    passkeys: self.passkey_store(),
-                    passkey_challenges: self.passkey_challenge_store(),
+                    records: self.records(),
+                    expiring: self.expiring(),
                 }
             }
 
-            pub fn user_store(
-                &self,
-            ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::UserStore> {
-                ::std::sync::Arc::new(UserStoreImpl {
-                    pool: self.pool.clone(),
-                })
+            pub fn records(&self) -> $crate::stores::__reexport::RecordStores {
+                $crate::stores::__reexport::RecordStores {
+                    users: ::std::sync::Arc::new(UserStoreImpl {
+                        pool: self.pool.clone(),
+                    }),
+                    passkeys: ::std::sync::Arc::new(PasskeyStoreImpl {
+                        pool: self.pool.clone(),
+                    }),
+                }
             }
 
-            pub fn session_store(
-                &self,
-            ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::SessionStore> {
-                ::std::sync::Arc::new(SessionStoreImpl {
-                    pool: self.pool.clone(),
-                })
-            }
-
-            pub fn email_link_store(
-                &self,
-            ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::EmailLinkStore> {
-                ::std::sync::Arc::new(EmailLinkStoreImpl {
-                    pool: self.pool.clone(),
-                })
-            }
-
-            pub fn passkey_store(
-                &self,
-            ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::PasskeyStore> {
-                ::std::sync::Arc::new(PasskeyStoreImpl {
-                    pool: self.pool.clone(),
-                })
-            }
-
-            pub fn passkey_challenge_store(
-                &self,
-            ) -> ::std::sync::Arc<dyn $crate::stores::__reexport::PasskeyChallengeStore> {
-                ::std::sync::Arc::new(PasskeyChallengeStoreImpl {
-                    pool: self.pool.clone(),
-                })
+            pub fn expiring(&self) -> $crate::stores::__reexport::ExpiringStores {
+                $crate::stores::__reexport::ExpiringStores {
+                    sessions: ::std::sync::Arc::new(SessionStoreImpl {
+                        pool: self.pool.clone(),
+                    }),
+                    email_links: ::std::sync::Arc::new(EmailLinkStoreImpl {
+                        pool: self.pool.clone(),
+                    }),
+                    passkey_challenges: ::std::sync::Arc::new(PasskeyChallengeStoreImpl {
+                        pool: self.pool.clone(),
+                    }),
+                }
             }
         }
 
@@ -992,9 +974,9 @@ pub(crate) mod __reexport {
     pub use doorman_core::encoding::{user_status_from_parts, user_status_to_str};
     pub use doorman_core::error::{StorageError, StorageResult};
     pub use doorman_core::storage::{
-        EmailLink, EmailLinkStore, PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore,
-        PasskeyUse, Session, SessionId, SessionStore, Storage, StoredPasskey,
-        StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
-        UserStatus, UserStore,
+        EmailLink, EmailLinkStore, ExpiringStores, PasskeyChallengeId, PasskeyChallengeStore,
+        PasskeyStore, PasskeyUse, RecordStores, Session, SessionId, SessionStore, Storage,
+        StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User,
+        UserId, UserStatus, UserStore,
     };
 }

@@ -10,7 +10,7 @@ CREATE TABLE users (
 
 CREATE TABLE sessions (
     id BLOB PRIMARY KEY,
-    user_id BLOB NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id BLOB NOT NULL,
     token_hash BLOB NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
     last_used_at TEXT NOT NULL,
@@ -25,7 +25,7 @@ CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 CREATE TABLE email_links (
     token_hash BLOB PRIMARY KEY,
     purpose TEXT NOT NULL,
-    user_id BLOB NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id BLOB NOT NULL,
     new_email TEXT,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
@@ -35,7 +35,7 @@ CREATE INDEX idx_email_links_expires_at ON email_links(expires_at);
 
 CREATE TABLE passkeys (
     credential_id BLOB PRIMARY KEY,
-    user_id BLOB NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id BLOB NOT NULL,
     passkey BLOB NOT NULL,
     name TEXT,
     created_at TEXT NOT NULL,
@@ -51,7 +51,7 @@ CREATE INDEX idx_passkeys_user_id ON passkeys(user_id);
 CREATE TABLE passkey_registrations (
     id BLOB PRIMARY KEY,
     purpose TEXT NOT NULL,
-    user_id BLOB NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id BLOB NOT NULL,
     state BLOB NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,

@@ -8,9 +8,7 @@ use aws_smithy_http_client::tls::{self, rustls_provider::CryptoMode};
 use chrono::{DateTime, Duration, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::session::hash_token;
-use doorman_core::storage::{
-    Session, SessionId, SessionStore, Storage, TokenHash, User, UserId, UserStatus,
-};
+use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 use doorman_dynamodb::{DynamoDbStorage, create_session_writes};
 use testcontainers_modules::dynamodb_local::DynamoDb;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -103,28 +101,14 @@ async fn override_create_session_reuses_bundled_reads() {
     let storage = DynamoDbStorage::new(client.clone(), "doorman-composability");
     storage.create_table().await.expect("create table");
 
-    let composite = Storage {
-        sessions: Arc::new(AuditedSessions {
-            inner: storage.session_store(),
-            client: client.clone(),
-            table: storage.table_name().to_string(),
-        }),
-        ..storage.all_stores()
-    };
+    let mut composite = storage.all_stores();
+    composite.expiring.sessions = Arc::new(AuditedSessions {
+        inner: composite.expiring.sessions.clone(),
+        client: client.clone(),
+        table: storage.table_name().to_string(),
+    });
 
     let user_id = UserId::new();
-    composite
-        .users
-        .create_user(User {
-            id: user_id,
-            email: Some("audited@example.com".to_string()),
-            email_verified_at: None,
-            status: UserStatus::Active,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        })
-        .await
-        .expect("create user");
 
     let now = Utc::now();
     let session = Session {
@@ -140,12 +124,14 @@ async fn override_create_session_reuses_bundled_reads() {
     };
 
     composite
+        .expiring
         .sessions
         .create_session(session.clone())
         .await
         .expect("transactional create_session");
 
     let found = composite
+        .expiring
         .sessions
         .find_session_by_token_hash(&session.token_hash)
         .await
@@ -155,6 +141,7 @@ async fn override_create_session_reuses_bundled_reads() {
     assert_eq!(found.user_id, user_id);
     assert_eq!(
         composite
+            .expiring
             .sessions
             .list_for_user(user_id)
             .await
@@ -175,6 +162,7 @@ async fn override_create_session_reuses_bundled_reads() {
 
     assert_eq!(
         composite
+            .expiring
             .sessions
             .delete_sessions_for_user(user_id, None)
             .await
@@ -183,6 +171,7 @@ async fn override_create_session_reuses_bundled_reads() {
     );
     assert!(
         composite
+            .expiring
             .sessions
             .find_session_by_id(session.id)
             .await

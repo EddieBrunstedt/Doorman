@@ -31,9 +31,9 @@ pub use crate::signup::{
     OpenSignupPolicy, SignupConfig, SignupDecision, SignupManager, SignupPolicy, SignupRateLimits,
 };
 pub use crate::storage::{
-    AuthenticationPurpose, EmailLink, EmailLinkPurpose, EmailLinkStore, PasskeyChallengeId,
-    PasskeyChallengeStore, PasskeyStore, PasskeySummary, RegistrationPurpose, Session, SessionId,
-    SessionStore, SessionSummary, Storage, StoredPasskey, StoredPasskeyAuthentication,
-    StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
+    AuthenticationPurpose, EmailLink, EmailLinkPurpose, EmailLinkStore, ExpiringStores,
+    PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore, PasskeySummary, RecordStores,
+    RegistrationPurpose, Session, SessionId, SessionStore, SessionSummary, Storage, StoredPasskey,
+    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStore,
 };
 pub use crate::user::{EmailChangeOutcome, UserConfig, UserManager};

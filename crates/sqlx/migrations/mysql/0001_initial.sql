@@ -17,8 +17,7 @@ CREATE TABLE sessions (
     expires_at DATETIME(6) NOT NULL,
     ip VARCHAR(45),
     user_agent TEXT,
-    recovery_cool_down_until DATETIME(6),
-    CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    recovery_cool_down_until DATETIME(6)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
@@ -29,8 +28,7 @@ CREATE TABLE email_links (
     user_id BINARY(16) NOT NULL,
     new_email VARCHAR(255),
     created_at DATETIME(6) NOT NULL,
-    expires_at DATETIME(6) NOT NULL,
-    CONSTRAINT fk_email_links_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    expires_at DATETIME(6) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE UNIQUE INDEX idx_email_links_owner ON email_links(user_id, purpose);
 CREATE INDEX idx_email_links_expires_at ON email_links(expires_at);
@@ -46,8 +44,7 @@ CREATE TABLE passkeys (
     transports VARCHAR(255) NOT NULL DEFAULT '',
     backup_eligible BOOLEAN NOT NULL DEFAULT FALSE,
     backup_state BOOLEAN NOT NULL DEFAULT FALSE,
-    recovery_cool_down_until DATETIME(6),
-    CONSTRAINT fk_passkeys_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    recovery_cool_down_until DATETIME(6)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_passkeys_user_id ON passkeys(user_id);
 
@@ -58,8 +55,7 @@ CREATE TABLE passkey_registrations (
     state BLOB NOT NULL,
     created_at DATETIME(6) NOT NULL,
     expires_at DATETIME(6) NOT NULL,
-    recovery_cool_down_until DATETIME(6),
-    CONSTRAINT fk_passkey_registrations_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    recovery_cool_down_until DATETIME(6)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_passkey_registrations_user_id ON passkey_registrations(user_id);
 CREATE INDEX idx_passkey_registrations_expires_at ON passkey_registrations(expires_at);

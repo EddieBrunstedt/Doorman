@@ -40,6 +40,10 @@ Passkey-only authentication for a single application: passkeys are the only way 
 
 **Re-authentication**: Proving possession of a passkey again, within an existing session, right before a destructive action. `reauth` is the accepted abbreviation in identifiers. _Avoid_: step-up
 
+**Record stores**: The stores that hold users and their passkeys. Their rows never expire; they last until doorman deletes them. `records` is their spelling in identifiers. _Avoid_: system of record, durable stores
+
+**Expiring stores**: The stores that hold sessions, email links and passkey challenges. Every row in them expires and is purged once it has. `expiring` is their spelling in identifiers. _Avoid_: ephemeral stores
+
 ## WebAuthn specifics
 
 Where doorman speaks the WebAuthn protocol itself, it keeps WebAuthn's own names: relying party (with its ID, name and origin), credential (only in the protocol's own messages and fields, such as the credential ID), user handle, user verification, discoverable credential, ceremony, challenge, assertion and attestation. Everywhere else, the terms above apply.

@@ -227,6 +227,7 @@ async fn purge_expired_deletes_only_expired() {
     h.clock.advance(ChronoDuration::seconds(45));
     let summary = h
         .storage
+        .expiring
         .purge_all_expired(h.clock.now())
         .await
         .expect("purge");

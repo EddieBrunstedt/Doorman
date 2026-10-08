@@ -13,7 +13,7 @@ impl SqliteStorage {
         let opts: SqliteConnectOptions = url.parse()?;
         let pool = SqlitePoolOptions::new()
             .max_connections(Self::DEFAULT_MAX_CONNECTIONS)
-            .connect_with(opts.foreign_keys(true).create_if_missing(true))
+            .connect_with(opts.create_if_missing(true))
             .await?;
         Ok(Self { pool })
     }

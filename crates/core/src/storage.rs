@@ -13,10 +13,20 @@ pub use crate::token::TokenHash;
 
 #[derive(Clone)]
 pub struct Storage {
+    pub records: RecordStores,
+    pub expiring: ExpiringStores,
+}
+
+#[derive(Clone)]
+pub struct RecordStores {
     pub users: Arc<dyn UserStore>,
+    pub passkeys: Arc<dyn PasskeyStore>,
+}
+
+#[derive(Clone)]
+pub struct ExpiringStores {
     pub sessions: Arc<dyn SessionStore>,
     pub email_links: Arc<dyn EmailLinkStore>,
-    pub passkeys: Arc<dyn PasskeyStore>,
     pub passkey_challenges: Arc<dyn PasskeyChallengeStore>,
 }
 

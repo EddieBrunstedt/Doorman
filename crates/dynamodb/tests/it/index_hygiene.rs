@@ -80,7 +80,7 @@ async fn start() -> (ContainerAsync<DynamoDb>, Client, DynamoDbStorage) {
 #[tokio::test]
 async fn dangling_session_ids_are_reclaimed() {
     let (_node, client, storage) = start().await;
-    let sessions = storage.session_store();
+    let sessions = storage.expiring().sessions;
 
     let now = Utc::now();
     let user_id = UserId::new();
@@ -137,7 +137,7 @@ async fn dangling_session_ids_are_reclaimed() {
 #[tokio::test]
 async fn dangling_token_hash_items_are_reclaimed() {
     let (_node, client, storage) = start().await;
-    let sessions = storage.session_store();
+    let sessions = storage.expiring().sessions;
 
     let now = Utc::now();
     let user_id = UserId::new();

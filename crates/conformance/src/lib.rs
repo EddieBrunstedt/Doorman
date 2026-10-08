@@ -4,9 +4,9 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use doorman_core::error::{StorageErrorKind, StorageResult};
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
-    AuthenticationPurpose, EmailLink, EmailLinkPurpose, PasskeyChallengeId, PasskeyUse,
-    RegistrationPurpose, Session, SessionId, Storage, StoredPasskey, StoredPasskeyAuthentication,
-    StoredPasskeyRegistration, User, UserId, UserStatus,
+    AuthenticationPurpose, EmailLink, EmailLinkPurpose, ExpiringStores, PasskeyChallengeId,
+    PasskeyUse, RecordStores, RegistrationPurpose, Session, SessionId, Storage, StoredPasskey,
+    StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, UserStatus,
 };
 
 fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
@@ -41,35 +41,43 @@ fn user(id: UserId, email: &str) -> User {
 const RACERS: usize = 64;
 
 pub async fn run(storage: &Storage) {
-    users_round_trip(storage).await;
-    users_email_change(storage).await;
-    users_field_changes_compose(storage).await;
-    users_setters_refuse_missing_user(storage).await;
-    email_link_single_use(storage).await;
-    email_link_email_change_payload(storage).await;
-    email_link_replaces_its_owners_link(storage).await;
-    email_link_purge_and_delete(storage).await;
-    sessions_crud_and_queries(storage).await;
-    sessions_purge_expired(storage).await;
-    session_touch_slides_deadline(storage).await;
-    session_touch_does_not_resurrect(storage).await;
-    session_revoke_races_creation(storage).await;
-    passkeys_cool_down_round_trip(storage).await;
-    passkey_field_changes_compose(storage).await;
-    passkey_writes_refuse_missing_passkey(storage).await;
-    passkeys_bulk_delete_for_user(storage).await;
-    passkey_registration_round_trip(storage).await;
-    passkey_registration_delete_for_user(storage).await;
-    passkey_authentication_single_use(storage).await;
-    single_use_under_concurrency(storage).await;
-    passkey_challenge_purge_expired(storage).await;
-    owner_indexes_track_removals(storage).await;
-    absent_lookups_return_none(storage).await;
-    inserts_refuse_duplicate_keys(storage).await;
+    run_records(&storage.records).await;
+    run_expiring(&storage.expiring).await;
 }
 
-async fn users_round_trip(storage: &Storage) {
-    let users = &storage.users;
+pub async fn run_records(stores: &RecordStores) {
+    users_round_trip(stores).await;
+    users_email_change(stores).await;
+    users_field_changes_compose(stores).await;
+    users_setters_refuse_missing_user(stores).await;
+    passkeys_cool_down_round_trip(stores).await;
+    passkey_field_changes_compose(stores).await;
+    passkey_writes_refuse_missing_passkey(stores).await;
+    passkeys_bulk_delete_for_user(stores).await;
+}
+
+pub async fn run_expiring(stores: &ExpiringStores) {
+    email_link_single_use(stores).await;
+    email_link_email_change_payload(stores).await;
+    email_link_replaces_its_owners_link(stores).await;
+    email_link_purge_and_delete(stores).await;
+    sessions_crud_and_queries(stores).await;
+    sessions_purge_expired(stores).await;
+    session_touch_slides_deadline(stores).await;
+    session_touch_does_not_resurrect(stores).await;
+    session_revoke_races_creation(stores).await;
+    passkey_registration_round_trip(stores).await;
+    passkey_registration_delete_for_user(stores).await;
+    passkey_authentication_single_use(stores).await;
+    single_use_under_concurrency(stores).await;
+    passkey_challenge_purge_expired(stores).await;
+    owner_indexes_track_removals(stores).await;
+    absent_lookups_return_none(stores).await;
+    inserts_refuse_duplicate_keys(stores).await;
+}
+
+async fn users_round_trip(stores: &RecordStores) {
+    let users = &stores.users;
     let id = UserId::new();
     let record = user(id, "round-trip@example.com");
     users.create_user(record.clone()).await.expect("create");
@@ -167,8 +175,8 @@ async fn users_round_trip(storage: &Storage) {
     );
 }
 
-async fn users_email_change(storage: &Storage) {
-    let users = &storage.users;
+async fn users_email_change(stores: &RecordStores) {
+    let users = &stores.users;
     let id = UserId::new();
     users
         .create_user(user(id, "before-change@example.com"))
@@ -239,8 +247,8 @@ async fn users_email_change(storage: &Storage) {
         .expect("re-set own address");
 }
 
-async fn users_field_changes_compose(storage: &Storage) {
-    let users = &storage.users;
+async fn users_field_changes_compose(stores: &RecordStores) {
+    let users = &stores.users;
     let disabled = UserStatus::Disabled { at: ts(2026, 4, 1) };
 
     let status_first = UserId::new();
@@ -294,8 +302,8 @@ async fn users_field_changes_compose(storage: &Storage) {
     assert_eq!(reread.email_verified_at, Some(ts(2026, 4, 1)));
 }
 
-async fn users_setters_refuse_missing_user(storage: &Storage) {
-    let users = &storage.users;
+async fn users_setters_refuse_missing_user(stores: &RecordStores) {
+    let users = &stores.users;
     let missing = UserId::new();
     assert_refused(
         users
@@ -334,15 +342,10 @@ async fn users_setters_refuse_missing_user(storage: &Storage) {
     );
 }
 
-async fn email_link_single_use(storage: &Storage) {
+async fn email_link_single_use(stores: &ExpiringStores) {
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "single-use@example.com"))
-        .await
-        .expect("user");
 
-    let tokens = &storage.email_links;
+    let tokens = &stores.email_links;
     let hash = hash_token("single-use-token");
     tokens
         .replace_link(EmailLink {
@@ -397,15 +400,10 @@ async fn email_link_single_use(storage: &Storage) {
     );
 }
 
-async fn email_link_email_change_payload(storage: &Storage) {
+async fn email_link_email_change_payload(stores: &ExpiringStores) {
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "email-change@example.com"))
-        .await
-        .expect("user");
 
-    let tokens = &storage.email_links;
+    let tokens = &stores.email_links;
     let hash = hash_token("email-change-token");
     tokens
         .replace_link(EmailLink {
@@ -443,21 +441,11 @@ fn link(raw: &str, user_id: UserId, purpose: EmailLinkPurpose) -> EmailLink {
     }
 }
 
-async fn email_link_replaces_its_owners_link(storage: &Storage) {
+async fn email_link_replaces_its_owners_link(stores: &ExpiringStores) {
     let owner = UserId::new();
     let bystander = UserId::new();
-    for (id, email) in [
-        (owner, "replace-owner@example.com"),
-        (bystander, "replace-bystander@example.com"),
-    ] {
-        storage
-            .users
-            .create_user(user(id, email))
-            .await
-            .expect("user");
-    }
 
-    let links = &storage.email_links;
+    let links = &stores.email_links;
     let first = link("replace-first", owner, EmailLinkPurpose::Signup);
     let other_purpose = link("replace-other-purpose", owner, EmailLinkPurpose::Recovery);
     let other_owner = link("replace-other-owner", bystander, EmailLinkPurpose::Signup);
@@ -500,21 +488,11 @@ async fn email_link_replaces_its_owners_link(storage: &Storage) {
     );
 }
 
-async fn email_link_purge_and_delete(storage: &Storage) {
+async fn email_link_purge_and_delete(stores: &ExpiringStores) {
     let user_id = UserId::new();
     let bystander = UserId::new();
-    for (id, email) in [
-        (user_id, "purge-tokens@example.com"),
-        (bystander, "purge-tokens-bystander@example.com"),
-    ] {
-        storage
-            .users
-            .create_user(user(id, email))
-            .await
-            .expect("user");
-    }
 
-    let tokens = &storage.email_links;
+    let tokens = &stores.email_links;
     let signup = link("delete-signup", user_id, EmailLinkPurpose::Signup);
     let recovery = link("delete-recovery", user_id, EmailLinkPurpose::Recovery);
     let survivor = link("delete-bystander", bystander, EmailLinkPurpose::Signup);
@@ -567,22 +545,12 @@ async fn email_link_purge_and_delete(storage: &Storage) {
     );
 }
 
-async fn sessions_crud_and_queries(storage: &Storage) {
+async fn sessions_crud_and_queries(stores: &ExpiringStores) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
     let other_user = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "sessions@example.com"))
-        .await
-        .expect("user");
-    storage
-        .users
-        .create_user(user(other_user, "neighbour@example.com"))
-        .await
-        .expect("other user");
 
-    let sessions = &storage.sessions;
+    let sessions = &stores.sessions;
     let mk = |token: &str, owner: UserId, cool_down: Option<DateTime<Utc>>| Session {
         id: SessionId::new(),
         user_id: owner,
@@ -676,16 +644,11 @@ async fn sessions_crud_and_queries(storage: &Storage) {
     );
 }
 
-async fn sessions_purge_expired(storage: &Storage) {
+async fn sessions_purge_expired(stores: &ExpiringStores) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "purge-sessions@example.com"))
-        .await
-        .expect("user");
 
-    let sessions = &storage.sessions;
+    let sessions = &stores.sessions;
     let expired = Session {
         id: SessionId::new(),
         user_id,
@@ -737,16 +700,11 @@ async fn sessions_purge_expired(storage: &Storage) {
     );
 }
 
-async fn session_touch_slides_deadline(storage: &Storage) {
+async fn session_touch_slides_deadline(stores: &ExpiringStores) {
     let created_at = ts(2026, 1, 1);
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "touch-slide@example.com"))
-        .await
-        .expect("user");
 
-    let sessions = &storage.sessions;
+    let sessions = &stores.sessions;
     let token_hash = hash_token("touch-slide");
     let original = Session {
         id: SessionId::new(),
@@ -803,16 +761,11 @@ async fn session_touch_slides_deadline(storage: &Storage) {
         .expect("cleanup session");
 }
 
-async fn session_touch_does_not_resurrect(storage: &Storage) {
+async fn session_touch_does_not_resurrect(stores: &ExpiringStores) {
     let created_at = ts(2026, 1, 1);
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "touch-resurrect@example.com"))
-        .await
-        .expect("user");
 
-    let sessions = &storage.sessions;
+    let sessions = &stores.sessions;
 
     let phantom = Session {
         id: SessionId::new(),
@@ -878,14 +831,9 @@ async fn session_touch_does_not_resurrect(storage: &Storage) {
 
 const REVOKE_ROUNDS: usize = 8;
 
-async fn session_revoke_races_creation(storage: &Storage) {
+async fn session_revoke_races_creation(stores: &ExpiringStores) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "revoke-race@example.com"))
-        .await
-        .expect("user");
 
     let session = |token: String| Session {
         id: SessionId::new(),
@@ -899,7 +847,7 @@ async fn session_revoke_races_creation(storage: &Storage) {
         recovery_cool_down_until: None,
     };
     let create = |session: Session| {
-        let sessions = storage.sessions.clone();
+        let sessions = stores.sessions.clone();
         tokio::spawn(async move {
             sessions
                 .create_session(session)
@@ -911,7 +859,7 @@ async fn session_revoke_races_creation(storage: &Storage) {
     let mut created = Vec::new();
     for round in 0..REVOKE_ROUNDS {
         let kept = session(format!("revoke-race-{round}-kept"));
-        storage
+        stores
             .sessions
             .create_session(kept.clone())
             .await
@@ -923,7 +871,7 @@ async fn session_revoke_races_creation(storage: &Storage) {
             .collect();
         let (before, after) = batch.split_at(RACERS / 2);
         let mut tasks: Vec<_> = before.iter().cloned().map(create).collect();
-        let sessions = storage.sessions.clone();
+        let sessions = stores.sessions.clone();
         tasks.push(tokio::spawn(async move {
             sessions
                 .delete_sessions_for_user(user_id, except)
@@ -935,7 +883,7 @@ async fn session_revoke_races_creation(storage: &Storage) {
             task.await.expect("race task");
         }
 
-        let kept_resolves = storage
+        let kept_resolves = stores
             .sessions
             .find_session_by_token_hash(&kept.token_hash)
             .await
@@ -950,7 +898,7 @@ async fn session_revoke_races_creation(storage: &Storage) {
         created.extend(batch);
     }
 
-    let listed: std::collections::HashSet<_> = storage
+    let listed: std::collections::HashSet<_> = stores
         .sessions
         .list_for_user(user_id)
         .await
@@ -959,7 +907,7 @@ async fn session_revoke_races_creation(storage: &Storage) {
         .map(|s| s.id)
         .collect();
     for s in &created {
-        let resolves = storage
+        let resolves = stores
             .sessions
             .find_session_by_token_hash(&s.token_hash)
             .await
@@ -971,7 +919,7 @@ async fn session_revoke_races_creation(storage: &Storage) {
         );
     }
 
-    let removed = storage
+    let removed = stores
         .sessions
         .delete_sessions_for_user(user_id, None)
         .await
@@ -983,7 +931,7 @@ async fn session_revoke_races_creation(storage: &Storage) {
     );
     for s in &created {
         assert!(
-            storage
+            stores
                 .sessions
                 .find_session_by_token_hash(&s.token_hash)
                 .await
@@ -994,14 +942,9 @@ async fn session_revoke_races_creation(storage: &Storage) {
     }
 }
 
-async fn passkeys_cool_down_round_trip(storage: &Storage) {
+async fn passkeys_cool_down_round_trip(stores: &RecordStores) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "passkey-round-trip@example.com"))
-        .await
-        .expect("user");
 
     let credential_id = b"conformance-passkey-id".to_vec();
     let passkey_blob = b"opaque-serialised-passkey-blob".to_vec();
@@ -1021,7 +964,7 @@ async fn passkeys_cool_down_round_trip(storage: &Storage) {
         recovery_cool_down_until: Some(cool_down_until),
     };
 
-    let passkeys = &storage.passkeys;
+    let passkeys = &stores.passkeys;
     passkeys
         .add_passkey(passkey.clone())
         .await
@@ -1092,11 +1035,6 @@ async fn passkeys_cool_down_round_trip(storage: &Storage) {
     );
 
     let other_user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(other_user_id, "passkey-hijack@example.com"))
-        .await
-        .expect("other user");
     let hijack = StoredPasskey {
         credential_id: credential_id.clone(),
         user_id: other_user_id,
@@ -1143,16 +1081,11 @@ fn passkey(user_id: UserId, credential_id: &[u8], created_at: DateTime<Utc>) -> 
     }
 }
 
-async fn passkey_field_changes_compose(storage: &Storage) {
+async fn passkey_field_changes_compose(stores: &RecordStores) {
     let created_at = ts(2026, 6, 1);
     let used_at = ts(2026, 6, 2);
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "passkey-compose@example.com"))
-        .await
-        .expect("user");
-    let passkeys = &storage.passkeys;
+    let passkeys = &stores.passkeys;
     let used = || PasskeyUse {
         passkey: b"opaque-serialised-passkey-blob-advanced".to_vec(),
         backup_eligible: true,
@@ -1219,8 +1152,8 @@ async fn passkey_field_changes_compose(storage: &Storage) {
     assert_eq!(cleared.last_used_at, Some(used_at));
 }
 
-async fn passkey_writes_refuse_missing_passkey(storage: &Storage) {
-    let passkeys = &storage.passkeys;
+async fn passkey_writes_refuse_missing_passkey(stores: &RecordStores) {
+    let passkeys = &stores.passkeys;
     let missing = b"conformance-missing-passkey";
     assert_refused(
         passkeys
@@ -1252,25 +1185,12 @@ async fn passkey_writes_refuse_missing_passkey(storage: &Storage) {
     );
 }
 
-async fn passkeys_bulk_delete_for_user(storage: &Storage) {
+async fn passkeys_bulk_delete_for_user(stores: &RecordStores) {
     let now = ts(2026, 1, 1);
     let target = UserId::new();
     let bystander = UserId::new();
-    storage
-        .users
-        .create_user(user(target, "bulk-delete-passkeys-target@example.com"))
-        .await
-        .expect("target user");
-    storage
-        .users
-        .create_user(user(
-            bystander,
-            "bulk-delete-passkeys-bystander@example.com",
-        ))
-        .await
-        .expect("bystander user");
 
-    let passkeys = &storage.passkeys;
+    let passkeys = &stores.passkeys;
     let add = |user_id: UserId, credential_id: Vec<u8>| {
         let passkey = StoredPasskey {
             credential_id,
@@ -1347,14 +1267,9 @@ async fn passkeys_bulk_delete_for_user(storage: &Storage) {
     assert_eq!(surviving[0].credential_id, bystander_passkey);
 }
 
-async fn passkey_registration_round_trip(storage: &Storage) {
+async fn passkey_registration_round_trip(stores: &ExpiringStores) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "registration-round-trip@example.com"))
-        .await
-        .expect("user");
 
     let state_blob = b"opaque-serialised-registration-state".to_vec();
     let cool_down_until = now + Duration::hours(24);
@@ -1364,7 +1279,7 @@ async fn passkey_registration_round_trip(storage: &Storage) {
         RegistrationPurpose::AddPasskey,
     ] {
         let challenge_id = PasskeyChallengeId::new();
-        storage
+        stores
             .passkey_challenges
             .put_registration(StoredPasskeyRegistration {
                 id: challenge_id,
@@ -1378,7 +1293,7 @@ async fn passkey_registration_round_trip(storage: &Storage) {
             .await
             .expect("put registration");
 
-        let taken = storage
+        let taken = stores
             .passkey_challenges
             .take_registration(challenge_id)
             .await
@@ -1395,7 +1310,7 @@ async fn passkey_registration_round_trip(storage: &Storage) {
             "ceremony blob round-trips verbatim"
         );
         assert!(
-            storage
+            stores
                 .passkey_challenges
                 .take_registration(challenge_id)
                 .await
@@ -1406,25 +1321,15 @@ async fn passkey_registration_round_trip(storage: &Storage) {
     }
 }
 
-async fn passkey_registration_delete_for_user(storage: &Storage) {
+async fn passkey_registration_delete_for_user(stores: &ExpiringStores) {
     let now = ts(2026, 1, 1);
     let target = UserId::new();
     let bystander = UserId::new();
-    storage
-        .users
-        .create_user(user(target, "delete-regs-target@example.com"))
-        .await
-        .expect("target user");
-    storage
-        .users
-        .create_user(user(bystander, "delete-regs-bystander@example.com"))
-        .await
-        .expect("bystander user");
 
     let put = |user_id: UserId| {
         let challenge_id = PasskeyChallengeId::new();
         async move {
-            storage
+            stores
                 .passkey_challenges
                 .put_registration(StoredPasskeyRegistration {
                     id: challenge_id,
@@ -1446,7 +1351,7 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
     let bystander_challenge = put(bystander).await;
 
     assert_eq!(
-        storage
+        stores
             .passkey_challenges
             .list_registrations_for_user(target)
             .await
@@ -1456,7 +1361,7 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
         "target has two pending registrations",
     );
     assert_eq!(
-        storage
+        stores
             .passkey_challenges
             .list_registrations_for_user(bystander)
             .await
@@ -1465,7 +1370,7 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
         1,
     );
 
-    let dropped = storage
+    let dropped = stores
         .passkey_challenges
         .delete_registrations_for_user(target)
         .await
@@ -1476,7 +1381,7 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
     );
 
     assert_eq!(
-        storage
+        stores
             .passkey_challenges
             .list_registrations_for_user(target)
             .await
@@ -1487,7 +1392,7 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
     );
 
     assert_eq!(
-        storage
+        stores
             .passkey_challenges
             .list_registrations_for_user(bystander)
             .await
@@ -1497,7 +1402,7 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
         "another user's pending registration must be untouched",
     );
     assert!(
-        storage
+        stores
             .passkey_challenges
             .take_registration(bystander_challenge)
             .await
@@ -1506,7 +1411,7 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
         "another user's pending registration must be untouched",
     );
 
-    let dropped_again = storage
+    let dropped_again = stores
         .passkey_challenges
         .delete_registrations_for_user(target)
         .await
@@ -1514,12 +1419,12 @@ async fn passkey_registration_delete_for_user(storage: &Storage) {
     assert_eq!(dropped_again, 0);
 }
 
-async fn passkey_authentication_single_use(storage: &Storage) {
+async fn passkey_authentication_single_use(stores: &ExpiringStores) {
     let now = ts(2026, 1, 1);
     for purpose in [AuthenticationPurpose::Login, AuthenticationPurpose::Reauth] {
         let challenge_id = PasskeyChallengeId::new();
         let state_blob = b"opaque-serialised-authentication-state".to_vec();
-        storage
+        stores
             .passkey_challenges
             .put_authentication(StoredPasskeyAuthentication {
                 id: challenge_id,
@@ -1531,7 +1436,7 @@ async fn passkey_authentication_single_use(storage: &Storage) {
             .await
             .expect("put authentication");
 
-        let taken = storage
+        let taken = stores
             .passkey_challenges
             .take_authentication(challenge_id)
             .await
@@ -1546,7 +1451,7 @@ async fn passkey_authentication_single_use(storage: &Storage) {
             "ceremony blob round-trips verbatim"
         );
         assert!(
-            storage
+            stores
                 .passkey_challenges
                 .take_authentication(challenge_id)
                 .await
@@ -1557,16 +1462,11 @@ async fn passkey_authentication_single_use(storage: &Storage) {
     }
 }
 
-async fn passkey_challenge_purge_expired(storage: &Storage) {
+async fn passkey_challenge_purge_expired(stores: &ExpiringStores) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "purge-challenges@example.com"))
-        .await
-        .expect("user");
 
-    let challenges = &storage.passkey_challenges;
+    let challenges = &stores.passkey_challenges;
     let expired_registration = PasskeyChallengeId::new();
     challenges
         .put_registration(StoredPasskeyRegistration {
@@ -1648,17 +1548,12 @@ where
     redeemed
 }
 
-async fn single_use_under_concurrency(storage: &Storage) {
+async fn single_use_under_concurrency(stores: &ExpiringStores) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "race@example.com"))
-        .await
-        .expect("user");
 
     let hash = hash_token("race-redeem-token");
-    storage
+    stores
         .email_links
         .replace_link(EmailLink {
             token_hash: hash,
@@ -1671,14 +1566,14 @@ async fn single_use_under_concurrency(storage: &Storage) {
         .await
         .expect("create token");
     let redeemed = count_redeemers(|| {
-        let tokens = storage.email_links.clone();
+        let tokens = stores.email_links.clone();
         async move { tokens.redeem_link(&hash).await.expect("redeem").is_some() }
     })
     .await;
     assert_eq!(redeemed, 1, "exactly one caller redeems the token");
 
     let registration = PasskeyChallengeId::new();
-    storage
+    stores
         .passkey_challenges
         .put_registration(StoredPasskeyRegistration {
             id: registration,
@@ -1692,7 +1587,7 @@ async fn single_use_under_concurrency(storage: &Storage) {
         .await
         .expect("put registration");
     let taken = count_redeemers(|| {
-        let challenges = storage.passkey_challenges.clone();
+        let challenges = stores.passkey_challenges.clone();
         async move {
             challenges
                 .take_registration(registration)
@@ -1705,7 +1600,7 @@ async fn single_use_under_concurrency(storage: &Storage) {
     assert_eq!(taken, 1, "exactly one caller takes the registration");
 
     let authentication = PasskeyChallengeId::new();
-    storage
+    stores
         .passkey_challenges
         .put_authentication(StoredPasskeyAuthentication {
             id: authentication,
@@ -1717,7 +1612,7 @@ async fn single_use_under_concurrency(storage: &Storage) {
         .await
         .expect("put authentication");
     let taken = count_redeemers(|| {
-        let challenges = storage.passkey_challenges.clone();
+        let challenges = stores.passkey_challenges.clone();
         async move {
             challenges
                 .take_authentication(authentication)
@@ -1730,16 +1625,11 @@ async fn single_use_under_concurrency(storage: &Storage) {
     assert_eq!(taken, 1, "exactly one caller takes the authentication");
 }
 
-async fn owner_indexes_track_removals(storage: &Storage) {
+async fn owner_indexes_track_removals(stores: &ExpiringStores) {
     let now = ts(2026, 1, 1);
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "index-removals@example.com"))
-        .await
-        .expect("user");
 
-    let sessions = &storage.sessions;
+    let sessions = &stores.sessions;
     let session = |token: &str, expires_at| Session {
         id: SessionId::new(),
         user_id,
@@ -1786,7 +1676,7 @@ async fn owner_indexes_track_removals(storage: &Storage) {
         "only the kept session is left to remove",
     );
 
-    let tokens = &storage.email_links;
+    let tokens = &stores.email_links;
     let token = |raw: &str, purpose, expires_at| EmailLink {
         created_at: ts(2020, 1, 1),
         expires_at,
@@ -1836,7 +1726,7 @@ async fn owner_indexes_track_removals(storage: &Storage) {
         "only the remaining token is left to remove",
     );
 
-    let challenges = &storage.passkey_challenges;
+    let challenges = &stores.passkey_challenges;
     let registration = |expires_at| StoredPasskeyRegistration {
         id: PasskeyChallengeId::new(),
         purpose: RegistrationPurpose::AddPasskey,
@@ -1896,9 +1786,9 @@ async fn owner_indexes_track_removals(storage: &Storage) {
     assert_eq!(count().await, 0, "no registrations remain");
 }
 
-async fn absent_lookups_return_none(storage: &Storage) {
+async fn absent_lookups_return_none(stores: &ExpiringStores) {
     assert!(
-        storage
+        stores
             .sessions
             .find_session_by_id(SessionId::new())
             .await
@@ -1907,7 +1797,7 @@ async fn absent_lookups_return_none(storage: &Storage) {
         "an unknown session id resolves to None",
     );
     assert!(
-        storage
+        stores
             .sessions
             .find_session_by_token_hash(&hash_token("no-such-session"))
             .await
@@ -1916,7 +1806,7 @@ async fn absent_lookups_return_none(storage: &Storage) {
         "an unknown session token hash resolves to None",
     );
     assert!(
-        storage
+        stores
             .email_links
             .redeem_link(&hash_token("no-such-token"))
             .await
@@ -1925,7 +1815,7 @@ async fn absent_lookups_return_none(storage: &Storage) {
         "redeeming an unknown token resolves to None",
     );
     assert!(
-        storage
+        stores
             .passkey_challenges
             .take_registration(PasskeyChallengeId::new())
             .await
@@ -1934,7 +1824,7 @@ async fn absent_lookups_return_none(storage: &Storage) {
         "taking an unknown registration resolves to None",
     );
     assert!(
-        storage
+        stores
             .passkey_challenges
             .take_authentication(PasskeyChallengeId::new())
             .await
@@ -1944,22 +1834,12 @@ async fn absent_lookups_return_none(storage: &Storage) {
     );
 }
 
-async fn inserts_refuse_duplicate_keys(storage: &Storage) {
+async fn inserts_refuse_duplicate_keys(stores: &ExpiringStores) {
     let now = ts(2026, 1, 1);
     let owner = UserId::new();
     let intruder = UserId::new();
-    storage
-        .users
-        .create_user(user(owner, "duplicate-owner@example.com"))
-        .await
-        .expect("owner");
-    storage
-        .users
-        .create_user(user(intruder, "duplicate-intruder@example.com"))
-        .await
-        .expect("intruder");
 
-    let sessions = &storage.sessions;
+    let sessions = &stores.sessions;
     let session = |user_id, token: &str| Session {
         id: SessionId::new(),
         user_id,
@@ -2029,13 +1909,13 @@ async fn inserts_refuse_duplicate_keys(storage: &Storage) {
         created_at: now,
         expires_at: ts(2099, 1, 1),
     };
-    storage
+    stores
         .email_links
         .replace_link(link.clone())
         .await
         .expect("create link");
     assert_refused(
-        storage
+        stores
             .email_links
             .replace_link(EmailLink {
                 user_id: intruder,
@@ -2047,7 +1927,7 @@ async fn inserts_refuse_duplicate_keys(storage: &Storage) {
         "duplicate email link hash",
     );
     assert_eq!(
-        storage
+        stores
             .email_links
             .delete_links_for_user(intruder)
             .await
@@ -2056,7 +1936,7 @@ async fn inserts_refuse_duplicate_keys(storage: &Storage) {
         "a refused link leaves nothing for its user",
     );
     assert_eq!(
-        storage
+        stores
             .email_links
             .redeem_link(&link.token_hash)
             .await
@@ -2065,7 +1945,7 @@ async fn inserts_refuse_duplicate_keys(storage: &Storage) {
         "the original link is untouched",
     );
 
-    let challenges = &storage.passkey_challenges;
+    let challenges = &stores.passkey_challenges;
     let registration = StoredPasskeyRegistration {
         id: PasskeyChallengeId::new(),
         purpose: RegistrationPurpose::AddPasskey,

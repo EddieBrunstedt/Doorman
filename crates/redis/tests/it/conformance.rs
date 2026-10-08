@@ -4,12 +4,12 @@ use crate::common::Backend;
 
 #[tokio::test]
 async fn redis_storage_conformance() {
-    let (_node, storage) = common::storage(Backend::Redis).await;
-    doorman_conformance::run(&storage).await;
+    let (_node, stores) = common::stores(Backend::Redis).await;
+    doorman_conformance::run_expiring(&stores).await;
 }
 
 #[tokio::test]
 async fn valkey_storage_conformance() {
-    let (_node, storage) = common::storage(Backend::Valkey).await;
-    doorman_conformance::run(&storage).await;
+    let (_node, stores) = common::stores(Backend::Valkey).await;
+    doorman_conformance::run_expiring(&stores).await;
 }

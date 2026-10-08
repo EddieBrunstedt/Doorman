@@ -4,9 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use doorman_core::error::StorageResult;
 use doorman_core::session::hash_token;
-use doorman_core::storage::{
-    Session, SessionId, SessionStore, Storage, TokenHash, User, UserId, UserStatus,
-};
+use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 use doorman_mongodb::{MongoDbStorage, session_to_document};
 use mongodb::Collection;
 use mongodb::bson::{Document, doc};
@@ -93,28 +91,14 @@ async fn override_create_session_reuses_bundled_reads() {
     let storage = MongoDbStorage::new(database.clone());
     storage.ensure_indexes().await.expect("ensure indexes");
 
-    let composite = Storage {
-        sessions: Arc::new(AuditedSessions {
-            inner: storage.session_store(),
-            sessions: storage.sessions_collection(),
-            audit: database.collection::<Document>("audit_outbox"),
-        }),
-        ..storage.all_stores()
-    };
+    let mut composite = storage.all_stores();
+    composite.expiring.sessions = Arc::new(AuditedSessions {
+        inner: composite.expiring.sessions.clone(),
+        sessions: storage.sessions_collection(),
+        audit: database.collection::<Document>("audit_outbox"),
+    });
 
     let user_id = UserId::new();
-    composite
-        .users
-        .create_user(User {
-            id: user_id,
-            email: Some("audited@example.com".to_string()),
-            email_verified_at: None,
-            status: UserStatus::Active,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        })
-        .await
-        .expect("create user");
 
     let now = Utc::now();
     let session = Session {
@@ -130,12 +114,14 @@ async fn override_create_session_reuses_bundled_reads() {
     };
 
     composite
+        .expiring
         .sessions
         .create_session(session.clone())
         .await
         .expect("custom create_session");
 
     let found = composite
+        .expiring
         .sessions
         .find_session_by_token_hash(&session.token_hash)
         .await

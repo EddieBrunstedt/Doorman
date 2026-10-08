@@ -64,7 +64,7 @@ impl TestApp {
     ) -> Self {
         let email = Arc::new(CapturingEmailSender::new());
         let memory = InMemoryStorage::new();
-        let users = memory.user_store();
+        let users = memory.records().users;
         let core = AuthCore::builder(memory.all_stores())
             .email(email.clone() as Arc<dyn EmailSender>)
             .passkey(PasskeyConfig::new(

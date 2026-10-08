@@ -63,8 +63,8 @@ async fn exists(conn: &mut MultiplexedConnection, key: String) -> i64 {
 }
 
 async fn run_index_hygiene(backend: Backend) {
-    let (_node, storage, mut raw, prefix) = common::storage_with_raw(backend).await;
-    let sessions = &storage.sessions;
+    let (_node, stores, mut raw, prefix) = common::stores_with_raw(backend).await;
+    let sessions = &stores.sessions;
     let now = Utc::now();
 
     let lister = UserId::new();

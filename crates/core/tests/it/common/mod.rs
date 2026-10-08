@@ -30,8 +30,8 @@ use doorman_core::session::{
 };
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use doorman_core::storage::{
-    PasskeyStore, Session, SessionId, SessionStore, Storage, StoredPasskey, TokenHash, User,
-    UserId, UserStatus, UserStore,
+    ExpiringStores, PasskeyStore, RecordStores, Session, SessionId, SessionStore, Storage,
+    StoredPasskey, TokenHash, User, UserId, UserStatus, UserStore,
 };
 use doorman_core::user::{UserConfig, UserManager};
 pub use doorman_test_support::token_from_email;
@@ -385,11 +385,15 @@ impl HarnessBuilder {
         });
 
         let storage = Storage {
-            users: user_store.clone(),
-            sessions: session_store.clone(),
-            email_links,
-            passkeys: passkeys.clone(),
-            passkey_challenges: challenges.clone(),
+            records: RecordStores {
+                users: user_store.clone(),
+                passkeys: passkeys.clone(),
+            },
+            expiring: ExpiringStores {
+                sessions: session_store.clone(),
+                email_links,
+                passkey_challenges: challenges.clone(),
+            },
         };
 
         let core = AuthCore::builder(storage.clone())

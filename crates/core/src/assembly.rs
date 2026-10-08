@@ -260,12 +260,12 @@ impl AuthCoreBuilder {
         let mailer = Mailer::new(email, emails);
         let notices = SecurityNotices::new(
             mailer.clone(),
-            self.storage.users.clone(),
+            self.storage.records.users.clone(),
             self.notice_policy.unwrap_or_default(),
         );
 
         let session_records = SessionRecords::new(
-            self.storage.sessions.clone(),
+            self.storage.expiring.sessions.clone(),
             clock.clone(),
             audit.clone(),
             session_config,

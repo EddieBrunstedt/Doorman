@@ -18,7 +18,7 @@ use std::sync::Arc;
 use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::error::StorageResult;
 use doorman_core::rate_limit::RateLimiter;
-use doorman_core::storage::{EmailLinkStore, PasskeyChallengeStore, SessionStore};
+use doorman_core::storage::ExpiringStores;
 use redis::aio::ConnectionManager;
 
 use crate::client::RedisClient;
@@ -64,20 +64,16 @@ impl RedisStorage {
         self.client.ping().await
     }
 
-    pub fn session_store(&self) -> Arc<dyn SessionStore> {
-        Arc::new(stores::session::RedisSessionStore::new(self.client.clone()))
-    }
-
-    pub fn email_link_store(&self) -> Arc<dyn EmailLinkStore> {
-        Arc::new(stores::email_link::RedisEmailLinkStore::new(
-            self.client.clone(),
-        ))
-    }
-
-    pub fn passkey_challenge_store(&self) -> Arc<dyn PasskeyChallengeStore> {
-        Arc::new(stores::passkey_chal::RedisPasskeyChallengeStore::new(
-            self.client.clone(),
-        ))
+    pub fn expiring(&self) -> ExpiringStores {
+        ExpiringStores {
+            sessions: Arc::new(stores::session::RedisSessionStore::new(self.client.clone())),
+            email_links: Arc::new(stores::email_link::RedisEmailLinkStore::new(
+                self.client.clone(),
+            )),
+            passkey_challenges: Arc::new(stores::passkey_chal::RedisPasskeyChallengeStore::new(
+                self.client.clone(),
+            )),
+        }
     }
 
     pub fn rate_limiter(&self) -> Arc<dyn RateLimiter> {

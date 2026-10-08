@@ -4,9 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::session::hash_token;
-use doorman_core::storage::{
-    Session, SessionId, SessionStore, Storage, TokenHash, User, UserId, UserStatus,
-};
+use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 use doorman_redb::{RedbStorage, write_session};
 use redb::{Database, ReadableDatabase as _, TableDefinition};
 
@@ -86,27 +84,13 @@ async fn override_create_session_reuses_bundled_reads() {
     let storage = RedbStorage::open(&path).expect("open redb");
 
     let db = storage.database();
-    let composite = Storage {
-        sessions: Arc::new(AuditedSessions {
-            inner: storage.session_store(),
-            db: db.clone(),
-        }),
-        ..storage.all_stores()
-    };
+    let mut composite = storage.all_stores();
+    composite.expiring.sessions = Arc::new(AuditedSessions {
+        inner: composite.expiring.sessions.clone(),
+        db: db.clone(),
+    });
 
     let user_id = UserId::new();
-    composite
-        .users
-        .create_user(User {
-            id: user_id,
-            email: Some("audited@example.com".to_string()),
-            email_verified_at: None,
-            status: UserStatus::Active,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        })
-        .await
-        .expect("create user");
 
     let now = Utc::now();
     let session = Session {
@@ -122,12 +106,14 @@ async fn override_create_session_reuses_bundled_reads() {
     };
 
     composite
+        .expiring
         .sessions
         .create_session(session.clone())
         .await
         .expect("transactional create_session");
 
     let by_hash = composite
+        .expiring
         .sessions
         .find_session_by_token_hash(&session.token_hash)
         .await
@@ -135,6 +121,7 @@ async fn override_create_session_reuses_bundled_reads() {
         .expect("session present");
     assert_eq!(by_hash.id, session.id);
     let listed = composite
+        .expiring
         .sessions
         .list_for_user(user_id)
         .await

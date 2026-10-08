@@ -10,7 +10,7 @@ CREATE TABLE users (
 
 CREATE TABLE sessions (
     id BYTEA PRIMARY KEY,
-    user_id BYTEA NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id BYTEA NOT NULL,
     token_hash BYTEA NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL,
     last_used_at TIMESTAMPTZ NOT NULL,
@@ -25,7 +25,7 @@ CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 CREATE TABLE email_links (
     token_hash BYTEA PRIMARY KEY,
     purpose TEXT NOT NULL,
-    user_id BYTEA NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id BYTEA NOT NULL,
     new_email TEXT,
     created_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL
@@ -35,7 +35,7 @@ CREATE INDEX idx_email_links_expires_at ON email_links(expires_at);
 
 CREATE TABLE passkeys (
     credential_id BYTEA PRIMARY KEY,
-    user_id BYTEA NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id BYTEA NOT NULL,
     passkey BYTEA NOT NULL,
     name TEXT,
     created_at TIMESTAMPTZ NOT NULL,
@@ -51,7 +51,7 @@ CREATE INDEX idx_passkeys_user_id ON passkeys(user_id);
 CREATE TABLE passkey_registrations (
     id BYTEA PRIMARY KEY,
     purpose TEXT NOT NULL,
-    user_id BYTEA NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id BYTEA NOT NULL,
     state BYTEA NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,

@@ -8,9 +8,10 @@ use crate::clock::Clock;
 use crate::error::{StorageError, StorageResult};
 use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::storage::{
-    EmailLink, EmailLinkStore, PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore, PasskeyUse,
-    Session, SessionId, SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication,
-    StoredPasskeyRegistration, TokenHash, User, UserId, UserStatus, UserStore,
+    EmailLink, EmailLinkStore, ExpiringStores, PasskeyChallengeId, PasskeyChallengeStore,
+    PasskeyStore, PasskeyUse, RecordStores, Session, SessionId, SessionStore, Storage,
+    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
+    UserStatus, UserStore,
 };
 use crate::sync;
 
@@ -34,33 +35,25 @@ impl InMemoryStorage {
         }
     }
 
-    pub fn user_store(&self) -> Arc<dyn UserStore> {
-        self.users.clone()
-    }
-
-    pub fn session_store(&self) -> Arc<dyn SessionStore> {
-        self.sessions.clone()
-    }
-
-    pub fn email_link_store(&self) -> Arc<dyn EmailLinkStore> {
-        self.email_links.clone()
-    }
-
-    pub fn passkey_store(&self) -> Arc<dyn PasskeyStore> {
-        self.passkeys.clone()
-    }
-
-    pub fn passkey_challenge_store(&self) -> Arc<dyn PasskeyChallengeStore> {
-        self.passkey_challenges.clone()
-    }
-
     pub fn all_stores(&self) -> Storage {
         Storage {
-            users: self.user_store(),
-            sessions: self.session_store(),
-            email_links: self.email_link_store(),
-            passkeys: self.passkey_store(),
-            passkey_challenges: self.passkey_challenge_store(),
+            records: self.records(),
+            expiring: self.expiring(),
+        }
+    }
+
+    pub fn records(&self) -> RecordStores {
+        RecordStores {
+            users: self.users.clone(),
+            passkeys: self.passkeys.clone(),
+        }
+    }
+
+    pub fn expiring(&self) -> ExpiringStores {
+        ExpiringStores {
+            sessions: self.sessions.clone(),
+            email_links: self.email_links.clone(),
+            passkey_challenges: self.passkey_challenges.clone(),
         }
     }
 }
@@ -649,12 +642,14 @@ mod tests {
             updated_at: now,
         };
         storage
+            .records
             .users
             .create_user(user.clone())
             .await
             .expect("user store wired");
         assert_eq!(
             storage
+                .records
                 .users
                 .find_user_by_id(user.id)
                 .await
@@ -664,6 +659,7 @@ mod tests {
 
         assert!(
             storage
+                .expiring
                 .sessions
                 .list_for_user(user.id)
                 .await
@@ -672,6 +668,7 @@ mod tests {
         );
         assert!(
             storage
+                .expiring
                 .email_links
                 .redeem_link(&TokenHash([0u8; 32]))
                 .await
@@ -680,6 +677,7 @@ mod tests {
         );
         assert!(
             storage
+                .records
                 .passkeys
                 .list_passkeys_for_user(user.id)
                 .await
@@ -688,6 +686,7 @@ mod tests {
         );
         assert!(
             storage
+                .expiring
                 .passkey_challenges
                 .take_registration(PasskeyChallengeId::new())
                 .await
@@ -710,14 +709,16 @@ mod tests {
         };
 
         storage
-            .user_store()
+            .records()
+            .users
             .create_user(user.clone())
             .await
             .expect("create via first handle");
 
         assert_eq!(
             storage
-                .user_store()
+                .records()
+                .users
                 .find_user_by_id(user.id)
                 .await
                 .expect("find via second handle"),
