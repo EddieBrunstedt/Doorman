@@ -32,7 +32,7 @@ CREATE TABLE email_links (
     expires_at DATETIME(6) NOT NULL,
     CONSTRAINT fk_email_links_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_email_links_user_id ON email_links(user_id);
+CREATE UNIQUE INDEX idx_email_links_owner ON email_links(user_id, purpose);
 CREATE INDEX idx_email_links_expires_at ON email_links(expires_at);
 
 CREATE TABLE passkeys (

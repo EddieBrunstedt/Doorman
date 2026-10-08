@@ -153,7 +153,7 @@ impl UserStore for DynamoUserStore {
         &self,
         id: UserId,
         email: &str,
-        at: DateTime<Utc>,
+        verified_at: DateTime<Utc>,
     ) -> StorageResult<()> {
         let Some(current) = self.client.get(&model::user_pk(id)).await? else {
             return Err(StorageError::not_found("user not found"));
@@ -168,7 +168,7 @@ impl UserStore for DynamoUserStore {
         ];
         let mut values = vec![
             (":email", client::s(email)),
-            (":at", client::s(client::fmt_ts(at))),
+            (":at", client::s(client::fmt_ts(verified_at))),
         ];
         let condition = match old_email.as_deref() {
             Some(old) => {

@@ -9,22 +9,16 @@ use crate::error::{Error, Result, StorageErrorKind};
 use crate::session::{IssuedSession, ResolvedSession, SessionContext};
 use crate::session_records::SessionRecords;
 use crate::storage::{
-    EmailLinkPurpose, EmailLinkStore, PasskeyChallengeStore, PasskeyStore, StoredPasskey, User,
-    UserId, UserStatus, UserStore,
+    EmailLinkStore, PasskeyChallengeStore, PasskeyStore, StoredPasskey, User, UserId, UserStatus,
+    UserStore,
 };
-
-const ALL_TOKEN_PURPOSES: [EmailLinkPurpose; 3] = [
-    EmailLinkPurpose::Signup,
-    EmailLinkPurpose::Recovery,
-    EmailLinkPurpose::EmailChange,
-];
 
 #[derive(Clone)]
 pub(crate) struct UserRecords {
     users: Arc<dyn UserStore>,
     sessions: SessionRecords,
     passkeys: Arc<dyn PasskeyStore>,
-    tokens: Arc<dyn EmailLinkStore>,
+    links: Arc<dyn EmailLinkStore>,
     challenges: Arc<dyn PasskeyChallengeStore>,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
@@ -36,7 +30,7 @@ impl UserRecords {
             users: deps.users.clone(),
             sessions: deps.sessions.clone(),
             passkeys: deps.passkeys.clone(),
-            tokens: deps.email_links.clone(),
+            links: deps.email_links.clone(),
             challenges: deps.passkey_challenges.clone(),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
@@ -92,7 +86,9 @@ impl UserRecords {
     }
 
     pub(crate) async fn change_email(&self, user_id: UserId, email: &str) -> Result<User> {
-        match self.users.set_user_email(user_id, email, self.now()).await {
+        // The email-change link proved control of the new address.
+        let verified_at = self.now();
+        match self.users.set_user_email(user_id, email, verified_at).await {
             Ok(()) => self.find(user_id).await,
             Err(e) => Err(match e.kind() {
                 StorageErrorKind::Conflict => Error::EmailAlreadyInUse,
@@ -155,9 +151,7 @@ impl UserRecords {
         // and leaves a delete that fails partway with a user who cannot log in.
         self.disable(user_id).await?;
         self.passkeys.delete_passkeys_for_user(user_id).await?;
-        for purpose in ALL_TOKEN_PURPOSES {
-            self.tokens.delete_links_for_user(user_id, purpose).await?;
-        }
+        self.links.delete_links_for_user(user_id).await?;
         self.challenges
             .delete_registrations_for_user(user_id)
             .await?;

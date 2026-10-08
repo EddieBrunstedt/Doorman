@@ -121,10 +121,19 @@ impl MongoDb {
         self.email_links()
             .create_indexes(vec![
                 IndexModel::builder()
-                    .keys(doc! { "user_id": 1, "purpose": 1 })
+                    .keys(doc! { "token_hash": 1 })
                     .options(
                         IndexOptions::builder()
-                            .name("idx_email_links_user_purpose".to_string())
+                            .name("idx_email_links_token_hash".to_string())
+                            .unique(true)
+                            .build(),
+                    )
+                    .build(),
+                IndexModel::builder()
+                    .keys(doc! { "user_id": 1 })
+                    .options(
+                        IndexOptions::builder()
+                            .name("idx_email_links_user_id".to_string())
                             .build(),
                     )
                     .build(),

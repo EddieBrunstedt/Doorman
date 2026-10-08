@@ -19,7 +19,7 @@ pub(crate) struct EmailLinks {
     purpose: EmailLinkPurpose,
     template: String,
     lifetime: Duration,
-    tokens: Arc<dyn EmailLinkStore>,
+    links: Arc<dyn EmailLinkStore>,
     redeemer: Redeemer,
     clock: Arc<dyn Clock>,
 }
@@ -53,22 +53,18 @@ impl EmailLinks {
             purpose,
             template: template.to_owned(),
             lifetime,
-            tokens: deps.email_links.clone(),
+            links: deps.email_links.clone(),
             redeemer: Redeemer::from_deps(deps),
             clock: deps.clock.clone(),
         })
     }
 
     pub(crate) async fn issue(&self, user_id: UserId, new_email: Option<String>) -> Result<String> {
-        self.tokens
-            .delete_links_for_user(user_id, self.purpose)
-            .await?;
-
         let now = self.clock.now();
         let expires_at = expiry(now, self.lifetime)?;
         let (token, token_hash) = generate_token()?;
-        self.tokens
-            .create_link(EmailLink {
+        self.links
+            .replace_link(EmailLink {
                 token_hash,
                 user_id,
                 purpose: self.purpose,
@@ -86,7 +82,7 @@ impl EmailLinks {
         token: &str,
         context: &SessionContext,
     ) -> Result<(User, Option<String>)> {
-        let taken = self.tokens.redeem_link(&hash_token(token)).await?;
+        let taken = self.links.redeem_link(&hash_token(token)).await?;
         let (user, new_email) = self
             .redeemer
             .check_owned(taken, self.purpose, carried_email, context)

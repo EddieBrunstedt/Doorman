@@ -140,9 +140,9 @@ impl UserStore for CountingUserStore {
         &self,
         id: UserId,
         email: &str,
-        at: DateTime<Utc>,
+        verified_at: DateTime<Utc>,
     ) -> StorageResult<()> {
-        self.inner.set_user_email(id, email, at).await
+        self.inner.set_user_email(id, email, verified_at).await
     }
 
     async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {

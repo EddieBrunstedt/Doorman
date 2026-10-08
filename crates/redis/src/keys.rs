@@ -1,4 +1,4 @@
-use doorman_core::storage::{EmailLinkPurpose, PasskeyChallengeId, SessionId, TokenHash, UserId};
+use doorman_core::storage::{PasskeyChallengeId, SessionId, TokenHash, UserId};
 
 #[derive(Clone, Debug)]
 pub(crate) struct KeySchema {
@@ -42,17 +42,12 @@ impl KeySchema {
         format!("{}email_link:{}", self.prefix, hex_hash)
     }
 
-    pub(crate) fn user_email_links(&self, user_id: UserId, purpose: EmailLinkPurpose) -> String {
-        format!(
-            "{}user:{}:email_links:{}",
-            self.prefix,
-            user_id.0,
-            purpose_str(purpose)
-        )
+    pub(crate) fn user_email_links(&self, user_id: UserId) -> String {
+        format!("{}user:{}:email_links", self.prefix, user_id.0)
     }
 
-    pub(crate) fn user_email_links_pattern(&self, purpose: EmailLinkPurpose) -> String {
-        format!("{}user:*:email_links:{}", self.prefix, purpose_str(purpose))
+    pub(crate) fn user_email_links_pattern(&self) -> String {
+        format!("{}user:*:email_links", self.prefix)
     }
 
     pub(crate) fn pkreg(&self, id: PasskeyChallengeId) -> String {
@@ -84,14 +79,6 @@ impl KeySchema {
     }
 }
 
-pub(crate) const ALL_PURPOSES: [EmailLinkPurpose; 3] = [
-    EmailLinkPurpose::Signup,
-    EmailLinkPurpose::Recovery,
-    EmailLinkPurpose::EmailChange,
-];
-
-pub(crate) use doorman_core::encoding::purpose_to_str as purpose_str;
-
 pub(crate) fn token_hash_hex(hash: &TokenHash) -> String {
     doorman_core::encoding::hex(&hash.0)
 }
@@ -102,7 +89,7 @@ mod tests {
     use doorman_core::session::hash_token;
 
     #[test]
-    fn keys_are_prefixed_and_owner_indexes_purpose_scoped() {
+    fn keys_are_prefixed() {
         let keys = KeySchema::new("doorman:".to_string());
         let hash = hash_token("a-token");
         let user = UserId::new();
@@ -119,8 +106,8 @@ mod tests {
         );
 
         assert_eq!(
-            keys.user_email_links(user, EmailLinkPurpose::EmailChange),
-            format!("doorman:user:{}:email_links:email_change", user.0)
+            keys.user_email_links(user),
+            format!("doorman:user:{}:email_links", user.0)
         );
     }
 

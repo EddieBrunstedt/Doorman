@@ -6,8 +6,8 @@ use doorman_core::encoding::{
 };
 use doorman_core::error::StorageResult;
 use doorman_core::storage::{
-    EmailLink, EmailLinkPurpose, PasskeyChallengeId, Session, SessionId, StoredPasskey,
-    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
+    EmailLink, PasskeyChallengeId, Session, SessionId, StoredPasskey, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, TokenHash, User, UserId,
 };
 use uuid::Uuid;
 
@@ -53,8 +53,8 @@ pub(crate) fn email_link_pk(hash: &TokenHash) -> String {
     format!("email_link#{}", hex(&hash.0))
 }
 
-pub(crate) fn user_email_links_key(user_id: UserId, purpose: EmailLinkPurpose) -> String {
-    format!("uvtok#{}#{}", user_id.0, purpose_str(purpose))
+pub(crate) fn user_email_links_key(user_id: UserId) -> String {
+    format!("uelink#{}", user_id.0)
 }
 
 pub(crate) fn passkey_pk(credential_id: &[u8]) -> String {
@@ -208,7 +208,7 @@ pub(crate) fn email_link_item(token: &EmailLink) -> Item {
     put_ts(&mut item, client::EXPIRES_AT, token.expires_at);
     item.insert(
         GSI2PK.to_string(),
-        client::s(user_email_links_key(token.user_id, token.purpose)),
+        client::s(user_email_links_key(token.user_id)),
     );
     put_ttl(&mut item, token.expires_at);
     item

@@ -8,10 +8,9 @@ use crate::clock::Clock;
 use crate::error::{StorageError, StorageResult};
 use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::storage::{
-    EmailLink, EmailLinkPurpose, EmailLinkStore, PasskeyChallengeId, PasskeyChallengeStore,
-    PasskeyStore, PasskeyUse, Session, SessionId, SessionStore, Storage, StoredPasskey,
-    StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId, UserStatus,
-    UserStore,
+    EmailLink, EmailLinkStore, PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore, PasskeyUse,
+    Session, SessionId, SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, TokenHash, User, UserId, UserStatus, UserStore,
 };
 use crate::sync;
 
@@ -149,7 +148,7 @@ impl UserStore for InMemoryUserStore {
         &self,
         id: UserId,
         email: &str,
-        at: DateTime<Utc>,
+        verified_at: DateTime<Utc>,
     ) -> StorageResult<()> {
         let mut state = self.write();
         let UserStoreState { by_id, email_to_id } = &mut *state;
@@ -168,8 +167,8 @@ impl UserStore for InMemoryUserStore {
         }
         email_to_id.insert(email.to_owned(), id);
         user.email = Some(email.to_owned());
-        user.email_verified_at = Some(at);
-        user.updated_at = at;
+        user.email_verified_at = Some(verified_at);
+        user.updated_at = verified_at;
         Ok(())
     }
 
@@ -343,12 +342,13 @@ impl InMemoryEmailLinkStore {
 
 #[async_trait]
 impl EmailLinkStore for InMemoryEmailLinkStore {
-    async fn create_link(&self, token: EmailLink) -> StorageResult<()> {
+    async fn replace_link(&self, link: EmailLink) -> StorageResult<()> {
         let mut state = self.lock();
-        if state.iter().any(|t| t.token_hash == token.token_hash) {
+        if state.iter().any(|t| t.token_hash == link.token_hash) {
             return Err(StorageError::conflict("email link token hash collision"));
         }
-        state.push(token);
+        state.retain(|t| !(t.user_id == link.user_id && t.purpose == link.purpose));
+        state.push(link);
         Ok(())
     }
 
@@ -358,14 +358,10 @@ impl EmailLinkStore for InMemoryEmailLinkStore {
         Ok(pos.map(|i| state.remove(i)))
     }
 
-    async fn delete_links_for_user(
-        &self,
-        user_id: UserId,
-        purpose: EmailLinkPurpose,
-    ) -> StorageResult<u64> {
+    async fn delete_links_for_user(&self, user_id: UserId) -> StorageResult<u64> {
         let mut state = self.lock();
         let before = state.len();
-        state.retain(|t| !(t.user_id == user_id && t.purpose == purpose));
+        state.retain(|t| t.user_id != user_id);
         Ok((before - state.len()) as u64)
     }
 

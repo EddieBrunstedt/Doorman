@@ -39,4 +39,5 @@ crate::stores::sqlx_stores! {
     placeholders: crate::common::ph_postgres,
     timestamp: crate::common::ts_passthrough,
     take: returning,
+    replace_link: upsert,
 }

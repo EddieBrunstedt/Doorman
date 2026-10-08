@@ -134,8 +134,13 @@ pub(crate) fn session_id_str(id: SessionId) -> String {
     id.0.to_string()
 }
 
-pub(crate) fn email_link_id(hash: &TokenHash) -> String {
-    hex(&hash.0)
+// Keyed by owner, so storing a link replaces the user's previous link for that purpose.
+pub(crate) fn email_link_id(link: &EmailLink) -> String {
+    format!("{}:{}", link.user_id.0, purpose_str(link.purpose))
+}
+
+pub(crate) fn token_hash_bson(hash: &TokenHash) -> Binary {
+    to_binary(hash.0.to_vec())
 }
 
 pub(crate) fn passkey_id(credential_id: &[u8]) -> String {
@@ -217,10 +222,9 @@ pub(crate) fn session_from_doc(doc: &Document) -> StorageResult<Session> {
 }
 
 pub(crate) fn email_link_to_doc(token: &EmailLink) -> Document {
-    let token_hash_bin = to_binary(token.token_hash.0.to_vec());
     let mut doc = doc! {
-        "_id": email_link_id(&token.token_hash),
-        "token_hash": token_hash_bin,
+        "_id": email_link_id(token),
+        "token_hash": token_hash_bson(&token.token_hash),
         "purpose": purpose_str(token.purpose),
         "user_id": token.user_id.0.to_string(),
         "created_at": to_bson_dt(token.created_at),

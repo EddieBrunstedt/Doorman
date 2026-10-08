@@ -38,4 +38,5 @@ crate::stores::sqlx_stores! {
     placeholders: crate::common::ph_sqlite,
     timestamp: crate::common::ts_passthrough,
     take: returning,
+    replace_link: upsert,
 }

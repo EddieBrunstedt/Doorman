@@ -137,8 +137,12 @@ pub trait UserStore: Send + Sync {
         at: DateTime<Utc>,
     ) -> StorageResult<()>;
 
-    async fn set_user_email(&self, id: UserId, email: &str, at: DateTime<Utc>)
-    -> StorageResult<()>;
+    async fn set_user_email(
+        &self,
+        id: UserId,
+        email: &str,
+        verified_at: DateTime<Utc>,
+    ) -> StorageResult<()>;
 
     async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()>;
 
@@ -369,15 +373,11 @@ pub struct EmailLink {
 
 #[async_trait]
 pub trait EmailLinkStore: Send + Sync {
-    async fn create_link(&self, token: EmailLink) -> StorageResult<()>;
+    async fn replace_link(&self, link: EmailLink) -> StorageResult<()>;
 
     async fn redeem_link(&self, hash: &TokenHash) -> StorageResult<Option<EmailLink>>;
 
-    async fn delete_links_for_user(
-        &self,
-        user_id: UserId,
-        purpose: EmailLinkPurpose,
-    ) -> StorageResult<u64>;
+    async fn delete_links_for_user(&self, user_id: UserId) -> StorageResult<u64>;
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }

@@ -30,7 +30,7 @@ CREATE TABLE email_links (
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );
-CREATE INDEX idx_email_links_user_id ON email_links(user_id);
+CREATE UNIQUE INDEX idx_email_links_owner ON email_links(user_id, purpose);
 CREATE INDEX idx_email_links_expires_at ON email_links(expires_at);
 
 CREATE TABLE passkeys (

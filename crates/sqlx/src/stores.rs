@@ -5,7 +5,8 @@ macro_rules! sqlx_stores {
         row: $row:ty,
         placeholders: $ph:path,
         timestamp: $ts:path,
-        take: $take:tt $(,)?
+        take: $take:tt,
+        replace_link: $replace_link:tt $(,)?
     ) => {
         impl $storage {
             pub fn all_stores(&self) -> $crate::stores::__reexport::Storage {
@@ -150,15 +151,15 @@ macro_rules! sqlx_stores {
                 &self,
                 id: $crate::stores::__reexport::UserId,
                 email: &str,
-                at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
+                verified_at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
                     "UPDATE users SET email = ?, email_verified_at = ?, updated_at = ? WHERE id = ?",
                 );
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind(email)
-                    .bind($ts(at))
-                    .bind($ts(at))
+                    .bind($ts(verified_at))
+                    .bind($ts(verified_at))
                     .bind($crate::common::uuid_to_bytes(id.0))
                     .execute(&self.pool)
                     .await
@@ -415,25 +416,17 @@ macro_rules! sqlx_stores {
 
         #[::async_trait::async_trait]
         impl $crate::stores::__reexport::EmailLinkStore for EmailLinkStoreImpl {
-            async fn create_link(
+            async fn replace_link(
                 &self,
-                token: $crate::stores::__reexport::EmailLink,
+                link: $crate::stores::__reexport::EmailLink,
             ) -> $crate::stores::__reexport::StorageResult<()> {
-                let sql = $ph(
-                    "INSERT INTO email_links (token_hash, purpose, user_id, new_email, created_at, expires_at)
-                     VALUES (?, ?, ?, ?, ?, ?)",
-                );
-                ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind($crate::common::token_hash_bytes(&token.token_hash))
-                    .bind($crate::common::purpose_to_str(token.purpose))
-                    .bind($crate::common::uuid_to_bytes(token.user_id.0))
-                    .bind(&token.new_email)
-                    .bind($ts(token.created_at))
-                    .bind($ts(token.expires_at))
-                    .execute(&self.pool)
-                    .await
-                    .map_err($crate::common::storage_err)?;
-                Ok(())
+                $crate::stores::sqlx_replace_link! {
+                    $replace_link,
+                    pool: self.pool,
+                    ph: $ph,
+                    timestamp: $ts,
+                    link: link,
+                }
             }
 
             async fn redeem_link(
@@ -457,13 +450,10 @@ macro_rules! sqlx_stores {
             async fn delete_links_for_user(
                 &self,
                 user_id: $crate::stores::__reexport::UserId,
-                purpose: $crate::stores::__reexport::EmailLinkPurpose,
             ) -> $crate::stores::__reexport::StorageResult<u64> {
-                let sql =
-                    $ph("DELETE FROM email_links WHERE user_id = ? AND purpose = ?");
+                let sql = $ph("DELETE FROM email_links WHERE user_id = ?");
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(user_id.0))
-                    .bind($crate::common::purpose_to_str(purpose))
                     .execute(&self.pool)
                     .await
                     .map_err($crate::common::storage_err)?;
@@ -928,13 +918,82 @@ macro_rules! sqlx_take {
 
 pub(crate) use sqlx_take;
 
+macro_rules! sqlx_replace_link {
+    (
+        upsert,
+        pool: $pool:expr,
+        ph: $ph:path,
+        timestamp: $ts:path,
+        link: $link:expr $(,)?
+    ) => {{
+        let link = $link;
+        let sql = $ph(
+            "INSERT INTO email_links (token_hash, purpose, user_id, new_email, created_at, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT (user_id, purpose) DO UPDATE SET
+                 token_hash = excluded.token_hash,
+                 new_email = excluded.new_email,
+                 created_at = excluded.created_at,
+                 expires_at = excluded.expires_at",
+        );
+        ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+            .bind($crate::common::token_hash_bytes(&link.token_hash))
+            .bind($crate::common::purpose_to_str(link.purpose))
+            .bind($crate::common::uuid_to_bytes(link.user_id.0))
+            .bind(&link.new_email)
+            .bind($ts(link.created_at))
+            .bind($ts(link.expires_at))
+            .execute(&$pool)
+            .await
+            .map_err($crate::common::storage_err)?;
+        Ok(())
+    }};
+    (
+        txn,
+        pool: $pool:expr,
+        ph: $ph:path,
+        timestamp: $ts:path,
+        link: $link:expr $(,)?
+    ) => {{
+        let link = $link;
+        // MySQL's upsert fires on any unique key, so a colliding token hash would overwrite
+        // another user's link instead of being refused.
+        let mut tx = $pool.begin().await.map_err($crate::common::storage_err)?;
+        let delete_sql = $ph("DELETE FROM email_links WHERE user_id = ? AND purpose = ?");
+        ::sqlx::query(::sqlx::AssertSqlSafe(delete_sql))
+            .bind($crate::common::uuid_to_bytes(link.user_id.0))
+            .bind($crate::common::purpose_to_str(link.purpose))
+            .execute(&mut *tx)
+            .await
+            .map_err($crate::common::storage_err)?;
+        let insert_sql = $ph(
+            "INSERT INTO email_links (token_hash, purpose, user_id, new_email, created_at, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        );
+        ::sqlx::query(::sqlx::AssertSqlSafe(insert_sql))
+            .bind($crate::common::token_hash_bytes(&link.token_hash))
+            .bind($crate::common::purpose_to_str(link.purpose))
+            .bind($crate::common::uuid_to_bytes(link.user_id.0))
+            .bind(&link.new_email)
+            .bind($ts(link.created_at))
+            .bind($ts(link.expires_at))
+            .execute(&mut *tx)
+            .await
+            .map_err($crate::common::storage_err)?;
+        tx.commit().await.map_err($crate::common::storage_err)?;
+        Ok(())
+    }};
+}
+
+pub(crate) use sqlx_replace_link;
+
 pub(crate) mod __reexport {
     pub use chrono::{DateTime, Utc};
     pub use doorman_core::encoding::{user_status_from_parts, user_status_to_str};
     pub use doorman_core::error::{StorageError, StorageResult};
     pub use doorman_core::storage::{
-        EmailLink, EmailLinkPurpose, EmailLinkStore, PasskeyChallengeId, PasskeyChallengeStore,
-        PasskeyStore, PasskeyUse, Session, SessionId, SessionStore, Storage, StoredPasskey,
+        EmailLink, EmailLinkStore, PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore,
+        PasskeyUse, Session, SessionId, SessionStore, Storage, StoredPasskey,
         StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
         UserStatus, UserStore,
     };

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use doorman_core::error::StorageResult;
-use doorman_core::storage::{EmailLink, EmailLinkPurpose, EmailLinkStore, TokenHash, UserId};
+use doorman_core::storage::{EmailLink, EmailLinkStore, TokenHash, UserId};
 
 use crate::client::{self, RedisClient};
 use crate::keys;
@@ -19,25 +19,50 @@ impl RedisEmailLinkStore {
 
 #[async_trait]
 impl EmailLinkStore for RedisEmailLinkStore {
-    async fn create_link(&self, token: EmailLink) -> StorageResult<()> {
+    async fn replace_link(&self, link: EmailLink) -> StorageResult<()> {
         let keys = self.client.keys();
-        let email_link_key = keys.email_link(&token.token_hash);
-        let user_key = keys.user_email_links(token.user_id, token.purpose);
-        let member = keys::token_hash_hex(&token.token_hash);
-        let json = client::to_json(&token)?;
+        let email_link_key = keys.email_link(&link.token_hash);
+        let user_key = keys.user_email_links(link.user_id);
+        let member = keys::token_hash_hex(&link.token_hash);
+        let json = client::to_json(&link)?;
         let mut conn = self.client.conn();
 
         stores::insert_absent(
             &mut conn,
             &[(&email_link_key, &json)],
-            token.expires_at,
+            link.expires_at,
             Some(stores::OwnerIndex {
                 set: &user_key,
                 member: &member,
             }),
             "email link token hash",
         )
-        .await
+        .await?;
+
+        let others: Vec<String> = client::smembers(&mut conn, &user_key)
+            .await?
+            .into_iter()
+            .filter(|other| *other != member)
+            .collect();
+        let other_keys: Vec<String> = others
+            .iter()
+            .map(|hex| keys.email_link_key_for(hex))
+            .collect();
+        let rows: Vec<Option<EmailLink>> = client::mget_json(&mut conn, &other_keys).await?;
+        let mut replaced_keys = Vec::new();
+        let mut replaced_members = Vec::new();
+        for ((other, key), row) in others.into_iter().zip(other_keys).zip(rows) {
+            match row {
+                Some(row) if row.purpose != link.purpose => {}
+                _ => {
+                    replaced_keys.push(key);
+                    replaced_members.push(other);
+                }
+            }
+        }
+        client::del(&mut conn, &replaced_keys).await?;
+        client::srem(&mut conn, &user_key, &replaced_members).await?;
+        Ok(())
     }
 
     async fn redeem_link(&self, hash: &TokenHash) -> StorageResult<Option<EmailLink>> {
@@ -45,23 +70,18 @@ impl EmailLinkStore for RedisEmailLinkStore {
         let email_link_key = keys.email_link(hash);
         let mut conn = self.client.conn();
 
-        let Some(token) = client::getdel_json::<EmailLink>(&mut conn, &email_link_key).await?
-        else {
+        let Some(link) = client::getdel_json::<EmailLink>(&mut conn, &email_link_key).await? else {
             return Ok(None);
         };
-        let user_key = keys.user_email_links(token.user_id, token.purpose);
+        let user_key = keys.user_email_links(link.user_id);
         let member = keys::token_hash_hex(hash);
         let _ = client::srem(&mut conn, &user_key, &[member]).await;
-        Ok(Some(token))
+        Ok(Some(link))
     }
 
-    async fn delete_links_for_user(
-        &self,
-        user_id: UserId,
-        purpose: EmailLinkPurpose,
-    ) -> StorageResult<u64> {
+    async fn delete_links_for_user(&self, user_id: UserId) -> StorageResult<u64> {
         let keys = self.client.keys();
-        let user_key = keys.user_email_links(user_id, purpose);
+        let user_key = keys.user_email_links(user_id);
         let mut conn = self.client.conn();
 
         let members = client::smembers(&mut conn, &user_key).await?;
@@ -81,17 +101,13 @@ impl EmailLinkStore for RedisEmailLinkStore {
         let keys = self.client.keys();
         let mut conn = self.client.conn();
 
-        let mut removed = 0u64;
-        for purpose in keys::ALL_PURPOSES {
-            removed += stores::purge_index_sets::<EmailLink>(
-                &mut conn,
-                keys,
-                &keys.user_email_links_pattern(purpose),
-                |hex| keys.email_link_key_for(hex),
-                now,
-            )
-            .await?;
-        }
-        Ok(removed)
+        stores::purge_index_sets::<EmailLink>(
+            &mut conn,
+            keys,
+            &keys.user_email_links_pattern(),
+            |hex| keys.email_link_key_for(hex),
+            now,
+        )
+        .await
     }
 }

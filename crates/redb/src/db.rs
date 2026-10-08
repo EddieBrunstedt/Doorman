@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{EmailLinkPurpose, Session, StoredPasskey, TokenHash, UserId};
+use doorman_core::storage::{Session, StoredPasskey, TokenHash, UserId};
 use redb::{
     Database, ReadTransaction, ReadableDatabase as _, ReadableTable, TableDefinition,
     WriteTransaction,
@@ -43,10 +43,6 @@ pub(crate) fn owner_key(owner: impl Display, member: impl Display) -> String {
     format!("{owner}{SEP}{member}")
 }
 
-pub(crate) fn email_links_owner(user_id: UserId, purpose: EmailLinkPurpose) -> String {
-    owner_key(user_id, purpose_str(purpose))
-}
-
 pub(crate) fn owned_members(
     index: &impl ReadableTable<&'static str, ()>,
     owner: impl Display,
@@ -64,8 +60,6 @@ pub(crate) fn owned_members(
         })
         .collect()
 }
-
-pub(crate) use doorman_core::encoding::purpose_to_str as purpose_str;
 
 pub(crate) fn fmt_ts(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::Nanos, true)

@@ -98,22 +98,22 @@ mod tests {
             .await
             .expect("live session");
 
-        let mk_token = |tag: u8, expires_at: DateTime<Utc>| EmailLink {
+        let mk_token = |tag: u8, purpose, expires_at: DateTime<Utc>| EmailLink {
             token_hash: TokenHash([tag; 32]),
             user_id,
-            purpose: EmailLinkPurpose::Signup,
+            purpose,
             new_email: None,
             created_at: now - chrono::Duration::hours(2),
             expires_at,
         };
         storage
             .email_links
-            .create_link(mk_token(3, expired))
+            .replace_link(mk_token(3, EmailLinkPurpose::Signup, expired))
             .await
             .expect("expired token");
         storage
             .email_links
-            .create_link(mk_token(4, live))
+            .replace_link(mk_token(4, EmailLinkPurpose::Recovery, live))
             .await
             .expect("live token");
 

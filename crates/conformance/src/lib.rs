@@ -47,6 +47,7 @@ pub async fn run(storage: &Storage) {
     users_setters_refuse_missing_user(storage).await;
     email_link_single_use(storage).await;
     email_link_email_change_payload(storage).await;
+    email_link_replaces_its_owners_link(storage).await;
     email_link_purge_and_delete(storage).await;
     sessions_crud_and_queries(storage).await;
     sessions_purge_expired(storage).await;
@@ -344,7 +345,7 @@ async fn email_link_single_use(storage: &Storage) {
     let tokens = &storage.email_links;
     let hash = hash_token("single-use-token");
     tokens
-        .create_link(EmailLink {
+        .replace_link(EmailLink {
             token_hash: hash,
             user_id,
             purpose: EmailLinkPurpose::Signup,
@@ -374,7 +375,7 @@ async fn email_link_single_use(storage: &Storage) {
 
     let signup_hash = hash_token("purpose-carrying-token");
     tokens
-        .create_link(EmailLink {
+        .replace_link(EmailLink {
             token_hash: signup_hash,
             user_id,
             purpose: EmailLinkPurpose::Signup,
@@ -407,7 +408,7 @@ async fn email_link_email_change_payload(storage: &Storage) {
     let tokens = &storage.email_links;
     let hash = hash_token("email-change-token");
     tokens
-        .create_link(EmailLink {
+        .replace_link(EmailLink {
             token_hash: hash,
             user_id,
             purpose: EmailLinkPurpose::EmailChange,
@@ -431,79 +432,134 @@ async fn email_link_email_change_payload(storage: &Storage) {
     );
 }
 
+fn link(raw: &str, user_id: UserId, purpose: EmailLinkPurpose) -> EmailLink {
+    EmailLink {
+        token_hash: hash_token(raw),
+        user_id,
+        purpose,
+        new_email: None,
+        created_at: ts(2026, 1, 1),
+        expires_at: ts(2099, 1, 1),
+    }
+}
+
+async fn email_link_replaces_its_owners_link(storage: &Storage) {
+    let owner = UserId::new();
+    let bystander = UserId::new();
+    for (id, email) in [
+        (owner, "replace-owner@example.com"),
+        (bystander, "replace-bystander@example.com"),
+    ] {
+        storage
+            .users
+            .create_user(user(id, email))
+            .await
+            .expect("user");
+    }
+
+    let links = &storage.email_links;
+    let first = link("replace-first", owner, EmailLinkPurpose::Signup);
+    let other_purpose = link("replace-other-purpose", owner, EmailLinkPurpose::Recovery);
+    let other_owner = link("replace-other-owner", bystander, EmailLinkPurpose::Signup);
+    let second = link("replace-second", owner, EmailLinkPurpose::Signup);
+    for l in [&first, &other_purpose, &other_owner, &second] {
+        links.replace_link(l.clone()).await.expect("replace link");
+    }
+
+    assert!(
+        links
+            .redeem_link(&first.token_hash)
+            .await
+            .expect("redeem replaced")
+            .is_none(),
+        "a link replaced by its owner's next link of the same purpose no longer redeems",
+    );
+    assert_eq!(
+        links
+            .redeem_link(&second.token_hash)
+            .await
+            .expect("redeem replacement"),
+        Some(second),
+        "the replacing link redeems",
+    );
+    assert_eq!(
+        links
+            .redeem_link(&other_purpose.token_hash)
+            .await
+            .expect("redeem other purpose"),
+        Some(other_purpose),
+        "the owner's link of another purpose survives",
+    );
+    assert_eq!(
+        links
+            .redeem_link(&other_owner.token_hash)
+            .await
+            .expect("redeem other owner"),
+        Some(other_owner),
+        "another user's link of the same purpose survives",
+    );
+}
+
 async fn email_link_purge_and_delete(storage: &Storage) {
     let user_id = UserId::new();
-    storage
-        .users
-        .create_user(user(user_id, "purge-tokens@example.com"))
-        .await
-        .expect("user");
+    let bystander = UserId::new();
+    for (id, email) in [
+        (user_id, "purge-tokens@example.com"),
+        (bystander, "purge-tokens-bystander@example.com"),
+    ] {
+        storage
+            .users
+            .create_user(user(id, email))
+            .await
+            .expect("user");
+    }
 
     let tokens = &storage.email_links;
-    let signup_hash = hash_token("delete-signup");
-    let recovery_hash = hash_token("delete-recovery");
-    tokens
-        .create_link(EmailLink {
-            token_hash: signup_hash,
-            user_id,
-            purpose: EmailLinkPurpose::Signup,
-            new_email: None,
-            created_at: ts(2026, 1, 1),
-            expires_at: ts(2099, 1, 1),
-        })
-        .await
-        .expect("create signup");
-    tokens
-        .create_link(EmailLink {
-            token_hash: recovery_hash,
-            user_id,
-            purpose: EmailLinkPurpose::Recovery,
-            new_email: None,
-            created_at: ts(2026, 1, 1),
-            expires_at: ts(2099, 1, 1),
-        })
-        .await
-        .expect("create recovery");
+    let signup = link("delete-signup", user_id, EmailLinkPurpose::Signup);
+    let recovery = link("delete-recovery", user_id, EmailLinkPurpose::Recovery);
+    let survivor = link("delete-bystander", bystander, EmailLinkPurpose::Signup);
+    for l in [&signup, &recovery, &survivor] {
+        tokens.replace_link(l.clone()).await.expect("create link");
+    }
 
     let removed = tokens
-        .delete_links_for_user(user_id, EmailLinkPurpose::Signup)
+        .delete_links_for_user(user_id)
         .await
-        .expect("delete signup tokens");
-    assert_eq!(removed, 1, "exactly the signup token was deleted");
+        .expect("delete the user's links");
+    assert_eq!(removed, 2, "every purpose's link was deleted");
+    for deleted in [&signup, &recovery] {
+        assert!(
+            tokens
+                .redeem_link(&deleted.token_hash)
+                .await
+                .expect("redeem deleted")
+                .is_none(),
+            "a deleted link no longer redeems",
+        );
+    }
     assert!(
         tokens
-            .redeem_link(&signup_hash)
-            .await
-            .expect("redeem deleted")
-            .is_none(),
-        "the deleted signup token no longer redeems",
-    );
-    assert!(
-        tokens
-            .redeem_link(&recovery_hash)
+            .redeem_link(&survivor.token_hash)
             .await
             .expect("redeem surviving")
             .is_some(),
-        "the recovery token of another purpose survived the delete",
+        "another user's link survived the delete",
     );
 
-    let expired_hash = hash_token("expired-token");
+    let expired = EmailLink {
+        created_at: ts(2020, 1, 1),
+        expires_at: ts(2020, 1, 2),
+        ..link("expired-token", user_id, EmailLinkPurpose::Signup)
+    };
     tokens
-        .create_link(EmailLink {
-            token_hash: expired_hash,
-            user_id,
-            purpose: EmailLinkPurpose::Signup,
-            new_email: None,
-            created_at: ts(2020, 1, 1),
-            expires_at: ts(2020, 1, 2),
-        })
+        .replace_link(expired.clone())
         .await
         .expect("create expired");
     let purged = tokens.purge_expired(ts(2026, 1, 1)).await.expect("purge");
     assert!(purged >= 1, "at least the expired token was purged");
     assert!(
         tokens
-            .redeem_link(&expired_hash)
+            .redeem_link(&expired.token_hash)
             .await
             .expect("redeem purged")
             .is_none(),
@@ -1604,7 +1660,7 @@ async fn single_use_under_concurrency(storage: &Storage) {
     let hash = hash_token("race-redeem-token");
     storage
         .email_links
-        .create_link(EmailLink {
+        .replace_link(EmailLink {
             token_hash: hash,
             user_id,
             purpose: EmailLinkPurpose::Signup,
@@ -1731,19 +1787,33 @@ async fn owner_indexes_track_removals(storage: &Storage) {
     );
 
     let tokens = &storage.email_links;
-    let token = |raw: &str, expires_at| EmailLink {
-        token_hash: hash_token(raw),
-        user_id,
-        purpose: EmailLinkPurpose::Recovery,
-        new_email: None,
+    let token = |raw: &str, purpose, expires_at| EmailLink {
         created_at: ts(2020, 1, 1),
         expires_at,
+        ..link(raw, user_id, purpose)
     };
-    let redeemed = token("index-redeemed-token", ts(2099, 1, 1));
-    let expired = token("index-expired-token", ts(2020, 1, 2));
-    let remaining = token("index-remaining-token", ts(2099, 1, 1));
-    for t in [&redeemed, &expired, &remaining] {
-        tokens.create_link(t.clone()).await.expect("create token");
+    let replaced = token(
+        "index-replaced-token",
+        EmailLinkPurpose::Signup,
+        ts(2099, 1, 1),
+    );
+    let redeemed = token(
+        "index-redeemed-token",
+        EmailLinkPurpose::Signup,
+        ts(2099, 1, 1),
+    );
+    let expired = token(
+        "index-expired-token",
+        EmailLinkPurpose::Recovery,
+        ts(2020, 1, 2),
+    );
+    let remaining = token(
+        "index-remaining-token",
+        EmailLinkPurpose::EmailChange,
+        ts(2099, 1, 1),
+    );
+    for t in [&replaced, &redeemed, &expired, &remaining] {
+        tokens.replace_link(t.clone()).await.expect("create token");
     }
     assert!(
         tokens
@@ -1759,7 +1829,7 @@ async fn owner_indexes_track_removals(storage: &Storage) {
     );
     assert_eq!(
         tokens
-            .delete_links_for_user(user_id, EmailLinkPurpose::Recovery)
+            .delete_links_for_user(user_id)
             .await
             .expect("delete tokens"),
         1,
@@ -1961,13 +2031,13 @@ async fn inserts_refuse_duplicate_keys(storage: &Storage) {
     };
     storage
         .email_links
-        .create_link(link.clone())
+        .replace_link(link.clone())
         .await
         .expect("create link");
     assert_refused(
         storage
             .email_links
-            .create_link(EmailLink {
+            .replace_link(EmailLink {
                 user_id: intruder,
                 purpose: EmailLinkPurpose::Recovery,
                 ..link.clone()
@@ -1979,7 +2049,7 @@ async fn inserts_refuse_duplicate_keys(storage: &Storage) {
     assert_eq!(
         storage
             .email_links
-            .delete_links_for_user(intruder, EmailLinkPurpose::Recovery)
+            .delete_links_for_user(intruder)
             .await
             .expect("delete intruder links"),
         0,
