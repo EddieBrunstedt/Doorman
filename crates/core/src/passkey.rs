@@ -17,7 +17,6 @@ use crate::challenge::{Login, PasskeyChallenge};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
-use crate::email::SecurityNotices;
 use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
 use crate::passkey_registration::{
@@ -25,13 +24,13 @@ use crate::passkey_registration::{
 };
 use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
 use crate::recovery_cool_down::RecoveryCoolDown;
+use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::{IssuedSession, ResolvedSession, SessionContext};
 use crate::session_records::SessionRecords;
 use crate::storage::{
     PasskeyChallengeId, PasskeyStore, PasskeySummary, RegistrationPurpose, StoredPasskey, User,
     UserId,
 };
-use crate::user_records::UserRecords;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PasskeyRateLimits {
@@ -124,7 +123,6 @@ pub struct RegistrationOutcome {
 
 #[derive(Clone)]
 pub struct PasskeyManager {
-    records: UserRecords,
     passkeys: Arc<dyn PasskeyStore>,
     registrations: PasskeyRegistrations,
     logins: PasskeyChallenge<Login>,
@@ -146,7 +144,6 @@ impl PasskeyManager {
         webauthn: Arc<Webauthn>,
     ) -> Self {
         Self {
-            records: UserRecords::new(deps),
             passkeys: deps.passkeys.clone(),
             registrations,
             logins: PasskeyChallenge::from_deps(deps, &config, webauthn.clone()),
@@ -200,7 +197,12 @@ impl PasskeyManager {
             .finish(challenge_id, response, name, &context, rules)
             .await?;
         self.notices
-            .passkey_registered(&user, passkey.name.as_deref())
+            .send(
+                &user,
+                SecurityNotice::PasskeyRegistered {
+                    passkey_name: passkey.name.as_deref(),
+                },
+            )
             .await;
         Ok(passkey)
     }
@@ -318,7 +320,6 @@ impl PasskeyManager {
             cleared.session().user_id,
             credential_id,
             Actor::from(&context),
-            PasskeyRemovalNotice::SelfService,
         )
         .await
     }
@@ -349,47 +350,19 @@ impl PasskeyManager {
         user_id: UserId,
         credential_id: &[u8],
         actor: Actor,
-        notice: PasskeyRemovalNotice,
     ) -> Result<()> {
         let passkey = find_owned_passkey(self.passkeys.as_ref(), user_id, credential_id).await?;
         self.passkeys.delete_passkey(credential_id).await?;
+        let passkey_name = passkey.name.as_deref();
+        let notice = match actor {
+            Actor::Subject { .. } => SecurityNotice::PasskeyRemoved { passkey_name },
+            Actor::Operator(_) => SecurityNotice::OperatorRemovedPasskey { passkey_name },
+        };
         self.audit
             .emit(actor, AuditEventKind::PasskeyRemoved { user_id })
             .await;
-        if notice.sends()
-            && let Some(user) = self
-                .records
-                .find_for_notice(user_id, "passkey removed")
-                .await
-        {
-            match notice {
-                PasskeyRemovalNotice::SelfService => {
-                    self.notices
-                        .passkey_removed(&user, passkey.name.as_deref())
-                        .await;
-                }
-                PasskeyRemovalNotice::Operator => {
-                    self.notices
-                        .operator_passkey_removed(&user, passkey.name.as_deref())
-                        .await;
-                }
-                PasskeyRemovalNotice::Suppressed => {}
-            }
-        }
+        self.notices.send_to(user_id, notice).await;
         Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PasskeyRemovalNotice {
-    SelfService,
-    Operator,
-    Suppressed,
-}
-
-impl PasskeyRemovalNotice {
-    fn sends(self) -> bool {
-        matches!(self, Self::SelfService | Self::Operator)
     }
 }
 

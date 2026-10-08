@@ -5,14 +5,15 @@ use crate::audit::{AuditDispatch, AuditSink};
 use crate::clock::{Clock, SystemClock};
 use crate::context::CoreDeps;
 use crate::destructive::DestructiveActions;
-use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, SecurityNotices};
+use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, Mailer};
 use crate::metrics::{MetricSink, NoopMetricSink};
-use crate::operator::{NoticePolicy, OperatorManager};
+use crate::operator::OperatorManager;
 use crate::passkey::{PasskeyConfig, PasskeyManager, build_webauthn};
 use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::RateLimiter;
 use crate::reauth::{ReauthManager, ReauthPolicy};
 use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
+use crate::security_notice::{NoticePolicy, SecurityNotices};
 use crate::session::{SessionConfig, SessionManager};
 use crate::session_records::SessionRecords;
 use crate::signup::{SignupConfig, SignupManager};
@@ -258,7 +259,12 @@ impl AuthCoreBuilder {
             validate_idle_timeout(idle_timeout, session_config.absolute_lifetime)?;
         }
 
-        let notices = SecurityNotices::new(email.clone(), emails.clone());
+        let mailer = Mailer::new(email, emails);
+        let notices = SecurityNotices::new(
+            mailer.clone(),
+            self.storage.users.clone(),
+            self.notice_policy.unwrap_or_default(),
+        );
 
         let session_records = SessionRecords::new(
             self.storage.sessions.clone(),
@@ -283,8 +289,7 @@ impl AuthCoreBuilder {
         let deps = CoreDeps::new(
             clock.clone(),
             audit,
-            email,
-            emails,
+            mailer,
             notices,
             limiter,
             session_records.clone(),
@@ -311,11 +316,7 @@ impl AuthCoreBuilder {
 
         let user = UserManager::new(&deps, user_config)?;
 
-        let operator = OperatorManager::new(
-            &deps,
-            passkey.clone(),
-            self.notice_policy.unwrap_or_default(),
-        );
+        let operator = OperatorManager::new(&deps, passkey.clone());
 
         let destructive_actions = DestructiveActions::new(
             session_records,

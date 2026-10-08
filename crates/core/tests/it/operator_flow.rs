@@ -2,7 +2,7 @@ use doorman_core::Error;
 use doorman_core::audit::RecoveryFailureReason;
 use doorman_core::audit::{Actor, AuditEvent, AuditEventKind, OperatorActor, SecretKind};
 use doorman_core::destructive::DestructiveAction;
-use doorman_core::operator::{NoticePolicy, OperatorNotice};
+use doorman_core::security_notice::{NoticePolicy, OperatorNotice};
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{PasskeyStore, SessionId, SessionStore, UserId, UserStatus, UserStore};
 
@@ -295,10 +295,7 @@ async fn operator_remove_passkey_refuses_cross_user_passkey() {
 #[tokio::test]
 async fn operator_remove_passkey_suppresses_notice_when_policy_off() {
     let h = HarnessBuilder::new()
-        .notice_policy(NoticePolicy {
-            passkey_removed: OperatorNotice::Suppress,
-            ..NoticePolicy::default()
-        })
+        .notice_policy(NoticePolicy::default().suppress(OperatorNotice::PasskeyRemoved))
         .build();
     let user = provision_user(&h, "owner@example.com").await;
     let credential_id = first_credential_id(&h, user.id).await;
@@ -325,6 +322,34 @@ async fn operator_remove_passkey_suppresses_notice_when_policy_off() {
             .subject
             .starts_with("Security notice: a passkey was removed")),
         "Suppress sends no passkey-removed notice",
+    );
+}
+
+#[tokio::test]
+async fn notice_policy_leaves_self_service_notices_alone() {
+    let h = HarnessBuilder::new()
+        .notice_policy(NoticePolicy::default().suppress(OperatorNotice::PasskeyRemoved))
+        .build();
+    let user = provision_user(&h, "owner@example.com").await;
+    let credential_id = first_credential_id(&h, user.id).await;
+    let session = session_for(&h, &user).await;
+
+    h.destructive_actions
+        .perform(
+            &session,
+            DestructiveAction::RemovePasskey { credential_id },
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("remove passkey");
+
+    assert!(
+        h.email
+            .sent()
+            .iter()
+            .any(|e| e.subject == "Security notice: passkey removed"),
+        "the user's own removal is still noticed",
     );
 }
 
@@ -421,10 +446,7 @@ async fn operator_revoke_all_clears_sessions_and_suppresses_notice_by_default() 
 #[tokio::test]
 async fn operator_revoke_all_sends_operator_notice_when_opted_in() {
     let h = HarnessBuilder::new()
-        .notice_policy(NoticePolicy {
-            sessions_revoked: OperatorNotice::Send,
-            ..NoticePolicy::default()
-        })
+        .notice_policy(NoticePolicy::default().send(OperatorNotice::SessionsRevoked))
         .build();
     let user = provision_user(&h, "owner@example.com").await;
 
@@ -635,10 +657,7 @@ async fn operator_disable_suppresses_notice_by_default() {
 #[tokio::test]
 async fn operator_disable_sends_operator_notice_when_opted_in() {
     let h = HarnessBuilder::new()
-        .notice_policy(NoticePolicy {
-            user_disabled: OperatorNotice::Send,
-            ..NoticePolicy::default()
-        })
+        .notice_policy(NoticePolicy::default().send(OperatorNotice::UserDisabled))
         .build();
     let user = provision_user(&h, "disabled@example.com").await;
 

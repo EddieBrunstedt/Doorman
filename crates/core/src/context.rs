@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use crate::audit::AuditDispatch;
 use crate::clock::Clock;
-use crate::email::{EmailSender, EmailTemplates, SecurityNotices};
+use crate::email::Mailer;
 use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::rate_limit::RateLimiter;
+use crate::security_notice::SecurityNotices;
 use crate::session_records::SessionRecords;
 use crate::storage::{EmailLinkStore, PasskeyChallengeStore, PasskeyStore, Storage, UserStore};
 
@@ -12,8 +13,7 @@ use crate::storage::{EmailLinkStore, PasskeyChallengeStore, PasskeyStore, Storag
 pub(crate) struct CoreDeps {
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) audit: AuditDispatch,
-    pub(crate) email: Arc<dyn EmailSender>,
-    pub(crate) emails: Arc<dyn EmailTemplates>,
+    pub(crate) mailer: Mailer,
     pub(crate) notices: SecurityNotices,
     pub(crate) rate_limiter: Arc<dyn RateLimiter>,
     pub(crate) metrics: Arc<dyn MetricSink>,
@@ -32,8 +32,7 @@ impl CoreDeps {
     pub(crate) fn new(
         clock: Arc<dyn Clock>,
         audit: AuditDispatch,
-        email: Arc<dyn EmailSender>,
-        emails: Arc<dyn EmailTemplates>,
+        mailer: Mailer,
         notices: SecurityNotices,
         rate_limiter: Arc<dyn RateLimiter>,
         sessions: SessionRecords,
@@ -42,8 +41,7 @@ impl CoreDeps {
         Self {
             clock,
             audit,
-            email,
-            emails,
+            mailer,
             notices,
             rate_limiter,
             metrics: Arc::new(NoopMetricSink),

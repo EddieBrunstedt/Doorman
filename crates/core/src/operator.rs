@@ -1,34 +1,11 @@
 use crate::audit::{AuditDispatch, AuditEventKind, OperatorActor};
 use crate::context::CoreDeps;
-use crate::email::SecurityNotices;
 use crate::error::{Error, Result};
-use crate::passkey::{PasskeyManager, PasskeyRemovalNotice};
+use crate::passkey::PasskeyManager;
+use crate::security_notice::{NoticePolicy, SecurityNotice, SecurityNotices};
 use crate::session_records::SessionRecords;
 use crate::storage::{PasskeySummary, SessionId, SessionSummary, User, UserId};
 use crate::user_records::UserRecords;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperatorNotice {
-    Send,
-    Suppress,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NoticePolicy {
-    pub passkey_removed: OperatorNotice,
-    pub sessions_revoked: OperatorNotice,
-    pub user_disabled: OperatorNotice,
-}
-
-impl Default for NoticePolicy {
-    fn default() -> Self {
-        Self {
-            passkey_removed: OperatorNotice::Send,
-            sessions_revoked: OperatorNotice::Suppress,
-            user_disabled: OperatorNotice::Suppress,
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct OperatorManager {
@@ -37,27 +14,21 @@ pub struct OperatorManager {
     passkey: PasskeyManager,
     notices: SecurityNotices,
     audit: AuditDispatch,
-    notice_policy: NoticePolicy,
 }
 
 impl OperatorManager {
-    pub(crate) fn new(
-        deps: &CoreDeps,
-        passkey: PasskeyManager,
-        notice_policy: NoticePolicy,
-    ) -> Self {
+    pub(crate) fn new(deps: &CoreDeps, passkey: PasskeyManager) -> Self {
         Self {
             records: UserRecords::new(deps),
             sessions: deps.sessions.clone(),
             passkey,
             notices: deps.notices.clone(),
             audit: deps.audit.clone(),
-            notice_policy,
         }
     }
 
     pub fn notice_policy(&self) -> &NoticePolicy {
-        &self.notice_policy
+        self.notices.policy()
     }
 
     #[tracing::instrument(skip(self, actor), fields(target_user_id = %target_user_id))]
@@ -92,9 +63,9 @@ impl OperatorManager {
             )
             .await;
 
-        if self.notice_policy.user_disabled == OperatorNotice::Send {
-            self.notices.operator_user_disabled(&user).await;
-        }
+        self.notices
+            .send(&user, SecurityNotice::OperatorDisabledUser)
+            .await;
 
         Ok(())
     }
@@ -137,13 +108,8 @@ impl OperatorManager {
     ) -> Result<()> {
         self.resolve_subject(target_user_id).await?;
 
-        let notice = match self.notice_policy.passkey_removed {
-            OperatorNotice::Send => PasskeyRemovalNotice::Operator,
-            OperatorNotice::Suppress => PasskeyRemovalNotice::Suppressed,
-        };
-
         self.passkey
-            .remove_passkey_for(target_user_id, credential_id, actor.into(), notice)
+            .remove_passkey_for(target_user_id, credential_id, actor.into())
             .await?;
 
         Ok(())
@@ -169,8 +135,10 @@ impl OperatorManager {
             )
             .await;
 
-        if count > 0 && self.notice_policy.sessions_revoked == OperatorNotice::Send {
-            self.notices.operator_sessions_revoked(&user).await;
+        if count > 0 {
+            self.notices
+                .send(&user, SecurityNotice::OperatorRevokedSessions)
+                .await;
         }
 
         Ok(count)

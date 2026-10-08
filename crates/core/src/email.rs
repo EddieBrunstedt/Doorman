@@ -36,6 +36,24 @@ pub struct Email {
     pub body_html: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailContent {
+    pub subject: String,
+    pub body_text: String,
+    pub body_html: Option<String>,
+}
+
+impl EmailContent {
+    fn addressed_to(self, to: &str) -> Email {
+        Email {
+            to: to.to_owned(),
+            subject: self.subject,
+            body_text: self.body_text,
+            body_html: self.body_html,
+        }
+    }
+}
+
 #[async_trait]
 pub trait EmailSender: Send + Sync {
     async fn send(&self, email: Email) -> EmailResult<()>;
@@ -108,9 +126,8 @@ impl EmailSender for FileEmailSender {
 }
 
 pub trait EmailTemplates: Send + Sync {
-    fn signup_email(&self, user: &User, url: &str) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+    fn signup_email(&self, _user: &User, url: &str) -> EmailContent {
+        EmailContent {
             subject: "Finish signing up".to_string(),
             body_text: format!(
                 "Hello,\n\n\
@@ -123,9 +140,8 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    fn recovery_email(&self, user: &User, url: &str) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+    fn recovery_email(&self, _user: &User, url: &str) -> EmailContent {
+        EmailContent {
             subject: "Recover access with a new passkey".to_string(),
             body_text: format!(
                 "Hello,\n\n\
@@ -140,9 +156,8 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    fn recovery_requested_notice_email(&self, user: &User) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+    fn recovery_requested_notice_email(&self, _user: &User) -> EmailContent {
+        EmailContent {
             subject: "Security notice: recovery requested".to_string(),
             body_text: "Hello,\n\n\
                  We received a request to recover your access. \
@@ -156,9 +171,8 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    fn recovery_completed_notice_email(&self, user: &User) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+    fn recovery_completed_notice_email(&self, _user: &User) -> EmailContent {
+        EmailContent {
             subject: "Security notice: recovery completed".to_string(),
             body_text: "Hello,\n\n\
                  A recovery just completed for you, and a new passkey was registered. \
@@ -172,9 +186,13 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    fn email_change_confirmation_email(&self, _user: &User, new_email: &str, url: &str) -> Email {
-        Email {
-            to: new_email.to_string(),
+    fn email_change_confirmation_email(
+        &self,
+        _user: &User,
+        _new_email: &str,
+        url: &str,
+    ) -> EmailContent {
+        EmailContent {
             subject: "Confirm your new email address".to_string(),
             body_text: format!(
                 "Hello,\n\n\
@@ -188,9 +206,8 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    fn email_change_requested_notice_email(&self, user: &User, new_email: &str) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+    fn email_change_requested_notice_email(&self, _user: &User, new_email: &str) -> EmailContent {
+        EmailContent {
             subject: "Security notice: email change requested".to_string(),
             body_text: format!(
                 "Hello,\n\n\
@@ -205,13 +222,16 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    fn passkey_registered_notice_email(&self, user: &User, passkey_name: Option<&str>) -> Email {
+    fn passkey_registered_notice_email(
+        &self,
+        _user: &User,
+        passkey_name: Option<&str>,
+    ) -> EmailContent {
         let detail = display_passkey_name(passkey_name)
             .map(|name| format!("A new passkey named \"{name}\" was just registered."))
             .unwrap_or_else(|| "A new passkey was just registered.".to_string());
 
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+        EmailContent {
             subject: "Security notice: passkey registered".to_string(),
             body_text: format!(
                 "Hello,\n\n\
@@ -224,13 +244,16 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    fn passkey_removed_notice_email(&self, user: &User, passkey_name: Option<&str>) -> Email {
+    fn passkey_removed_notice_email(
+        &self,
+        _user: &User,
+        passkey_name: Option<&str>,
+    ) -> EmailContent {
         let detail = display_passkey_name(passkey_name)
             .map(|name| format!("The passkey named \"{name}\" was just removed."))
             .unwrap_or_else(|| "A passkey was just removed.".to_string());
 
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+        EmailContent {
             subject: "Security notice: passkey removed".to_string(),
             body_text: format!(
                 "Hello,\n\n\
@@ -245,15 +268,14 @@ pub trait EmailTemplates: Send + Sync {
 
     fn operator_passkey_removed_notice_email(
         &self,
-        user: &User,
+        _user: &User,
         passkey_name: Option<&str>,
-    ) -> Email {
+    ) -> EmailContent {
         let detail = display_passkey_name(passkey_name)
             .map(|name| format!("An operator removed the passkey named \"{name}\"."))
             .unwrap_or_else(|| "An operator removed one of your passkeys.".to_string());
 
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+        EmailContent {
             subject: "Security notice: a passkey was removed by an operator".to_string(),
             body_text: format!(
                 "Hello,\n\n\
@@ -264,9 +286,8 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    fn operator_sessions_revoked_notice_email(&self, user: &User) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+    fn operator_sessions_revoked_notice_email(&self, _user: &User) -> EmailContent {
+        EmailContent {
             subject: "Security notice: you were logged out by an operator".to_string(),
             body_text: "Hello,\n\n\
                  An operator ended all of your active sessions. You will need to log in \
@@ -277,9 +298,8 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    fn operator_user_disabled_notice_email(&self, user: &User) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+    fn operator_user_disabled_notice_email(&self, _user: &User) -> EmailContent {
+        EmailContent {
             subject: "Security notice: your access was disabled by an operator".to_string(),
             body_text: "Hello,\n\n\
                  An operator disabled your access. Until an operator enables it again, you \
@@ -290,9 +310,8 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    fn other_session_revoked_notice_email(&self, user: &User) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+    fn other_session_revoked_notice_email(&self, _user: &User) -> EmailContent {
+        EmailContent {
             subject: "Security notice: session revoked".to_string(),
             body_text: "Hello,\n\n\
                  A session other than the one you are using was just revoked. If this was \
@@ -304,9 +323,8 @@ pub trait EmailTemplates: Send + Sync {
         }
     }
 
-    fn other_sessions_revoked_notice_email(&self, user: &User) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+    fn other_sessions_revoked_notice_email(&self, _user: &User) -> EmailContent {
+        EmailContent {
             subject: "Security notice: other sessions revoked".to_string(),
             body_text: "Hello,\n\n\
                  All of your sessions except the one that asked for it were just revoked. \
@@ -333,102 +351,40 @@ pub struct DefaultEmailTemplates;
 impl EmailTemplates for DefaultEmailTemplates {}
 
 #[derive(Clone)]
-pub struct SecurityNotices {
+pub(crate) struct Mailer {
     sender: Arc<dyn EmailSender>,
-    emails: Arc<dyn EmailTemplates>,
+    templates: Arc<dyn EmailTemplates>,
 }
 
-impl SecurityNotices {
-    pub fn new(sender: Arc<dyn EmailSender>, emails: Arc<dyn EmailTemplates>) -> Self {
-        Self { sender, emails }
+impl Mailer {
+    pub(crate) fn new(sender: Arc<dyn EmailSender>, templates: Arc<dyn EmailTemplates>) -> Self {
+        Self { sender, templates }
     }
 
-    pub async fn passkey_registered(&self, user: &User, passkey_name: Option<&str>) {
-        self.send_best_effort(user, "passkey registered notice", |emails| {
-            emails.passkey_registered_notice_email(user, passkey_name)
-        })
-        .await;
-    }
-
-    pub async fn passkey_removed(&self, user: &User, passkey_name: Option<&str>) {
-        self.send_best_effort(user, "passkey removed notice", |emails| {
-            emails.passkey_removed_notice_email(user, passkey_name)
-        })
-        .await;
-    }
-
-    pub async fn operator_passkey_removed(&self, user: &User, passkey_name: Option<&str>) {
-        self.send_best_effort(user, "operator passkey removed notice", |emails| {
-            emails.operator_passkey_removed_notice_email(user, passkey_name)
-        })
-        .await;
-    }
-
-    pub async fn operator_sessions_revoked(&self, user: &User) {
-        self.send_best_effort(user, "operator sessions revoked notice", |emails| {
-            emails.operator_sessions_revoked_notice_email(user)
-        })
-        .await;
-    }
-
-    pub async fn operator_user_disabled(&self, user: &User) {
-        self.send_best_effort(user, "operator user disabled notice", |emails| {
-            emails.operator_user_disabled_notice_email(user)
-        })
-        .await;
-    }
-
-    pub async fn other_session_revoked(&self, user: &User) {
-        self.send_best_effort(user, "other-session revoked notice", |emails| {
-            emails.other_session_revoked_notice_email(user)
-        })
-        .await;
-    }
-
-    pub async fn other_sessions_revoked(&self, user: &User) {
-        self.send_best_effort(user, "other-sessions revoked notice", |emails| {
-            emails.other_sessions_revoked_notice_email(user)
-        })
-        .await;
-    }
-
-    pub async fn recovery_requested(&self, user: &User) {
-        self.send_best_effort(user, "recovery requested notice", |emails| {
-            emails.recovery_requested_notice_email(user)
-        })
-        .await;
-    }
-
-    pub async fn recovery_completed(&self, user: &User) {
-        self.send_best_effort(user, "recovery completed notice", |emails| {
-            emails.recovery_completed_notice_email(user)
-        })
-        .await;
-    }
-
-    pub async fn email_change_requested(&self, user: &User, new_email: &str) {
-        self.send_best_effort(user, "email change requested notice", |emails| {
-            emails.email_change_requested_notice_email(user, new_email)
-        })
-        .await;
+    pub(crate) async fn send(
+        &self,
+        to: &str,
+        render: impl FnOnce(&dyn EmailTemplates) -> EmailContent,
+    ) -> EmailResult<()> {
+        let email = render(self.templates.as_ref()).addressed_to(to);
+        self.sender.send(email).await
     }
 
     pub(crate) async fn send_best_effort(
         &self,
         user: &User,
         what: &'static str,
-        render: impl FnOnce(&dyn EmailTemplates) -> Email,
+        render: impl FnOnce(&dyn EmailTemplates) -> EmailContent,
     ) {
-        if user.email.is_none() {
+        let Some(to) = user.email.as_deref() else {
             tracing::debug!(
                 user_id = %user.id,
                 "{what} email skipped because user has no email"
             );
             return;
-        }
+        };
 
-        let email = render(self.emails.as_ref());
-        if let Err(err) = self.sender.send(email).await {
+        if let Err(err) = self.send(to, render).await {
             tracing::warn!(
                 error = %err,
                 user_id = %user.id,

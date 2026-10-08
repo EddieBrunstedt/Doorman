@@ -8,11 +8,11 @@ use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
 use doorman_core::audit::NoopAuditSink;
 use doorman_core::email::EmailSender;
 use doorman_core::memory::InMemoryStorage;
-use doorman_core::operator::{NoticePolicy, OperatorNotice};
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::NoopRateLimiter;
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::RecoveryConfig;
+use doorman_core::security_notice::{NoticePolicy, OperatorNotice};
 use doorman_core::session::{SessionConfig, SessionContext};
 use doorman_core::signup::SignupConfig;
 use doorman_core::storage::UserId;
@@ -62,12 +62,9 @@ fn fully_wired_builder_builds() {
 #[tokio::test]
 async fn service_drives_the_managers_the_core_assembled() {
     let email = Arc::new(CapturingEmailSender::new());
-    let policy = NoticePolicy {
-        sessions_revoked: OperatorNotice::Send,
-        ..NoticePolicy::default()
-    };
+    let policy = NoticePolicy::default().send(OperatorNotice::SessionsRevoked);
     let core = core_builder(email.clone() as Arc<dyn EmailSender>)
-        .notice_policy(policy)
+        .notice_policy(policy.clone())
         .build()
         .expect("core");
     let auth = AuthService::builder(core)

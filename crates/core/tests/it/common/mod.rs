@@ -19,11 +19,12 @@ use doorman_core::memory::{
     InMemorySessionStore, InMemoryUserStore,
 };
 use doorman_core::metrics::MetricSink;
-use doorman_core::operator::{NoticePolicy, OperatorManager};
+use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
 use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
 use doorman_core::reauth::{ReauthManager, ReauthPolicy};
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
+use doorman_core::security_notice::NoticePolicy;
 use doorman_core::session::hash_token;
 use doorman_core::session::{
     IssuedSession, ResolvedSession, SessionConfig, SessionContext, SessionManager,

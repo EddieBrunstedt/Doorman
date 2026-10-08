@@ -70,31 +70,6 @@ impl UserRecords {
             .ok_or(Error::UserNotFound)
     }
 
-    pub(crate) async fn find_for_notice(
-        &self,
-        user_id: UserId,
-        what: &'static str,
-    ) -> Option<User> {
-        match self.find(user_id).await {
-            Ok(user) => Some(user),
-            Err(Error::UserNotFound) => {
-                tracing::warn!(
-                    %user_id,
-                    "{what} notice skipped because user was not found"
-                );
-                None
-            }
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    %user_id,
-                    "{what} notice skipped because user lookup failed"
-                );
-                None
-            }
-        }
-    }
-
     pub(crate) async fn find_active(&self, user_id: UserId) -> Result<User> {
         find_active_user(self.users.as_ref(), user_id).await
     }

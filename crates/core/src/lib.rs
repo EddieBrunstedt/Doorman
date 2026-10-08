@@ -31,6 +31,7 @@ pub mod reauth;
 pub mod recovery;
 mod recovery_cool_down;
 mod redeem;
+pub mod security_notice;
 pub mod session;
 mod session_records;
 pub mod signup;

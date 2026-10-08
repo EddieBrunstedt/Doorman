@@ -7,7 +7,7 @@ use webauthn_rs::prelude::RegisterPublicKeyCredential;
 use crate::assembly::AssemblyError;
 use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
-use crate::email::{self, SecurityNotices};
+use crate::email::{self, Mailer};
 use crate::email_link::TOKEN_PLACEHOLDER;
 use crate::email_link_registration::{EmailLinkRegistration, Signup};
 use crate::error::{Error, Result};
@@ -107,7 +107,7 @@ pub struct SignupManager {
     passkeys: Arc<dyn PasskeyStore>,
     records: UserRecords,
     registration: EmailLinkRegistration<Signup>,
-    notices: SecurityNotices,
+    mailer: Mailer,
     rate_limiter: Arc<dyn RateLimiter>,
     audit: AuditDispatch,
     config: SignupConfig,
@@ -129,7 +129,7 @@ impl SignupManager {
                 &config.url_template,
                 config.token_lifetime,
             )?,
-            notices: deps.notices.clone(),
+            mailer: deps.mailer.clone(),
             rate_limiter: deps.rate_limiter.clone(),
             audit: deps.audit.clone(),
             config,
@@ -240,9 +240,9 @@ impl SignupManager {
 
     async fn send_link(&self, user: &User, context: &SessionContext) -> Result<()> {
         let url = self.registration.issue_link(user.id).await?;
-        self.notices
-            .send_best_effort(user, "signup link", |emails| {
-                emails.signup_email(user, &url)
+        self.mailer
+            .send_best_effort(user, "signup link", |templates| {
+                templates.signup_email(user, &url)
             })
             .await;
         self.audit

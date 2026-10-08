@@ -8,7 +8,6 @@ use crate::assembly::AssemblyError;
 use crate::audit::{AuditDispatch, AuditEventKind, SecretKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
-use crate::email::SecurityNotices;
 use crate::email_link::{EmailLinks, LinkPurpose};
 use crate::error::Result;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
@@ -16,6 +15,7 @@ use crate::passkey_registration::{
     FinishRules, PasskeyCap, PasskeyRegistrations, RegisteredPasskey,
 };
 use crate::recovery_cool_down::RecoveryCoolDown;
+use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
 use crate::session_records::SessionRecords;
 use crate::storage::{
@@ -112,7 +112,7 @@ impl RegistrationLink for Recovery {
 
     // The recovery-completed notice already says a new passkey was registered.
     async fn on_finish(&self, notices: &SecurityNotices, user: &User) {
-        notices.recovery_completed(user).await;
+        notices.send(user, SecurityNotice::RecoveryCompleted).await;
     }
 }
 

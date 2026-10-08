@@ -1,13 +1,13 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::assembly::AssemblyError;
 use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
-use crate::email::{self, EmailSender, EmailTemplates, SecurityNotices};
+use crate::email::{self, Mailer};
 use crate::email_link::{EmailChange, EmailLinks, TOKEN_PLACEHOLDER};
 use crate::error::{Error, Result};
+use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
 use crate::storage::User;
 use crate::user_records::UserRecords;
@@ -36,8 +36,7 @@ pub struct UserManager {
     records: UserRecords,
     link: EmailLinks<EmailChange>,
     audit: AuditDispatch,
-    email: Arc<dyn EmailSender>,
-    emails: Arc<dyn EmailTemplates>,
+    mailer: Mailer,
     notices: SecurityNotices,
 }
 
@@ -51,8 +50,7 @@ impl UserManager {
             records: UserRecords::new(deps),
             link,
             audit: deps.audit.clone(),
-            email: deps.email.clone(),
-            emails: deps.emails.clone(),
+            mailer: deps.mailer.clone(),
             notices: deps.notices.clone(),
         })
     }
@@ -75,13 +73,19 @@ impl UserManager {
         let user = self.records.find(session.user_id).await?;
         let url = self.link.issue(user.id, normalized.clone()).await?;
 
-        let confirmation = self
-            .emails
-            .email_change_confirmation_email(&user, &normalized, &url);
-        self.email.send(confirmation).await?;
+        self.mailer
+            .send(&normalized, |templates| {
+                templates.email_change_confirmation_email(&user, &normalized, &url)
+            })
+            .await?;
 
         self.notices
-            .email_change_requested(&user, &normalized)
+            .send(
+                &user,
+                SecurityNotice::EmailChangeRequested {
+                    new_email: &normalized,
+                },
+            )
             .await;
 
         self.audit

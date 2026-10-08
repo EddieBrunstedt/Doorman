@@ -6,13 +6,14 @@ use webauthn_rs::prelude::RegisterPublicKeyCredential;
 use crate::assembly::{AssemblyError, MAX_LIFETIME};
 use crate::audit::{AuditDispatch, AuditEventKind, RecoveryFailureReason};
 use crate::context::CoreDeps;
-use crate::email::{self, SecurityNotices};
+use crate::email::{self, Mailer};
 use crate::email_link::TOKEN_PLACEHOLDER;
 use crate::email_link_registration::{EmailLinkRegistration, Recovery};
 use crate::error::Result;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
+use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
 use crate::storage::PasskeyChallengeId;
 use crate::user_records::{self, UserRecords};
@@ -100,6 +101,7 @@ impl Default for RecoveryConfig {
 pub struct RecoveryManager {
     records: UserRecords,
     registration: EmailLinkRegistration<Recovery>,
+    mailer: Mailer,
     notices: SecurityNotices,
     rate_limiter: Arc<dyn RateLimiter>,
     audit: AuditDispatch,
@@ -138,6 +140,7 @@ impl RecoveryManager {
                 &config.url_template,
                 config.token_lifetime,
             )?,
+            mailer: deps.mailer.clone(),
             notices: deps.notices.clone(),
             rate_limiter: deps.rate_limiter.clone(),
             audit: deps.audit.clone(),
@@ -230,12 +233,14 @@ impl RecoveryManager {
         }
 
         let url = self.registration.issue_link(user.id).await?;
-        self.notices
-            .send_best_effort(&user, "recovery link", |emails| {
-                emails.recovery_email(&user, &url)
+        self.mailer
+            .send_best_effort(&user, "recovery link", |templates| {
+                templates.recovery_email(&user, &url)
             })
             .await;
-        self.notices.recovery_requested(&user).await;
+        self.notices
+            .send(&user, SecurityNotice::RecoveryRequested)
+            .await;
 
         self.audit
             .emit(

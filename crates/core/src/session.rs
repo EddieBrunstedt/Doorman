@@ -8,12 +8,11 @@ use crate::audit::Actor;
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
-use crate::email::SecurityNotices;
 use crate::error::Result;
+use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session_records::SessionRecords;
 use crate::storage::{Session, SessionId, SessionSummary, User};
 pub use crate::token::hash_token;
-use crate::user_records::UserRecords;
 
 #[derive(Clone)]
 pub struct IssuedSession {
@@ -88,7 +87,6 @@ impl Deref for ResolvedSession {
 #[derive(Clone)]
 pub struct SessionManager {
     records: SessionRecords,
-    users: UserRecords,
     notices: SecurityNotices,
 }
 
@@ -96,7 +94,6 @@ impl SessionManager {
     pub(crate) fn new(deps: &CoreDeps) -> Self {
         Self {
             records: deps.sessions.clone(),
-            users: UserRecords::new(deps),
             notices: deps.notices.clone(),
         }
     }
@@ -143,13 +140,10 @@ impl SessionManager {
             .revoke_owned(session.user_id, target, Actor::of_session(session))
             .await?;
         // Revoking the current session is logging out, so there is no other session to tell of.
-        if target != session.id
-            && let Some(user) = self
-                .users
-                .find_for_notice(session.user_id, "other-session revoked")
-                .await
-        {
-            self.notices.other_session_revoked(&user).await;
+        if target != session.id {
+            self.notices
+                .send_to(session.user_id, SecurityNotice::OtherSessionRevoked)
+                .await;
         }
         Ok(())
     }
@@ -163,13 +157,10 @@ impl SessionManager {
             .records
             .revoke_others(session, Actor::of_session(session))
             .await?;
-        if count > 0
-            && let Some(user) = self
-                .users
-                .find_for_notice(session.user_id, "other-sessions revoked")
-                .await
-        {
-            self.notices.other_sessions_revoked(&user).await;
+        if count > 0 {
+            self.notices
+                .send_to(session.user_id, SecurityNotice::OtherSessionsRevoked)
+                .await;
         }
         Ok(())
     }

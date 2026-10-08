@@ -9,7 +9,7 @@ use doorman_core::audit::{
     AuditEventKind, RecoveryFailureReason, RedemptionFailureReason, SecretKind,
 };
 use doorman_core::clock::Clock;
-use doorman_core::email::{Email, EmailTemplates};
+use doorman_core::email::{EmailContent, EmailTemplates};
 use doorman_core::error::Error;
 use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::passkey::PasskeyConfig;
@@ -448,27 +448,24 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
 struct BrandedEmails;
 
 impl EmailTemplates for BrandedEmails {
-    fn recovery_email(&self, user: &User, url: &str) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+    fn recovery_email(&self, _user: &User, url: &str) -> EmailContent {
+        EmailContent {
             subject: "Acme recovery".to_string(),
             body_text: format!("Open {url}"),
             body_html: Some(format!("<a href=\"{url}\">Open</a>")),
         }
     }
 
-    fn recovery_requested_notice_email(&self, user: &User) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+    fn recovery_requested_notice_email(&self, _user: &User) -> EmailContent {
+        EmailContent {
             subject: "Acme recovery requested".to_string(),
             body_text: "Recovery requested".to_string(),
             body_html: None,
         }
     }
 
-    fn recovery_completed_notice_email(&self, user: &User) -> Email {
-        Email {
-            to: user.email.clone().unwrap_or_default(),
+    fn recovery_completed_notice_email(&self, _user: &User) -> EmailContent {
+        EmailContent {
             subject: "Acme recovery completed".to_string(),
             body_text: "Recovery completed".to_string(),
             body_html: None,

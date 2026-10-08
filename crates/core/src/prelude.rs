@@ -8,12 +8,12 @@ pub use crate::destructive::{DestructiveAction, DestructiveActions};
 #[cfg(feature = "file-email")]
 pub use crate::email::FileEmailSender;
 pub use crate::email::{
-    DefaultEmailTemplates, Email, EmailSender, EmailTemplates, SecurityNotices, TerminalEmailSender,
+    DefaultEmailTemplates, Email, EmailContent, EmailSender, EmailTemplates, TerminalEmailSender,
 };
 pub use crate::email_link::TOKEN_PLACEHOLDER;
 pub use crate::error::{Error, Result, StorageError, StorageErrorKind, StorageResult};
 pub use crate::metrics::{MetricEvent, MetricSink, NoopMetricSink};
-pub use crate::operator::{NoticePolicy, OperatorManager, OperatorNotice};
+pub use crate::operator::OperatorManager;
 pub use crate::passkey::{
     AuthenticationOutcome, PasskeyConfig, PasskeyManager, RegistrationOutcome, StartedRegistration,
 };
@@ -23,6 +23,7 @@ pub use crate::rate_limit::{
 };
 pub use crate::reauth::{ReauthAction, ReauthManager, ReauthPolicy, ReauthProof};
 pub use crate::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
+pub use crate::security_notice::{NoticePolicy, OperatorNotice};
 pub use crate::session::{
     IssuedSession, ResolvedSession, SessionConfig, SessionContext, SessionManager,
 };
