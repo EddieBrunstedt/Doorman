@@ -211,10 +211,14 @@ async fn operator_delete_emits_user_deleted_with_operator_actor() {
     let Actor::Operator(recorded) = actor else {
         panic!("operator delete must attribute to Actor::Operator, got {actor:?}");
     };
-    assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
-    assert_eq!(recorded.correlation_id.as_deref(), Some("authz-log-42"));
-    assert_eq!(recorded.ip.as_deref(), Some("198.51.100.7"));
-    assert_eq!(recorded.user_agent.as_deref(), Some("operator-console/1.0"));
+    assert_eq!(
+        recorded.id(),
+        "support-agent-7",
+        "actor id recorded verbatim"
+    );
+    assert_eq!(recorded.correlation_id(), Some("authz-log-42"));
+    assert_eq!(recorded.ip(), Some("198.51.100.7"));
+    assert_eq!(recorded.user_agent(), Some("operator-console/1.0"));
 }
 
 #[tokio::test]
@@ -248,7 +252,11 @@ async fn operator_remove_passkey_attributes_to_operator_and_sends_operator_copy(
             removed.actor
         );
     };
-    assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
+    assert_eq!(
+        recorded.id(),
+        "support-agent-7",
+        "actor id recorded verbatim"
+    );
 
     let notices = h.email.sent();
     assert!(
@@ -387,7 +395,7 @@ async fn operator_revoke_session_attributes_to_operator() {
             revoked.actor
         );
     };
-    assert_eq!(recorded.id, "support-agent-7");
+    assert_eq!(recorded.id(), "support-agent-7");
 }
 
 #[tokio::test]
@@ -499,7 +507,11 @@ async fn operator_revoke_all_emits_audit_with_operator_actor() {
             event.actor
         );
     };
-    assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
+    assert_eq!(
+        recorded.id(),
+        "support-agent-7",
+        "actor id recorded verbatim"
+    );
 }
 
 #[tokio::test]
@@ -531,7 +543,11 @@ async fn operator_list_passkeys_returns_summaries_and_audits() {
             listed.actor
         );
     };
-    assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
+    assert_eq!(
+        recorded.id(),
+        "support-agent-7",
+        "actor id recorded verbatim"
+    );
 }
 
 #[tokio::test]
@@ -566,7 +582,11 @@ async fn operator_list_sessions_returns_summaries_without_token_hash_and_audits(
             listed.actor
         );
     };
-    assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
+    assert_eq!(
+        recorded.id(),
+        "support-agent-7",
+        "actor id recorded verbatim"
+    );
 }
 
 async fn status_of(h: &Harness, user_id: UserId) -> UserStatus {
@@ -631,7 +651,11 @@ async fn operator_disable_emits_status_and_revoke_audit_with_operator_actor() {
             disabled.actor
         );
     };
-    assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
+    assert_eq!(
+        recorded.id(),
+        "support-agent-7",
+        "actor id recorded verbatim"
+    );
 
     assert!(
         h.audit.events().iter().any(|e| matches!(
@@ -745,7 +769,11 @@ async fn operator_enable_returns_user_to_active_and_audits() {
             enabled.actor
         );
     };
-    assert_eq!(recorded.id, "support-agent-7", "actor id recorded verbatim");
+    assert_eq!(
+        recorded.id(),
+        "support-agent-7",
+        "actor id recorded verbatim"
+    );
 }
 
 #[tokio::test]
@@ -802,4 +830,55 @@ async fn disable_blocks_recovery_then_enable_restores_it() {
         )
         .await
         .expect("an enabled user can recover again");
+}
+
+#[test]
+fn every_operator_actor_field_is_bounded_however_the_actor_is_built() {
+    let at_limit = "a".repeat(OperatorActor::MAX_FIELD_LEN);
+    let over_limit = "a".repeat(OperatorActor::MAX_FIELD_LEN + 1);
+    let fields = ["id", "correlation_id", "ip", "user_agent"];
+
+    for field in fields {
+        let value = |name: &str, long: &str| {
+            if name == field {
+                long.to_string()
+            } else {
+                "x".to_string()
+            }
+        };
+        let build = |long: &str| {
+            OperatorActor::new(
+                value("id", long),
+                Some(value("correlation_id", long)),
+                Some(value("ip", long)),
+                Some(value("user_agent", long)),
+            )
+        };
+        let deserialize = |long: &str| {
+            serde_json::from_value::<OperatorActor>(serde_json::json!({
+                "id": value("id", long),
+                "correlation_id": value("correlation_id", long),
+                "ip": value("ip", long),
+                "user_agent": value("user_agent", long),
+            }))
+        };
+
+        assert!(build(&at_limit).is_ok(), "{field} at the limit is accepted");
+        assert!(
+            deserialize(&at_limit).is_ok(),
+            "{field} at the limit deserializes"
+        );
+        assert!(
+            matches!(
+                build(&over_limit),
+                Err(Error::InvalidOperatorActor { field: refused, limit })
+                    if refused == field && limit == OperatorActor::MAX_FIELD_LEN
+            ),
+            "{field} over the limit is refused, naming the field"
+        );
+        assert!(
+            deserialize(&over_limit).is_err(),
+            "{field} over the limit does not deserialize"
+        );
+    }
 }

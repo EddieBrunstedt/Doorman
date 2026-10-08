@@ -53,11 +53,12 @@ impl From<OperatorActor> for Actor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "OperatorActorFields")]
 pub struct OperatorActor {
-    pub id: String,
-    pub correlation_id: Option<String>,
-    pub ip: Option<String>,
-    pub user_agent: Option<String>,
+    id: String,
+    correlation_id: Option<String>,
+    ip: Option<String>,
+    user_agent: Option<String>,
 }
 
 impl OperatorActor {
@@ -70,19 +71,18 @@ impl OperatorActor {
         user_agent: Option<String>,
     ) -> Result<Self> {
         let id = id.into();
-        if id.len() > Self::MAX_FIELD_LEN {
-            return Err(Error::InvalidOperatorActor {
-                field: "id",
-                limit: Self::MAX_FIELD_LEN,
-            });
-        }
-        if let Some(correlation_id) = &correlation_id
-            && correlation_id.len() > Self::MAX_FIELD_LEN
-        {
-            return Err(Error::InvalidOperatorActor {
-                field: "correlation_id",
-                limit: Self::MAX_FIELD_LEN,
-            });
+        for (field, value) in [
+            ("id", Some(id.as_str())),
+            ("correlation_id", correlation_id.as_deref()),
+            ("ip", ip.as_deref()),
+            ("user_agent", user_agent.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.len() > Self::MAX_FIELD_LEN) {
+                return Err(Error::InvalidOperatorActor {
+                    field,
+                    limit: Self::MAX_FIELD_LEN,
+                });
+            }
         }
         Ok(Self {
             id,
@@ -90,6 +90,43 @@ impl OperatorActor {
             ip,
             user_agent,
         })
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn correlation_id(&self) -> Option<&str> {
+        self.correlation_id.as_deref()
+    }
+
+    pub fn ip(&self) -> Option<&str> {
+        self.ip.as_deref()
+    }
+
+    pub fn user_agent(&self) -> Option<&str> {
+        self.user_agent.as_deref()
+    }
+}
+
+#[derive(Deserialize)]
+struct OperatorActorFields {
+    id: String,
+    correlation_id: Option<String>,
+    ip: Option<String>,
+    user_agent: Option<String>,
+}
+
+impl TryFrom<OperatorActorFields> for OperatorActor {
+    type Error = Error;
+
+    fn try_from(fields: OperatorActorFields) -> Result<Self> {
+        Self::new(
+            fields.id,
+            fields.correlation_id,
+            fields.ip,
+            fields.user_agent,
+        )
     }
 }
 
