@@ -16,7 +16,7 @@ use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
 use crate::storage::PasskeyChallengeId;
-use crate::user_records::{self, UserRecords};
+use crate::user_records::UserRecords;
 
 #[derive(Clone)]
 pub struct RecoveryConfig {
@@ -219,7 +219,7 @@ impl RecoveryManager {
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
-        if user_records::ensure_active(&user).is_err() {
+        if !user.status.is_active() {
             self.audit
                 .emit(
                     &context,

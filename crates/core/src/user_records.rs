@@ -6,6 +6,8 @@ use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result, StorageErrorKind};
+use crate::recovery_cool_down::RecoveryCoolDown;
+use crate::session::{IssuedSession, ResolvedSession, SessionContext};
 use crate::session_records::SessionRecords;
 use crate::storage::{
     EmailLinkPurpose, EmailLinkStore, PasskeyChallengeStore, PasskeyStore, User, UserId,
@@ -17,23 +19,6 @@ const ALL_TOKEN_PURPOSES: [EmailLinkPurpose; 3] = [
     EmailLinkPurpose::Recovery,
     EmailLinkPurpose::EmailChange,
 ];
-
-pub(crate) fn ensure_active(user: &User) -> Result<()> {
-    if user.status.is_active() {
-        Ok(())
-    } else {
-        Err(Error::UserDisabled)
-    }
-}
-
-pub(crate) async fn find_active_user(users: &dyn UserStore, user_id: UserId) -> Result<User> {
-    let user = users
-        .find_user_by_id(user_id)
-        .await?
-        .ok_or(Error::UserNotFound)?;
-    ensure_active(&user)?;
-    Ok(user)
-}
 
 #[derive(Clone)]
 pub(crate) struct UserRecords {
@@ -71,7 +56,12 @@ impl UserRecords {
     }
 
     pub(crate) async fn find_active(&self, user_id: UserId) -> Result<User> {
-        find_active_user(self.users.as_ref(), user_id).await
+        let user = self.find(user_id).await?;
+        if user.status.is_active() {
+            Ok(user)
+        } else {
+            Err(Error::UserDisabled)
+        }
     }
 
     pub(crate) async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
@@ -115,11 +105,41 @@ impl UserRecords {
 
     pub(crate) async fn disable(&self, user_id: UserId) -> Result<u64> {
         let now = self.now();
-        // The status goes before the sessions; `SessionRecords::issue` relies on that order.
+        // The status goes before the sessions; `issue_session` relies on that order.
         self.users
             .set_user_status(user_id, UserStatus::Disabled { at: now }, now)
             .await?;
         self.sessions.revoke_all_for_user(user_id).await
+    }
+
+    pub(crate) async fn issue_session(
+        &self,
+        user_id: UserId,
+        context: SessionContext,
+        cool_down: RecoveryCoolDown,
+    ) -> Result<IssuedSession> {
+        let (session, token) = self.sessions.create(user_id, &context, cool_down).await?;
+        // Disable and delete change the user before deleting their sessions, so if that delete
+        // missed this session, this read sees the change. The token is handed out only after it.
+        if let Err(error) = self.find_active(user_id).await {
+            self.sessions.discard(&session).await;
+            return Err(error);
+        }
+
+        self.audit
+            .emit(
+                &context,
+                AuditEventKind::SessionCreated {
+                    user_id,
+                    session_id: session.id,
+                },
+            )
+            .await;
+
+        Ok(IssuedSession {
+            session: ResolvedSession::new(session, false),
+            token,
+        })
     }
 
     pub(crate) async fn enable(&self, user_id: UserId) -> Result<()> {
@@ -132,7 +152,7 @@ impl UserRecords {
     pub(crate) async fn delete(&self, user_id: UserId, actor: Actor) -> Result<()> {
         self.find(user_id).await?;
 
-        // Disabling first makes a racing login refuse its own session (see `SessionRecords::issue`),
+        // Disabling first makes a racing login refuse its own session (see `issue_session`),
         // and leaves a delete that fails partway with a user who cannot log in.
         self.disable(user_id).await?;
         self.passkeys.delete_passkeys_for_user(user_id).await?;

@@ -268,7 +268,6 @@ impl AuthCoreBuilder {
 
         let session_records = SessionRecords::new(
             self.storage.sessions.clone(),
-            self.storage.users.clone(),
             clock.clone(),
             audit.clone(),
             session_config,
@@ -277,14 +276,6 @@ impl AuthCoreBuilder {
         let reauth_policy = self.reauth.ok_or(AssemblyError::ReauthDecisionRequired)?;
 
         let webauthn = Arc::new(build_webauthn(&passkey_config).map_err(AssemblyError::Passkey)?);
-
-        let reauth = ReauthManager::new(
-            &passkey_config,
-            &self.storage,
-            clock.clone(),
-            audit.clone(),
-            webauthn.clone(),
-        );
 
         let deps = CoreDeps::new(
             clock.clone(),
@@ -296,6 +287,8 @@ impl AuthCoreBuilder {
             self.storage,
         )
         .with_metrics(metrics);
+
+        let reauth = ReauthManager::new(&deps, &passkey_config, webauthn.clone());
 
         let sessions = SessionManager::new(&deps);
 

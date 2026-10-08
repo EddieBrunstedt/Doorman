@@ -26,11 +26,11 @@ use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::{IssuedSession, ResolvedSession, SessionContext};
-use crate::session_records::SessionRecords;
 use crate::storage::{
     PasskeyChallengeId, PasskeyStore, PasskeySummary, RegistrationPurpose, StoredPasskey, User,
     UserId,
 };
+use crate::user_records::UserRecords;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PasskeyRateLimits {
@@ -127,7 +127,7 @@ pub struct PasskeyManager {
     registrations: PasskeyRegistrations,
     logins: PasskeyChallenge<Login>,
     assertions: AssertionVerifier,
-    sessions: SessionRecords,
+    records: UserRecords,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     notices: SecurityNotices,
@@ -147,13 +147,8 @@ impl PasskeyManager {
             passkeys: deps.passkeys.clone(),
             registrations,
             logins: PasskeyChallenge::from_deps(deps, &config, webauthn.clone()),
-            assertions: AssertionVerifier::new(
-                webauthn,
-                deps.users.clone(),
-                deps.passkeys.clone(),
-                deps.clock.clone(),
-            ),
-            sessions: deps.sessions.clone(),
+            assertions: AssertionVerifier::from_deps(deps, webauthn),
+            records: UserRecords::new(deps),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             notices: deps.notices.clone(),
@@ -283,8 +278,8 @@ impl PasskeyManager {
         let cool_down = RecoveryCoolDown::of_passkey(&passkey, self.clock.now());
 
         let session = self
-            .sessions
-            .issue(user_id, context.clone(), cool_down)
+            .records
+            .issue_session(user_id, context.clone(), cool_down)
             .await?;
         self.metrics.record(MetricEvent::LoginSucceeded);
         self.audit

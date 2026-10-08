@@ -6,12 +6,11 @@ use webauthn_rs::prelude::{PublicKeyCredential, RequestChallengeResponse, Webaut
 use crate::assertion::AssertionVerifier;
 use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::challenge::{PasskeyChallenge, Reauth};
-use crate::clock::Clock;
+use crate::context::CoreDeps;
 use crate::error::Result;
 use crate::passkey::PasskeyConfig;
-use crate::redeem::Redeemer;
 use crate::session::{ResolvedSession, SessionContext};
-use crate::storage::{PasskeyChallengeId, Session, Storage};
+use crate::storage::{PasskeyChallengeId, Session};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ReauthAction {
@@ -57,29 +56,11 @@ pub struct ReauthManager {
 }
 
 impl ReauthManager {
-    pub(crate) fn new(
-        config: &PasskeyConfig,
-        storage: &Storage,
-        clock: Arc<dyn Clock>,
-        audit: AuditDispatch,
-        webauthn: Arc<Webauthn>,
-    ) -> Self {
+    pub(crate) fn new(deps: &CoreDeps, config: &PasskeyConfig, webauthn: Arc<Webauthn>) -> Self {
         Self {
-            challenges: PasskeyChallenge::new(
-                config,
-                webauthn.clone(),
-                storage.passkey_challenges.clone(),
-                storage.passkeys.clone(),
-                Redeemer::new(storage.users.clone(), clock.clone(), audit.clone()),
-                clock.clone(),
-            ),
-            assertions: AssertionVerifier::new(
-                webauthn,
-                storage.users.clone(),
-                storage.passkeys.clone(),
-                clock.clone(),
-            ),
-            audit,
+            challenges: PasskeyChallenge::from_deps(deps, config, webauthn.clone()),
+            assertions: AssertionVerifier::from_deps(deps, webauthn),
+            audit: deps.audit.clone(),
         }
     }
 

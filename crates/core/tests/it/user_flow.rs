@@ -153,7 +153,7 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
         .expect("request email change");
     let token = last_email_change_token(&h);
 
-    let release = h.user_store.hold_email_lookups(1);
+    let release = h.user_store.hold_user_creates(1);
     let (signed_up, confirmed) = within_deadline(async {
         tokio::join!(
             h.signup

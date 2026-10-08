@@ -8,10 +8,11 @@ use webauthn_rs::prelude::{
 
 use crate::audit::AuthFailureReason;
 use crate::clock::Clock;
+use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::passkey::{PasskeyMetadata, decode_passkey, encode_passkey};
-use crate::storage::{PasskeyStore, PasskeyUse, StoredPasskey, User, UserId, UserStore};
-use crate::user_records::find_active_user;
+use crate::storage::{PasskeyStore, PasskeyUse, StoredPasskey, User, UserId};
+use crate::user_records::UserRecords;
 
 pub(crate) enum PendingAssertion {
     Login(DiscoverableAuthentication),
@@ -35,23 +36,18 @@ pub(crate) struct AssertionRefusal {
 #[derive(Clone)]
 pub(crate) struct AssertionVerifier {
     webauthn: Arc<Webauthn>,
-    users: Arc<dyn UserStore>,
+    records: UserRecords,
     passkeys: Arc<dyn PasskeyStore>,
     clock: Arc<dyn Clock>,
 }
 
 impl AssertionVerifier {
-    pub(crate) fn new(
-        webauthn: Arc<Webauthn>,
-        users: Arc<dyn UserStore>,
-        passkeys: Arc<dyn PasskeyStore>,
-        clock: Arc<dyn Clock>,
-    ) -> Self {
+    pub(crate) fn from_deps(deps: &CoreDeps, webauthn: Arc<Webauthn>) -> Self {
         Self {
             webauthn,
-            users,
-            passkeys,
-            clock,
+            records: UserRecords::new(deps),
+            passkeys: deps.passkeys.clone(),
+            clock: deps.clock.clone(),
         }
     }
 
@@ -121,7 +117,7 @@ impl AssertionVerifier {
             )));
         }
 
-        let user = match find_active_user(self.users.as_ref(), user_id).await {
+        let user = match self.records.find_active(user_id).await {
             Ok(user) => user,
             Err(error) => {
                 let reason = match error {

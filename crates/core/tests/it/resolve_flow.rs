@@ -6,12 +6,16 @@ use doorman_core::assembly::AssemblyError;
 use doorman_core::audit::{AuditEventKind, OperatorActor};
 use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
-use doorman_core::session::{SessionConfig, SessionContext, hash_token};
-use doorman_core::storage::{SessionStore, User, UserId, UserStatus, UserStore};
+use doorman_core::passkey::StartedRegistration;
+use doorman_core::session::{IssuedSession, SessionConfig, SessionContext, hash_token};
+use doorman_core::storage::{
+    PasskeyChallengeId, SessionStore, User, UserId, UserStatus, UserStore,
+};
+use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::common::{
-    Harness, authenticator, last_email_change_token, make_user, register_passkey, session_count,
-    sign_in, within_deadline,
+    Harness, RECOVERY_URL, SIGNUP_URL, authenticator, last_email_change_token, make_user,
+    provision_user, register_passkey, session_count, sign_in, token_from_email, within_deadline,
 };
 
 fn sliding_config() -> SessionConfig {
@@ -298,74 +302,151 @@ fn operator() -> OperatorActor {
     OperatorActor::new("support-agent-7", None, None, None).expect("operator actor")
 }
 
-async fn login_racing(
-    h: &Harness,
-    email: &str,
-    lock_out: impl AsyncFnOnce(UserId),
-) -> (UserId, Result<(), Error>) {
-    let user = make_user(h, email).await;
+// Every flow that starts a session, driven up to its last call.
+#[derive(Debug, Clone, Copy)]
+enum Issuer {
+    Login,
+    Signup,
+    Recovery,
+}
+
+enum Finish {
+    Login(PasskeyChallengeId, PublicKeyCredential),
+    Registration(Issuer, PasskeyChallengeId, RegisterPublicKeyCredential),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LockOut {
+    Disable,
+    Delete,
+}
+
+async fn redeem_emailed_link(h: &Harness, issuer: Issuer, token: &str) -> StartedRegistration {
+    let context = SessionContext::default();
+    match issuer {
+        Issuer::Signup => h.signup.redeem_signup_link(token, context).await,
+        _ => h.recovery.redeem_recovery_link(token, context).await,
+    }
+    .expect("redeem link")
+}
+
+async fn ready_to_finish(h: &Harness, issuer: Issuer, email: &str) -> (UserId, Finish) {
     let mut wa = authenticator();
-    let passkey = register_passkey(h, user.id, &mut wa, None).await;
-    let (challenge, options) = h
-        .passkey
-        .start_authentication(SessionContext::default())
-        .await
-        .expect("start login");
-    let assertion = wa.do_authentication(options, &passkey.credential_id);
+    match issuer {
+        Issuer::Login => {
+            let user = make_user(h, email).await;
+            let passkey = register_passkey(h, user.id, &mut wa, None).await;
+            let (challenge, options) = h
+                .passkey
+                .start_authentication(SessionContext::default())
+                .await
+                .expect("start login");
+            let assertion = wa.do_authentication(options, &passkey.credential_id);
+            (user.id, Finish::Login(challenge, assertion))
+        }
+        Issuer::Signup | Issuer::Recovery => {
+            let (url, subject) = if let Issuer::Signup = issuer {
+                h.signup
+                    .request_signup(email, None, SessionContext::default())
+                    .await
+                    .expect("request signup");
+                (SIGNUP_URL, "Finish signing up")
+            } else {
+                provision_user(h, email).await;
+                h.recovery
+                    .request_recovery(email, SessionContext::default())
+                    .await
+                    .expect("request recovery");
+                (RECOVERY_URL, "Recover access with a new passkey")
+            };
+            let link = h
+                .email
+                .sent()
+                .into_iter()
+                .rev()
+                .find(|e| e.subject == subject)
+                .expect("link queued");
+            let started =
+                redeem_emailed_link(h, issuer, &token_from_email(&link.body_text, url)).await;
+            let user = h
+                .users
+                .find_user_by_email(email)
+                .await
+                .expect("find user")
+                .expect("user exists");
+            let attestation = wa.do_registration(started.options);
+            (
+                user.id,
+                Finish::Registration(issuer, started.challenge_id, attestation),
+            )
+        }
+    }
+}
 
-    let held = h.user_store.hold_next_id_lookup();
-    let (login, ()) = within_deadline(async {
-        tokio::join!(
-            h.passkey
-                .finish_authentication(challenge, &assertion, SessionContext::default()),
-            async {
-                held.wait().await;
-                lock_out(user.id).await;
-                held.wait().await;
-            },
-        )
-    })
-    .await;
-    (user.id, login.map(|_| ()))
+async fn finish(h: &Harness, finish: Finish) -> Result<IssuedSession, Error> {
+    let context = SessionContext::default();
+    match finish {
+        Finish::Login(challenge, assertion) => h
+            .passkey
+            .finish_authentication(challenge, &assertion, context)
+            .await
+            .map(|outcome| outcome.session),
+        Finish::Registration(Issuer::Signup, challenge, attestation) => h
+            .signup
+            .finish_signup(challenge, &attestation, None, context)
+            .await
+            .map(|outcome| outcome.session),
+        Finish::Registration(_, challenge, attestation) => h
+            .recovery
+            .finish_recovery(challenge, &attestation, None, context)
+            .await
+            .map(|outcome| outcome.session),
+    }
 }
 
 #[tokio::test]
-async fn a_login_racing_a_disable_leaves_no_session() {
-    let h = Harness::fresh();
-    let other = h.another_process();
-    let (user_id, login) = login_racing(&h, "racer@example.com", async |user_id| {
-        other
-            .operator
-            .disable(user_id, operator())
-            .await
-            .expect("disable");
-    })
-    .await;
+async fn a_session_issued_while_the_user_is_locked_out_does_not_survive() {
+    for issuer in [Issuer::Login, Issuer::Signup, Issuer::Recovery] {
+        for lock_out in [LockOut::Disable, LockOut::Delete] {
+            let h = Harness::fresh();
+            let other = h.another_process();
+            let (user_id, ready) = ready_to_finish(&h, issuer, "racer@example.com").await;
+            let audited_before = h.audit.events().len();
 
-    assert!(matches!(login, Err(Error::UserDisabled)), "got {login:?}");
-    assert_eq!(session_count(&h, user_id).await, 0);
-    assert!(
-        !h.audit
-            .events()
-            .iter()
-            .any(|e| matches!(e.kind, AuditEventKind::LoginSucceeded { .. })),
-        "a refused login is not audited as a success",
-    );
-}
+            // The lock-out lands while the new session is being written.
+            let held = h.session_store.hold_next_session_write();
+            let (issued, ()) = within_deadline(async {
+                tokio::join!(finish(&h, ready), async {
+                    held.wait().await;
+                    match lock_out {
+                        LockOut::Disable => other.operator.disable(user_id, operator()).await,
+                        LockOut::Delete => other.operator.delete_user(user_id, operator()).await,
+                    }
+                    .expect("lock out");
+                    held.wait().await;
+                })
+            })
+            .await;
 
-#[tokio::test]
-async fn a_login_racing_a_delete_leaves_no_session() {
-    let h = Harness::fresh();
-    let other = h.another_process();
-    let (user_id, login) = login_racing(&h, "racer@example.com", async |user_id| {
-        other
-            .operator
-            .delete_user(user_id, operator())
-            .await
-            .expect("delete");
-    })
-    .await;
-
-    assert!(login.is_err(), "got {login:?}");
-    assert_eq!(session_count(&h, user_id).await, 0);
+            let case = format!("{issuer:?} racing {lock_out:?}");
+            match lock_out {
+                LockOut::Disable => assert!(
+                    matches!(issued, Err(Error::UserDisabled)),
+                    "{case}: got {issued:?}"
+                ),
+                LockOut::Delete => assert!(
+                    matches!(issued, Err(Error::UserNotFound)),
+                    "{case}: got {issued:?}"
+                ),
+            }
+            assert_eq!(session_count(&h, user_id).await, 0, "{case}");
+            assert!(
+                !h.audit.events()[audited_before..].iter().any(|e| matches!(
+                    e.kind,
+                    AuditEventKind::SessionCreated { .. } | AuditEventKind::LoginSucceeded { .. }
+                )),
+                "{case}: a refused session is not audited as issued",
+            );
+        }
+    }
 }

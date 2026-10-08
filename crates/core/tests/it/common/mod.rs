@@ -82,8 +82,7 @@ pub fn recovery_config() -> RecoveryConfig {
 pub struct CountingUserStore {
     inner: Arc<InMemoryUserStore>,
     reads: AtomicUsize,
-    email_hold: Mutex<Option<(Arc<Barrier>, usize)>>,
-    id_hold: Mutex<Option<Arc<Barrier>>>,
+    create_hold: Mutex<Option<(Arc<Barrier>, usize)>>,
 }
 
 impl CountingUserStore {
@@ -95,15 +94,9 @@ impl CountingUserStore {
         self.reads.store(0, Ordering::SeqCst);
     }
 
-    pub fn hold_email_lookups(&self, lookups: usize) -> Arc<Barrier> {
-        let barrier = Arc::new(Barrier::new(lookups + 1));
-        *self.email_hold.lock().expect("email hold lock") = Some((barrier.clone(), lookups));
-        barrier
-    }
-
-    pub fn hold_next_id_lookup(&self) -> Arc<Barrier> {
-        let barrier = Arc::new(Barrier::new(2));
-        *self.id_hold.lock().expect("id hold lock") = Some(barrier.clone());
+    pub fn hold_user_creates(&self, creates: usize) -> Arc<Barrier> {
+        let barrier = Arc::new(Barrier::new(creates + 1));
+        *self.create_hold.lock().expect("create hold lock") = Some((barrier.clone(), creates));
         barrier
     }
 }
@@ -111,35 +104,27 @@ impl CountingUserStore {
 #[async_trait]
 impl UserStore for CountingUserStore {
     async fn create_user(&self, user: User) -> StorageResult<()> {
-        self.inner.create_user(user).await
-    }
-
-    async fn find_user_by_id(&self, id: UserId) -> StorageResult<Option<User>> {
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        let barrier = self.id_hold.lock().expect("id hold lock").take();
-        let found = self.inner.find_user_by_id(id).await;
-        if let Some(barrier) = barrier {
-            // The first wait tells the test the lookup has read; the second releases it.
-            barrier.wait().await;
-            barrier.wait().await;
-        }
-        found
-    }
-
-    async fn find_user_by_email(&self, email: &str) -> StorageResult<Option<User>> {
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        let barrier = match &mut *self.email_hold.lock().expect("email hold lock") {
+        let barrier = match &mut *self.create_hold.lock().expect("create hold lock") {
             Some((barrier, left)) if *left > 0 => {
                 *left -= 1;
                 Some(barrier.clone())
             }
             _ => None,
         };
-        let found = self.inner.find_user_by_email(email).await;
         if let Some(barrier) = barrier {
             barrier.wait().await;
         }
-        found
+        self.inner.create_user(user).await
+    }
+
+    async fn find_user_by_id(&self, id: UserId) -> StorageResult<Option<User>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.inner.find_user_by_id(id).await
+    }
+
+    async fn find_user_by_email(&self, email: &str) -> StorageResult<Option<User>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.inner.find_user_by_email(email).await
     }
 
     async fn set_user_status(
@@ -172,6 +157,7 @@ impl UserStore for CountingUserStore {
 pub struct CountingSessionStore {
     inner: Arc<InMemorySessionStore>,
     reads: AtomicUsize,
+    write_hold: Mutex<Option<Arc<Barrier>>>,
 }
 
 impl CountingSessionStore {
@@ -183,6 +169,12 @@ impl CountingSessionStore {
         self.reads.store(0, Ordering::SeqCst);
     }
 
+    pub fn hold_next_session_write(&self) -> Arc<Barrier> {
+        let barrier = Arc::new(Barrier::new(2));
+        *self.write_hold.lock().expect("write hold lock") = Some(barrier.clone());
+        barrier
+    }
+
     fn read(&self) {
         self.reads.fetch_add(1, Ordering::SeqCst);
     }
@@ -191,6 +183,12 @@ impl CountingSessionStore {
 #[async_trait]
 impl SessionStore for CountingSessionStore {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
+        let barrier = self.write_hold.lock().expect("write hold lock").take();
+        if let Some(barrier) = barrier {
+            // The first wait tells the test the write is due; the second lets it through.
+            barrier.wait().await;
+            barrier.wait().await;
+        }
         self.inner.create_session(session).await
     }
 
@@ -381,12 +379,12 @@ impl HarnessBuilder {
         let user_store = Arc::new(CountingUserStore {
             inner: users.clone(),
             reads: AtomicUsize::new(0),
-            email_hold: Mutex::new(None),
-            id_hold: Mutex::new(None),
+            create_hold: Mutex::new(None),
         });
         let session_store = Arc::new(CountingSessionStore {
             inner: sessions.clone(),
             reads: AtomicUsize::new(0),
+            write_hold: Mutex::new(None),
         });
 
         let storage = Storage {

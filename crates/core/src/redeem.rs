@@ -10,8 +10,8 @@ use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::session::SessionContext;
-use crate::storage::{User, UserId, UserStore};
-use crate::user_records::find_active_user;
+use crate::storage::{User, UserId};
+use crate::user_records::UserRecords;
 
 pub(crate) struct Candidate<T> {
     pub owner: Option<UserId>,
@@ -22,26 +22,18 @@ pub(crate) struct Candidate<T> {
 
 #[derive(Clone)]
 pub(crate) struct Redeemer {
-    users: Arc<dyn UserStore>,
+    records: UserRecords,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
 }
 
 impl Redeemer {
-    pub(crate) fn new(
-        users: Arc<dyn UserStore>,
-        clock: Arc<dyn Clock>,
-        audit: AuditDispatch,
-    ) -> Self {
-        Self {
-            users,
-            clock,
-            audit,
-        }
-    }
-
     pub(crate) fn from_deps(deps: &CoreDeps) -> Self {
-        Self::new(deps.users.clone(), deps.clock.clone(), deps.audit.clone())
+        Self {
+            records: UserRecords::new(deps),
+            clock: deps.clock.clone(),
+            audit: deps.audit.clone(),
+        }
     }
 
     pub(crate) async fn check<T>(
@@ -76,7 +68,7 @@ impl Redeemer {
         user_id: UserId,
         context: &SessionContext,
     ) -> Result<User> {
-        match find_active_user(self.users.as_ref(), user_id).await {
+        match self.records.find_active(user_id).await {
             Ok(user) => Ok(user),
             Err(Error::UserNotFound) => Err(self
                 .refuse(secret, Some(user_id), UserNotFound, context)

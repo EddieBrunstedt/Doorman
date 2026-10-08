@@ -8,17 +8,13 @@ use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::recovery_cool_down::RecoveryCoolDown;
-use crate::session::{IssuedSession, ResolvedSession, SessionConfig, SessionContext, hash_token};
-use crate::storage::{
-    Session, SessionId, SessionStore, SessionSummary, TokenHash, User, UserId, UserStore,
-};
+use crate::session::{ResolvedSession, SessionConfig, SessionContext, hash_token};
+use crate::storage::{Session, SessionId, SessionStore, SessionSummary, TokenHash, UserId};
 use crate::token::generate_token;
-use crate::user_records::find_active_user;
 
 #[derive(Clone)]
 pub(crate) struct SessionRecords {
     sessions: Arc<dyn SessionStore>,
-    users: Arc<dyn UserStore>,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     config: SessionConfig,
@@ -27,7 +23,6 @@ pub(crate) struct SessionRecords {
 impl SessionRecords {
     pub(crate) fn new(
         sessions: Arc<dyn SessionStore>,
-        users: Arc<dyn UserStore>,
         clock: Arc<dyn Clock>,
         audit: AuditDispatch,
         config: SessionConfig,
@@ -42,7 +37,6 @@ impl SessionRecords {
         }
         Ok(Self {
             sessions,
-            users,
             clock,
             audit,
             config,
@@ -72,20 +66,14 @@ impl SessionRecords {
         Ok(ResolvedSession::new(session, slid))
     }
 
-    #[tracing::instrument(skip_all, fields(user_id = %session.user_id))]
-    pub(crate) async fn find_user(&self, session: &Session) -> Result<User> {
-        self.users
-            .find_user_by_id(session.user_id)
-            .await?
-            .ok_or(Error::UserNotFound)
-    }
-
-    pub(crate) async fn issue(
+    // Only `UserRecords::issue_session` calls this: it checks the user once the row is written,
+    // and hands the token out only if that check passes.
+    pub(crate) async fn create(
         &self,
         user_id: UserId,
-        context: SessionContext,
+        context: &SessionContext,
         cool_down: RecoveryCoolDown,
-    ) -> Result<IssuedSession> {
+    ) -> Result<(Session, String)> {
         if let Some(max) = self.config.max_sessions_per_user {
             self.enforce_session_cap(user_id, max.get()).await?;
         }
@@ -106,33 +94,17 @@ impl SessionRecords {
         };
 
         self.sessions.create_session(session.clone()).await?;
-        // Disable and delete change the user before deleting their sessions, so if that delete
-        // missed this session, this read sees the change. The token is handed out only after it.
-        if let Err(error) = find_active_user(self.users.as_ref(), user_id).await {
-            if let Err(cleanup) = self.sessions.delete_session(session.id).await {
-                tracing::warn!(
-                    session_id = %session.id,
-                    error = %cleanup,
-                    "refused session left behind; its token was never handed out",
-                );
-            }
-            return Err(error);
+        Ok((session, token))
+    }
+
+    pub(crate) async fn discard(&self, session: &Session) {
+        if let Err(error) = self.sessions.delete_session(session.id).await {
+            tracing::warn!(
+                session_id = %session.id,
+                %error,
+                "refused session left behind; its token was never handed out",
+            );
         }
-
-        self.audit
-            .emit(
-                &context,
-                AuditEventKind::SessionCreated {
-                    user_id,
-                    session_id: session.id,
-                },
-            )
-            .await;
-
-        Ok(IssuedSession {
-            session: ResolvedSession::new(session, false),
-            token,
-        })
     }
 
     async fn enforce_session_cap(&self, user_id: UserId, max: u32) -> Result<()> {

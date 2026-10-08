@@ -66,39 +66,21 @@ impl<P> Clone for PasskeyChallenge<P> {
 }
 
 impl<P> PasskeyChallenge<P> {
-    pub(crate) fn new(
-        config: &PasskeyConfig,
-        webauthn: Arc<Webauthn>,
-        challenges: Arc<dyn PasskeyChallengeStore>,
-        passkeys: Arc<dyn PasskeyStore>,
-        redeemer: Redeemer,
-        clock: Arc<dyn Clock>,
-    ) -> Self {
-        Self {
-            webauthn,
-            challenges,
-            passkeys,
-            redeemer,
-            clock,
-            lifetime: config.challenge_lifetime,
-            max_pending_registrations: config.max_pending_registrations_per_user,
-            purpose: PhantomData,
-        }
-    }
-
     pub(crate) fn from_deps(
         deps: &CoreDeps,
         config: &PasskeyConfig,
         webauthn: Arc<Webauthn>,
     ) -> Self {
-        Self::new(
-            config,
+        Self {
             webauthn,
-            deps.passkey_challenges.clone(),
-            deps.passkeys.clone(),
-            Redeemer::from_deps(deps),
-            deps.clock.clone(),
-        )
+            challenges: deps.passkey_challenges.clone(),
+            passkeys: deps.passkeys.clone(),
+            redeemer: Redeemer::from_deps(deps),
+            clock: deps.clock.clone(),
+            lifetime: config.challenge_lifetime,
+            max_pending_registrations: config.max_pending_registrations_per_user,
+            purpose: PhantomData,
+        }
     }
 
     async fn put_authentication<S: Serialize>(

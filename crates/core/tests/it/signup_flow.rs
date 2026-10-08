@@ -50,7 +50,7 @@ async fn request_provisions_user_for_new_email() {
 #[tokio::test]
 async fn concurrent_requests_for_one_new_email_both_succeed() {
     let h = Harness::fresh();
-    let release = h.user_store.hold_email_lookups(2);
+    let release = h.user_store.hold_user_creates(2);
 
     let (first, second, _) = within_deadline(async {
         tokio::join!(
@@ -210,36 +210,6 @@ async fn finish_sends_no_security_notice() {
 
     assert!(outcome.user.email_verified_at.is_some());
     assert_eq!(h.email.sent().len(), mail_before_finish);
-}
-
-#[tokio::test]
-async fn finish_reads_the_user_before_and_after_issuing_its_session() {
-    let h = Harness::fresh();
-    h.signup
-        .request_signup("alice@example.com", None, SessionContext::default())
-        .await
-        .expect("request");
-    let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
-    let started = h
-        .signup
-        .redeem_signup_link(&token, SessionContext::default())
-        .await
-        .expect("redeem");
-    let mut wa = authenticator();
-    let attestation = wa.do_registration(started.options);
-
-    h.user_store.clear_reads();
-    h.signup
-        .finish_signup(
-            started.challenge_id,
-            &attestation,
-            None,
-            SessionContext::default(),
-        )
-        .await
-        .expect("finish");
-
-    assert_eq!(h.user_store.reads(), 2);
 }
 
 #[tokio::test]

@@ -17,7 +17,6 @@ use crate::passkey_registration::{
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
-use crate::session_records::SessionRecords;
 use crate::storage::{
     EmailLink, EmailLinkPurpose, PasskeyChallengeId, RegistrationPurpose, User, UserId,
 };
@@ -122,7 +121,6 @@ pub(crate) struct EmailLinkRegistration<P> {
     links: EmailLinks<P>,
     registrations: PasskeyRegistrations,
     records: UserRecords,
-    sessions: SessionRecords,
     notices: SecurityNotices,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
@@ -141,7 +139,6 @@ impl<P: RegistrationLink> EmailLinkRegistration<P> {
             links: EmailLinks::new(deps, url_template, link_lifetime)?,
             registrations,
             records: UserRecords::new(deps),
-            sessions: deps.sessions.clone(),
             notices: deps.notices.clone(),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
@@ -198,8 +195,8 @@ impl<P: RegistrationLink> EmailLinkRegistration<P> {
         // passkey or a stolen session, so it must not outlive the one the link started.
         self.registrations.invalidate_pending(user.id).await?;
         let session = self
-            .sessions
-            .issue(user.id, context.clone(), cool_down)
+            .records
+            .issue_session(user.id, context.clone(), cool_down)
             .await?;
         self.audit
             .emit(

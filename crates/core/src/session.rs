@@ -13,6 +13,7 @@ use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session_records::SessionRecords;
 use crate::storage::{Session, SessionId, SessionSummary, User};
 pub use crate::token::hash_token;
+use crate::user_records::UserRecords;
 
 #[derive(Clone)]
 pub struct IssuedSession {
@@ -87,6 +88,7 @@ impl Deref for ResolvedSession {
 #[derive(Clone)]
 pub struct SessionManager {
     records: SessionRecords,
+    users: UserRecords,
     notices: SecurityNotices,
 }
 
@@ -94,6 +96,7 @@ impl SessionManager {
     pub(crate) fn new(deps: &CoreDeps) -> Self {
         Self {
             records: deps.sessions.clone(),
+            users: UserRecords::new(deps),
             notices: deps.notices.clone(),
         }
     }
@@ -110,8 +113,9 @@ impl SessionManager {
         self.records.resolve(token).await
     }
 
+    #[tracing::instrument(skip_all, fields(user_id = %session.user_id))]
     pub async fn find_user(&self, session: &ResolvedSession) -> Result<User> {
-        self.records.find_user(session).await
+        self.users.find(session.user_id).await
     }
 
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id))]
