@@ -3,17 +3,17 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
-use axum::http::{HeaderMap, Request, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, Request};
+use axum::response::Response;
 use doorman_core::session::{ResolvedSession, SessionManager};
 use tower_layer::Layer;
 use tower_service::Service;
 use tracing::Instrument;
 
 use crate::config::CookieConfig;
-use crate::cookies::{SessionCookie, bearer_token, read_cookie};
+use crate::cookies::{bearer_token, read_cookie};
 use crate::csrf::{self, CsrfConfig};
-use crate::error::{ErrorResponse, csrf_rejection_response};
+use crate::error::csrf_rejection_response;
 
 #[derive(Clone)]
 pub struct AuthContext {
@@ -92,88 +92,37 @@ where
                     return Ok(csrf_rejection_response());
                 }
 
-                let mut own_cookie: Option<SessionCookie> = None;
-                if let Some((token, source)) = extract_token(req.headers(), cookie_name) {
+                if let Some(token) = extract_token(req.headers(), cookie_name) {
                     match state.sessions.resolve(&token).await {
                         Ok(Some(resolved)) => {
                             let span = tracing::Span::current();
                             span.record("session_id", tracing::field::display(resolved.id));
                             span.record("user_id", tracing::field::display(resolved.user_id));
-                            if resolved.slid() && source == TokenSource::Cookie {
-                                own_cookie = Some(SessionCookie::Issue {
-                                    token: token.clone(),
-                                    max_age: resolved.remaining_lifetime(),
-                                });
-                            }
                             req.extensions_mut().insert(AuthContext {
                                 session: resolved,
                                 token,
                                 sessions: state.sessions.clone(),
                             });
                         }
-                        Ok(None) => {
-                            if source == TokenSource::Cookie {
-                                own_cookie = Some(SessionCookie::Clear);
-                            }
-                        }
-                        // The cookie may still name a live session, so it stays.
+                        Ok(None) => {}
                         Err(error) => {
                             tracing::warn!(%error, "session resolve failed");
                             req.extensions_mut().insert(SessionUnresolved);
                         }
                     }
                 }
-                let response = inner.call(req).await?;
-                Ok(set_session_cookie(response, own_cookie, &state.cookie))
+                inner.call(req).await
             }
             .instrument(span),
         )
     }
 }
 
-// The handler ran after the resolve and may have ended or replaced the session, so its decision
-// outranks the layer's own refresh or clear.
-fn set_session_cookie(
-    mut response: Response,
-    own_cookie: Option<SessionCookie>,
-    config: &CookieConfig,
-) -> Response {
-    let (cookie, from_handler) = match response.extensions_mut().remove::<SessionCookie>() {
-        Some(decided) => (decided, true),
-        None => match own_cookie {
-            Some(own) => (own, false),
-            None => return response,
-        },
-    };
-    match cookie.header(config) {
-        Ok(value) => {
-            response.headers_mut().append(header::SET_COOKIE, value);
-            response
-        }
-        // Skipping the layer's own cookie only lets a refresh lapse or a dead cookie linger;
-        // without the handler's the response would claim a login or logout it never sees.
-        Err(err) if from_handler => ErrorResponse(err).into_response(),
-        Err(err) => {
-            tracing::error!(error = %err, "session cookie refresh or clear skipped");
-            response
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum TokenSource {
-    Cookie,
-    Bearer,
-}
-
-pub(crate) fn extract_token(
-    headers: &HeaderMap,
-    cookie_name: &str,
-) -> Option<(String, TokenSource)> {
+pub(crate) fn extract_token(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
     if let Some(token) = bearer_token(headers) {
-        return Some((token.to_owned(), TokenSource::Bearer));
+        return Some(token.to_owned());
     }
-    read_cookie(headers, cookie_name).map(|token| (token, TokenSource::Cookie))
+    read_cookie(headers, cookie_name)
 }
 
 #[cfg(test)]
@@ -194,7 +143,7 @@ mod tests {
         );
         assert_eq!(
             extract_token(&headers, "doorman_session"),
-            Some(("header-token".into(), TokenSource::Bearer))
+            Some("header-token".into())
         );
     }
 
@@ -207,7 +156,7 @@ mod tests {
         );
         assert_eq!(
             extract_token(&headers, "doorman_session"),
-            Some(("cookie-token".into(), TokenSource::Cookie))
+            Some("cookie-token".into())
         );
     }
 
@@ -227,7 +176,7 @@ mod tests {
         );
         assert_eq!(
             extract_token(&headers, "doorman_session"),
-            Some(("cookie-token".into(), TokenSource::Cookie))
+            Some("cookie-token".into())
         );
     }
 }

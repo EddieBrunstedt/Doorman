@@ -13,7 +13,7 @@ use doorman_core::session::{DEFAULT_SESSION_LIFETIME, SessionConfig};
 use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId, UserStatus};
 use doorman_test_support::MockClock;
 
-use crate::common::{ResidentAuthenticator, TestApp, rp_origin};
+use crate::common::{Call, ResidentAuthenticator, TestApp, rp_origin};
 
 #[tokio::test]
 async fn a_login_sets_a_session_cookie_that_authenticates() {
@@ -36,8 +36,8 @@ async fn a_login_sets_a_session_cookie_that_authenticates() {
     assert_eq!(me.status, StatusCode::OK);
 }
 
-// Every request slides the session it carries, so each route below competes with a refresh of that
-// cookie.
+// Every request slides the session it carries, so a cookie written for a slide would show up on
+// each route below.
 fn always_sliding_app() -> TestApp {
     TestApp::with(
         |b| {
@@ -142,12 +142,13 @@ async fn a_refused_login_sets_no_cookie() {
 }
 
 const IDLE: Duration = Duration::from_secs(60 * 60);
+const ABSOLUTE: Duration = Duration::from_secs(60 * 60 * 24);
 
 fn sliding_app(clock: Arc<MockClock>) -> TestApp {
     TestApp::with(
         move |b| {
             b.clock(clock as Arc<dyn Clock>).session(SessionConfig {
-                absolute_lifetime: Duration::from_secs(60 * 60 * 24),
+                absolute_lifetime: ABSOLUTE,
                 idle_timeout: Some(IDLE),
                 ..SessionConfig::default()
             })
@@ -162,37 +163,43 @@ fn sliding_app(clock: Arc<MockClock>) -> TestApp {
 }
 
 #[tokio::test]
-async fn a_slid_session_refreshes_its_cookie() {
-    let clock = Arc::new(MockClock::new(Utc::now()));
-    let app = sliding_app(clock.clone());
-    let session = app.session_for("alice@example.com").await;
+async fn a_session_cookie_lives_until_the_absolute_deadline_despite_an_idle_timeout() {
+    let app = sliding_app(Arc::new(MockClock::new(Utc::now())));
+    let (_, mut authenticator) = app.signup("alice@example.com").await;
+    let credential_id = authenticator.credential_ids()[0].clone();
 
-    let unslid = app.get("/me").cookie(&session.token).send().await;
-    assert_eq!(unslid.status, StatusCode::OK);
-    assert!(unslid.set_cookie().is_none(), "no slide, no refresh");
+    let login = app.log_in(&mut authenticator, &credential_id).await;
 
-    clock.advance(chrono::Duration::minutes(2));
-    let slid = app.get("/me").cookie(&session.token).send().await;
-    assert_eq!(slid.status, StatusCode::OK);
-    let set_cookie = slid.set_cookie().expect("a slide refreshes the cookie");
-    assert!(set_cookie.contains(&format!("doorman_session={}", session.token)));
-    assert!(set_cookie.contains(&format!("Max-Age={}", IDLE.as_secs())));
+    assert_eq!(login.status, StatusCode::OK);
+    let set_cookie = login.set_cookie().expect("login sets the session cookie");
+    assert!(
+        set_cookie.contains(&format!("Max-Age={}", ABSOLUTE.as_secs())),
+        "{set_cookie}"
+    );
+}
+
+fn me<'a>(app: &'a TestApp, token: &str, by_cookie: bool) -> Call<'a> {
+    let call = app.get("/me");
+    if by_cookie {
+        call.cookie(token)
+    } else {
+        call.bearer(token)
+    }
 }
 
 #[tokio::test]
-async fn a_slid_bearer_session_sets_no_cookie() {
-    let clock = Arc::new(MockClock::new(Utc::now()));
-    let app = sliding_app(clock.clone());
-    let session = app.session_for("alice@example.com").await;
+async fn a_slid_session_sets_no_cookie() {
+    for by_cookie in [true, false] {
+        let clock = Arc::new(MockClock::new(Utc::now()));
+        let app = sliding_app(clock.clone());
+        let session = app.session_for("alice@example.com").await;
 
-    clock.advance(chrono::Duration::minutes(2));
-    let slid = app.get("/me").bearer(&session.token).send().await;
+        clock.advance(chrono::Duration::minutes(2));
+        let slid = me(&app, &session.token, by_cookie).send().await;
 
-    assert_eq!(slid.status, StatusCode::OK);
-    assert!(
-        slid.set_cookie().is_none(),
-        "bearer clients track expiry themselves"
-    );
+        assert_eq!(slid.status, StatusCode::OK, "by cookie: {by_cookie}");
+        assert!(slid.set_cookie().is_none(), "by cookie: {by_cookie}");
+    }
 }
 
 async fn log_out(app: &TestApp, token: &str) {
@@ -201,51 +208,39 @@ async fn log_out(app: &TestApp, token: &str) {
 }
 
 #[tokio::test]
-async fn a_cookie_without_a_live_session_is_cleared() {
+async fn a_token_without_a_live_session_is_refused_and_sets_no_cookie() {
     let clock = Arc::new(MockClock::new(Utc::now()));
     let app = sliding_app(clock.clone());
     let revoked = app.session_for("alice@example.com").await;
     log_out(&app, &revoked.token).await;
-    let expired = app.session_for("bob@example.com").await;
+    let idled_out = app.session_for("bob@example.com").await;
     clock.advance(chrono::Duration::from_std(IDLE).expect("idle") + chrono::Duration::seconds(1));
 
-    for (name, token) in [("revoked", &revoked.token), ("expired", &expired.token)] {
-        let me = app.get("/me").cookie(token).send().await;
-        assert_eq!(me.status, StatusCode::UNAUTHORIZED, "{name}");
-        assert_eq!(me.error_code(), "session_not_found", "{name}");
-        let set_cookie = me.set_cookie().expect("the dead cookie is cleared");
-        assert!(
-            set_cookie.contains("doorman_session=;"),
-            "{name}: {set_cookie}"
-        );
-        assert!(set_cookie.contains("Max-Age=0"), "{name}: {set_cookie}");
+    for (name, token) in [("revoked", &revoked.token), ("idled out", &idled_out.token)] {
+        for by_cookie in [true, false] {
+            let reply = me(&app, token, by_cookie).send().await;
+            assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{name} {by_cookie}");
+            assert_eq!(
+                reply.error_code(),
+                "session_not_found",
+                "{name} {by_cookie}"
+            );
+            assert!(reply.set_cookie().is_none(), "{name} {by_cookie}");
+        }
     }
 }
 
 #[tokio::test]
-async fn a_bearer_token_without_a_live_session_sets_no_cookie() {
-    let app = TestApp::new();
-    let session = app.session_for("alice@example.com").await;
-    log_out(&app, &session.token).await;
-
-    let me = app.get("/me").bearer(&session.token).send().await;
-
-    assert_eq!(me.status, StatusCode::UNAUTHORIZED);
-    assert!(me.set_cookie().is_none());
-}
-
-#[tokio::test]
-async fn a_session_store_failure_refuses_the_request_and_keeps_its_cookie() {
+async fn a_session_store_failure_refuses_the_request() {
     let memory = InMemoryStorage::new();
     let mut storage = memory.all_stores();
     storage.expiring.sessions = Arc::new(UnavailableSessionStore);
     let app = TestApp::with_storage(storage, |b| b, |b| b);
 
-    let me = app.get("/me").cookie("a-session-token").send().await;
+    let reply = me(&app, "a-session-token", true).send().await;
 
-    assert_eq!(me.status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(me.error_code(), "storage_error");
-    assert!(me.set_cookie().is_none(), "the session may still be live");
+    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(reply.error_code(), "storage_error");
 }
 
 struct UnavailableSessionStore;

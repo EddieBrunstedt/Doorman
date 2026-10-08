@@ -85,11 +85,12 @@ async fn authenticate_finish(
         .passkey
         .finish_authentication(challenge_id, &body.response, context)
         .await?;
-    Ok(auth_success(
+    auth_success(
+        &state,
         &outcome.user,
         outcome.passkey_count,
         outcome.session,
-    ))
+    )
 }
 
 async fn list(
@@ -113,7 +114,7 @@ async fn remove(
     let reauth = body.and_then(|Json(b)| b.reauthentication);
     let action = DestructiveAction::RemovePasskey { credential_id };
     let current = perform(&state, &auth, action, reauth, context).await?;
-    Ok(no_content(current))
+    no_content(&state, current)
 }
 
 async fn rename(

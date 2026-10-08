@@ -55,5 +55,5 @@ async fn finish(
     let outcome = manager(&state)
         .finish_signup(challenge_id, &body.response, body.name, context)
         .await?;
-    Ok(registration_success(outcome))
+    registration_success(&state, outcome)
 }

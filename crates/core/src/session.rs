@@ -26,6 +26,9 @@ use crate::user_records::UserRecords;
 pub struct IssuedSession {
     pub session: ResolvedSession,
     pub token: String,
+    // No slide moves the absolute deadline, so a client may keep the token this long without
+    // ever refreshing it; the server alone decides whether it idled out sooner.
+    pub absolute_lifetime: Duration,
 }
 
 impl fmt::Debug for IssuedSession {
@@ -33,6 +36,7 @@ impl fmt::Debug for IssuedSession {
         f.debug_struct("IssuedSession")
             .field("session", &self.session)
             .field("token", &"<redacted>")
+            .field("absolute_lifetime", &self.absolute_lifetime)
             .finish()
     }
 }
@@ -67,22 +71,17 @@ pub struct SessionContext {
 }
 
 // Only core builds one, so a method that takes it acts on a session core resolved or issued, with
-// its real recovery cool-down, never on a row the caller made up. Its remaining lifetime and
-// cool-down hold as of that moment, so a request needs no clock of its own.
+// its real recovery cool-down, never on a row the caller made up. Its cool-down holds as of that
+// moment, so a request needs no clock of its own.
 #[derive(Debug, Clone)]
 pub struct ResolvedSession {
     summary: SessionSummary,
     token_hash: TokenHash,
-    slid: bool,
-    remaining_lifetime: Duration,
     in_recovery_cool_down: bool,
 }
 
 impl ResolvedSession {
-    pub(crate) fn new(session: Session, slid: bool, now: DateTime<Utc>) -> Self {
-        let remaining_lifetime = (session.expires_at - now)
-            .to_std()
-            .unwrap_or(Duration::ZERO);
+    pub(crate) fn new(session: Session, now: DateTime<Utc>) -> Self {
         let token_hash = session.token_hash;
         let summary = SessionSummary::from(session);
         Self {
@@ -90,17 +89,7 @@ impl ResolvedSession {
                 != RecoveryCoolDown::NONE,
             summary,
             token_hash,
-            slid,
-            remaining_lifetime,
         }
-    }
-
-    pub fn slid(&self) -> bool {
-        self.slid
-    }
-
-    pub fn remaining_lifetime(&self) -> Duration {
-        self.remaining_lifetime
     }
 
     pub fn is_in_recovery_cool_down(&self) -> bool {
@@ -311,8 +300,9 @@ mod tests {
             recovery_cool_down_until: None,
         };
         let issued = IssuedSession {
-            session: ResolvedSession::new(session, false, now),
+            session: ResolvedSession::new(session, now),
             token: "super-secret-bearer-token".to_string(),
+            absolute_lifetime: DEFAULT_SESSION_LIFETIME,
         };
 
         let rendered = format!("{issued:?}");

@@ -118,11 +118,11 @@ impl UserRecords {
         context: SessionContext,
     ) -> Result<IssuedSession> {
         let user_id = passkey.user_id;
-        let (session, token) = self.sessions.create(passkey, &context).await?;
+        let issued = self.sessions.create(passkey, &context).await?;
         // Disable and delete change the user before deleting their sessions, so if that delete
         // missed this session, this read sees the change. The token is handed out only after it.
         if let Err(error) = self.find_active(user_id).await {
-            self.sessions.discard(&session).await;
+            self.sessions.discard(&issued.session).await;
             return Err(error);
         }
 
@@ -131,12 +131,12 @@ impl UserRecords {
                 &context,
                 AuditEventKind::SessionCreated {
                     user_id,
-                    session_id: session.id,
+                    session_id: issued.session.id,
                 },
             )
             .await;
 
-        Ok(IssuedSession { session, token })
+        Ok(issued)
     }
 
     pub(crate) async fn enable(&self, user_id: UserId) -> Result<()> {

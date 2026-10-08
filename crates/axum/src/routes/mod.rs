@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::Router;
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use doorman_core::destructive::{CurrentSession, DestructiveAction};
 use doorman_core::passkey::{RegistrationOutcome, StartedRegistration};
@@ -10,7 +10,7 @@ use doorman_core::storage::{PasskeyChallengeId, User};
 use uuid::Uuid;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
-use crate::cookies::SessionCookie;
+use crate::cookies::{clear_session_cookie, session_cookie};
 use crate::dto::{AuthResponse, PasskeyChallenge, Reauthentication};
 use crate::error::ErrorResponse;
 use crate::extractors::AuthSession;
@@ -23,23 +23,35 @@ pub(crate) mod sessions;
 pub(crate) mod signup;
 pub(crate) mod user;
 
-pub(crate) fn auth_success(user: &User, passkey_count: u64, issued: IssuedSession) -> Response {
-    let cookie = SessionCookie::Issue {
-        token: issued.token.clone(),
-        max_age: issued.session.remaining_lifetime(),
-    };
+// Only the routes that start or end a session write its cookie. A cookie written on any other
+// response could reach the browser after a newer one and overwrite it.
+pub(crate) fn auth_success(
+    state: &AuthState,
+    user: &User,
+    passkey_count: u64,
+    issued: IssuedSession,
+) -> Result<Response, ErrorResponse> {
+    let cookie = session_cookie(
+        state.cookie_config(),
+        &issued.token,
+        issued.absolute_lifetime,
+    )?;
     let body = AuthResponse::from_issued(user, passkey_count, issued);
     let mut response = Json(body).into_response();
-    response.extensions_mut().insert(cookie);
-    response
+    response.headers_mut().insert(header::SET_COOKIE, cookie);
+    Ok(response)
 }
 
-pub(crate) fn no_content(current: CurrentSession) -> Response {
+pub(crate) fn no_content(
+    state: &AuthState,
+    current: CurrentSession,
+) -> Result<Response, ErrorResponse> {
     let mut response = StatusCode::NO_CONTENT.into_response();
     if current == CurrentSession::Ended {
-        response.extensions_mut().insert(SessionCookie::Clear);
+        let cookie = clear_session_cookie(state.cookie_config())?;
+        response.headers_mut().insert(header::SET_COOKIE, cookie);
     }
-    response
+    Ok(response)
 }
 
 pub(crate) fn parse_challenge_id(raw: &str) -> Result<PasskeyChallengeId, ErrorResponse> {
@@ -83,8 +95,11 @@ pub(crate) fn redeem_response(
     })
 }
 
-pub(crate) fn registration_success(outcome: RegistrationOutcome) -> Response {
-    auth_success(&outcome.user, outcome.passkey_count, outcome.session)
+pub(crate) fn registration_success(
+    state: &AuthState,
+    outcome: RegistrationOutcome,
+) -> Result<Response, ErrorResponse> {
+    auth_success(state, &outcome.user, outcome.passkey_count, outcome.session)
 }
 
 pub(crate) fn router(state: AuthState) -> Router {

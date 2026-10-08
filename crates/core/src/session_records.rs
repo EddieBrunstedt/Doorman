@@ -8,7 +8,7 @@ use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::recovery_cool_down::RecoveryCoolDown;
-use crate::session::{ResolvedSession, SessionConfig, SessionContext, hash_token};
+use crate::session::{IssuedSession, ResolvedSession, SessionConfig, SessionContext, hash_token};
 use crate::storage::{Session, SessionId, SessionStore, SessionSummary, StoredPasskey, UserId};
 use crate::token::generate_token;
 
@@ -56,8 +56,8 @@ impl SessionRecords {
         let Some(session) = live(stored, now) else {
             return Ok(None);
         };
-        let (session, slid) = self.slide(session, now).await;
-        Ok(Some(ResolvedSession::new(session, slid, now)))
+        let session = self.slide(session, now).await;
+        Ok(Some(ResolvedSession::new(session, now)))
     }
 
     // Only `UserRecords::issue_session` calls this: it checks the user once the row is written,
@@ -66,7 +66,7 @@ impl SessionRecords {
         &self,
         passkey: &StoredPasskey,
         context: &SessionContext,
-    ) -> Result<(ResolvedSession, String)> {
+    ) -> Result<IssuedSession> {
         let user_id = passkey.user_id;
         if let Some(max) = self.config.max_sessions_per_user {
             self.enforce_session_cap(user_id, max.get()).await?;
@@ -88,7 +88,11 @@ impl SessionRecords {
         };
 
         self.sessions.create_session(session.clone()).await?;
-        Ok((ResolvedSession::new(session, false, now), token))
+        Ok(IssuedSession {
+            session: ResolvedSession::new(session, now),
+            token,
+            absolute_lifetime: self.config.absolute_lifetime,
+        })
     }
 
     pub(crate) async fn discard(&self, session: &ResolvedSession) {
@@ -140,7 +144,7 @@ impl SessionRecords {
             .filter(|stored| stored.token_hash == *session.token_hash());
         let now = self.clock.now();
         let stored = live(stored, now).ok_or(Error::SessionNotFound)?;
-        Ok(ResolvedSession::new(stored, false, now))
+        Ok(ResolvedSession::new(stored, now))
     }
 
     fn slide_due(&self, session: &Session, now: DateTime<Utc>) -> bool {
@@ -150,9 +154,9 @@ impl SessionRecords {
                 .is_ok_and(|since_used| since_used >= self.config.slide_interval)
     }
 
-    async fn slide(&self, session: Session, now: DateTime<Utc>) -> (Session, bool) {
+    async fn slide(&self, session: Session, now: DateTime<Utc>) -> Session {
         if !self.slide_due(&session, now) {
-            return (session, false);
+            return session;
         }
 
         let mut updated = session.clone();
@@ -165,7 +169,7 @@ impl SessionRecords {
         {
             Ok(()) => {
                 tracing::debug!(session_id = %updated.id, "session deadline slid");
-                (updated, true)
+                updated
             }
             Err(error) => {
                 tracing::warn!(
@@ -173,7 +177,7 @@ impl SessionRecords {
                     %error,
                     "session touch failed; serving un-slid session",
                 );
-                (session, false)
+                session
             }
         }
     }

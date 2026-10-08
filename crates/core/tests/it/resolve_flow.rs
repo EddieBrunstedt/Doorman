@@ -51,7 +51,6 @@ async fn a_request_reads_its_session_row_and_nothing_else() {
             .expect("resolve")
             .expect("a live session");
         assert_eq!(resolved.user_id, user.id);
-        assert_eq!(resolved.slid(), advance > 0);
         assert_eq!(h.session_store.reads(), 1, "one session read");
         assert_eq!(h.user_store.reads(), 0, "no user read");
     }
@@ -254,7 +253,7 @@ async fn a_security_notice_goes_to_the_address_changed_in_another_process() {
 }
 
 #[tokio::test]
-async fn a_request_after_the_slide_interval_slides_and_reports_it() {
+async fn a_request_after_the_slide_interval_slides() {
     let h = sliding_harness();
     let (_, token) = signed_in(&h, "alice@example.com").await;
 
@@ -266,7 +265,6 @@ async fn a_request_after_the_slide_interval_slides_and_reports_it() {
         .await
         .expect("resolve")
         .expect("a live session");
-    assert!(resolved.slid(), "the deadline moved");
     assert_eq!(resolved.last_used_at, now);
     assert_eq!(resolved.expires_at, now + ChronoDuration::minutes(10));
 
@@ -299,7 +297,6 @@ async fn read_within_the_slide_interval_does_not_slide() {
         .await
         .expect("resolve")
         .expect("a live session");
-    assert!(!second.slid());
     assert_eq!(second.expires_at, first.expires_at);
     assert_eq!(second.last_used_at, first.last_used_at);
 }
@@ -345,7 +342,6 @@ async fn without_an_idle_timeout_nothing_slides() {
         .await
         .expect("resolve")
         .expect("a live session");
-    assert!(!resolved.slid());
     assert_eq!(resolved.expires_at, issued.expires_at);
     assert_eq!(resolved.last_used_at, issued.last_used_at);
 }
