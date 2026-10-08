@@ -1,13 +1,11 @@
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::assembly::{AssemblyError, validate_lifetime};
-use crate::audit::SecretKind;
 use crate::clock::{Clock, expiry};
 use crate::context::CoreDeps;
 use crate::error::{Error, Result};
-use crate::redeem::{Candidate, Redeemer};
+use crate::redeem::Redeemer;
 use crate::session::SessionContext;
 use crate::storage::{EmailLink, EmailLinkPurpose, EmailLinkStore, User, UserId};
 use crate::token::{generate_token, hash_token};
@@ -16,88 +14,54 @@ pub const TOKEN_PLACEHOLDER: &str = "{token}";
 
 const PLACEHOLDER_URL_HOST: &str = "example.invalid";
 
-pub(crate) trait LinkPurpose {
-    type Payload;
-    const PURPOSE: EmailLinkPurpose;
-    const SECRET: SecretKind;
-    const FLOW: &'static str;
-    const LIFETIME_FIELD: &'static str;
-    fn store(payload: Self::Payload) -> Option<String>;
-    fn load(token: &EmailLink) -> Option<Self::Payload>;
-}
-
-pub(crate) enum EmailChange {}
-
-impl LinkPurpose for EmailChange {
-    type Payload = String;
-    const PURPOSE: EmailLinkPurpose = EmailLinkPurpose::EmailChange;
-    const SECRET: SecretKind = SecretKind::EmailChangeLink;
-    const FLOW: &'static str = "email change";
-    const LIFETIME_FIELD: &'static str = "user token_lifetime";
-
-    fn store(new_email: String) -> Option<String> {
-        Some(new_email)
-    }
-
-    fn load(token: &EmailLink) -> Option<String> {
-        token.new_email.clone()
-    }
-}
-
-pub(crate) struct EmailLinks<P> {
+#[derive(Clone)]
+pub(crate) struct EmailLinks {
+    purpose: EmailLinkPurpose,
     template: String,
     lifetime: Duration,
     tokens: Arc<dyn EmailLinkStore>,
     redeemer: Redeemer,
     clock: Arc<dyn Clock>,
-    purpose: PhantomData<fn() -> P>,
 }
 
-impl<P> Clone for EmailLinks<P> {
-    fn clone(&self) -> Self {
-        Self {
-            template: self.template.clone(),
-            lifetime: self.lifetime,
-            tokens: self.tokens.clone(),
-            redeemer: self.redeemer.clone(),
-            clock: self.clock.clone(),
-            purpose: PhantomData,
-        }
-    }
-}
-
-impl<P: LinkPurpose> EmailLinks<P> {
+impl EmailLinks {
     pub(crate) fn new(
         deps: &CoreDeps,
+        purpose: EmailLinkPurpose,
         template: &str,
         lifetime: Duration,
     ) -> std::result::Result<Self, AssemblyError> {
+        let (flow, lifetime_field) = match purpose {
+            EmailLinkPurpose::Signup => ("signup", "signup token_lifetime"),
+            EmailLinkPurpose::Recovery => ("recovery", "recovery token_lifetime"),
+            EmailLinkPurpose::EmailChange => ("email change", "user token_lifetime"),
+        };
         if !template.contains(TOKEN_PLACEHOLDER) {
             return Err(AssemblyError::InvalidUrlTemplate {
-                flow: P::FLOW,
+                flow,
                 placeholder: TOKEN_PLACEHOLDER,
             });
         }
         if template.contains(PLACEHOLDER_URL_HOST) {
             return Err(AssemblyError::PlaceholderUrlTemplate {
-                flow: P::FLOW,
+                flow,
                 placeholder_host: PLACEHOLDER_URL_HOST,
             });
         }
-        validate_lifetime(P::LIFETIME_FIELD, lifetime)?;
+        validate_lifetime(lifetime_field, lifetime)?;
         Ok(Self {
+            purpose,
             template: template.to_owned(),
             lifetime,
             tokens: deps.email_links.clone(),
             redeemer: Redeemer::from_deps(deps),
             clock: deps.clock.clone(),
-            purpose: PhantomData,
         })
     }
 
-    pub(crate) async fn issue(&self, user_id: UserId, payload: P::Payload) -> Result<String> {
+    pub(crate) async fn issue(&self, user_id: UserId, new_email: Option<String>) -> Result<String> {
         self.tokens
-            .delete_links_for_user(user_id, P::PURPOSE)
+            .delete_links_for_user(user_id, self.purpose)
             .await?;
 
         let now = self.clock.now();
@@ -107,8 +71,8 @@ impl<P: LinkPurpose> EmailLinks<P> {
             .create_link(EmailLink {
                 token_hash,
                 user_id,
-                purpose: P::PURPOSE,
-                new_email: P::store(payload),
+                purpose: self.purpose,
+                new_email,
                 created_at: now,
                 expires_at,
             })
@@ -121,25 +85,23 @@ impl<P: LinkPurpose> EmailLinks<P> {
         &self,
         token: &str,
         context: &SessionContext,
-    ) -> Result<(User, P::Payload)> {
-        let record = self.tokens.redeem_link(&hash_token(token)).await?;
-        let candidate = record.map(|record| Candidate {
-            owner: Some(record.user_id),
-            purpose_matches: record.purpose == P::PURPOSE,
-            expires_at: record.expires_at,
-            payload: P::load(&record)
-                .map(|payload| (record.user_id, payload))
-                .ok_or_else(|| Error::Internal("email link carries no payload".to_string())),
-        });
-        let (user_id, payload) = self
+    ) -> Result<(User, Option<String>)> {
+        let taken = self.tokens.redeem_link(&hash_token(token)).await?;
+        let (user, new_email) = self
             .redeemer
-            .check(P::SECRET, None, candidate, context)
-            .await?;
-        let user = self
-            .redeemer
-            .active_owner(P::SECRET, user_id, context)
+            .check_owned(taken, self.purpose, carried_email, context)
             .await?;
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
-        Ok((user, payload))
+        Ok((user, new_email))
+    }
+}
+
+// Only an email-change link carries an address: the one the user is changing to.
+fn carried_email(link: EmailLink) -> Result<Option<String>> {
+    match (link.purpose, link.new_email) {
+        (EmailLinkPurpose::EmailChange, None) => Err(Error::Internal(
+            "email-change link carries no new email".to_string(),
+        )),
+        (_, new_email) => Ok(new_email),
     }
 }

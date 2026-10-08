@@ -8,7 +8,7 @@ use crate::audit::{AuditDispatch, AuditEventKind, RecoveryFailureReason};
 use crate::context::CoreDeps;
 use crate::email::{self, Mailer};
 use crate::email_link::TOKEN_PLACEHOLDER;
-use crate::email_link_registration::{EmailLinkRegistration, Recovery};
+use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
 use crate::error::Result;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
@@ -119,7 +119,7 @@ impl Default for RecoveryConfig {
 #[derive(Clone)]
 pub struct RecoveryManager {
     records: UserRecords,
-    registration: EmailLinkRegistration<Recovery>,
+    registration: EmailLinkRegistration,
     mailer: Mailer,
     notices: SecurityNotices,
     rate_limiter: Arc<dyn RateLimiter>,
@@ -138,7 +138,7 @@ impl RecoveryManager {
             registration: EmailLinkRegistration::new(
                 deps,
                 registrations,
-                Recovery,
+                RegistrationLink::Recovery,
                 &config.url_template,
                 config.token_lifetime,
             )?,

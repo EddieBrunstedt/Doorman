@@ -13,14 +13,12 @@ use webauthn_rs::prelude::{
 
 use crate::assertion::{AssertionVerifier, VerifiedAssertion};
 use crate::audit::{Actor, AuditDispatch, AuditEventKind};
-use crate::challenge::{Login, PasskeyChallenge};
+use crate::challenge::PasskeyChallenges;
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
 use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
-use crate::passkey_registration::{
-    FinishRules, PasskeyCap, PasskeyRegistrations, RegisteredPasskey, RegistrationSource,
-};
+use crate::passkey_registration::{PasskeyRegistrations, RegisteredPasskey, RegistrationSource};
 use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::{IssuedSession, ResolvedSession, SessionContext};
@@ -123,7 +121,7 @@ pub struct RegistrationOutcome {
 pub struct PasskeyManager {
     passkeys: Arc<dyn PasskeyStore>,
     registrations: PasskeyRegistrations,
-    logins: PasskeyChallenge<Login>,
+    challenges: PasskeyChallenges,
     assertions: AssertionVerifier,
     records: UserRecords,
     audit: AuditDispatch,
@@ -143,7 +141,7 @@ impl PasskeyManager {
         Self {
             passkeys: deps.passkeys.clone(),
             registrations,
-            logins: PasskeyChallenge::from_deps(deps, &config, webauthn.clone()),
+            challenges: PasskeyChallenges::from_deps(deps, &config, webauthn.clone()),
             assertions: AssertionVerifier::from_deps(deps, webauthn),
             records: UserRecords::new(deps),
             audit: deps.audit.clone(),
@@ -161,7 +159,7 @@ impl PasskeyManager {
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let started = self
             .registrations
-            .start(session.user_id, RegistrationSource::Session(session))
+            .start(RegistrationSource::Session(session))
             .await?;
         Ok((started.challenge_id, started.options))
     }
@@ -177,13 +175,15 @@ impl PasskeyManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<StoredPasskey> {
-        let rules = FinishRules {
-            purpose: RegistrationPurpose::AddPasskey,
-            passkey_cap: PasskeyCap::Enforced,
-        };
         let RegisteredPasskey { user, passkey } = self
             .registrations
-            .finish(challenge_id, response, name, &context, rules)
+            .finish(
+                challenge_id,
+                response,
+                name,
+                &context,
+                RegistrationPurpose::AddPasskey,
+            )
             .await?;
         self.notices
             .send(
@@ -210,7 +210,7 @@ impl PasskeyManager {
         )
         .await?;
 
-        let (id, rcr) = self.logins.issue().await?;
+        let (id, rcr) = self.challenges.issue_login().await?;
         tracing::info!(outcome = "started", "passkey authentication started");
         Ok((id, rcr))
     }
@@ -245,7 +245,7 @@ impl PasskeyManager {
         )
         .await?;
 
-        let pending = self.logins.redeem(challenge_id, &context).await?;
+        let pending = self.challenges.redeem_login(challenge_id, &context).await?;
 
         let VerifiedAssertion { user, passkey } =
             match self.assertions.verify(pending, response).await? {

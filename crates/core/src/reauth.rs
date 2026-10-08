@@ -5,7 +5,7 @@ use webauthn_rs::prelude::{PublicKeyCredential, RequestChallengeResponse, Webaut
 
 use crate::assertion::AssertionVerifier;
 use crate::audit::{AuditDispatch, AuditEventKind};
-use crate::challenge::{PasskeyChallenge, Reauth};
+use crate::challenge::PasskeyChallenges;
 use crate::context::CoreDeps;
 use crate::error::Result;
 use crate::passkey::PasskeyConfig;
@@ -50,7 +50,7 @@ pub struct ReauthProof {
 
 #[derive(Clone)]
 pub struct ReauthManager {
-    challenges: PasskeyChallenge<Reauth>,
+    challenges: PasskeyChallenges,
     assertions: AssertionVerifier,
     audit: AuditDispatch,
 }
@@ -58,7 +58,7 @@ pub struct ReauthManager {
 impl ReauthManager {
     pub(crate) fn new(deps: &CoreDeps, config: &PasskeyConfig, webauthn: Arc<Webauthn>) -> Self {
         Self {
-            challenges: PasskeyChallenge::from_deps(deps, config, webauthn.clone()),
+            challenges: PasskeyChallenges::from_deps(deps, config, webauthn.clone()),
             assertions: AssertionVerifier::from_deps(deps, webauthn),
             audit: deps.audit.clone(),
         }
@@ -69,7 +69,7 @@ impl ReauthManager {
         &self,
         session: &ResolvedSession,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
-        let (id, rcr) = self.challenges.issue(session).await?;
+        let (id, rcr) = self.challenges.issue_reauth(session).await?;
         tracing::info!(outcome = "started", "reauth started");
         Ok((id, rcr))
     }
@@ -83,7 +83,7 @@ impl ReauthManager {
         let user_id = session.user_id;
         let pending = self
             .challenges
-            .redeem(proof.challenge_id, session, context)
+            .redeem_reauth(proof.challenge_id, session, context)
             .await?;
         if let Err(refusal) = self.assertions.verify(pending, &proof.assertion).await? {
             self.audit

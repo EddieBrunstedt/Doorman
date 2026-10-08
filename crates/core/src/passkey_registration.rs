@@ -4,7 +4,7 @@ use std::sync::Arc;
 use webauthn_rs::prelude::{RegisterPublicKeyCredential, Webauthn};
 
 use crate::audit::{AuditDispatch, AuditEventKind};
-use crate::challenge::{PasskeyChallenge, RedeemedRegistration, Registration};
+use crate::challenge::{PasskeyChallenges, RedeemedRegistration};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result};
@@ -16,33 +16,21 @@ use crate::storage::{
 };
 use crate::user_records::UserRecords;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PasskeyCap {
-    Enforced,
-    Exempt,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RegistrationSource<'a> {
-    SignupLink,
-    RecoveryLink,
+    SignupLink(&'a User),
+    RecoveryLink(&'a User),
     Session(&'a Session),
 }
 
 impl RegistrationSource<'_> {
-    pub(crate) const fn purpose(self) -> RegistrationPurpose {
+    const fn purpose(self) -> RegistrationPurpose {
         match self {
-            Self::SignupLink => RegistrationPurpose::Signup,
-            Self::RecoveryLink => RegistrationPurpose::Recovery,
+            Self::SignupLink(_) => RegistrationPurpose::Signup,
+            Self::RecoveryLink(_) => RegistrationPurpose::Recovery,
             Self::Session(_) => RegistrationPurpose::AddPasskey,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FinishRules {
-    pub purpose: RegistrationPurpose,
-    pub passkey_cap: PasskeyCap,
 }
 
 pub(crate) struct RegisteredPasskey {
@@ -54,7 +42,7 @@ pub(crate) struct RegisteredPasskey {
 pub(crate) struct PasskeyRegistrations {
     records: UserRecords,
     passkeys: Arc<dyn PasskeyStore>,
-    challenges: PasskeyChallenge<Registration>,
+    challenges: PasskeyChallenges,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     webauthn: Arc<Webauthn>,
@@ -72,7 +60,7 @@ impl PasskeyRegistrations {
         Self {
             records: UserRecords::new(deps),
             passkeys: deps.passkeys.clone(),
-            challenges: PasskeyChallenge::from_deps(deps, config, webauthn.clone()),
+            challenges: PasskeyChallenges::from_deps(deps, config, webauthn.clone()),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             webauthn,
@@ -81,23 +69,26 @@ impl PasskeyRegistrations {
         }
     }
 
+    // An email link proved its owner active a moment ago; a session names a user to look up.
     pub(crate) async fn start(
         &self,
-        user_id: UserId,
         source: RegistrationSource<'_>,
     ) -> Result<StartedRegistration> {
-        let user = self.records.find_active(user_id).await?;
         let now = self.clock.now();
-        let cool_down = match source {
-            RegistrationSource::SignupLink => RecoveryCoolDown::NONE,
-            RegistrationSource::RecoveryLink => {
-                RecoveryCoolDown::start(now, self.recovery_cool_down)
-            }
-            RegistrationSource::Session(session) => RecoveryCoolDown::of_session(session, now),
+        let (user, cool_down) = match source {
+            RegistrationSource::SignupLink(user) => (user.clone(), RecoveryCoolDown::NONE),
+            RegistrationSource::RecoveryLink(user) => (
+                user.clone(),
+                RecoveryCoolDown::start(now, self.recovery_cool_down),
+            ),
+            RegistrationSource::Session(session) => (
+                self.records.find_active(session.user_id).await?,
+                RecoveryCoolDown::of_session(session, now),
+            ),
         };
         let (challenge_id, options) = self
             .challenges
-            .issue(&user, source.purpose(), cool_down)
+            .issue_registration(&user, source.purpose(), cool_down)
             .await?;
         tracing::info!(outcome = "started", "passkey registration started");
         Ok(StartedRegistration {
@@ -112,18 +103,20 @@ impl PasskeyRegistrations {
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
         context: &SessionContext,
-        rules: FinishRules,
+        purpose: RegistrationPurpose,
     ) -> Result<RegisteredPasskey> {
         let redeemed = self
             .challenges
-            .redeem(challenge_id, rules.purpose, context)
+            .redeem_registration(challenge_id, purpose, context)
             .await?;
         let user_id = redeemed.user.id;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
-        if rules.passkey_cap == PasskeyCap::Enforced {
+        // A user who has lost their passkeys may still sit at the cap, and recovery is their way
+        // back.
+        if purpose != RegistrationPurpose::Recovery {
             self.enforce_passkey_cap(user_id).await?;
         }
-        let cool_down = match rules.purpose {
+        let cool_down = match purpose {
             // A recovery starts its cool-down again when the registration finishes, so a slow
             // ceremony never eats into it; the later deadline wins.
             RegistrationPurpose::Recovery => redeemed.cool_down.extended_by(
@@ -144,7 +137,7 @@ impl PasskeyRegistrations {
     }
 
     pub(crate) async fn invalidate_pending(&self, user_id: UserId) -> Result<()> {
-        self.challenges.invalidate_pending(user_id).await
+        self.challenges.invalidate_registrations(user_id).await
     }
 
     async fn enforce_passkey_cap(&self, user_id: UserId) -> Result<()> {

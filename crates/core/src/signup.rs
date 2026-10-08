@@ -9,7 +9,7 @@ use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
 use crate::email::{self, Mailer};
 use crate::email_link::TOKEN_PLACEHOLDER;
-use crate::email_link_registration::{EmailLinkRegistration, Signup};
+use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
 use crate::error::{Error, Result};
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
@@ -106,7 +106,7 @@ impl Default for SignupConfig {
 pub struct SignupManager {
     passkeys: Arc<dyn PasskeyStore>,
     records: UserRecords,
-    registration: EmailLinkRegistration<Signup>,
+    registration: EmailLinkRegistration,
     mailer: Mailer,
     rate_limiter: Arc<dyn RateLimiter>,
     audit: AuditDispatch,
@@ -125,7 +125,7 @@ impl SignupManager {
             registration: EmailLinkRegistration::new(
                 deps,
                 registrations,
-                Signup,
+                RegistrationLink::Signup,
                 &config.url_template,
                 config.token_lifetime,
             )?,

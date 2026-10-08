@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +18,7 @@ use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::passkey::{PasskeyConfig, decode_passkey};
 use crate::recovery_cool_down::RecoveryCoolDown;
-use crate::redeem::{Candidate, Redeemer};
+use crate::redeem::Redeemer;
 use crate::session::SessionContext;
 use crate::storage::{
     AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore,
@@ -27,19 +26,14 @@ use crate::storage::{
     StoredPasskeyRegistration, User, UserId,
 };
 
-pub(crate) enum Registration {}
-
-pub(crate) enum Login {}
-
-pub(crate) enum Reauth {}
-
 pub(crate) struct RedeemedRegistration {
     pub user: User,
     pub state: PasskeyRegistration,
     pub cool_down: RecoveryCoolDown,
 }
 
-pub(crate) struct PasskeyChallenge<P> {
+#[derive(Clone)]
+pub(crate) struct PasskeyChallenges {
     webauthn: Arc<Webauthn>,
     challenges: Arc<dyn PasskeyChallengeStore>,
     passkeys: Arc<dyn PasskeyStore>,
@@ -47,25 +41,9 @@ pub(crate) struct PasskeyChallenge<P> {
     clock: Arc<dyn Clock>,
     lifetime: Duration,
     max_pending_registrations: Option<NonZeroU32>,
-    purpose: PhantomData<fn() -> P>,
 }
 
-impl<P> Clone for PasskeyChallenge<P> {
-    fn clone(&self) -> Self {
-        Self {
-            webauthn: self.webauthn.clone(),
-            challenges: self.challenges.clone(),
-            passkeys: self.passkeys.clone(),
-            redeemer: self.redeemer.clone(),
-            clock: self.clock.clone(),
-            lifetime: self.lifetime,
-            max_pending_registrations: self.max_pending_registrations,
-            purpose: PhantomData,
-        }
-    }
-}
-
-impl<P> PasskeyChallenge<P> {
+impl PasskeyChallenges {
     pub(crate) fn from_deps(
         deps: &CoreDeps,
         config: &PasskeyConfig,
@@ -79,7 +57,6 @@ impl<P> PasskeyChallenge<P> {
             clock: deps.clock.clone(),
             lifetime: config.challenge_lifetime,
             max_pending_registrations: config.max_pending_registrations_per_user,
-            purpose: PhantomData,
         }
     }
 
@@ -105,24 +82,23 @@ impl<P> PasskeyChallenge<P> {
     async fn take_authentication<S: DeserializeOwned>(
         &self,
         id: PasskeyChallengeId,
-        secret: SecretKind,
         purpose: AuthenticationPurpose,
         owner: Option<UserId>,
         context: &SessionContext,
     ) -> Result<S> {
-        let stored = self.challenges.take_authentication(id).await?;
-        let candidate = stored.map(|stored| Candidate {
-            owner,
-            purpose_matches: stored.purpose == purpose,
-            expires_at: stored.expires_at,
-            payload: decode_state(&stored.state),
-        });
-        self.redeemer.check(secret, owner, candidate, context).await
+        let taken = self.challenges.take_authentication(id).await?;
+        self.redeemer
+            .check(
+                taken,
+                purpose,
+                owner,
+                |stored| decode_state(&stored.state),
+                context,
+            )
+            .await
     }
-}
 
-impl PasskeyChallenge<Registration> {
-    pub(crate) async fn issue(
+    pub(crate) async fn issue_registration(
         &self,
         user: &User,
         purpose: RegistrationPurpose,
@@ -182,31 +158,25 @@ impl PasskeyChallenge<Registration> {
         Ok((id, ccr))
     }
 
-    pub(crate) async fn redeem(
+    pub(crate) async fn redeem_registration(
         &self,
         id: PasskeyChallengeId,
         purpose: RegistrationPurpose,
         context: &SessionContext,
     ) -> Result<RedeemedRegistration> {
-        let secret = SecretKind::RegistrationChallenge;
-        let stored = self.challenges.take_registration(id).await?;
-        let candidate = stored.map(|stored| Candidate {
-            owner: Some(stored.user_id),
-            purpose_matches: stored.purpose == purpose,
-            expires_at: stored.expires_at,
-            payload: decode_state(&stored.state).map(|state| {
-                (
-                    stored.user_id,
-                    RecoveryCoolDown::of_registration(&stored),
-                    state,
-                )
-            }),
-        });
-        let (user_id, cool_down, state) = self
+        let taken = self.challenges.take_registration(id).await?;
+        let (user, (state, cool_down)) = self
             .redeemer
-            .check(secret, None, candidate, context)
+            .check_owned(
+                taken,
+                purpose,
+                |stored| {
+                    let state = decode_state(&stored.state)?;
+                    Ok((state, RecoveryCoolDown::of_registration(&stored)))
+                },
+                context,
+            )
             .await?;
-        let user = self.redeemer.active_owner(secret, user_id, context).await?;
         Ok(RedeemedRegistration {
             user,
             state,
@@ -214,7 +184,7 @@ impl PasskeyChallenge<Registration> {
         })
     }
 
-    pub(crate) async fn invalidate_pending(&self, user_id: UserId) -> Result<()> {
+    pub(crate) async fn invalidate_registrations(&self, user_id: UserId) -> Result<()> {
         let dropped = self
             .challenges
             .delete_registrations_for_user(user_id)
@@ -224,10 +194,10 @@ impl PasskeyChallenge<Registration> {
         }
         Ok(())
     }
-}
 
-impl PasskeyChallenge<Login> {
-    pub(crate) async fn issue(&self) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
+    pub(crate) async fn issue_login(
+        &self,
+    ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
         let (rcr, state) = self
             .webauthn
             .start_discoverable_authentication()
@@ -238,19 +208,13 @@ impl PasskeyChallenge<Login> {
         Ok((id, rcr))
     }
 
-    pub(crate) async fn redeem(
+    pub(crate) async fn redeem_login(
         &self,
         id: PasskeyChallengeId,
         context: &SessionContext,
     ) -> Result<PendingAssertion> {
         let state = self
-            .take_authentication(
-                id,
-                SecretKind::LoginChallenge,
-                AuthenticationPurpose::Login,
-                None,
-                context,
-            )
+            .take_authentication(id, AuthenticationPurpose::Login, None, context)
             .await?;
         Ok(PendingAssertion::Login(state))
     }
@@ -264,8 +228,8 @@ struct ReauthChallengeState {
     state: PasskeyAuthentication,
 }
 
-impl PasskeyChallenge<Reauth> {
-    pub(crate) async fn issue(
+impl PasskeyChallenges {
+    pub(crate) async fn issue_reauth(
         &self,
         session: &Session,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
@@ -296,27 +260,25 @@ impl PasskeyChallenge<Reauth> {
         Ok((id, rcr))
     }
 
-    pub(crate) async fn redeem(
+    pub(crate) async fn redeem_reauth(
         &self,
         id: PasskeyChallengeId,
         session: &Session,
         context: &SessionContext,
     ) -> Result<PendingAssertion> {
-        let secret = SecretKind::ReauthChallenge;
         let user_id = session.user_id;
         let ReauthChallengeState { session_id, state } = self
-            .take_authentication(
-                id,
-                secret,
-                AuthenticationPurpose::Reauth,
-                Some(user_id),
-                context,
-            )
+            .take_authentication(id, AuthenticationPurpose::Reauth, Some(user_id), context)
             .await?;
         if session_id != session.id {
             return Err(self
                 .redeemer
-                .refuse(secret, Some(user_id), WrongSession, context)
+                .refuse(
+                    SecretKind::ReauthChallenge,
+                    Some(user_id),
+                    WrongSession,
+                    context,
+                )
                 .await);
         }
         Ok(PendingAssertion::Reauth { user_id, state })

@@ -5,11 +5,11 @@ use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
 use crate::email::{self, Mailer};
-use crate::email_link::{EmailChange, EmailLinks, TOKEN_PLACEHOLDER};
+use crate::email_link::{EmailLinks, TOKEN_PLACEHOLDER};
 use crate::error::{Error, Result};
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
-use crate::storage::User;
+use crate::storage::{EmailLinkPurpose, User};
 use crate::user_records::UserRecords;
 
 #[derive(Clone)]
@@ -34,7 +34,7 @@ impl Default for UserConfig {
 #[derive(Clone)]
 pub struct UserManager {
     records: UserRecords,
-    link: EmailLinks<EmailChange>,
+    link: EmailLinks,
     audit: AuditDispatch,
     mailer: Mailer,
     notices: SecurityNotices,
@@ -45,7 +45,12 @@ impl UserManager {
         deps: &CoreDeps,
         config: UserConfig,
     ) -> std::result::Result<Self, AssemblyError> {
-        let link = EmailLinks::new(deps, &config.url_template, config.token_lifetime)?;
+        let link = EmailLinks::new(
+            deps,
+            EmailLinkPurpose::EmailChange,
+            &config.url_template,
+            config.token_lifetime,
+        )?;
         Ok(Self {
             records: UserRecords::new(deps),
             link,
@@ -71,7 +76,7 @@ impl UserManager {
         }
 
         let user = self.records.find(session.user_id).await?;
-        let url = self.link.issue(user.id, normalized.clone()).await?;
+        let url = self.link.issue(user.id, Some(normalized.clone())).await?;
 
         self.mailer
             .send(&normalized, |templates| {
@@ -100,6 +105,8 @@ impl UserManager {
     #[tracing::instrument(skip(self, token, context), fields(user_id = tracing::field::Empty))]
     pub async fn confirm_email_change(&self, token: &str, context: SessionContext) -> Result<User> {
         let (user, new_email) = self.link.redeem(token, &context).await?;
+        let new_email = new_email
+            .ok_or_else(|| Error::Internal("email-change link carries no new email".to_string()))?;
         let user_id = user.id;
 
         let user = match self.records.change_email(user_id, &new_email).await {

@@ -10,14 +10,88 @@ use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::session::SessionContext;
-use crate::storage::{User, UserId};
+use crate::storage::{
+    AuthenticationPurpose, EmailLink, EmailLinkPurpose, RegistrationPurpose,
+    StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
+};
 use crate::user_records::UserRecords;
 
-pub(crate) struct Candidate<T> {
-    pub owner: Option<UserId>,
-    pub purpose_matches: bool,
-    pub expires_at: DateTime<Utc>,
-    pub payload: Result<T>,
+pub(crate) trait SingleUseSecret {
+    type Purpose: PartialEq + Copy;
+    fn secret(purpose: Self::Purpose) -> SecretKind;
+    fn purpose(&self) -> Self::Purpose;
+    fn expires_at(&self) -> DateTime<Utc>;
+}
+
+pub(crate) trait OwnedSecret: SingleUseSecret {
+    fn owner(&self) -> UserId;
+}
+
+impl SingleUseSecret for EmailLink {
+    type Purpose = EmailLinkPurpose;
+
+    fn secret(purpose: EmailLinkPurpose) -> SecretKind {
+        match purpose {
+            EmailLinkPurpose::Signup => SecretKind::SignupLink,
+            EmailLinkPurpose::Recovery => SecretKind::RecoveryLink,
+            EmailLinkPurpose::EmailChange => SecretKind::EmailChangeLink,
+        }
+    }
+
+    fn purpose(&self) -> EmailLinkPurpose {
+        self.purpose
+    }
+
+    fn expires_at(&self) -> DateTime<Utc> {
+        self.expires_at
+    }
+}
+
+impl OwnedSecret for EmailLink {
+    fn owner(&self) -> UserId {
+        self.user_id
+    }
+}
+
+impl SingleUseSecret for StoredPasskeyRegistration {
+    type Purpose = RegistrationPurpose;
+
+    fn secret(_: RegistrationPurpose) -> SecretKind {
+        SecretKind::RegistrationChallenge
+    }
+
+    fn purpose(&self) -> RegistrationPurpose {
+        self.purpose
+    }
+
+    fn expires_at(&self) -> DateTime<Utc> {
+        self.expires_at
+    }
+}
+
+impl OwnedSecret for StoredPasskeyRegistration {
+    fn owner(&self) -> UserId {
+        self.user_id
+    }
+}
+
+impl SingleUseSecret for StoredPasskeyAuthentication {
+    type Purpose = AuthenticationPurpose;
+
+    fn secret(purpose: AuthenticationPurpose) -> SecretKind {
+        match purpose {
+            AuthenticationPurpose::Login => SecretKind::LoginChallenge,
+            AuthenticationPurpose::Reauth => SecretKind::ReauthChallenge,
+        }
+    }
+
+    fn purpose(&self) -> AuthenticationPurpose {
+        self.purpose
+    }
+
+    fn expires_at(&self) -> DateTime<Utc> {
+        self.expires_at
+    }
 }
 
 #[derive(Clone)]
@@ -36,22 +110,25 @@ impl Redeemer {
         }
     }
 
-    pub(crate) async fn check<T>(
+    // `owner` is the user a refusal names, since the secret itself names nobody.
+    pub(crate) async fn check<S: SingleUseSecret, T>(
         &self,
-        secret: SecretKind,
-        unknown_owner: Option<UserId>,
-        candidate: Option<Candidate<T>>,
+        taken: Option<S>,
+        expected: S::Purpose,
+        owner: Option<UserId>,
+        decode: impl FnOnce(S) -> Result<T>,
         context: &SessionContext,
     ) -> Result<T> {
-        let Some(candidate) = candidate else {
-            return Err(self.refuse(secret, unknown_owner, Unknown, context).await);
+        let secret = S::secret(expected);
+        let Some(taken) = taken else {
+            return Err(self.refuse(secret, owner, Unknown, context).await);
         };
-        let reason = if !candidate.purpose_matches {
+        let reason = if taken.purpose() != expected {
             WrongPurpose
-        } else if candidate.expires_at <= self.clock.now() {
+        } else if taken.expires_at() <= self.clock.now() {
             Expired
         } else {
-            match candidate.payload {
+            match decode(taken) {
                 Ok(value) => return Ok(value),
                 Err(error) => {
                     tracing::warn!(%error, "single-use secret payload did not decode");
@@ -59,25 +136,31 @@ impl Redeemer {
                 }
             }
         };
-        Err(self.refuse(secret, candidate.owner, reason, context).await)
+        Err(self.refuse(secret, owner, reason, context).await)
     }
 
-    pub(crate) async fn active_owner(
+    // A secret issued to a user is good only while that user is active.
+    pub(crate) async fn check_owned<S: OwnedSecret, T>(
         &self,
-        secret: SecretKind,
-        user_id: UserId,
+        taken: Option<S>,
+        expected: S::Purpose,
+        decode: impl FnOnce(S) -> Result<T>,
         context: &SessionContext,
-    ) -> Result<User> {
-        match self.records.find_active(user_id).await {
-            Ok(user) => Ok(user),
-            Err(Error::UserNotFound) => Err(self
-                .refuse(secret, Some(user_id), UserNotFound, context)
-                .await),
-            Err(Error::UserDisabled) => Err(self
-                .refuse(secret, Some(user_id), UserDisabled, context)
-                .await),
-            Err(error) => Err(error),
-        }
+    ) -> Result<(User, T)> {
+        let secret = S::secret(expected);
+        let Some(owner) = taken.as_ref().map(OwnedSecret::owner) else {
+            return Err(self.refuse(secret, None, Unknown, context).await);
+        };
+        let value = self
+            .check(taken, expected, Some(owner), decode, context)
+            .await?;
+        let reason = match self.records.find_active(owner).await {
+            Ok(user) => return Ok((user, value)),
+            Err(Error::UserNotFound) => UserNotFound,
+            Err(Error::UserDisabled) => UserDisabled,
+            Err(error) => return Err(error),
+        };
+        Err(self.refuse(secret, Some(owner), reason, context).await)
     }
 
     pub(crate) async fn refuse(
