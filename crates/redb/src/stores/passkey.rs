@@ -48,8 +48,7 @@ impl PasskeyStore for RedbPasskeyStore {
         self.handle
             .write(move |wtxn| {
                 let passkey_key = db::hex_bytes(&passkey.credential_id);
-                let user_idx_key =
-                    db::user_passkeys_idx_key(passkey.user_id, &passkey.credential_id);
+                let user_idx_key = db::owner_key(passkey.user_id, &passkey_key);
                 let encoded = db::encode_passkey(&passkey)?;
 
                 let mut passkeys = wtxn.open_table(db::PASSKEYS).map_err(db::err)?;
@@ -100,26 +99,8 @@ impl PasskeyStore for RedbPasskeyStore {
     async fn list_passkeys_for_user(&self, user_id: UserId) -> StorageResult<Vec<StoredPasskey>> {
         self.handle
             .read(move |rtxn| {
-                let prefix = db::user_creds_prefix(user_id);
-                let end = db::prefix_end(&prefix);
-
-                let passkey_keys: Vec<String> = {
-                    let idx_tbl = rtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
-                    idx_tbl
-                        .range(prefix.as_str()..end.as_str())
-                        .map_err(db::err)?
-                        .map(|r| {
-                            r.map_err(db::err).and_then(|(k, _)| {
-                                k.value()
-                                    .split_once('\x00')
-                                    .map(|x| x.1.to_owned())
-                                    .ok_or_else(|| {
-                                        StorageError::msg("malformed user_creds_idx key")
-                                    })
-                            })
-                        })
-                        .collect::<StorageResult<_>>()?
-                };
+                let user_idx = rtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
+                let passkey_keys = db::owned_members(&user_idx, user_id)?;
 
                 let creds_tbl = rtxn.open_table(db::PASSKEYS).map_err(db::err)?;
                 let mut out = Vec::with_capacity(passkey_keys.len());
@@ -158,8 +139,7 @@ impl PasskeyStore for RedbPasskeyStore {
 
                 if let Some(guard) = passkeys.remove(passkey_key.as_str()).map_err(db::err)? {
                     let passkey = db::decode_passkey(guard.value())?;
-                    let user_idx_key =
-                        db::user_passkeys_idx_key(passkey.user_id, &passkey.credential_id);
+                    let user_idx_key = db::owner_key(passkey.user_id, &passkey_key);
                     user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
                 Ok(())
@@ -170,29 +150,11 @@ impl PasskeyStore for RedbPasskeyStore {
     async fn delete_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
         self.handle
             .write(move |wtxn| {
-                let prefix = db::user_creds_prefix(user_id);
-                let end = db::prefix_end(&prefix);
-
                 let mut passkeys = wtxn.open_table(db::PASSKEYS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
 
-                let entries: Vec<(String, String)> = user_idx
-                    .range(prefix.as_str()..end.as_str())
-                    .map_err(db::err)?
-                    .map(|r| {
-                        r.map_err(db::err).and_then(|(k, _)| {
-                            let idx_key = k.value().to_owned();
-                            let passkey_key = idx_key
-                                .split_once('\x00')
-                                .map(|x| x.1.to_owned())
-                                .ok_or_else(|| StorageError::msg("malformed user_creds_idx key"))?;
-                            Ok((idx_key, passkey_key))
-                        })
-                    })
-                    .collect::<StorageResult<_>>()?;
-
                 let mut count = 0u64;
-                for (idx_key, passkey_key) in &entries {
+                for passkey_key in db::owned_members(&user_idx, user_id)? {
                     if passkeys
                         .remove(passkey_key.as_str())
                         .map_err(db::err)?
@@ -200,7 +162,8 @@ impl PasskeyStore for RedbPasskeyStore {
                     {
                         count += 1;
                     }
-                    user_idx.remove(idx_key.as_str()).map_err(db::err)?;
+                    let user_idx_key = db::owner_key(user_id, &passkey_key);
+                    user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
                 Ok(count)
             })

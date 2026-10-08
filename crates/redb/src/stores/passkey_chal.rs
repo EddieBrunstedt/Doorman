@@ -25,7 +25,7 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
         self.handle
             .write(move |wtxn| {
                 let key = value.id.0.to_string();
-                let user_idx_key = db::user_pkregs_idx_key(value.user_id, value.id);
+                let user_idx_key = db::owner_key(value.user_id, value.id);
                 let encoded = db::encode(&value)?;
 
                 let mut pkregs = wtxn.open_table(db::PKREGS).map_err(db::err)?;
@@ -61,7 +61,7 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
                     return Ok(None);
                 };
                 let reg: StoredPasskeyRegistration = db::decode(guard.value())?;
-                let user_idx_key = db::user_pkregs_idx_key(reg.user_id, reg.id);
+                let user_idx_key = db::owner_key(reg.user_id, reg.id);
                 user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 Ok(Some(reg))
             })
@@ -71,30 +71,20 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
     async fn delete_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
         self.handle
             .write(move |wtxn| {
-                let prefix = db::user_pkregs_prefix(user_id);
-                let end = db::prefix_end(&prefix);
-
                 let mut pkregs = wtxn.open_table(db::PKREGS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
 
-                let idx_keys: Vec<String> = {
-                    user_idx
-                        .range(prefix.as_str()..end.as_str())
-                        .map_err(db::err)?
-                        .map(|r| r.map_err(db::err).map(|(k, _)| k.value().to_owned()))
-                        .collect::<StorageResult<_>>()?
-                };
-
                 let mut count = 0u64;
-                for idx_key in &idx_keys {
-                    let challenge_id = idx_key
-                        .split_once('\x00')
-                        .map(|x| x.1)
-                        .ok_or_else(|| StorageError::msg("malformed user_pkregs_idx key"))?;
-                    if pkregs.remove(challenge_id).map_err(db::err)?.is_some() {
+                for challenge_id in db::owned_members(&user_idx, user_id)? {
+                    if pkregs
+                        .remove(challenge_id.as_str())
+                        .map_err(db::err)?
+                        .is_some()
+                    {
                         count += 1;
                     }
-                    user_idx.remove(idx_key.as_str()).map_err(db::err)?;
+                    let user_idx_key = db::owner_key(user_id, &challenge_id);
+                    user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
                 Ok(count)
             })
@@ -107,26 +97,8 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
     ) -> StorageResult<Vec<StoredPasskeyRegistration>> {
         self.handle
             .read(move |rtxn| {
-                let prefix = db::user_pkregs_prefix(user_id);
-                let end = db::prefix_end(&prefix);
-
-                let challenge_ids: Vec<String> = {
-                    let idx_tbl = rtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
-                    idx_tbl
-                        .range(prefix.as_str()..end.as_str())
-                        .map_err(db::err)?
-                        .map(|r| {
-                            r.map_err(db::err).and_then(|(k, _)| {
-                                k.value()
-                                    .split_once(db::SEP)
-                                    .map(|x| x.1.to_owned())
-                                    .ok_or_else(|| {
-                                        StorageError::msg("malformed user_pkregs_idx key")
-                                    })
-                            })
-                        })
-                        .collect::<StorageResult<_>>()?
-                };
+                let user_idx = rtxn.open_table(db::USER_PKREGS_IDX).map_err(db::err)?;
+                let challenge_ids = db::owned_members(&user_idx, user_id)?;
 
                 let pkregs = rtxn.open_table(db::PKREGS).map_err(db::err)?;
                 let mut out = Vec::with_capacity(challenge_ids.len());
@@ -212,7 +184,7 @@ impl PasskeyChallengeStore for RedbPasskeyChallengeStore {
 
                 for (key, reg) in &expired_regs {
                     pkregs.remove(key.as_str()).map_err(db::err)?;
-                    let user_idx_key = db::user_pkregs_idx_key(reg.user_id, reg.id);
+                    let user_idx_key = db::owner_key(reg.user_id, reg.id);
                     user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
                 for key in &expired_auths {

@@ -23,7 +23,7 @@ impl EmailLinkStore for RedbEmailLinkStore {
             .write(move |wtxn| {
                 let vt_key = db::token_hash_hex(&token.token_hash);
                 let user_idx_key =
-                    db::user_email_links_idx_key(token.user_id, token.purpose, &token.token_hash);
+                    db::owner_key(db::email_links_owner(token.user_id, token.purpose), &vt_key);
                 let encoded = db::encode(&token)?;
 
                 let mut email_links = wtxn.open_table(db::EMAIL_LINKS).map_err(db::err)?;
@@ -56,8 +56,10 @@ impl EmailLinkStore for RedbEmailLinkStore {
                     return Ok(None);
                 };
                 let token: EmailLink = db::decode(guard.value())?;
-                let user_idx_key =
-                    db::user_email_links_idx_key(token.user_id, token.purpose, &token.token_hash);
+                let user_idx_key = db::owner_key(
+                    db::email_links_owner(token.user_id, token.purpose),
+                    db::token_hash_hex(&token.token_hash),
+                );
                 user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 Ok(Some(token))
             })
@@ -71,27 +73,22 @@ impl EmailLinkStore for RedbEmailLinkStore {
     ) -> StorageResult<u64> {
         self.handle
             .write(move |wtxn| {
-                let prefix = db::user_email_links_prefix(user_id, purpose);
-                let end = db::prefix_end(&prefix);
+                let owner = db::email_links_owner(user_id, purpose);
 
                 let mut email_links = wtxn.open_table(db::EMAIL_LINKS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_EMAIL_LINKS_IDX).map_err(db::err)?;
 
-                let idx_keys: Vec<String> = {
-                    user_idx
-                        .range(prefix.as_str()..end.as_str())
-                        .map_err(db::err)?
-                        .map(|r| r.map_err(db::err).map(|(k, _)| k.value().to_owned()))
-                        .collect::<StorageResult<_>>()?
-                };
-
                 let mut count = 0u64;
-                for idx_key in &idx_keys {
-                    let hash_hex = &idx_key[prefix.len()..];
-                    if email_links.remove(hash_hex).map_err(db::err)?.is_some() {
+                for hash_hex in db::owned_members(&user_idx, &owner)? {
+                    if email_links
+                        .remove(hash_hex.as_str())
+                        .map_err(db::err)?
+                        .is_some()
+                    {
                         count += 1;
                     }
-                    user_idx.remove(idx_key.as_str()).map_err(db::err)?;
+                    let user_idx_key = db::owner_key(&owner, &hash_hex);
+                    user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
                 Ok(count)
             })
@@ -119,10 +116,9 @@ impl EmailLinkStore for RedbEmailLinkStore {
 
                 for (key, token) in &expired {
                     email_links.remove(key.as_str()).map_err(db::err)?;
-                    let user_idx_key = db::user_email_links_idx_key(
-                        token.user_id,
-                        token.purpose,
-                        &token.token_hash,
+                    let user_idx_key = db::owner_key(
+                        db::email_links_owner(token.user_id, token.purpose),
+                        db::token_hash_hex(&token.token_hash),
                     );
                     user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }

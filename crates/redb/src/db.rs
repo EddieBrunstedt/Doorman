@@ -1,10 +1,11 @@
+use std::fmt::Display;
 use std::sync::Arc;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{EmailLinkPurpose, Session, StoredPasskey, TokenHash, UserId};
 use redb::{
-    Database, ReadTransaction, ReadableDatabase as _, ReadableTable as _, TableDefinition,
+    Database, ReadTransaction, ReadableDatabase as _, ReadableTable, TableDefinition,
     WriteTransaction,
 };
 use serde::{Deserialize, Serialize};
@@ -28,7 +29,7 @@ pub(crate) const USER_PKREGS_IDX: TableDefinition<&str, ()> =
     TableDefinition::new("user_pkregs_idx");
 pub(crate) const PKAUTHS: TableDefinition<&str, &[u8]> = TableDefinition::new("pkauths");
 
-pub(crate) const SEP: char = '\x00';
+const SEP: char = '\x00';
 
 pub(crate) fn token_hash_hex(hash: &TokenHash) -> String {
     hex_bytes(&hash.0)
@@ -38,57 +39,30 @@ pub(crate) fn hex_bytes(bytes: &[u8]) -> String {
     doorman_core::encoding::hex(bytes)
 }
 
-pub(crate) fn user_sessions_idx_key(
-    user_id: UserId,
-    session_id: doorman_core::storage::SessionId,
-) -> String {
-    format!("{}{SEP}{}", user_id.0, session_id.0)
+pub(crate) fn owner_key(owner: impl Display, member: impl Display) -> String {
+    format!("{owner}{SEP}{member}")
 }
 
-pub(crate) fn user_sessions_prefix(user_id: UserId) -> String {
-    format!("{}{SEP}", user_id.0)
+pub(crate) fn email_links_owner(user_id: UserId, purpose: EmailLinkPurpose) -> String {
+    owner_key(user_id, purpose_str(purpose))
 }
 
-pub(crate) fn user_email_links_idx_key(
-    user_id: UserId,
-    purpose: EmailLinkPurpose,
-    hash: &TokenHash,
-) -> String {
-    format!(
-        "{}{SEP}{}{SEP}{}",
-        user_id.0,
-        purpose_str(purpose),
-        token_hash_hex(hash)
-    )
-}
-
-pub(crate) fn user_email_links_prefix(user_id: UserId, purpose: EmailLinkPurpose) -> String {
-    format!("{}{SEP}{}{SEP}", user_id.0, purpose_str(purpose))
-}
-
-pub(crate) fn user_passkeys_idx_key(user_id: UserId, credential_id: &[u8]) -> String {
-    format!("{}{SEP}{}", user_id.0, hex_bytes(credential_id))
-}
-
-pub(crate) fn user_creds_prefix(user_id: UserId) -> String {
-    format!("{}{SEP}", user_id.0)
-}
-
-pub(crate) fn user_pkregs_idx_key(
-    user_id: UserId,
-    challenge_id: doorman_core::storage::PasskeyChallengeId,
-) -> String {
-    format!("{}{SEP}{}", user_id.0, challenge_id.0)
-}
-
-pub(crate) fn user_pkregs_prefix(user_id: UserId) -> String {
-    format!("{}{SEP}", user_id.0)
-}
-
-pub(crate) fn prefix_end(prefix: &str) -> String {
-    debug_assert!(prefix.ends_with(SEP));
-    let stem = &prefix[..prefix.len() - SEP.len_utf8()];
-    format!("{stem}\x01")
+pub(crate) fn owned_members(
+    index: &impl ReadableTable<&'static str, ()>,
+    owner: impl Display,
+) -> StorageResult<Vec<String>> {
+    let prefix = format!("{owner}{SEP}");
+    // `\x01` is the character right after SEP, so the range holds exactly this owner's keys.
+    let end = format!("{owner}\x01");
+    index
+        .range(prefix.as_str()..end.as_str())
+        .map_err(err)?
+        .map(|entry| {
+            entry
+                .map(|(key, _)| key.value()[prefix.len()..].to_owned())
+                .map_err(err)
+        })
+        .collect()
 }
 
 pub(crate) use doorman_core::encoding::purpose_to_str as purpose_str;
@@ -233,7 +207,7 @@ impl RedbHandle {
 pub(crate) fn write_session(wtxn: &WriteTransaction, session: &Session) -> StorageResult<()> {
     let session_key = session.id.0.to_string();
     let hash_key = token_hash_hex(&session.token_hash);
-    let user_idx_key = user_sessions_idx_key(session.user_id, session.id);
+    let user_idx_key = owner_key(session.user_id, session.id);
     let encoded = encode(session)?;
 
     let mut sessions = wtxn.open_table(SESSIONS).map_err(err)?;

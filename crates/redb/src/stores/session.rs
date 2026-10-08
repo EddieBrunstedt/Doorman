@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use doorman_core::error::{StorageError, StorageResult};
+use doorman_core::error::StorageResult;
 use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 
 use redb::ReadableTable as _;
@@ -15,12 +15,6 @@ impl RedbSessionStore {
     pub(crate) fn new(handle: RedbHandle) -> Self {
         Self { handle }
     }
-}
-
-fn session_id_from_idx_key(key: &str) -> StorageResult<&str> {
-    key.split_once('\x00')
-        .map(|x| x.1)
-        .ok_or_else(|| StorageError::msg("malformed user_sessions_idx key"))
 }
 
 #[async_trait]
@@ -97,21 +91,8 @@ impl SessionStore for RedbSessionStore {
     async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
         self.handle
             .read(move |rtxn| {
-                let prefix = db::user_sessions_prefix(user_id);
-                let end = db::prefix_end(&prefix);
-
-                let session_ids: Vec<String> = {
-                    let idx_tbl = rtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
-                    idx_tbl
-                        .range(prefix.as_str()..end.as_str())
-                        .map_err(db::err)?
-                        .map(|r| {
-                            r.map_err(db::err).and_then(|(k, _)| {
-                                session_id_from_idx_key(k.value()).map(ToOwned::to_owned)
-                            })
-                        })
-                        .collect::<StorageResult<Vec<_>>>()?
-                };
+                let user_idx = rtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
+                let session_ids = db::owned_members(&user_idx, user_id)?;
 
                 let sessions_tbl = rtxn.open_table(db::SESSIONS).map_err(db::err)?;
                 let mut out = Vec::with_capacity(session_ids.len());
@@ -136,7 +117,7 @@ impl SessionStore for RedbSessionStore {
                 if let Some(guard) = sessions.remove(key.as_str()).map_err(db::err)? {
                     let session: Session = db::decode(guard.value())?;
                     let hash_hex = db::token_hash_hex(&session.token_hash);
-                    let user_idx_key = db::user_sessions_idx_key(session.user_id, session.id);
+                    let user_idx_key = db::owner_key(session.user_id, session.id);
                     hash_idx.remove(hash_hex.as_str()).map_err(db::err)?;
                     user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
@@ -152,35 +133,25 @@ impl SessionStore for RedbSessionStore {
     ) -> StorageResult<u64> {
         self.handle
             .write(move |wtxn| {
-                let prefix = db::user_sessions_prefix(user_id);
-                let end = db::prefix_end(&prefix);
                 let except_key = except.map(|id| id.0.to_string());
 
                 let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
                 let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
 
-                let idx_keys: Vec<String> = {
-                    user_idx
-                        .range(prefix.as_str()..end.as_str())
-                        .map_err(db::err)?
-                        .map(|r| r.map_err(db::err).map(|(k, _)| k.value().to_owned()))
-                        .collect::<StorageResult<_>>()?
-                };
-
                 let mut count = 0u64;
-                for idx_key in &idx_keys {
-                    let sid = session_id_from_idx_key(idx_key)?;
-                    if except_key.as_deref() == Some(sid) {
+                for sid in db::owned_members(&user_idx, user_id)? {
+                    if except_key.as_ref() == Some(&sid) {
                         continue;
                     }
-                    if let Some(guard) = sessions.remove(sid).map_err(db::err)? {
+                    if let Some(guard) = sessions.remove(sid.as_str()).map_err(db::err)? {
                         let session: Session = db::decode(guard.value())?;
                         let hash_hex = db::token_hash_hex(&session.token_hash);
                         hash_idx.remove(hash_hex.as_str()).map_err(db::err)?;
                         count += 1;
                     }
-                    user_idx.remove(idx_key.as_str()).map_err(db::err)?;
+                    let user_idx_key = db::owner_key(user_id, &sid);
+                    user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
                 Ok(count)
             })
@@ -210,7 +181,7 @@ impl SessionStore for RedbSessionStore {
                 for (key, session) in &expired {
                     sessions.remove(key.as_str()).map_err(db::err)?;
                     let hash_hex = db::token_hash_hex(&session.token_hash);
-                    let user_idx_key = db::user_sessions_idx_key(session.user_id, session.id);
+                    let user_idx_key = db::owner_key(session.user_id, session.id);
                     hash_idx.remove(hash_hex.as_str()).map_err(db::err)?;
                     user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }
