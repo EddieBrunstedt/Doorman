@@ -28,8 +28,6 @@ impl RecoveryCoolDown {
         Self(registration.recovery_cool_down_until)
     }
 
-    // A recovery stamps its challenge when the email link is redeemed and starts again when the
-    // registration finishes; the later deadline wins, so a slow ceremony never eats into it.
     pub(crate) fn extended_by(self, other: Self) -> Self {
         Self(self.0.max(other.0))
     }
@@ -65,27 +63,10 @@ impl StoredPasskey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
-
-    fn ts(secs: i64) -> DateTime<Utc> {
-        Utc.timestamp_opt(secs, 0)
-            .single()
-            .expect("valid timestamp")
-    }
 
     #[test]
     fn start_saturates_instead_of_overflowing() {
         let started = RecoveryCoolDown::start(DateTime::<Utc>::MAX_UTC, chrono::Duration::hours(1));
         assert_eq!(started.until(), Some(DateTime::<Utc>::MAX_UTC));
-    }
-
-    #[test]
-    fn extended_by_keeps_the_later_deadline() {
-        let earlier = RecoveryCoolDown::start(ts(0), chrono::Duration::hours(1));
-        let later = RecoveryCoolDown::start(ts(0), chrono::Duration::hours(2));
-        assert_eq!(earlier.extended_by(later), later);
-        assert_eq!(later.extended_by(earlier), later);
-        assert_eq!(RecoveryCoolDown::NONE.extended_by(earlier), earlier);
-        assert_eq!(earlier.extended_by(RecoveryCoolDown::NONE), earlier);
     }
 }

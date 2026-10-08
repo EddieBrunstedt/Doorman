@@ -1,32 +1,25 @@
-use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
 use crate::assembly::AssemblyError;
 use crate::audit::{AuditDispatch, AuditEventKind, SecretKind};
-use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email_link::{EmailLinks, LinkPurpose};
 use crate::error::Result;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::{
-    FinishRules, PasskeyCap, PasskeyRegistrations, RegisteredPasskey,
+    FinishRules, PasskeyCap, PasskeyRegistrations, RegisteredPasskey, RegistrationSource,
 };
-use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
-use crate::storage::{
-    EmailLink, EmailLinkPurpose, PasskeyChallengeId, RegistrationPurpose, User, UserId,
-};
+use crate::storage::{EmailLink, EmailLinkPurpose, PasskeyChallengeId, User, UserId};
 use crate::user_records::UserRecords;
 
 pub(crate) trait RegistrationLink: LinkPurpose<Payload = ()> + Sync {
-    const REGISTRATION: RegistrationPurpose;
+    const SOURCE: RegistrationSource<'static>;
     const PASSKEY_CAP: PasskeyCap;
     fn redeemed(user_id: UserId) -> AuditEventKind;
-    fn cool_down(&self, now: DateTime<Utc>) -> RecoveryCoolDown;
     async fn on_redeem(&self, records: &UserRecords, user: &User) -> Result<()>;
     async fn on_finish(&self, notices: &SecurityNotices, user: &User);
 }
@@ -35,9 +28,7 @@ pub(crate) trait RegistrationLink: LinkPurpose<Payload = ()> + Sync {
 pub(crate) struct Signup;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Recovery {
-    pub cool_down: chrono::Duration,
-}
+pub(crate) struct Recovery;
 
 impl LinkPurpose for Signup {
     type Payload = ();
@@ -56,15 +47,11 @@ impl LinkPurpose for Signup {
 }
 
 impl RegistrationLink for Signup {
-    const REGISTRATION: RegistrationPurpose = RegistrationPurpose::Signup;
+    const SOURCE: RegistrationSource<'static> = RegistrationSource::SignupLink;
     const PASSKEY_CAP: PasskeyCap = PasskeyCap::Enforced;
 
     fn redeemed(user_id: UserId) -> AuditEventKind {
         AuditEventKind::SignupLinkRedeemed { user_id }
-    }
-
-    fn cool_down(&self, _: DateTime<Utc>) -> RecoveryCoolDown {
-        RecoveryCoolDown::NONE
     }
 
     async fn on_redeem(&self, records: &UserRecords, user: &User) -> Result<()> {
@@ -93,16 +80,12 @@ impl LinkPurpose for Recovery {
 }
 
 impl RegistrationLink for Recovery {
-    const REGISTRATION: RegistrationPurpose = RegistrationPurpose::Recovery;
+    const SOURCE: RegistrationSource<'static> = RegistrationSource::RecoveryLink;
     // A user who has lost their passkeys may still sit at the cap, and recovery is their way back.
     const PASSKEY_CAP: PasskeyCap = PasskeyCap::Exempt;
 
     fn redeemed(user_id: UserId) -> AuditEventKind {
         AuditEventKind::RecoveryLinkRedeemed { user_id }
-    }
-
-    fn cool_down(&self, now: DateTime<Utc>) -> RecoveryCoolDown {
-        RecoveryCoolDown::start(now, self.cool_down)
     }
 
     async fn on_redeem(&self, _: &UserRecords, _: &User) -> Result<()> {
@@ -122,7 +105,6 @@ pub(crate) struct EmailLinkRegistration<P> {
     registrations: PasskeyRegistrations,
     records: UserRecords,
     notices: SecurityNotices,
-    clock: Arc<dyn Clock>,
     audit: AuditDispatch,
 }
 
@@ -140,7 +122,6 @@ impl<P: RegistrationLink> EmailLinkRegistration<P> {
             registrations,
             records: UserRecords::new(deps),
             notices: deps.notices.clone(),
-            clock: deps.clock.clone(),
             audit: deps.audit.clone(),
         })
     }
@@ -157,14 +138,7 @@ impl<P: RegistrationLink> EmailLinkRegistration<P> {
         let (user, ()) = self.links.redeem(token, &context).await?;
         self.purpose.on_redeem(&self.records, &user).await?;
         self.registrations.invalidate_pending(user.id).await?;
-        let started = self
-            .registrations
-            .start(
-                user.id,
-                P::REGISTRATION,
-                self.purpose.cool_down(self.clock.now()),
-            )
-            .await?;
+        let started = self.registrations.start(user.id, P::SOURCE).await?;
 
         self.audit.emit(&context, P::redeemed(user.id)).await;
         tracing::info!(outcome = "redeemed", "email link redeemed");
@@ -179,15 +153,10 @@ impl<P: RegistrationLink> EmailLinkRegistration<P> {
         context: SessionContext,
     ) -> Result<RegistrationOutcome> {
         let rules = FinishRules {
-            purpose: P::REGISTRATION,
+            purpose: P::SOURCE.purpose(),
             passkey_cap: P::PASSKEY_CAP,
-            cool_down: self.purpose.cool_down(self.clock.now()),
         };
-        let RegisteredPasskey {
-            user,
-            passkey,
-            cool_down,
-        } = self
+        let RegisteredPasskey { user, passkey } = self
             .registrations
             .finish(challenge_id, response, name, &context, rules)
             .await?;
@@ -196,7 +165,7 @@ impl<P: RegistrationLink> EmailLinkRegistration<P> {
         self.registrations.invalidate_pending(user.id).await?;
         let session = self
             .records
-            .issue_session(user.id, context.clone(), cool_down)
+            .issue_session(&passkey, context.clone())
             .await?;
         self.audit
             .emit(

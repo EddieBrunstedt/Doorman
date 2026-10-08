@@ -9,7 +9,9 @@ use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::{ResolvedSession, SessionConfig, SessionContext, hash_token};
-use crate::storage::{Session, SessionId, SessionStore, SessionSummary, TokenHash, UserId};
+use crate::storage::{
+    Session, SessionId, SessionStore, SessionSummary, StoredPasskey, TokenHash, UserId,
+};
 use crate::token::generate_token;
 
 #[derive(Clone)]
@@ -70,10 +72,10 @@ impl SessionRecords {
     // and hands the token out only if that check passes.
     pub(crate) async fn create(
         &self,
-        user_id: UserId,
+        passkey: &StoredPasskey,
         context: &SessionContext,
-        cool_down: RecoveryCoolDown,
     ) -> Result<(Session, String)> {
+        let user_id = passkey.user_id;
         if let Some(max) = self.config.max_sessions_per_user {
             self.enforce_session_cap(user_id, max.get()).await?;
         }
@@ -90,7 +92,7 @@ impl SessionRecords {
             expires_at: self.deadline(now, now),
             ip: context.ip.clone(),
             user_agent: context.user_agent.clone(),
-            recovery_cool_down_until: cool_down.until(),
+            recovery_cool_down_until: RecoveryCoolDown::of_passkey(passkey, now).until(),
         };
 
         self.sessions.create_session(session.clone()).await?;

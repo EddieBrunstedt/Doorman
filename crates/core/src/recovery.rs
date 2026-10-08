@@ -83,6 +83,25 @@ impl RecoveryConfig {
     pub const DEFAULT_COOL_DOWN: Duration = Duration::from_secs(60 * 60 * 24);
     pub const MIN_COOL_DOWN: Duration = Duration::from_secs(60 * 60);
     pub const MAX_COOL_DOWN: Duration = MAX_LIFETIME;
+
+    pub(crate) fn validated_cool_down(
+        &self,
+    ) -> std::result::Result<chrono::Duration, RecoveryConfigError> {
+        let too_long = RecoveryConfigError::CoolDownTooLong {
+            configured: self.cool_down,
+            maximum: Self::MAX_COOL_DOWN,
+        };
+        if self.cool_down > Self::MAX_COOL_DOWN {
+            return Err(too_long);
+        }
+        if self.cool_down < Self::MIN_COOL_DOWN && !self.danger_allow_cool_down_below_floor {
+            return Err(RecoveryConfigError::CoolDownTooShort {
+                configured: self.cool_down,
+                minimum: Self::MIN_COOL_DOWN,
+            });
+        }
+        chrono::Duration::from_std(self.cool_down).map_err(|_| too_long)
+    }
 }
 
 impl Default for RecoveryConfig {
@@ -114,29 +133,12 @@ impl RecoveryManager {
         registrations: PasskeyRegistrations,
         config: RecoveryConfig,
     ) -> std::result::Result<Self, AssemblyError> {
-        let too_long = RecoveryConfigError::CoolDownTooLong {
-            configured: config.cool_down,
-            maximum: RecoveryConfig::MAX_COOL_DOWN,
-        };
-        if config.cool_down > RecoveryConfig::MAX_COOL_DOWN {
-            return Err(too_long.into());
-        }
-        if config.cool_down < RecoveryConfig::MIN_COOL_DOWN
-            && !config.danger_allow_cool_down_below_floor
-        {
-            return Err(RecoveryConfigError::CoolDownTooShort {
-                configured: config.cool_down,
-                minimum: RecoveryConfig::MIN_COOL_DOWN,
-            }
-            .into());
-        }
-        let cool_down = chrono::Duration::from_std(config.cool_down).map_err(|_| too_long)?;
         Ok(Self {
             records: UserRecords::new(deps),
             registration: EmailLinkRegistration::new(
                 deps,
                 registrations,
-                Recovery { cool_down },
+                Recovery,
                 &config.url_template,
                 config.token_lifetime,
             )?,

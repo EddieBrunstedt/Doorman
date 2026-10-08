@@ -14,16 +14,14 @@ use webauthn_rs::prelude::{
 use crate::assertion::{AssertionVerifier, VerifiedAssertion};
 use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::challenge::{Login, PasskeyChallenge};
-use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
 use crate::error::{Error, Result};
 use crate::metrics::{MetricEvent, MetricSink};
 use crate::passkey_registration::{
-    FinishRules, PasskeyCap, PasskeyRegistrations, RegisteredPasskey,
+    FinishRules, PasskeyCap, PasskeyRegistrations, RegisteredPasskey, RegistrationSource,
 };
 use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
-use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::{IssuedSession, ResolvedSession, SessionContext};
 use crate::storage::{
@@ -128,7 +126,6 @@ pub struct PasskeyManager {
     logins: PasskeyChallenge<Login>,
     assertions: AssertionVerifier,
     records: UserRecords,
-    clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     notices: SecurityNotices,
     rate_limiter: Arc<dyn RateLimiter>,
@@ -149,7 +146,6 @@ impl PasskeyManager {
             logins: PasskeyChallenge::from_deps(deps, &config, webauthn.clone()),
             assertions: AssertionVerifier::from_deps(deps, webauthn),
             records: UserRecords::new(deps),
-            clock: deps.clock.clone(),
             audit: deps.audit.clone(),
             notices: deps.notices.clone(),
             rate_limiter: deps.rate_limiter.clone(),
@@ -163,10 +159,9 @@ impl PasskeyManager {
         &self,
         session: &ResolvedSession,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
-        let cool_down = RecoveryCoolDown::of_session(session, self.clock.now());
         let started = self
             .registrations
-            .start(session.user_id, RegistrationPurpose::AddPasskey, cool_down)
+            .start(session.user_id, RegistrationSource::Session(session))
             .await?;
         Ok((started.challenge_id, started.options))
     }
@@ -185,9 +180,8 @@ impl PasskeyManager {
         let rules = FinishRules {
             purpose: RegistrationPurpose::AddPasskey,
             passkey_cap: PasskeyCap::Enforced,
-            cool_down: RecoveryCoolDown::NONE,
         };
-        let RegisteredPasskey { user, passkey, .. } = self
+        let RegisteredPasskey { user, passkey } = self
             .registrations
             .finish(challenge_id, response, name, &context, rules)
             .await?;
@@ -275,11 +269,9 @@ impl PasskeyManager {
         let user_id = user.id;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
-        let cool_down = RecoveryCoolDown::of_passkey(&passkey, self.clock.now());
-
         let session = self
             .records
-            .issue_session(user_id, context.clone(), cool_down)
+            .issue_session(&passkey, context.clone())
             .await?;
         self.metrics.record(MetricEvent::LoginSucceeded);
         self.audit

@@ -6,12 +6,11 @@ use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result, StorageErrorKind};
-use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::{IssuedSession, ResolvedSession, SessionContext};
 use crate::session_records::SessionRecords;
 use crate::storage::{
-    EmailLinkPurpose, EmailLinkStore, PasskeyChallengeStore, PasskeyStore, User, UserId,
-    UserStatus, UserStore,
+    EmailLinkPurpose, EmailLinkStore, PasskeyChallengeStore, PasskeyStore, StoredPasskey, User,
+    UserId, UserStatus, UserStore,
 };
 
 const ALL_TOKEN_PURPOSES: [EmailLinkPurpose; 3] = [
@@ -114,11 +113,11 @@ impl UserRecords {
 
     pub(crate) async fn issue_session(
         &self,
-        user_id: UserId,
+        passkey: &StoredPasskey,
         context: SessionContext,
-        cool_down: RecoveryCoolDown,
     ) -> Result<IssuedSession> {
-        let (session, token) = self.sessions.create(user_id, &context, cool_down).await?;
+        let user_id = passkey.user_id;
+        let (session, token) = self.sessions.create(passkey, &context).await?;
         // Disable and delete change the user before deleting their sessions, so if that delete
         // missed this session, this read sees the change. The token is handed out only after it.
         if let Err(error) = self.find_active(user_id).await {

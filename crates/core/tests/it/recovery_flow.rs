@@ -474,62 +474,67 @@ impl EmailTemplates for BrandedEmails {
 }
 
 #[tokio::test]
-async fn finish_recovery_stores_same_cool_down_on_session_and_passkey() {
-    let h = Harness::fresh();
-    let _ = provision_user(&h, "alice@example.com").await;
+async fn recovery_cool_down_runs_from_the_later_of_redeem_and_finish() {
+    for (case, clock_step) in [
+        ("slow ceremony", ChronoDuration::minutes(4)),
+        ("clock stepped back", -ChronoDuration::hours(1)),
+    ] {
+        let h = Harness::fresh();
+        let _ = provision_user(&h, "alice@example.com").await;
 
-    h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
-        .await
-        .expect("request");
-    let link = h
-        .email
-        .sent()
-        .into_iter()
-        .rev()
-        .find(|e| e.subject == "Recover access with a new passkey")
-        .expect("link queued");
-    let token = token_from_email(&link.body_text, RECOVERY_URL);
+        h.recovery
+            .request_recovery("alice@example.com", SessionContext::default())
+            .await
+            .expect("request");
+        let link = h
+            .email
+            .sent()
+            .into_iter()
+            .rev()
+            .find(|e| e.subject == "Recover access with a new passkey")
+            .expect("link queued");
+        let token = token_from_email(&link.body_text, RECOVERY_URL);
 
-    let started = h
-        .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect("redeem");
-    let mut wa = authenticator();
-    let attestation = wa.do_registration(started.options);
-    let now_at_finish = h.clock.now();
-    let outcome = h
-        .recovery
-        .finish_recovery(
-            started.challenge_id,
-            &attestation,
-            Some("backup device".into()),
-            SessionContext::default(),
-        )
-        .await
-        .expect("finish");
+        let redeemed_at = h.clock.now();
+        let started = h
+            .recovery
+            .redeem_recovery_link(&token, SessionContext::default())
+            .await
+            .expect("redeem");
+        let mut wa = authenticator();
+        let attestation = wa.do_registration(started.options);
+        h.clock.advance(clock_step);
+        let finished_at = h.clock.now();
+        let outcome = h
+            .recovery
+            .finish_recovery(
+                started.challenge_id,
+                &attestation,
+                Some("backup device".into()),
+                SessionContext::default(),
+            )
+            .await
+            .expect("finish");
 
-    let expected = now_at_finish + ChronoDuration::hours(24);
-    assert_eq!(
-        outcome.session.session.recovery_cool_down_until,
-        Some(expected),
-    );
-    assert_eq!(outcome.passkey.recovery_cool_down_until, Some(expected));
-
-    let stored = h
-        .passkeys
-        .find_passkey_by_credential_id(&outcome.passkey.credential_id)
-        .await
-        .expect("find passkey")
-        .expect("passkey stored");
-    assert_eq!(stored.recovery_cool_down_until, Some(expected));
-    assert!(
-        outcome
-            .session
-            .session
-            .is_in_recovery_cool_down(h.clock.now())
-    );
+        let expected = redeemed_at.max(finished_at) + ChronoDuration::hours(24);
+        assert_eq!(
+            outcome.session.session.recovery_cool_down_until,
+            Some(expected),
+            "{case}",
+        );
+        assert_eq!(
+            outcome.passkey.recovery_cool_down_until,
+            Some(expected),
+            "{case}"
+        );
+        let stored = h
+            .passkeys
+            .find_passkey_by_credential_id(&outcome.passkey.credential_id)
+            .await
+            .expect("find passkey")
+            .expect("passkey stored");
+        assert_eq!(stored.recovery_cool_down_until, Some(expected), "{case}");
+    }
 }
 
 #[tokio::test]
@@ -787,6 +792,23 @@ async fn passkey_registered_during_cool_down_inherits_its_deadline() {
         passkey.recovery_cool_down_until,
         outcome.session.session.recovery_cool_down_until,
     );
+
+    let (auth_id, options) = h
+        .passkey
+        .start_authentication(SessionContext::default())
+        .await
+        .expect("start auth");
+    let assertion = wa.do_authentication(options, &passkey.credential_id);
+    let issued = h
+        .passkey
+        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .await
+        .expect("finish auth")
+        .session;
+    assert_eq!(
+        issued.session.recovery_cool_down_until,
+        outcome.session.session.recovery_cool_down_until,
+    );
 }
 
 #[tokio::test]
@@ -909,13 +931,13 @@ async fn recovery_config_with_zero_cool_down_yields_inactive_deadline() {
     let outcome = drive_recovery_finish(&h, "alice@example.com").await;
 
     assert_eq!(
-        outcome.session.session.recovery_cool_down_until,
+        outcome.passkey.recovery_cool_down_until,
         Some(now_at_finish),
         "a zero cool-down stamps the deadline at the finish instant",
     );
     assert_eq!(
-        outcome.passkey.recovery_cool_down_until,
-        Some(now_at_finish)
+        outcome.session.session.recovery_cool_down_until, None,
+        "the session inherits no cool-down that is already over",
     );
     assert!(
         !outcome

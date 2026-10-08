@@ -12,7 +12,7 @@ use crate::passkey::{PasskeyConfig, PasskeyMetadata, StartedRegistration, encode
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::SessionContext;
 use crate::storage::{
-    PasskeyChallengeId, PasskeyStore, RegistrationPurpose, StoredPasskey, User, UserId,
+    PasskeyChallengeId, PasskeyStore, RegistrationPurpose, Session, StoredPasskey, User, UserId,
 };
 use crate::user_records::UserRecords;
 
@@ -23,17 +23,31 @@ pub(crate) enum PasskeyCap {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(crate) enum RegistrationSource<'a> {
+    SignupLink,
+    RecoveryLink,
+    Session(&'a Session),
+}
+
+impl RegistrationSource<'_> {
+    pub(crate) const fn purpose(self) -> RegistrationPurpose {
+        match self {
+            Self::SignupLink => RegistrationPurpose::Signup,
+            Self::RecoveryLink => RegistrationPurpose::Recovery,
+            Self::Session(_) => RegistrationPurpose::AddPasskey,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct FinishRules {
     pub purpose: RegistrationPurpose,
     pub passkey_cap: PasskeyCap,
-    // The cool-down stamped at start is kept; the later of the two deadlines wins.
-    pub cool_down: RecoveryCoolDown,
 }
 
 pub(crate) struct RegisteredPasskey {
     pub user: User,
     pub passkey: StoredPasskey,
-    pub cool_down: RecoveryCoolDown,
 }
 
 #[derive(Clone)]
@@ -45,10 +59,16 @@ pub(crate) struct PasskeyRegistrations {
     audit: AuditDispatch,
     webauthn: Arc<Webauthn>,
     max_passkeys_per_user: Option<NonZeroU32>,
+    recovery_cool_down: chrono::Duration,
 }
 
 impl PasskeyRegistrations {
-    pub(crate) fn new(deps: &CoreDeps, config: &PasskeyConfig, webauthn: Arc<Webauthn>) -> Self {
+    pub(crate) fn new(
+        deps: &CoreDeps,
+        config: &PasskeyConfig,
+        webauthn: Arc<Webauthn>,
+        recovery_cool_down: chrono::Duration,
+    ) -> Self {
         Self {
             records: UserRecords::new(deps),
             passkeys: deps.passkeys.clone(),
@@ -57,17 +77,28 @@ impl PasskeyRegistrations {
             audit: deps.audit.clone(),
             webauthn,
             max_passkeys_per_user: config.max_passkeys_per_user,
+            recovery_cool_down,
         }
     }
 
     pub(crate) async fn start(
         &self,
         user_id: UserId,
-        purpose: RegistrationPurpose,
-        cool_down: RecoveryCoolDown,
+        source: RegistrationSource<'_>,
     ) -> Result<StartedRegistration> {
         let user = self.records.find_active(user_id).await?;
-        let (challenge_id, options) = self.challenges.issue(&user, purpose, cool_down).await?;
+        let now = self.clock.now();
+        let cool_down = match source {
+            RegistrationSource::SignupLink => RecoveryCoolDown::NONE,
+            RegistrationSource::RecoveryLink => {
+                RecoveryCoolDown::start(now, self.recovery_cool_down)
+            }
+            RegistrationSource::Session(session) => RecoveryCoolDown::of_session(session, now),
+        };
+        let (challenge_id, options) = self
+            .challenges
+            .issue(&user, source.purpose(), cool_down)
+            .await?;
         tracing::info!(outcome = "started", "passkey registration started");
         Ok(StartedRegistration {
             challenge_id,
@@ -92,7 +123,14 @@ impl PasskeyRegistrations {
         if rules.passkey_cap == PasskeyCap::Enforced {
             self.enforce_passkey_cap(user_id).await?;
         }
-        let cool_down = redeemed.cool_down.extended_by(rules.cool_down);
+        let cool_down = match rules.purpose {
+            // A recovery starts its cool-down again when the registration finishes, so a slow
+            // ceremony never eats into it; the later deadline wins.
+            RegistrationPurpose::Recovery => redeemed.cool_down.extended_by(
+                RecoveryCoolDown::start(self.clock.now(), self.recovery_cool_down),
+            ),
+            RegistrationPurpose::Signup | RegistrationPurpose::AddPasskey => redeemed.cool_down,
+        };
         let passkey = self.verify(&redeemed, response, name, cool_down)?;
 
         self.passkeys.add_passkey(passkey.clone()).await?;
@@ -102,7 +140,6 @@ impl PasskeyRegistrations {
         Ok(RegisteredPasskey {
             user: redeemed.user,
             passkey,
-            cool_down,
         })
     }
 

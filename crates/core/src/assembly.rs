@@ -292,7 +292,12 @@ impl AuthCoreBuilder {
 
         let sessions = SessionManager::new(&deps);
 
-        let registrations = PasskeyRegistrations::new(&deps, &passkey_config, webauthn.clone());
+        let registrations = PasskeyRegistrations::new(
+            &deps,
+            &passkey_config,
+            webauthn.clone(),
+            recovery_config.validated_cool_down()?,
+        );
 
         let passkey = PasskeyManager::new(&deps, registrations.clone(), passkey_config, webauthn);
 
