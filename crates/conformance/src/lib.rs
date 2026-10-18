@@ -71,6 +71,7 @@ pub async fn run_expiring(stores: &ExpiringStores) {
     sessions_purge_expired(stores).await;
     session_touch_slides_deadline(stores).await;
     session_touch_does_not_resurrect(stores).await;
+    session_touch_races_revoke(stores).await;
     session_revoke_races_creation(stores).await;
     passkey_registration_round_trip(stores).await;
     passkey_registration_delete_for_user(stores).await;
@@ -832,6 +833,92 @@ async fn session_touch_does_not_resurrect(stores: &ExpiringStores) {
             .expect("find deleted by hash")
             .is_none(),
         "the resurrected row must not be reachable by token hash either",
+    );
+}
+
+async fn session_touch_races_revoke(stores: &ExpiringStores) {
+    let now = present();
+    let user_id = UserId::new();
+
+    let raced: Vec<Session> = (0..RACERS)
+        .map(|i| Session {
+            id: SessionId::new(),
+            user_id,
+            token_hash: hash_token(&format!("touch-race-{i}")),
+            created_at: now,
+            last_used_at: now,
+            expires_at: days(365),
+            ip: None,
+            user_agent: None,
+            recovery_cool_down_until: None,
+        })
+        .collect();
+    for session in &raced {
+        stores
+            .sessions
+            .create_session(session.clone())
+            .await
+            .expect("create raced session");
+    }
+
+    let mut tasks = Vec::new();
+    for (i, session) in raced.iter().enumerate() {
+        let id = session.id;
+        let touch = {
+            let sessions = stores.sessions.clone();
+            async move {
+                sessions
+                    .touch_session(id, days(1), days(366))
+                    .await
+                    .expect("touch");
+            }
+        };
+        let delete = {
+            let sessions = stores.sessions.clone();
+            async move { sessions.delete_session(id).await.expect("delete") }
+        };
+        // A delete started first lets its touch read the row before the delete
+        // lands and write after it.
+        if i % 2 == 0 {
+            tasks.push(tokio::spawn(delete));
+            tasks.push(tokio::spawn(touch));
+        } else {
+            tasks.push(tokio::spawn(touch));
+            tasks.push(tokio::spawn(delete));
+        }
+    }
+    for task in tasks {
+        task.await.expect("race task");
+    }
+
+    for session in &raced {
+        assert!(
+            stores
+                .sessions
+                .find_session_by_id(session.id)
+                .await
+                .expect("find raced session")
+                .is_none(),
+            "a touch racing a delete must not resurrect the session",
+        );
+        assert!(
+            stores
+                .sessions
+                .find_session_by_token_hash(&session.token_hash)
+                .await
+                .expect("find raced session by hash")
+                .is_none(),
+            "a touch racing a delete must not leave the session reachable by token hash",
+        );
+    }
+    assert!(
+        stores
+            .sessions
+            .list_for_user(user_id)
+            .await
+            .expect("list raced user")
+            .is_empty(),
+        "a touch racing a delete must not leave the session listed",
     );
 }
 

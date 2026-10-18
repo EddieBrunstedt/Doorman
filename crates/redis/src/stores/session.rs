@@ -61,6 +61,8 @@ impl SessionStore for RedisSessionStore {
         let mut pipe = redis::pipe();
         pipe.atomic();
         let pxat = current.expires_at.timestamp_millis();
+        // `XX` turns a delete that lands after the GET into a no-op instead of
+        // a resurrected session.
         pipe.cmd("SET")
             .arg(&session_key)
             .arg(&json)
