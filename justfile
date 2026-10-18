@@ -19,28 +19,38 @@ clean:
 # (`cargo install cargo-nextest --locked`). Use the per-backend recipes below to
 # run just one adapter.
 test *args:
-    cargo nextest run --workspace --all-features --locked {{ args }}
+    {{ nextest }} {{ args }}
 
-# Run only the doorman-redis (redis + valkey) conformance suite.
+nextest := "cargo nextest run --workspace --all-features --locked"
+
+# The per-backend recipes filter the `test` run rather than build their crate
+# alone, so they keep its flags and reuse its build.
+
+# Run only the doorman-redis (redis + valkey) tests.
 test-redis *args:
-    cargo nextest run -p doorman-redis --all-features {{ args }}
-
-# Run only the doorman-sqlx mysql + mariadb conformance tests.
-test-mysql *args:
-    cargo nextest run -p doorman-sqlx --features mysql {{ args }}
+    {{ nextest }} -E 'package(doorman-redis)' {{ args }}
 
 # Run only the doorman-sqlx postgres conformance test.
 test-postgres *args:
-    cargo nextest run -p doorman-sqlx --features postgres {{ args }}
+    {{ nextest }} -E 'package(doorman-sqlx) & test(/^postgres::/)' {{ args }}
 
-# Run only the doorman-mongodb conformance suite.
+# Run only the doorman-sqlx mysql + mariadb conformance tests.
+test-mysql *args:
+    {{ nextest }} -E 'package(doorman-sqlx) & test(/^(mysql|mariadb)::/)' {{ args }}
+
+# SQLite runs in memory, so this needs no Docker.
+# Run only the doorman-sqlx sqlite tests.
+test-sqlite *args:
+    {{ nextest }} -E 'package(doorman-sqlx) & test(/^(sqlite|composability)::/)' {{ args }}
+
+# Run only the doorman-mongodb tests.
 test-mongodb *args:
-    cargo nextest run -p doorman-mongodb {{ args }}
+    {{ nextest }} -E 'package(doorman-mongodb)' {{ args }}
 
-# Run only the doorman-redb conformance suite. redb is embedded (a local
-# file), so this is the one backend suite that needs no Docker.
+# redb is embedded (a local file), so this needs no Docker.
+# Run only the doorman-redb tests.
 test-redb *args:
-    cargo nextest run -p doorman-redb {{ args }}
+    {{ nextest }} -E 'package(doorman-redb)' {{ args }}
 
 # Format the workspace.
 fmt:
@@ -56,7 +66,7 @@ dprint-check:
 
 # Type-check the whole workspace with all features.
 check:
-    cargo check --workspace --all-features
+    cargo check --workspace --all-features --locked
 
 # Lint with warnings denied.
 clippy:
@@ -92,10 +102,16 @@ features_target := env("CARGO_TARGET_DIR", "target") / "check-features"
 msrv:
     cargo +1.99.0 check --workspace --all-features --locked
 
+# Check dependencies against the advisory database and deny.toml's policy.
+deny:
+    cargo deny check
+
 # Cheap-first ordering: format, dprint, lint, docs, MSRV, then the two slow
 # steps side by side, since the feature-combination checks are CPU-bound while
 # the test suite spends much of its time waiting on containers.
-# The full local gate, running the same checks as CI.
+# `deny` stays out: it reads an advisory database that changes without any
+# change here, so it could fail the gate for reasons unrelated to the change.
+# The full local gate, running every check CI does except `deny`.
 verify: fmt-check dprint-check clippy doc msrv slow-checks
 
 [parallel]

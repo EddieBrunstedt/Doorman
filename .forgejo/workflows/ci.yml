@@ -77,9 +77,11 @@ jobs:
   # Dependency policy: licenses, RustSec advisories, banned/duplicate crates.
   # Split out because it compiles none of the project, so the weekly cron can
   # surface freshly disclosed advisories without rerunning the whole pipeline.
+  # The one check `just verify` leaves out: its advisory database changes
+  # without any change to the repo.
   audit:
     runs-on: native
     steps:
       - uses: actions/checkout@v4
       - name: cargo-deny
-        run: cargo deny check
+        run: just deny
