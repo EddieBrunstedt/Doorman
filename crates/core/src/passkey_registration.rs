@@ -161,13 +161,20 @@ impl PasskeyRegistrations {
             RegistrationPurpose::Signup | RegistrationPurpose::AddPasskey => redeemed.cool_down,
         };
         let passkey = self.verify(&redeemed, response, name, cool_down)?;
+        // Marked before the passkey is stored: a failure in between leaves a user who has to
+        // recover, never a signed-up user that a signup link still reaches.
+        let user = if purpose == RegistrationPurpose::Signup {
+            self.records.mark_signed_up(redeemed.user).await?
+        } else {
+            redeemed.user
+        };
 
         self.passkeys.add_passkey(passkey.clone()).await?;
         self.audit
             .emit(context, AuditEventKind::PasskeyAdded { user_id })
             .await;
         Ok(RegisteredPasskey {
-            user: redeemed.user,
+            user,
             passkey,
             passkey_count: held + 1,
         })

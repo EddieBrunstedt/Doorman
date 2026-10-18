@@ -101,10 +101,16 @@ impl UserStatus {
 pub struct User {
     pub id: UserId,
     pub email: Option<String>,
-    pub email_verified_at: Option<DateTime<Utc>>,
+    pub signed_up_at: Option<DateTime<Utc>>,
     pub status: UserStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl User {
+    pub fn has_finished_signup(&self) -> bool {
+        self.signed_up_at.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,14 +153,10 @@ pub trait UserStore: Send + Sync {
         at: DateTime<Utc>,
     ) -> StorageResult<()>;
 
-    async fn set_user_email(
-        &self,
-        id: UserId,
-        email: &str,
-        verified_at: DateTime<Utc>,
-    ) -> StorageResult<()>;
+    async fn set_user_email(&self, id: UserId, email: &str, at: DateTime<Utc>)
+    -> StorageResult<()>;
 
-    async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()>;
+    async fn mark_signed_up(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()>;
 
     async fn delete_user(&self, id: UserId) -> StorageResult<()>;
 }

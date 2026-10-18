@@ -139,13 +139,13 @@ impl UserStore for CountingUserStore {
         &self,
         id: UserId,
         email: &str,
-        verified_at: DateTime<Utc>,
+        at: DateTime<Utc>,
     ) -> StorageResult<()> {
-        self.inner.set_user_email(id, email, verified_at).await
+        self.inner.set_user_email(id, email, at).await
     }
 
-    async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
-        self.inner.mark_email_verified(id, at).await
+    async fn mark_signed_up(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
+        self.inner.mark_signed_up(id, at).await
     }
 
     async fn delete_user(&self, id: UserId) -> StorageResult<()> {
@@ -512,7 +512,7 @@ pub async fn make_user(h: &Harness, email: &str) -> User {
     let user = User {
         id: UserId::new(),
         email: Some(email.to_ascii_lowercase()),
-        email_verified_at: Some(now),
+        signed_up_at: Some(now),
         status: UserStatus::Active,
         created_at: now,
         updated_at: now,

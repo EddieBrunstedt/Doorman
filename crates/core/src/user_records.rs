@@ -66,12 +66,12 @@ impl UserRecords {
         Ok(self.users.find_user_by_email(email).await?)
     }
 
-    pub(crate) async fn create_unverified(&self, email: &str) -> Result<Option<User>> {
+    pub(crate) async fn create(&self, email: &str) -> Result<Option<User>> {
         let now = self.now();
         let user = User {
             id: UserId::new(),
             email: Some(email.to_owned()),
-            email_verified_at: None,
+            signed_up_at: None,
             status: UserStatus::Active,
             created_at: now,
             updated_at: now,
@@ -83,17 +83,18 @@ impl UserRecords {
         }
     }
 
-    pub(crate) async fn mark_email_verified(&self, user: &User) -> Result<()> {
-        if user.email_verified_at.is_none() {
-            self.users.mark_email_verified(user.id, self.now()).await?;
-        }
-        Ok(())
+    pub(crate) async fn mark_signed_up(&self, user: User) -> Result<User> {
+        let now = self.now();
+        self.users.mark_signed_up(user.id, now).await?;
+        Ok(User {
+            signed_up_at: Some(now),
+            updated_at: now,
+            ..user
+        })
     }
 
     pub(crate) async fn change_email(&self, user_id: UserId, email: &str) -> Result<User> {
-        // The email-change link proved control of the new address.
-        let verified_at = self.now();
-        match self.users.set_user_email(user_id, email, verified_at).await {
+        match self.users.set_user_email(user_id, email, self.now()).await {
             Ok(()) => self.find(user_id).await,
             Err(e) => Err(match e.kind() {
                 StorageErrorKind::Conflict => Error::EmailAlreadyInUse,

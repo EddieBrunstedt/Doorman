@@ -1,7 +1,7 @@
 CREATE TABLE users (
     id BINARY(16) PRIMARY KEY,
     email VARCHAR(255) UNIQUE,
-    email_verified_at DATETIME(6),
+    signed_up_at DATETIME(6),
     status VARCHAR(32) NOT NULL DEFAULT 'active',
     disabled_at DATETIME(6),
     created_at DATETIME(6) NOT NULL,

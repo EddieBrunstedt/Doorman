@@ -15,7 +15,7 @@ use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
 use crate::session::SessionContext;
-use crate::storage::{PasskeyChallengeId, PasskeyStore, User};
+use crate::storage::{PasskeyChallengeId, User};
 use crate::user_records::UserRecords;
 
 #[derive(Debug, Clone)]
@@ -104,7 +104,6 @@ impl Default for SignupConfig {
 
 #[derive(Clone)]
 pub struct SignupManager {
-    passkeys: Arc<dyn PasskeyStore>,
     records: UserRecords,
     registration: EmailLinkRegistration,
     mailer: Mailer,
@@ -120,7 +119,6 @@ impl SignupManager {
         config: SignupConfig,
     ) -> std::result::Result<Self, AssemblyError> {
         Ok(Self {
-            passkeys: deps.passkeys.clone(),
             records: UserRecords::new(deps),
             registration: EmailLinkRegistration::new(
                 deps,
@@ -196,7 +194,7 @@ impl SignupManager {
         if let Some(existing) = records.find_by_email(&email_normalized).await? {
             return self.request_for_existing(&existing, &context).await;
         }
-        let Some(user) = records.create_unverified(&email_normalized).await? else {
+        let Some(user) = records.create(&email_normalized).await? else {
             return match records.find_by_email(&email_normalized).await? {
                 Some(existing) => self.request_for_existing(&existing, &context).await,
                 None => Ok(()),
@@ -212,16 +210,12 @@ impl SignupManager {
     async fn request_for_existing(&self, existing: &User, context: &SessionContext) -> Result<()> {
         tracing::Span::current().record("user_id", tracing::field::display(existing.id));
 
-        if self
-            .passkeys
-            .list_passkeys_for_user(existing.id)
-            .await?
-            .is_empty()
-        {
+        // Once signup has finished, only recovery brings the user back, with its cool-down.
+        if !existing.has_finished_signup() {
             self.send_link(existing, context).await?;
             tracing::info!(
                 outcome = "reissued",
-                "signup email re-sent to passkey-less user"
+                "signup email re-sent before signup finished"
             );
             return Ok(());
         }

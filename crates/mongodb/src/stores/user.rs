@@ -76,22 +76,21 @@ impl UserStore for MongoUserStore {
         &self,
         id: UserId,
         email: &str,
-        verified_at: DateTime<Utc>,
+        at: DateTime<Utc>,
     ) -> StorageResult<()> {
         let update = doc! {
             "$set": {
                 "email": email,
-                "email_verified_at": model::to_bson_dt(verified_at),
-                "updated_at": model::to_bson_dt(verified_at),
+                "updated_at": model::to_bson_dt(at),
             }
         };
         self.update(id, update).await
     }
 
-    async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
+    async fn mark_signed_up(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
         let update = doc! {
             "$set": {
-                "email_verified_at": model::to_bson_dt(at),
+                "signed_up_at": model::to_bson_dt(at),
                 "updated_at": model::to_bson_dt(at),
             }
         };

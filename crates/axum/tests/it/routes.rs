@@ -17,7 +17,6 @@ async fn signup_registers_a_passkey_and_starts_a_session() {
     let (auth, _) = app.signup("Alice@Example.com").await;
 
     assert_eq!(auth.user.email.as_deref(), Some("alice@example.com"));
-    assert!(auth.user.email_verified);
     assert_eq!(auth.user.passkey_count, 1);
     assert!(app.is_authenticated(&auth.token).await);
 }
@@ -189,7 +188,6 @@ async fn an_email_change_is_requested_and_confirmed() {
     assert_eq!(confirm.status, StatusCode::OK);
     let user: UserDto = confirm.json();
     assert_eq!(user.email.as_deref(), Some("after@example.com"));
-    assert!(user.email_verified);
 }
 
 #[tokio::test]

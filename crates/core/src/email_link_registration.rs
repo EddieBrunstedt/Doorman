@@ -90,9 +90,6 @@ impl EmailLinkRegistration {
         context: SessionContext,
     ) -> Result<StartedRegistration> {
         let (user, _) = self.links.redeem(token, &context).await?;
-        if self.link == RegistrationLink::Signup {
-            self.records.mark_email_verified(&user).await?;
-        }
         self.registrations.invalidate_pending(user.id).await?;
         let started = self.registrations.start(self.link.source(&user)).await?;
 

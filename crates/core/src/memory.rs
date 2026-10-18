@@ -141,7 +141,7 @@ impl UserStore for InMemoryUserStore {
         &self,
         id: UserId,
         email: &str,
-        verified_at: DateTime<Utc>,
+        at: DateTime<Utc>,
     ) -> StorageResult<()> {
         let mut state = self.write();
         let UserStoreState { by_id, email_to_id } = &mut *state;
@@ -160,17 +160,16 @@ impl UserStore for InMemoryUserStore {
         }
         email_to_id.insert(email.to_owned(), id);
         user.email = Some(email.to_owned());
-        user.email_verified_at = Some(verified_at);
-        user.updated_at = verified_at;
+        user.updated_at = at;
         Ok(())
     }
 
-    async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
+    async fn mark_signed_up(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
         let mut state = self.write();
         let Some(user) = state.by_id.get_mut(&id) else {
             return Err(StorageError::not_found("user not found"));
         };
-        user.email_verified_at = Some(at);
+        user.signed_up_at = Some(at);
         user.updated_at = at;
         Ok(())
     }
@@ -636,7 +635,7 @@ mod tests {
         let user = User {
             id: UserId::new(),
             email: Some("composite@example.com".into()),
-            email_verified_at: None,
+            signed_up_at: None,
             status: UserStatus::Active,
             created_at: now,
             updated_at: now,
@@ -702,7 +701,7 @@ mod tests {
         let user = User {
             id: UserId::new(),
             email: Some("shared@example.com".into()),
-            email_verified_at: None,
+            signed_up_at: None,
             status: UserStatus::Active,
             created_at: now,
             updated_at: now,

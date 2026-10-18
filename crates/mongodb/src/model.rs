@@ -156,8 +156,8 @@ pub(crate) fn user_to_doc(user: &User) -> Document {
     if let Some(email) = &user.email {
         doc.insert("email", email.clone());
     }
-    if let Some(ts) = user.email_verified_at {
-        doc.insert("email_verified_at", to_bson_dt(ts));
+    if let Some(ts) = user.signed_up_at {
+        doc.insert("signed_up_at", to_bson_dt(ts));
     }
     doc.insert("status", user_status_to_str(&user.status));
     if let Some(ts) = user.status.disabled_at() {
@@ -171,7 +171,7 @@ pub(crate) fn user_from_doc(doc: &Document) -> StorageResult<User> {
     Ok(User {
         id: UserId(get_uuid(doc, "_id")?),
         email: get_opt_str(doc, "email")?,
-        email_verified_at: get_opt_dt(doc, "email_verified_at")?,
+        signed_up_at: get_opt_dt(doc, "signed_up_at")?,
         status,
         created_at: get_dt(doc, "created_at")?,
         updated_at: get_dt(doc, "updated_at")?,

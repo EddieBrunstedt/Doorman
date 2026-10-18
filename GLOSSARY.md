@@ -28,7 +28,7 @@ Passkey-only authentication for a single application: passkeys are the only way 
 
 **Signup**: Creating a new user through an email link, followed by registration of their first passkey.
 
-**Recovery**: Regaining access to a user through an email link, followed by registration of a new passkey. _Avoid_: reset, re-enrolment
+**Recovery**: Regaining access to a user who has finished signup, through an email link, followed by registration of a new passkey. _Avoid_: reset, re-enrolment
 
 **Email change**: Replacing a user's email address with a new one, proven through an email link sent to the new address.
 

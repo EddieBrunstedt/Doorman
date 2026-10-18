@@ -234,6 +234,20 @@ impl RecoveryManager {
             return Ok(());
         }
 
+        // There is no access to regain until signup has finished; a signup link finishes it.
+        if !user.has_finished_signup() {
+            self.audit
+                .emit(
+                    &context,
+                    AuditEventKind::RecoveryFailed {
+                        user_id: Some(user.id),
+                        reason: RecoveryFailureReason::SignupUnfinished,
+                    },
+                )
+                .await;
+            return Ok(());
+        }
+
         let url = self.registration.issue_link(user.id).await?;
         self.mailer
             .send_best_effort(&user, "recovery link", |templates| {

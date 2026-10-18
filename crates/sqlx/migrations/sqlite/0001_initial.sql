@@ -1,7 +1,7 @@
 CREATE TABLE users (
     id BLOB PRIMARY KEY,
     email TEXT UNIQUE,
-    email_verified_at TEXT,
+    signed_up_at TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     disabled_at TEXT,
     created_at TEXT NOT NULL,

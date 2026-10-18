@@ -287,6 +287,7 @@ pub enum RecoveryFailureReason {
     UnknownEmail,
     RateLimited,
     UserDisabled,
+    SignupUnfinished,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,6 +313,7 @@ pub enum RedemptionFailureReason {
     Malformed,
     UserNotFound,
     UserDisabled,
+    SignupFinished,
 }
 
 #[async_trait]

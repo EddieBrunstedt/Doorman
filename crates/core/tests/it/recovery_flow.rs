@@ -135,6 +135,40 @@ async fn request_for_disabled_user_sends_nothing_but_audits() {
 }
 
 #[tokio::test]
+async fn request_before_signup_finished_sends_nothing_but_audits() {
+    let h = Harness::fresh();
+    h.signup
+        .request_signup("alice@example.com", None, SessionContext::default())
+        .await
+        .expect("signup request");
+    let user = h
+        .users
+        .find_user_by_email("alice@example.com")
+        .await
+        .expect("find user")
+        .expect("user present");
+    let mail_before = h.email.sent().len();
+
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("silent ok before signup finished");
+
+    assert_eq!(
+        h.email.sent().len(),
+        mail_before,
+        "no link sent to a user who never finished signup",
+    );
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RecoveryFailed {
+            reason: RecoveryFailureReason::SignupUnfinished,
+            user_id: Some(id),
+        } if *id == user.id,
+    )));
+}
+
+#[tokio::test]
 async fn redeem_refused_for_disabled_user() {
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;

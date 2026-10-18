@@ -37,7 +37,7 @@ fn user(id: UserId, email: &str) -> User {
     User {
         id,
         email: Some(email.to_string()),
-        email_verified_at: None,
+        signed_up_at: None,
         status: UserStatus::Active,
         created_at: present(),
         updated_at: present(),
@@ -200,17 +200,17 @@ async fn users_round_trip(stores: &RecordStores) {
     );
 
     users
-        .mark_email_verified(id, days(31))
+        .mark_signed_up(id, days(31))
         .await
-        .expect("mark verified");
-    let verified = User {
-        email_verified_at: Some(days(31)),
+        .expect("mark signed up");
+    let signed_up = User {
+        signed_up_at: Some(days(31)),
         updated_at: days(31),
         ..record
     };
     assert_eq!(
         users.find_user_by_id(id).await.expect("find updated"),
-        Some(verified.clone()),
+        Some(signed_up.clone()),
     );
 
     let disabled_at = days(45);
@@ -221,7 +221,7 @@ async fn users_round_trip(stores: &RecordStores) {
     let disabled = User {
         status: UserStatus::Disabled { at: disabled_at },
         updated_at: disabled_at,
-        ..verified
+        ..signed_up
     };
     let reread = users
         .find_user_by_id(id)
@@ -279,6 +279,10 @@ async fn users_email_change(stores: &RecordStores) {
         .create_user(user(other, "taken@example.com"))
         .await
         .expect("create other");
+    users
+        .mark_signed_up(id, days(58))
+        .await
+        .expect("mark signed up");
 
     let at = days(59);
     users
@@ -292,7 +296,11 @@ async fn users_email_change(stores: &RecordStores) {
         .expect("new address resolves");
     assert_eq!(changed.id, id);
     assert_eq!(changed.email.as_deref(), Some("after-change@example.com"));
-    assert_eq!(changed.email_verified_at, Some(at));
+    assert_eq!(
+        changed.signed_up_at,
+        Some(days(58)),
+        "an email change keeps signup finished",
+    );
     assert_eq!(changed.updated_at, at);
     assert!(
         users
@@ -391,7 +399,6 @@ async fn users_field_changes_compose(stores: &RecordStores) {
         Some("email-first-new@example.com"),
         "disable kept the email change",
     );
-    assert_eq!(reread.email_verified_at, Some(days(90)));
 }
 
 async fn users_setters_refuse_missing_user(stores: &RecordStores) {
@@ -412,9 +419,9 @@ async fn users_setters_refuse_missing_user(stores: &RecordStores) {
         "email of a missing user",
     );
     assert_refused(
-        users.mark_email_verified(missing, days(120)).await,
+        users.mark_signed_up(missing, days(120)).await,
         StorageErrorKind::NotFound,
-        "verify a missing user",
+        "mark a missing user signed up",
     );
     assert!(
         users

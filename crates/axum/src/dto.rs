@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 pub struct UserDto {
     pub id: UserId,
     pub email: Option<String>,
-    pub email_verified: bool,
     pub created_at: DateTime<Utc>,
     pub passkey_count: u64,
 }
@@ -19,7 +18,6 @@ impl UserDto {
         Self {
             id: user.id,
             email: user.email.clone(),
-            email_verified: user.email_verified_at.is_some(),
             created_at: user.created_at,
             passkey_count,
         }
@@ -245,7 +243,6 @@ mod tests {
             user: UserDto {
                 id: UserId::new(),
                 email: Some("user@example.com".to_string()),
-                email_verified: true,
                 created_at: now,
                 passkey_count: 1,
             },

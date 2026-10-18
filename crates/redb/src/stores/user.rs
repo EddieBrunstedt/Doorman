@@ -131,7 +131,7 @@ impl UserStore for RedbUserStore {
         &self,
         id: UserId,
         email: &str,
-        verified_at: DateTime<Utc>,
+        at: DateTime<Utc>,
     ) -> StorageResult<()> {
         let email = email.to_owned();
         let user_key = id.0.to_string();
@@ -148,16 +148,15 @@ impl UserStore for RedbUserStore {
                 .insert(email.as_str(), user_key.as_str())
                 .map_err(db::err)?;
             user.email = Some(email);
-            user.email_verified_at = Some(verified_at);
-            user.updated_at = verified_at;
+            user.updated_at = at;
             Ok(())
         })
         .await
     }
 
-    async fn mark_email_verified(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
+    async fn mark_signed_up(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
         self.modify(id, move |user, _| {
-            user.email_verified_at = Some(at);
+            user.signed_up_at = Some(at);
             user.updated_at = at;
             Ok(())
         })

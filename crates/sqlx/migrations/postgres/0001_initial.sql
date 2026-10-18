@@ -1,7 +1,7 @@
 CREATE TABLE users (
     id BYTEA PRIMARY KEY,
     email TEXT UNIQUE,
-    email_verified_at TIMESTAMPTZ,
+    signed_up_at TIMESTAMPTZ,
     status TEXT NOT NULL DEFAULT 'active',
     disabled_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL,

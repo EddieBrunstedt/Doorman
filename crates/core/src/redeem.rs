@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 
 use crate::audit::RedemptionFailureReason::{
-    Expired, Malformed, Unknown, UserDisabled, UserNotFound, WrongPurpose,
+    Expired, Malformed, SignupFinished, Unknown, UserDisabled, UserNotFound, WrongPurpose,
 };
 use crate::audit::{AuditDispatch, AuditEventKind, RedemptionFailureReason, SecretKind};
 use crate::clock::Clock;
@@ -25,6 +25,7 @@ pub(crate) trait SingleUseSecret {
 
 pub(crate) trait OwnedSecret: SingleUseSecret {
     fn owner(&self) -> UserId;
+    fn is_signup(purpose: Self::Purpose) -> bool;
 }
 
 impl SingleUseSecret for EmailLink {
@@ -51,6 +52,10 @@ impl OwnedSecret for EmailLink {
     fn owner(&self) -> UserId {
         self.user_id
     }
+
+    fn is_signup(purpose: EmailLinkPurpose) -> bool {
+        purpose == EmailLinkPurpose::Signup
+    }
 }
 
 impl SingleUseSecret for StoredPasskeyRegistration {
@@ -72,6 +77,10 @@ impl SingleUseSecret for StoredPasskeyRegistration {
 impl OwnedSecret for StoredPasskeyRegistration {
     fn owner(&self) -> UserId {
         self.user_id
+    }
+
+    fn is_signup(purpose: RegistrationPurpose) -> bool {
+        purpose == RegistrationPurpose::Signup
     }
 }
 
@@ -139,7 +148,9 @@ impl Redeemer {
         Err(self.refuse(secret, owner, reason, context).await)
     }
 
-    // A secret issued to a user is good only while that user is active.
+    // A secret issued to a user is good only while that user is active, and a signup secret only
+    // until signup has finished: from then on only recovery brings the user back, with its
+    // cool-down.
     pub(crate) async fn check_owned<S: OwnedSecret, T>(
         &self,
         taken: Option<S>,
@@ -155,6 +166,7 @@ impl Redeemer {
             .check(taken, expected, Some(owner), decode, context)
             .await?;
         let reason = match self.records.find_active(owner).await {
+            Ok(user) if S::is_signup(expected) && user.has_finished_signup() => SignupFinished,
             Ok(user) => return Ok((user, value)),
             Err(Error::UserNotFound) => UserNotFound,
             Err(Error::UserDisabled) => UserDisabled,

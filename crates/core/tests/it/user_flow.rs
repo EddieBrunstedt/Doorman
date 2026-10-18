@@ -66,10 +66,6 @@ async fn email_change_happy_path() {
         .await
         .expect("confirm email change");
     assert_eq!(updated.user.email.as_deref(), Some("new@example.com"));
-    assert!(
-        updated.user.email_verified_at.is_some(),
-        "confirming the link verifies the new address",
-    );
 
     let stored = h
         .users

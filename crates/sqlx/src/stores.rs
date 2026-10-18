@@ -53,13 +53,13 @@ macro_rules! sqlx_stores {
                 user: $crate::stores::__reexport::User,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "INSERT INTO users (id, email, email_verified_at, status, disabled_at, created_at, updated_at)
+                    "INSERT INTO users (id, email, signed_up_at, status, disabled_at, created_at, updated_at)
                      VALUES (?, ?, ?, ?, ?, ?, ?)",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(user.id.0))
                     .bind(&user.email)
-                    .bind($ts(user.email_verified_at))
+                    .bind($ts(user.signed_up_at))
                     .bind($crate::stores::__reexport::user_status_to_str(&user.status))
                     .bind($ts(user.status.disabled_at()))
                     .bind($ts(user.created_at))
@@ -77,7 +77,7 @@ macro_rules! sqlx_stores {
                 Option<$crate::stores::__reexport::User>,
             > {
                 let sql = $ph(
-                    "SELECT id, email, email_verified_at, status, disabled_at, created_at, updated_at
+                    "SELECT id, email, signed_up_at, status, disabled_at, created_at, updated_at
                      FROM users WHERE id = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -95,7 +95,7 @@ macro_rules! sqlx_stores {
                 Option<$crate::stores::__reexport::User>,
             > {
                 let sql = $ph(
-                    "SELECT id, email, email_verified_at, status, disabled_at, created_at, updated_at
+                    "SELECT id, email, signed_up_at, status, disabled_at, created_at, updated_at
                      FROM users WHERE email = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -133,15 +133,12 @@ macro_rules! sqlx_stores {
                 &self,
                 id: $crate::stores::__reexport::UserId,
                 email: &str,
-                verified_at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
+                at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
             ) -> $crate::stores::__reexport::StorageResult<()> {
-                let sql = $ph(
-                    "UPDATE users SET email = ?, email_verified_at = ?, updated_at = ? WHERE id = ?",
-                );
+                let sql = $ph("UPDATE users SET email = ?, updated_at = ? WHERE id = ?");
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind(email)
-                    .bind($ts(verified_at))
-                    .bind($ts(verified_at))
+                    .bind($ts(at))
                     .bind($crate::common::uuid_to_bytes(id.0))
                     .execute(&self.pool)
                     .await
@@ -152,12 +149,12 @@ macro_rules! sqlx_stores {
                 Ok(())
             }
 
-            async fn mark_email_verified(
+            async fn mark_signed_up(
                 &self,
                 id: $crate::stores::__reexport::UserId,
                 at: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
             ) -> $crate::stores::__reexport::StorageResult<()> {
-                let sql = $ph("UPDATE users SET email_verified_at = ?, updated_at = ? WHERE id = ?");
+                let sql = $ph("UPDATE users SET signed_up_at = ?, updated_at = ? WHERE id = ?");
                 let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($ts(at))
                     .bind($ts(at))
@@ -197,8 +194,8 @@ macro_rules! sqlx_stores {
             Ok($crate::stores::__reexport::User {
                 id: $crate::stores::__reexport::UserId($crate::common::uuid_from_row(id_bytes)?),
                 email: row.try_get("email").map_err($crate::common::storage_err)?,
-                email_verified_at: row
-                    .try_get("email_verified_at")
+                signed_up_at: row
+                    .try_get("signed_up_at")
                     .map_err($crate::common::storage_err)?,
                 status: $crate::stores::__reexport::user_status_from_parts(
                     &status_str,

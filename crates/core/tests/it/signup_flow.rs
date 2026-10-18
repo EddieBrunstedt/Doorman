@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use doorman_core::audit::AuditEventKind;
+use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::email::{EmailContent, EmailTemplates};
 use doorman_core::error::{Error, Result, StorageError};
@@ -10,7 +10,7 @@ use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
 use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy, SignupRateLimits};
-use doorman_core::storage::{User, UserStore};
+use doorman_core::storage::{PasskeyStore, User, UserStore};
 use doorman_test_support::MockClock;
 
 use crate::common::{
@@ -32,7 +32,10 @@ async fn request_provisions_user_for_new_email() {
         .await
         .expect("find user")
         .expect("user provisioned");
-    assert!(user.email_verified_at.is_none(), "unverified until redeem");
+    assert!(
+        user.signed_up_at.is_none(),
+        "signup unfinished until its passkey is registered"
+    );
     assert_eq!(h.email.sent().len(), 1, "signup email queued");
     assert_eq!(h.email.sent()[0].subject, "Finish signing up");
     assert!(matches!(
@@ -102,7 +105,7 @@ async fn request_for_email_with_passkeys_is_silent_and_audited() {
 }
 
 #[tokio::test]
-async fn request_for_passkeyless_user_reissues_signup_link() {
+async fn request_before_signup_finished_reissues_signup_link() {
     let h = Harness::fresh();
     h.signup
         .request_signup("alice@example.com", None, SessionContext::default())
@@ -146,7 +149,145 @@ async fn request_for_passkeyless_user_reissues_signup_link() {
 }
 
 #[tokio::test]
-async fn redeem_verifies_email_and_starts_passkey_registration() {
+async fn request_after_signup_finished_sends_no_link_even_without_passkeys() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "alice@example.com").await;
+    h.passkeys
+        .delete_passkeys_for_user(user.id)
+        .await
+        .expect("drop every passkey");
+    let mail_before = h.email.sent().len();
+
+    h.signup
+        .request_signup("alice@example.com", None, SessionContext::default())
+        .await
+        .expect("silent ok");
+
+    assert_eq!(h.email.sent().len(), mail_before, "no signup link sent");
+    assert!(matches!(
+        kinds(&h.audit.events()).last(),
+        Some(AuditEventKind::SignupRequested { user_id }) if *user_id == user.id
+    ));
+}
+
+fn last_signup_token(h: &Harness) -> String {
+    let mail = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Finish signing up")
+        .expect("signup link queued");
+    token_from_email(&mail.body_text, SIGNUP_URL)
+}
+
+fn assert_last_refused_as_signup_finished(h: &Harness, secret: SecretKind) {
+    let last = h.audit.events().last().map(|e| e.kind.clone());
+    assert!(
+        matches!(
+            last,
+            Some(AuditEventKind::RedemptionFailed {
+                user_id: Some(_),
+                secret: s,
+                reason: RedemptionFailureReason::SignupFinished,
+            }) if s == secret
+        ),
+        "expected {secret:?} refused as signup finished, got {last:?}",
+    );
+}
+
+#[tokio::test]
+async fn signup_link_issued_before_signup_finished_is_refused_after() {
+    let h = Harness::fresh();
+    h.signup
+        .request_signup("alice@example.com", None, SessionContext::default())
+        .await
+        .expect("first request");
+    let started = h
+        .signup
+        .redeem_signup_link(&last_signup_token(&h), SessionContext::default())
+        .await
+        .expect("redeem first link");
+    h.signup
+        .request_signup("alice@example.com", None, SessionContext::default())
+        .await
+        .expect("second request");
+    let spare = last_signup_token(&h);
+    let outcome = h
+        .signup
+        .finish_signup(
+            started.challenge_id,
+            &authenticator().do_registration(started.options),
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish signup");
+
+    let err = h
+        .signup
+        .redeem_signup_link(&spare, SessionContext::default())
+        .await
+        .expect_err("the spare link no longer reaches the user");
+    assert!(matches!(err, Error::InvalidEmailLink), "{err:?}");
+    assert_last_refused_as_signup_finished(&h, SecretKind::SignupLink);
+    assert_eq!(
+        h.passkeys
+            .list_passkeys_for_user(outcome.user.id)
+            .await
+            .expect("list passkeys")
+            .len(),
+        1,
+    );
+}
+
+#[tokio::test]
+async fn signup_registration_cannot_finish_once_signup_finished_elsewhere() {
+    let h = Harness::fresh();
+    h.signup
+        .request_signup("alice@example.com", None, SessionContext::default())
+        .await
+        .expect("request");
+    let started = h
+        .signup
+        .redeem_signup_link(&last_signup_token(&h), SessionContext::default())
+        .await
+        .expect("redeem");
+    let user = h
+        .users
+        .find_user_by_email("alice@example.com")
+        .await
+        .expect("find user")
+        .expect("user present");
+    // Stands in for a racing signup registration that finished first.
+    h.users
+        .mark_signed_up(user.id, h.clock.now())
+        .await
+        .expect("finish signup elsewhere");
+
+    let err = h
+        .signup
+        .finish_signup(
+            started.challenge_id,
+            &authenticator().do_registration(started.options),
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("a signup registration never reaches a user who finished signup");
+    assert!(matches!(err, Error::InvalidPasskeyChallenge), "{err:?}");
+    assert_last_refused_as_signup_finished(&h, SecretKind::RegistrationChallenge);
+    assert!(
+        h.passkeys
+            .list_passkeys_for_user(user.id)
+            .await
+            .expect("list passkeys")
+            .is_empty(),
+    );
+}
+
+#[tokio::test]
+async fn redeem_starts_passkey_registration() {
     let h = Harness::fresh();
     h.signup
         .request_signup("user@example.com", None, SessionContext::default())
@@ -174,7 +315,10 @@ async fn redeem_verifies_email_and_starts_passkey_registration() {
         .await
         .expect("find user")
         .expect("user present");
-    assert!(user.email_verified_at.is_some(), "email verified on redeem");
+    assert!(
+        user.signed_up_at.is_none(),
+        "signup unfinished until its passkey is registered",
+    );
     assert!(
         kinds(&h.audit.events())
             .iter()
@@ -208,7 +352,7 @@ async fn finish_sends_no_security_notice() {
         .await
         .expect("finish");
 
-    assert!(outcome.user.email_verified_at.is_some());
+    assert!(outcome.user.signed_up_at.is_some(), "signup finished");
     assert_eq!(h.email.sent().len(), mail_before_finish);
 }
 
@@ -337,7 +481,7 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
         .await
         .expect("find user")
         .expect("user provisioned despite send failure");
-    assert!(provisioned.email_verified_at.is_none());
+    assert!(provisioned.signed_up_at.is_none());
 }
 
 struct BrandedEmails;
