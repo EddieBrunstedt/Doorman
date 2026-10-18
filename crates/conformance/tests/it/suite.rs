@@ -79,7 +79,7 @@ async fn every_failing_check_is_reported_after_the_whole_suite_ran() {
         .expect("the suite reports in a formatted panic");
 
     assert!(
-        report.starts_with("9 of 18 conformance checks failed:"),
+        report.starts_with("9 of 19 conformance checks failed:"),
         "{report}"
     );
     for failed in ["sessions_crud_and_queries", "inserts_refuse_duplicate_keys"] {

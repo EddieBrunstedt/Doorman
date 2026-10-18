@@ -1,11 +1,20 @@
+use std::sync::LazyLock;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use doorman_core::error::StorageResult;
+use doorman_core::encoding::purpose_to_str;
+use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{EmailLink, EmailLinkStore, TokenHash, UserId};
 
 use crate::client::{self, RedisClient};
 use crate::keys;
-use crate::stores;
+use crate::scripts;
+
+static REPLACE_EMAIL_LINK: LazyLock<redis::Script> =
+    LazyLock::new(|| redis::Script::new(scripts::REPLACE_EMAIL_LINK));
+
+static DELETE_EMAIL_LINKS: LazyLock<redis::Script> =
+    LazyLock::new(|| redis::Script::new(scripts::DELETE_EMAIL_LINKS));
 
 pub(crate) struct RedisEmailLinkStore {
     client: RedisClient,
@@ -21,93 +30,65 @@ impl RedisEmailLinkStore {
 impl EmailLinkStore for RedisEmailLinkStore {
     async fn replace_link(&self, link: EmailLink) -> StorageResult<()> {
         let keys = self.client.keys();
-        let email_link_key = keys.email_link(&link.token_hash);
-        let user_key = keys.user_email_links(link.user_id);
-        let member = keys::token_hash_hex(&link.token_hash);
-        let json = client::to_json(&link)?;
         let mut conn = self.client.conn();
 
-        stores::insert_absent(
-            &mut conn,
-            &[(&email_link_key, &json)],
-            link.expires_at,
-            Some(stores::OwnerIndex {
-                set: &user_key,
-                member: &member,
-            }),
-            "email link token hash",
-        )
-        .await?;
-
-        let others: Vec<String> = client::smembers(&mut conn, &user_key)
-            .await?
-            .into_iter()
-            .filter(|other| *other != member)
-            .collect();
-        let other_keys: Vec<String> = others
-            .iter()
-            .map(|hex| keys.email_link_key_for(hex))
-            .collect();
-        let rows: Vec<Option<EmailLink>> = client::mget_json(&mut conn, &other_keys).await?;
-        let mut replaced_keys = Vec::new();
-        let mut replaced_members = Vec::new();
-        for ((other, key), row) in others.into_iter().zip(other_keys).zip(rows) {
-            match row {
-                Some(row) if row.purpose != link.purpose => {}
-                _ => {
-                    replaced_keys.push(key);
-                    replaced_members.push(other);
-                }
-            }
+        let inserted: i64 = REPLACE_EMAIL_LINK
+            .key(keys.email_link(&link.token_hash))
+            .key(keys.user_email_links(link.user_id))
+            .arg(client::to_json(&link)?)
+            .arg(link.expires_at.timestamp_millis())
+            .arg(purpose_to_str(link.purpose))
+            .arg(keys::token_hash_hex(&link.token_hash))
+            .arg(keys.email_link_key_for(""))
+            .invoke_async(&mut conn)
+            .await
+            .map_err(StorageError::new)?;
+        if inserted == 0 {
+            return Err(StorageError::conflict(
+                "email link token hash already exists",
+            ));
         }
-        client::del(&mut conn, &replaced_keys).await?;
-        client::srem(&mut conn, &user_key, &replaced_members).await?;
         Ok(())
     }
 
     async fn redeem_link(&self, hash: &TokenHash) -> StorageResult<Option<EmailLink>> {
         let keys = self.client.keys();
-        let email_link_key = keys.email_link(hash);
         let mut conn = self.client.conn();
 
-        let Some(link) = client::getdel_json::<EmailLink>(&mut conn, &email_link_key).await? else {
-            return Ok(None);
-        };
-        let user_key = keys.user_email_links(link.user_id);
-        let member = keys::token_hash_hex(hash);
-        let _ = client::srem(&mut conn, &user_key, &[member]).await;
-        Ok(Some(link))
+        // The owner's hash may still name the redeemed row; replacing or
+        // deleting it then finds no row, so it is left to expire.
+        client::getdel_json(&mut conn, &keys.email_link(hash)).await
     }
 
     async fn delete_links_for_user(&self, user_id: UserId) -> StorageResult<u64> {
         let keys = self.client.keys();
-        let user_key = keys.user_email_links(user_id);
         let mut conn = self.client.conn();
 
-        let members = client::smembers(&mut conn, &user_key).await?;
-        if members.is_empty() {
-            return Ok(0);
-        }
-        let email_link_keys: Vec<String> = members
-            .iter()
-            .map(|hex| keys.email_link_key_for(hex))
-            .collect();
-        let removed = client::del(&mut conn, &email_link_keys).await?;
-        client::del(&mut conn, &[user_key]).await?;
-        Ok(removed)
+        DELETE_EMAIL_LINKS
+            .key(keys.user_email_links(user_id))
+            .arg(keys.email_link_key_for(""))
+            .invoke_async(&mut conn)
+            .await
+            .map_err(StorageError::new)
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
         let keys = self.client.keys();
         let mut conn = self.client.conn();
 
-        stores::purge_index_sets::<EmailLink>(
-            &mut conn,
-            keys,
-            &keys.user_email_links_pattern(),
-            |hex| keys.email_link_key_for(hex),
-            now,
-        )
-        .await
+        let link_keys = client::scan_all(&mut conn, &keys.email_link_pattern()).await?;
+        if link_keys.is_empty() {
+            return Ok(0);
+        }
+        let rows: Vec<Option<EmailLink>> = client::mget_json(&mut conn, &link_keys).await?;
+        let expired: Vec<String> = link_keys
+            .into_iter()
+            .zip(rows)
+            .filter_map(|(key, row)| match row {
+                Some(link) if link.expires_at <= now => Some(key),
+                _ => None,
+            })
+            .collect();
+        client::del(&mut conn, &expired).await
     }
 }

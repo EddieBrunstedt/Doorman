@@ -52,3 +52,39 @@ if #KEYS > claimed then
 end
 return 1
 "#;
+
+pub(crate) const REPLACE_EMAIL_LINK: &str = r#"
+-- KEYS[1] is the new link's row, KEYS[2] its owner's hash of link token
+-- hashes by purpose. ARGV: the row, its deadline, its purpose, its token hash,
+-- and the prefix that turns a token hash into its row key.
+if redis.call('EXISTS', KEYS[1]) == 1 then
+    return 0
+end
+
+local pxat = tonumber(ARGV[2])
+local replaced = redis.call('HGET', KEYS[2], ARGV[3])
+if replaced then
+    redis.call('DEL', ARGV[5] .. replaced)
+end
+redis.call('SET', KEYS[1], ARGV[1], 'PXAT', pxat)
+redis.call('HSET', KEYS[2], ARGV[3], ARGV[4])
+-- The hash lives as long as the longest-lived link it names. `GT` alone would
+-- never set a first deadline, since it treats a key without one as immortal.
+if redis.call('PTTL', KEYS[2]) < 0 then
+    redis.call('PEXPIREAT', KEYS[2], pxat)
+else
+    redis.call('PEXPIREAT', KEYS[2], pxat, 'GT')
+end
+return 1
+"#;
+
+pub(crate) const DELETE_EMAIL_LINKS: &str = r#"
+-- KEYS[1] is the owner's hash of link token hashes by purpose; ARGV[1] the
+-- prefix that turns a token hash into its row key.
+local removed = 0
+for _, hash in ipairs(redis.call('HVALS', KEYS[1])) do
+    removed = removed + redis.call('DEL', ARGV[1] .. hash)
+end
+redis.call('DEL', KEYS[1])
+return removed
+"#;

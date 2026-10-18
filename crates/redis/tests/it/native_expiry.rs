@@ -88,6 +88,26 @@ async fn run_every_row_expires_at_its_deadline(backend: Backend) {
         link.expires_at.timestamp_millis(),
         "the email link expires at its deadline",
     );
+    let shorter = EmailLink {
+        token_hash: hash_token("native-expiry-shorter-link"),
+        purpose: EmailLinkPurpose::Recovery,
+        expires_at: now + Duration::minutes(10),
+        ..link.clone()
+    };
+    stores
+        .email_links
+        .replace_link(shorter)
+        .await
+        .expect("replace shorter link");
+    assert_eq!(
+        expire_time(
+            &mut raw,
+            format!("{prefix}user:{}:email_links", link.user_id.0)
+        )
+        .await,
+        link.expires_at.timestamp_millis(),
+        "the owner's links expire with its longest-lived link",
+    );
 
     let registration = StoredPasskeyRegistration {
         id: PasskeyChallengeId::new(),

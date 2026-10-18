@@ -150,6 +150,7 @@ async fn expiring_checks(checks: &mut Checks, stores: &ExpiringStores) {
         email_link_single_use,
         email_link_email_change_payload,
         email_link_replaces_its_owners_link,
+        email_link_racing_replaces_leave_one_link,
         email_link_purge_and_delete,
         sessions_crud_and_queries,
         sessions_purge_expired,
@@ -584,6 +585,50 @@ async fn email_link_replaces_its_owners_link(stores: &ExpiringStores) {
             .expect("redeem other owner"),
         Some(other_owner),
         "another user's link of the same purpose survives",
+    );
+}
+
+async fn email_link_racing_replaces_leave_one_link(stores: &ExpiringStores) {
+    let owner = UserId::new();
+    let raced: Vec<EmailLink> = (0..RACERS)
+        .map(|i| {
+            link(
+                &format!("replace-race-{i}"),
+                owner,
+                EmailLinkPurpose::Signup,
+            )
+        })
+        .collect();
+
+    let tasks: Vec<_> = raced
+        .iter()
+        .cloned()
+        .map(|l| {
+            let links = stores.email_links.clone();
+            // Only the links left are under test here, not whether every racer
+            // was accepted.
+            tokio::spawn(async move { links.replace_link(l).await.is_ok() })
+        })
+        .collect();
+    for task in tasks {
+        task.await.expect("racer task");
+    }
+
+    let mut live = 0;
+    for l in &raced {
+        if stores
+            .email_links
+            .redeem_link(&l.token_hash)
+            .await
+            .expect("redeem raced link")
+            .is_some()
+        {
+            live += 1;
+        }
+    }
+    assert_eq!(
+        live, 1,
+        "racing replaces of one owner's link of one purpose leave exactly one link"
     );
 }
 

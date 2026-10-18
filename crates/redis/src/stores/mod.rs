@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{EmailLink, Session, StoredPasskeyRegistration};
+use doorman_core::storage::{Session, StoredPasskeyRegistration};
 use redis::aio::ConnectionManager;
 use serde::de::DeserializeOwned;
 
@@ -94,12 +94,6 @@ impl IndexedRow for Session {
 
     fn companion_key(&self, keys: &KeySchema) -> Option<String> {
         Some(keys.session_hash_index(&self.token_hash))
-    }
-}
-
-impl IndexedRow for EmailLink {
-    fn expires_at(&self) -> DateTime<Utc> {
-        self.expires_at
     }
 }
 

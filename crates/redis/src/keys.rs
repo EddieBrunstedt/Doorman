@@ -46,8 +46,8 @@ impl KeySchema {
         format!("{}user:{}:email_links", self.prefix, user_id.0)
     }
 
-    pub(crate) fn user_email_links_pattern(&self) -> String {
-        format!("{}user:*:email_links", self.prefix)
+    pub(crate) fn email_link_pattern(&self) -> String {
+        format!("{}email_link:*", self.prefix)
     }
 
     pub(crate) fn pkreg(&self, id: PasskeyChallengeId) -> String {
