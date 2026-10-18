@@ -23,14 +23,15 @@ CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 
 CREATE TABLE email_links (
-    token_hash BINARY(32) PRIMARY KEY,
+    token_hash BINARY(32) NOT NULL,
     purpose VARCHAR(32) NOT NULL,
     user_id BINARY(16) NOT NULL,
     new_email VARCHAR(255),
     created_at DATETIME(6) NOT NULL,
-    expires_at DATETIME(6) NOT NULL
+    expires_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (user_id, purpose)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE UNIQUE INDEX idx_email_links_owner ON email_links(user_id, purpose);
+CREATE UNIQUE INDEX idx_email_links_token_hash ON email_links(token_hash);
 CREATE INDEX idx_email_links_expires_at ON email_links(expires_at);
 
 CREATE TABLE passkeys (

@@ -23,14 +23,15 @@ CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 
 CREATE TABLE email_links (
-    token_hash BLOB PRIMARY KEY,
+    token_hash BLOB NOT NULL,
     purpose TEXT NOT NULL,
     user_id BLOB NOT NULL,
     new_email TEXT,
     created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL
+    expires_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, purpose)
 );
-CREATE UNIQUE INDEX idx_email_links_owner ON email_links(user_id, purpose);
+CREATE UNIQUE INDEX idx_email_links_token_hash ON email_links(token_hash);
 CREATE INDEX idx_email_links_expires_at ON email_links(expires_at);
 
 CREATE TABLE passkeys (

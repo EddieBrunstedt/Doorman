@@ -37,5 +37,5 @@ crate::stores::sqlx_stores! {
     placeholders: crate::common::ph_mysql,
     timestamp: crate::common::ts_mysql,
     take: txn,
-    replace_link: txn,
+    replace_link: update_or_insert,
 }

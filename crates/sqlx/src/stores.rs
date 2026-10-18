@@ -928,7 +928,7 @@ macro_rules! sqlx_replace_link {
         Ok(())
     }};
     (
-        txn,
+        update_or_insert,
         pool: $pool:expr,
         ph: $ph:path,
         timestamp: $ts:path,
@@ -936,31 +936,60 @@ macro_rules! sqlx_replace_link {
     ) => {{
         let link = $link;
         // MySQL's upsert fires on any unique key, so a colliding token hash would overwrite
-        // another user's link instead of being refused.
-        let mut tx = $pool.begin().await.map_err($crate::common::storage_err)?;
-        let delete_sql = $ph("DELETE FROM email_links WHERE user_id = ? AND purpose = ?");
-        ::sqlx::query(::sqlx::AssertSqlSafe(delete_sql))
-            .bind($crate::common::uuid_to_bytes(link.user_id.0))
-            .bind($crate::common::purpose_to_str(link.purpose))
-            .execute(&mut *tx)
-            .await
-            .map_err($crate::common::storage_err)?;
+        // another user's link instead of being refused. Deleting, then inserting, in one
+        // transaction deadlocks: the delete of an absent row locks the index gap that every
+        // concurrent replace's insert then waits on, even another user's.
+        let user_id = $crate::common::uuid_to_bytes(link.user_id.0);
+        let purpose = $crate::common::purpose_to_str(link.purpose);
+        let update_sql = $ph(
+            "UPDATE email_links SET token_hash = ?, new_email = ?, created_at = ?, expires_at = ?
+             WHERE user_id = ? AND purpose = ?",
+        );
         let insert_sql = $ph(
             "INSERT INTO email_links (token_hash, purpose, user_id, new_email, created_at, expires_at)
              VALUES (?, ?, ?, ?, ?, ?)",
         );
-        ::sqlx::query(::sqlx::AssertSqlSafe(insert_sql))
-            .bind($crate::common::token_hash_bytes(&link.token_hash))
-            .bind($crate::common::purpose_to_str(link.purpose))
-            .bind($crate::common::uuid_to_bytes(link.user_id.0))
-            .bind(&link.new_email)
-            .bind($ts(link.created_at))
-            .bind($ts(link.expires_at))
-            .execute(&mut *tx)
-            .await
-            .map_err($crate::common::storage_err)?;
-        tx.commit().await.map_err($crate::common::storage_err)?;
-        Ok(())
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let updated = ::sqlx::query(::sqlx::AssertSqlSafe(update_sql.clone()))
+                .bind($crate::common::token_hash_bytes(&link.token_hash))
+                .bind(&link.new_email)
+                .bind($ts(link.created_at))
+                .bind($ts(link.expires_at))
+                .bind(&user_id)
+                .bind(purpose)
+                .execute(&$pool)
+                .await
+                .map_err($crate::common::storage_err)?;
+            // sqlx connects with CLIENT_FOUND_ROWS, so this counts the rows matched, even
+            // when an identical link left them unchanged.
+            if updated.rows_affected() > 0 {
+                break Ok(());
+            }
+            let inserted = ::sqlx::query(::sqlx::AssertSqlSafe(insert_sql.clone()))
+                .bind($crate::common::token_hash_bytes(&link.token_hash))
+                .bind(purpose)
+                .bind(&user_id)
+                .bind(&link.new_email)
+                .bind($ts(link.created_at))
+                .bind($ts(link.expires_at))
+                .execute(&$pool)
+                .await;
+            match inserted {
+                Ok(_) => break Ok(()),
+                // A concurrent replace inserted the owner's row first, so update that row
+                // instead. A colliding token hash keeps failing and is refused once the
+                // attempts run out.
+                Err(e)
+                    if attempts < 3
+                        && e.as_database_error().is_some_and(|db| db.is_unique_violation()) =>
+                {
+                    continue;
+                }
+                Err(e) => break Err($crate::common::storage_err(e)),
+            }
+        }
     }};
 }
 
