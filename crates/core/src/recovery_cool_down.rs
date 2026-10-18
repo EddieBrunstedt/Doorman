@@ -44,6 +44,21 @@ impl RecoveryCoolDown {
         Ok(())
     }
 
+    // A passkey in cool-down would otherwise clear a destructive action for a session outside it.
+    pub(crate) fn refuse_reauthentication(
+        passkeys: Vec<StoredPasskey>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<StoredPasskey>> {
+        let allowed: Vec<StoredPasskey> = passkeys
+            .into_iter()
+            .filter(|passkey| Self::of_passkey(passkey, now) == Self::NONE)
+            .collect();
+        if allowed.is_empty() {
+            return Err(Error::RecoveryCoolDownActive);
+        }
+        Ok(allowed)
+    }
+
     fn in_force(self, now: DateTime<Utc>) -> Self {
         Self(self.0.filter(|&until| now < until))
     }

@@ -576,3 +576,126 @@ async fn ending_the_acting_session_passes_no_gate() {
         }
     }
 }
+
+async fn register_passkey_in_cool_down(
+    h: &Harness,
+    user: &doorman_core::storage::User,
+    wa: &mut common::ResidentAuthenticator,
+    cool_down_until: chrono::DateTime<chrono::Utc>,
+) -> StoredPasskey {
+    let session = session_in_cool_down_for(h, user, cool_down_until).await;
+    let (challenge_id, ccr) = h
+        .session_manager
+        .start_passkey_registration(&session)
+        .await
+        .expect("start registration");
+    let response = wa.do_registration(ccr);
+    let registered = h
+        .session_manager
+        .finish_passkey_registration(
+            &session,
+            challenge_id,
+            &response,
+            Some("in cool-down".into()),
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish registration");
+    h.sessions
+        .delete_session(session.id)
+        .await
+        .expect("drop registering session");
+    h.passkeys
+        .find_passkey_by_credential_id(&registered.credential_id)
+        .await
+        .expect("lookup")
+        .expect("registered passkey stored")
+}
+
+#[tokio::test]
+async fn a_passkey_in_recovery_cool_down_cannot_reauthenticate() {
+    let h = gated_harness();
+    let alice = sign_in(&h, "alice@example.com").await;
+    let current = alice.session.session.clone();
+    assert!(!current.is_in_recovery_cool_down());
+    let mut recovered_wa = authenticator();
+    let until = h.clock.now() + chrono::Duration::hours(1);
+    let recovered = register_passkey_in_cool_down(&h, &alice.user, &mut recovered_wa, until).await;
+
+    let (challenge_id, options) = h
+        .session_manager
+        .start_reauth(&current)
+        .await
+        .expect("reauth start");
+    assert!(
+        options
+            .public_key
+            .allow_credentials
+            .iter()
+            .all(|c| c.id.as_ref() != recovered.credential_id.as_slice()),
+        "the challenge names the passkey in cool-down"
+    );
+    assert!(
+        !options.public_key.allow_credentials.is_empty(),
+        "the challenge names the user's other passkey"
+    );
+
+    let assertion =
+        recovered_wa.do_scoped_authentication(scoped_to(options, &recovered.credential_id));
+    let refused = perform(
+        &h,
+        &current,
+        DestructiveAction::DeleteUser,
+        Some(ReauthProof {
+            challenge_id,
+            assertion,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(Error::Webauthn(_))),
+        "a passkey in cool-down cleared a destructive action: {refused:?}"
+    );
+    assert!(
+        h.users
+            .find_user_by_id(alice.user.id)
+            .await
+            .expect("lookup")
+            .is_some(),
+        "the user is untouched"
+    );
+}
+
+#[tokio::test]
+async fn reauth_start_is_refused_when_every_passkey_is_in_recovery_cool_down() {
+    let h = gated_harness();
+    let user = make_user(&h, "alice@example.com").await;
+    let mut wa = authenticator();
+    let until = h.clock.now() + chrono::Duration::hours(1);
+    register_passkey_in_cool_down(&h, &user, &mut wa, until).await;
+    let current = session_for(&h, &user).await;
+
+    let refused = h.session_manager.start_reauth(&current).await;
+    assert!(
+        matches!(refused, Err(Error::RecoveryCoolDownActive)),
+        "got: {refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_passkey_reauthenticates_once_its_recovery_cool_down_lapses() {
+    let h = gated_harness();
+    let user = make_user(&h, "alice@example.com").await;
+    let mut wa = authenticator();
+    let until = h.clock.now() + chrono::Duration::hours(1);
+    register_passkey_in_cool_down(&h, &user, &mut wa, until).await;
+    let current = session_for(&h, &user).await;
+
+    h.clock.advance(chrono::Duration::hours(1));
+    let proof = fresh_proof(&h, &current, &mut wa).await;
+    let performed = perform(&h, &current, DestructiveAction::DeleteUser, Some(proof)).await;
+    assert!(
+        matches!(performed, Ok(CurrentSession::Ended)),
+        "got: {performed:?}"
+    );
+}

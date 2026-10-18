@@ -268,6 +268,13 @@ impl PasskeyChallenges {
             tracing::warn!(outcome = "no_passkeys", "reauth start refused");
             return Err(Error::PasskeyNotFound);
         }
+        // webauthn-rs accepts a proof only from a passkey the challenge names, so leaving one out
+        // refuses it. A passkey's cool-down is fixed when it is registered, so one left in can't
+        // enter cool-down before the proof comes back.
+        let stored = RecoveryCoolDown::refuse_reauthentication(stored, self.clock.now())
+            .inspect_err(|_| {
+                tracing::info!(outcome = "recovery_cool_down", "reauth start refused")
+            })?;
         let passkeys = stored
             .iter()
             .map(|c| decode_passkey(&c.passkey))
