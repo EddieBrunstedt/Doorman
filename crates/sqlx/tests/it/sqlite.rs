@@ -2,7 +2,7 @@
 
 use doorman_sqlx::SqliteStorage;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sqlite_storage_conformance() {
     let storage = SqliteStorage::connect("sqlite::memory:")
         .await

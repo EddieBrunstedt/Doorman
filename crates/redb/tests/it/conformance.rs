@@ -1,6 +1,6 @@
 use doorman_redb::RedbStorage;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn redb_storage_conformance() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("conformance.redb");

@@ -7,7 +7,7 @@ use testcontainers_modules::testcontainers::ImageExt;
 use testcontainers_modules::testcontainers::core::Mount;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mariadb_storage_conformance() {
     // A tmpfs data directory cuts the server's first-boot initialisation from
     // about 25s to 6s.

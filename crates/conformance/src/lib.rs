@@ -46,41 +46,126 @@ fn user(id: UserId, email: &str) -> User {
 
 const RACERS: usize = 64;
 
+// One worker would run each racer to completion before the next, so a store
+// whose operations never await could never be raced.
+const MIN_WORKERS: usize = 2;
+
 pub async fn run(storage: &Storage) {
-    run_records(&storage.records).await;
-    run_expiring(&storage.expiring).await;
+    let mut checks = Checks::start();
+    record_checks(&mut checks, &storage.records).await;
+    expiring_checks(&mut checks, &storage.expiring).await;
+    checks.finish();
 }
 
 pub async fn run_records(stores: &RecordStores) {
-    users_round_trip(stores).await;
-    users_email_change(stores).await;
-    users_field_changes_compose(stores).await;
-    users_setters_refuse_missing_user(stores).await;
-    passkeys_cool_down_round_trip(stores).await;
-    passkey_field_changes_compose(stores).await;
-    passkey_writes_refuse_missing_passkey(stores).await;
-    passkeys_bulk_delete_for_user(stores).await;
+    let mut checks = Checks::start();
+    record_checks(&mut checks, stores).await;
+    checks.finish();
 }
 
 pub async fn run_expiring(stores: &ExpiringStores) {
-    email_link_single_use(stores).await;
-    email_link_email_change_payload(stores).await;
-    email_link_replaces_its_owners_link(stores).await;
-    email_link_purge_and_delete(stores).await;
-    sessions_crud_and_queries(stores).await;
-    sessions_purge_expired(stores).await;
-    session_touch_slides_deadline(stores).await;
-    session_touch_does_not_resurrect(stores).await;
-    session_touch_races_revoke(stores).await;
-    session_revoke_races_creation(stores).await;
-    passkey_registration_round_trip(stores).await;
-    passkey_registration_delete_for_user(stores).await;
-    passkey_authentication_single_use(stores).await;
-    single_use_under_concurrency(stores).await;
-    passkey_challenge_purge_expired(stores).await;
-    owner_indexes_track_removals(stores).await;
-    absent_lookups_return_none(stores).await;
-    inserts_refuse_duplicate_keys(stores).await;
+    let mut checks = Checks::start();
+    expiring_checks(&mut checks, stores).await;
+    checks.finish();
+}
+
+struct Checks {
+    run: usize,
+    failed: Vec<String>,
+}
+
+impl Checks {
+    fn start() -> Self {
+        let workers = tokio::runtime::Handle::current().metrics().num_workers();
+        assert!(
+            workers >= MIN_WORKERS,
+            "the conformance suite races concurrent callers and needs at least \
+             {MIN_WORKERS} runtime workers, got {workers}; run it under \
+             #[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+        );
+        Self {
+            run: 0,
+            failed: Vec::new(),
+        }
+    }
+
+    async fn run(&mut self, name: &str, check: impl Future<Output = ()> + Send + 'static) {
+        self.run += 1;
+        if let Err(err) = tokio::spawn(check).await {
+            let message = if err.is_panic() {
+                let payload = err.into_panic();
+                payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "panicked".to_string())
+            } else {
+                err.to_string()
+            };
+            self.failed
+                .push(format!("- {name}: {}", message.replace('\n', "\n    ")));
+        }
+    }
+
+    fn finish(self) {
+        if !self.failed.is_empty() {
+            panic!(
+                "{} of {} conformance checks failed:\n{}",
+                self.failed.len(),
+                self.run,
+                self.failed.join("\n"),
+            );
+        }
+    }
+}
+
+// Runs each check in its own task, in order, so a failing check reports and
+// the next one still runs.
+macro_rules! checks {
+    ($checks:expr, $stores:expr; $($check:ident),* $(,)?) => {
+        $(
+            let stores = $stores.clone();
+            $checks
+                .run(stringify!($check), async move { $check(&stores).await })
+                .await;
+        )*
+    };
+}
+
+async fn record_checks(checks: &mut Checks, stores: &RecordStores) {
+    checks!(checks, stores;
+        users_round_trip,
+        users_email_change,
+        users_field_changes_compose,
+        users_setters_refuse_missing_user,
+        passkeys_cool_down_round_trip,
+        passkey_field_changes_compose,
+        passkey_writes_refuse_missing_passkey,
+        passkeys_bulk_delete_for_user,
+    );
+}
+
+async fn expiring_checks(checks: &mut Checks, stores: &ExpiringStores) {
+    checks!(checks, stores;
+        email_link_single_use,
+        email_link_email_change_payload,
+        email_link_replaces_its_owners_link,
+        email_link_purge_and_delete,
+        sessions_crud_and_queries,
+        sessions_purge_expired,
+        session_touch_slides_deadline,
+        session_touch_does_not_resurrect,
+        session_touch_races_revoke,
+        session_revoke_races_creation,
+        passkey_registration_round_trip,
+        passkey_registration_delete_for_user,
+        passkey_authentication_single_use,
+        single_use_under_concurrency,
+        passkey_challenge_purge_expired,
+        owner_indexes_track_removals,
+        absent_lookups_return_none,
+        inserts_refuse_duplicate_keys,
+    );
 }
 
 async fn users_round_trip(stores: &RecordStores) {

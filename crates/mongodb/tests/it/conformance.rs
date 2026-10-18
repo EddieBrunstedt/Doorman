@@ -2,7 +2,7 @@ use doorman_mongodb::MongoDbStorage;
 use testcontainers_modules::mongo::Mongo;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mongodb_storage_conformance() {
     let node = Mongo::default()
         .start()

@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn postgres_storage_conformance() {
     let node = Postgres::default()
         .start()
