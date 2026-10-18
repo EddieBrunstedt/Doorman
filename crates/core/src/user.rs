@@ -84,12 +84,9 @@ impl UserManager {
         let user = self.records.find(session.user_id).await?;
         let url = self.link.issue(user.id, Some(normalized.clone())).await?;
 
-        self.mailer
-            .send(&normalized, |templates| {
-                templates.email_change_confirmation_email(&user, &normalized, &url)
-            })
-            .await?;
-
+        // Whoever holds the session may own the new address, and its mail server
+        // can take the link yet fail the send. So the old address hears of the
+        // change, and the audit records it, before the link leaves.
         self.notices
             .send(
                 &user,
@@ -105,6 +102,15 @@ impl UserManager {
                 AuditEventKind::EmailChangeRequested { user_id: user.id },
             )
             .await;
+
+        // The link is the whole flow, so a failed send fails the request. Unlike
+        // in signup and recovery, that reveals nothing: the request needs a
+        // session, and no user has the new address.
+        self.mailer
+            .send(&normalized, |templates| {
+                templates.email_change_confirmation_email(&user, &normalized, &url)
+            })
+            .await?;
         Ok(())
     }
 

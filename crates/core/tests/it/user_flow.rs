@@ -102,6 +102,50 @@ async fn email_change_happy_path() {
 }
 
 #[tokio::test]
+async fn the_old_address_hears_of_an_email_change_even_when_its_link_fails_to_send() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "old@example.com").await;
+    let session = session_for(&h, &user).await;
+    let mail_before = h.email.sent().len();
+    h.email.fail_after_successful_sends(mail_before + 1);
+
+    let err = h
+        .session_manager
+        .perform(
+            &session,
+            DestructiveAction::RequestEmailChange {
+                new_email: "new@example.com".into(),
+            },
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("a failed link send fails the request");
+    assert!(matches!(err, Error::Email(_)), "got {err:?}");
+
+    let sent = h.email.sent();
+    let delivered: Vec<_> = sent[mail_before..]
+        .iter()
+        .map(|e| (e.to.as_str(), e.subject.as_str()))
+        .collect();
+    assert_eq!(
+        delivered,
+        [("old@example.com", "Security notice: email change requested")],
+    );
+    let bounced = h.email.bounced();
+    assert_eq!(bounced.len(), 1);
+    assert_eq!(bounced[0].to, "new@example.com");
+    assert_eq!(bounced[0].subject, "Confirm your new email address");
+
+    assert!(
+        kinds(&h.audit.events())
+            .iter()
+            .any(|k| matches!(k, AuditEventKind::EmailChangeRequested { .. })),
+        "the request is audited before the link is sent",
+    );
+}
+
+#[tokio::test]
 async fn email_change_confirm_refuses_address_claimed_since_request() {
     let h = Harness::fresh();
     let user = provision_user(&h, "owner@example.com").await;
