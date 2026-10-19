@@ -1,6 +1,7 @@
 CREATE TABLE users (
     id BINARY(16) PRIMARY KEY,
-    email VARCHAR(255) UNIQUE,
+    -- Binary, so the column compares addresses exactly, as every other backend does.
+    email VARCHAR(255) COLLATE utf8mb4_bin UNIQUE,
     signed_up_at DATETIME(6),
     status VARCHAR(32) NOT NULL DEFAULT 'active',
     disabled_at DATETIME(6),

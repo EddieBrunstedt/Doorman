@@ -136,6 +136,7 @@ async fn record_checks(checks: &mut Checks, stores: &RecordStores) {
     checks!(checks, stores;
         users_round_trip,
         users_email_change,
+        users_email_matches_exactly,
         users_field_changes_compose,
         users_setters_refuse_missing_user,
         passkeys_cool_down_round_trip,
@@ -348,6 +349,41 @@ async fn users_email_change(stores: &RecordStores) {
         .set_user_email(id, "after-change@example.com", days(61))
         .await
         .expect("re-set own address");
+}
+
+// Core alone decides which addresses are the same; a backend that folds accents
+// or case would merge users core keeps apart.
+async fn users_email_matches_exactly(stores: &RecordStores) {
+    let users = &stores.users;
+    for (stored, other) in [
+        ("jos\u{e9}@example.com", "jose@example.com"),
+        ("ren\u{e9}@example.com", "ren\u{c9}@example.com"),
+        ("stra\u{df}e@example.com", "strasse@example.com"),
+    ] {
+        let first = user(UserId::new(), stored);
+        users.create_user(first.clone()).await.expect("create");
+        assert!(
+            users
+                .find_user_by_email(other)
+                .await
+                .expect("find other")
+                .is_none(),
+            "{other} matched {stored}",
+        );
+        let second = user(UserId::new(), other);
+        users
+            .create_user(second.clone())
+            .await
+            .unwrap_or_else(|e| panic!("{other} refused beside {stored}: {e}"));
+        assert_eq!(
+            users.find_user_by_email(other).await.expect("find other"),
+            Some(second),
+        );
+        assert_eq!(
+            users.find_user_by_email(stored).await.expect("find stored"),
+            Some(first),
+        );
+    }
 }
 
 async fn users_field_changes_compose(stores: &RecordStores) {
