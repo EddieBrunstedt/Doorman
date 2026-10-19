@@ -24,8 +24,9 @@ pub(crate) fn routes() -> Router<AuthState> {
 async fn logout(
     State(state): State<AuthState>,
     auth: AuthSession,
+    RequestContext(context): RequestContext,
 ) -> Result<Response, ErrorResponse> {
-    state.core.sessions.log_out(&auth.session).await?;
+    state.core.sessions.log_out(&auth.session, context).await?;
     no_content(&state, CurrentSession::Ended)
 }
 

@@ -10,6 +10,7 @@ use webauthn_rs::prelude::{
     CreationChallengeResponse, RegisterPublicKeyCredential, RequestChallengeResponse,
 };
 
+use crate::audit::Actor;
 use crate::context::CoreDeps;
 use crate::destructive::{CurrentSession, DestructiveAction, DestructiveActions};
 use crate::error::Result;
@@ -177,8 +178,8 @@ impl SessionManager {
     }
 
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id, session_id = %session.id))]
-    pub async fn log_out(&self, session: &ResolvedSession) -> Result<()> {
-        self.records.log_out(session).await
+    pub async fn log_out(&self, session: &ResolvedSession, context: SessionContext) -> Result<()> {
+        self.records.log_out(session, Actor::from(&context)).await
     }
 
     pub async fn start_passkey_registration(

@@ -330,14 +330,9 @@ impl PasskeyManager {
         &self,
         cleared: Cleared,
         credential_id: &[u8],
-        context: SessionContext,
     ) -> Result<()> {
-        self.remove_passkey_for(
-            cleared.session().user_id,
-            credential_id,
-            Actor::from(&context),
-        )
-        .await
+        self.remove_passkey_for(cleared.session().user_id, credential_id, cleared.actor())
+            .await
     }
 
     #[tracing::instrument(skip(self, session, credential_id, name, context), fields(user_id = %session.user_id))]

@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use chrono::Duration as ChronoDuration;
-use doorman_core::audit::AuditEventKind;
+use doorman_core::audit::{Actor, AuditEventKind};
 use doorman_core::clock::Clock;
 use doorman_core::destructive::{CurrentSession, DestructiveAction};
 use doorman_core::error::Error;
@@ -15,7 +15,7 @@ use doorman_core::storage::{
 use webauthn_rs::prelude::CreationChallengeResponse;
 
 use crate::common::{
-    Harness, RECOVERY_URL, SignedIn, authenticator, kinds, log_in, session_count,
+    Harness, RECOVERY_URL, SignedIn, authenticator, kinds, log_in, register_passkey, session_count,
     session_in_cool_down_for, sign_in, sign_in_from, token_from_email,
 };
 
@@ -100,7 +100,10 @@ async fn log_out_deletes_the_session_and_audits_it() {
     let alice = sign_in(&h, "alice@example.com").await;
     let session = &alice.session.session;
 
-    h.session_manager.log_out(session).await.expect("log out");
+    h.session_manager
+        .log_out(session, SessionContext::default())
+        .await
+        .expect("log out");
     assert!(h.sessions.is_empty());
 
     let resolved = h
@@ -117,7 +120,11 @@ async fn log_out_deletes_the_session_and_audits_it() {
         }),
     );
 
-    let err = h.session_manager.log_out(session).await.err();
+    let err = h
+        .session_manager
+        .log_out(session, SessionContext::default())
+        .await
+        .err();
     assert!(
         matches!(err, Some(Error::SessionNotFound)),
         "a session logs out once, got {err:?}"
@@ -135,7 +142,11 @@ impl SessionEnd {
 
     async fn apply(self, h: &Harness, session: &ResolvedSession) {
         match self {
-            Self::LoggedOut => h.session_manager.log_out(session).await.expect("log out"),
+            Self::LoggedOut => h
+                .session_manager
+                .log_out(session, SessionContext::default())
+                .await
+                .expect("log out"),
             Self::Expired => h.clock.advance(ChronoDuration::hours(2)),
         }
     }
@@ -471,6 +482,121 @@ async fn revoke_others_keeps_only_the_acting_session_audits_and_notifies() {
     assert_eq!(sent.len(), 1, "one bulk-revocation notice");
     assert_eq!(sent[0].subject, "Security notice: other sessions revoked");
     assert_eq!(sent[0].to, "alice@example.com");
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ActingRequest {
+    LogOut,
+    RevokeOwnSession,
+    RevokeOtherSession,
+    RevokeOtherSessions,
+    LogOutEverywhere,
+    LogInPastSessionCap,
+    DeleteUser,
+    RemovePasskey,
+    RequestEmailChange,
+}
+
+impl ActingRequest {
+    const ALL: [Self; 9] = [
+        Self::LogOut,
+        Self::RevokeOwnSession,
+        Self::RevokeOtherSession,
+        Self::RevokeOtherSessions,
+        Self::LogOutEverywhere,
+        Self::LogInPastSessionCap,
+        Self::DeleteUser,
+        Self::RemovePasskey,
+        Self::RequestEmailChange,
+    ];
+}
+
+#[tokio::test]
+async fn revocations_and_destructive_actions_audit_the_request_not_the_login() {
+    let login = SessionContext::new(Some("198.51.100.1".parse().expect("ip")), Some("login"));
+    let request = SessionContext::new(Some("203.0.113.9".parse().expect("ip")), Some("request"));
+    for acting in ActingRequest::ALL {
+        let h = Harness::builder()
+            .session_config(SessionConfig {
+                absolute_lifetime: Duration::from_secs(60 * 60),
+                max_sessions_per_user: NonZeroU32::new(2),
+                ..SessionConfig::default()
+            })
+            .build();
+        let mut alice = sign_in_from(&h, "alice@example.com", login.clone()).await;
+        h.clock.advance(ChronoDuration::seconds(1));
+        let other = log_in(
+            &h,
+            &mut alice.authenticator,
+            &alice.credential_id,
+            login.clone(),
+        )
+        .await;
+        let spare = register_passkey(&h, alice.user.id, &mut authenticator(), None).await;
+        h.clock.advance(ChronoDuration::seconds(1));
+        let current = &alice.session.session;
+        let audited_before = h.audit.len();
+
+        let perform = |action| {
+            h.session_manager
+                .perform(current, action, None, request.clone())
+        };
+        match acting {
+            ActingRequest::LogOut => h
+                .session_manager
+                .log_out(current, request.clone())
+                .await
+                .map(|()| CurrentSession::Ended),
+            ActingRequest::RevokeOwnSession => {
+                perform(DestructiveAction::RevokeSession { id: current.id }).await
+            }
+            ActingRequest::RevokeOtherSession => {
+                perform(DestructiveAction::RevokeSession {
+                    id: other.session.id,
+                })
+                .await
+            }
+            ActingRequest::RevokeOtherSessions => {
+                perform(DestructiveAction::RevokeOtherSessions).await
+            }
+            ActingRequest::LogOutEverywhere => perform(DestructiveAction::LogOutEverywhere).await,
+            ActingRequest::LogInPastSessionCap => {
+                log_in(
+                    &h,
+                    &mut alice.authenticator,
+                    &alice.credential_id,
+                    request.clone(),
+                )
+                .await;
+                Ok(CurrentSession::Kept)
+            }
+            ActingRequest::DeleteUser => perform(DestructiveAction::DeleteUser).await,
+            ActingRequest::RemovePasskey => {
+                perform(DestructiveAction::RemovePasskey {
+                    credential_id: spare.credential_id.clone(),
+                })
+                .await
+            }
+            ActingRequest::RequestEmailChange => {
+                perform(DestructiveAction::RequestEmailChange {
+                    new_email: "alice@example.org".into(),
+                })
+                .await
+            }
+        }
+        .unwrap_or_else(|error| panic!("{acting:?} failed: {error:?}"));
+
+        let audited = &h.audit.events()[audited_before..];
+        assert!(!audited.is_empty(), "{acting:?} audits nothing");
+        for event in audited {
+            assert_eq!(
+                event.actor,
+                Actor::from(&request),
+                "{acting:?} audits {:?} as the wrong actor",
+                event.kind,
+            );
+        }
+    }
 }
 
 #[tokio::test]

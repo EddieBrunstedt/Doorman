@@ -39,14 +39,20 @@ pub enum CurrentSession {
 }
 
 // Only the gate builds one, and every destructive action's implementation takes one, so none of
-// them can run without passing it.
+// them can run without passing it. It names the request that passed the gate as the actor, so no
+// action can audit the session's login in its place.
 pub(crate) struct Cleared {
     session: LiveSession,
+    actor: Actor,
 }
 
 impl Cleared {
     pub(crate) fn session(&self) -> &LiveSession {
         &self.session
+    }
+
+    pub(crate) fn actor(&self) -> Actor {
+        self.actor.clone()
     }
 }
 
@@ -92,7 +98,7 @@ impl DestructiveActions {
         // Revoking the acting session is logging out, which can't lock anyone out, so it passes
         // no gate.
         if action == (DestructiveAction::RevokeSession { id: session.id }) {
-            self.records.log_out(session).await?;
+            self.records.log_out(session, Actor::from(&context)).await?;
             return Ok(CurrentSession::Ended);
         }
         let cleared = self
@@ -100,19 +106,15 @@ impl DestructiveActions {
             .await?;
         match action {
             DestructiveAction::DeleteUser => {
-                self.user.delete_user(cleared, context).await?;
+                self.user.delete_user(cleared).await?;
                 Ok(CurrentSession::Ended)
             }
             DestructiveAction::RequestEmailChange { new_email } => {
-                self.user
-                    .request_email_change(cleared, &new_email, context)
-                    .await?;
+                self.user.request_email_change(cleared, &new_email).await?;
                 Ok(CurrentSession::Kept)
             }
             DestructiveAction::RemovePasskey { credential_id } => {
-                self.passkey
-                    .remove_passkey(cleared, &credential_id, context)
-                    .await?;
+                self.passkey.remove_passkey(cleared, &credential_id).await?;
                 Ok(CurrentSession::Kept)
             }
             DestructiveAction::RevokeSession { id } => {
@@ -146,18 +148,23 @@ impl DestructiveActions {
             };
             self.reauth.verify(&session, proof, context).await?;
         }
-        Ok(Cleared { session })
+        Ok(Cleared {
+            session,
+            actor: Actor::from(context),
+        })
     }
 
     async fn log_out_everywhere(&self, cleared: Cleared) -> Result<()> {
         self.revoke_others(&cleared).await?;
-        self.records.log_out(cleared.session()).await
+        self.records
+            .log_out(cleared.session(), cleared.actor())
+            .await
     }
 
     async fn revoke_other(&self, cleared: Cleared, target: SessionId) -> Result<()> {
         let session = cleared.session();
         self.records
-            .revoke_owned(session.user_id, target, Actor::of_session(session))
+            .revoke_owned(session.user_id, target, cleared.actor())
             .await?;
         self.notices
             .send_to(session.user_id, SecurityNotice::OtherSessionRevoked)
@@ -167,10 +174,7 @@ impl DestructiveActions {
 
     async fn revoke_others(&self, cleared: &Cleared) -> Result<()> {
         let session = cleared.session();
-        let count = self
-            .records
-            .revoke_others(session, Actor::of_session(session))
-            .await?;
+        let count = self.records.revoke_others(session, cleared.actor()).await?;
         if count > 0 {
             self.notices
                 .send_to(session.user_id, SecurityNotice::OtherSessionsRevoked)

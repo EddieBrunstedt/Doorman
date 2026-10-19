@@ -361,3 +361,31 @@ async fn signup_session_and_audit_record_the_peer_despite_spoofing() {
         );
     }
 }
+
+#[tokio::test]
+async fn log_out_audits_the_request_not_the_login() {
+    let audit = Arc::new(InMemoryAuditSink::new());
+    let app = TestApp::with(|b| b.audit(audit.clone()), |b| b);
+    let alice = app.session_for("alice@example.com").await;
+
+    let reply = app
+        .post("/auth/logout")
+        .bearer(&alice.token)
+        .header("user-agent", "logout agent")
+        .send()
+        .await;
+
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let revoked = audit
+        .events()
+        .into_iter()
+        .find(|event| matches!(event.kind, AuditEventKind::SessionRevoked { .. }))
+        .expect("log out audited");
+    assert_eq!(
+        revoked.actor,
+        Actor::Subject {
+            ip: Some(PEER.to_owned()),
+            user_agent: Some("logout agent".to_owned()),
+        },
+    );
+}

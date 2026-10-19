@@ -85,7 +85,8 @@ impl SessionRecords {
         let now = self.clock.now();
         let cool_down = RecoveryCoolDown::of_passkey(passkey, now);
         if let Some(max) = self.config.max_sessions_per_user {
-            self.enforce_session_cap(user_id, max.get(), cool_down, now)
+            // The login that pushes a session out is the one that revokes it.
+            self.enforce_session_cap(user_id, max.get(), cool_down, Actor::from(context), now)
                 .await?;
         }
 
@@ -126,6 +127,7 @@ impl SessionRecords {
         user_id: UserId,
         max: u32,
         cool_down: RecoveryCoolDown,
+        actor: Actor,
         now: DateTime<Utc>,
     ) -> Result<()> {
         let active = self.list_summaries_for_user(user_id).await?;
@@ -139,8 +141,7 @@ impl SessionRecords {
         let mut evictable = cool_down.evictable_by(active, now);
         evictable.sort_by_key(|s| s.created_at);
         for session in evictable.into_iter().take(evict) {
-            self.revoke_session(&session, Actor::of_session(&session))
-                .await?;
+            self.revoke_session(&session, actor.clone()).await?;
         }
         Ok(())
     }
@@ -257,9 +258,8 @@ impl SessionRecords {
         Ok(count)
     }
 
-    pub(crate) async fn log_out(&self, session: &ResolvedSession) -> Result<()> {
-        self.revoke_owned(session.user_id, session.id, Actor::of_session(session))
-            .await
+    pub(crate) async fn log_out(&self, session: &ResolvedSession, actor: Actor) -> Result<()> {
+        self.revoke_owned(session.user_id, session.id, actor).await
     }
 
     pub(crate) async fn revoke_owned(

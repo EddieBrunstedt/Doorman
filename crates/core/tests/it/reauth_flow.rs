@@ -515,7 +515,7 @@ async fn ending_the_acting_session_passes_no_gate() {
             let ended = match way {
                 EndActingSession::LogOut => h
                     .session_manager
-                    .log_out(&current)
+                    .log_out(&current, SessionContext::default())
                     .await
                     .map(|()| CurrentSession::Ended),
                 EndActingSession::RevokeIt => {

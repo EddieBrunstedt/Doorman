@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::session::SessionContext;
-use crate::storage::{SessionId, SessionSummary, UserId};
+use crate::storage::{SessionId, UserId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEvent {
@@ -26,15 +26,6 @@ pub enum Actor {
         user_agent: Option<String>,
     },
     Operator(OperatorActor),
-}
-
-impl Actor {
-    pub(crate) fn of_session(session: &SessionSummary) -> Self {
-        Self::Subject {
-            ip: session.ip.clone(),
-            user_agent: session.user_agent.clone(),
-        }
-    }
 }
 
 impl From<&SessionContext> for Actor {

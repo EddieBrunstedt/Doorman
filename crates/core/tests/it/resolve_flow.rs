@@ -117,7 +117,10 @@ async fn a_revocation_reaches_another_process_at_once() {
         .await
         .expect("resolve")
         .expect("a live session");
-    h.session_manager.log_out(&session).await.expect("log out");
+    h.session_manager
+        .log_out(&session, SessionContext::default())
+        .await
+        .expect("log out");
     let resolved = other.sessions.resolve(&token).await.expect("resolve");
     assert!(resolved.is_none(), "got {resolved:?}");
 }

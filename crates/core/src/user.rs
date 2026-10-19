@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::assembly::AssemblyError;
-use crate::audit::{Actor, AuditDispatch, AuditEventKind};
+use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
 use crate::email::{EmailAddress, Mailer};
@@ -70,7 +70,6 @@ impl UserManager {
         &self,
         cleared: Cleared,
         new_email: &str,
-        context: SessionContext,
     ) -> Result<()> {
         let session = cleared.session();
         let address = EmailAddress::parse(new_email)?;
@@ -97,7 +96,7 @@ impl UserManager {
 
         self.audit
             .emit(
-                &context,
+                cleared.actor(),
                 AuditEventKind::EmailChangeRequested { user_id: user.id },
             )
             .await;
@@ -142,13 +141,9 @@ impl UserManager {
         })
     }
 
-    pub(crate) async fn delete_user(
-        &self,
-        cleared: Cleared,
-        context: SessionContext,
-    ) -> Result<()> {
+    pub(crate) async fn delete_user(&self, cleared: Cleared) -> Result<()> {
         self.records
-            .delete(cleared.session().user_id, Actor::from(&context))
+            .delete(cleared.session().user_id, cleared.actor())
             .await
     }
 }
