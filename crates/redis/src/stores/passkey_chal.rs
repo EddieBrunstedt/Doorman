@@ -62,17 +62,15 @@ impl PasskeyChallengeStore for RedisPasskeyChallengeStore {
 
     async fn delete_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
         let keys = self.client.keys();
-        let user_key = keys.user_pkregs(user_id);
         let mut conn = self.client.conn();
-
-        let members = client::smembers(&mut conn, &user_key).await?;
-        if members.is_empty() {
-            return Ok(0);
-        }
-        let reg_keys: Vec<String> = members.iter().map(|m| keys.pkreg_key_for(m)).collect();
-        let removed = client::del(&mut conn, &reg_keys).await?;
-        client::del(&mut conn, &[user_key]).await?;
-        Ok(removed)
+        stores::delete_indexed::<StoredPasskeyRegistration>(
+            &mut conn,
+            keys,
+            &keys.user_pkregs(user_id),
+            |m| keys.pkreg_key_for(m),
+            None,
+        )
+        .await
     }
 
     async fn list_registrations_for_user(

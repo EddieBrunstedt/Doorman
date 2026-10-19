@@ -79,6 +79,39 @@ pub(crate) async fn list_indexed<T: IndexedRow>(
     Ok(out)
 }
 
+pub(crate) async fn delete_indexed<T: IndexedRow>(
+    conn: &mut ConnectionManager,
+    keys: &KeySchema,
+    set_key: &str,
+    row_key: impl Fn(&str) -> String,
+    except: Option<&str>,
+) -> StorageResult<u64> {
+    let mut members = client::smembers(conn, set_key).await?;
+    members.retain(|m| Some(m.as_str()) != except);
+    if members.is_empty() {
+        return Ok(0);
+    }
+    let row_keys: Vec<String> = members.iter().map(|m| row_key(m)).collect();
+    let rows: Vec<Option<T>> = client::mget_json(conn, &row_keys).await?;
+    let companions: Vec<String> = rows
+        .iter()
+        .flatten()
+        .filter_map(|row| row.companion_key(keys))
+        .collect();
+
+    let mut pipe = redis::pipe();
+    pipe.atomic();
+    pipe.cmd("DEL").arg(&row_keys);
+    if !companions.is_empty() {
+        pipe.cmd("DEL").arg(&companions).ignore();
+    }
+    // Only the members read above leave the set: a row inserted since keeps
+    // its member, so a later delete or list still finds it.
+    pipe.cmd("SREM").arg(set_key).arg(&members).ignore();
+    let (removed,): (u64,) = pipe.query_async(conn).await.map_err(StorageError::new)?;
+    Ok(removed)
+}
+
 pub(crate) trait IndexedRow: DeserializeOwned {
     fn expires_at(&self) -> DateTime<Utc>;
 

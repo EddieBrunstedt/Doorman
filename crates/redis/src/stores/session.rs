@@ -140,39 +140,16 @@ impl SessionStore for RedisSessionStore {
         except: Option<SessionId>,
     ) -> StorageResult<u64> {
         let keys = self.client.keys();
-        let user_key = keys.user_sessions(user_id);
         let except = except.map(|id| id.0.to_string());
         let mut conn = self.client.conn();
-
-        let mut members = client::smembers(&mut conn, &user_key).await?;
-        members.retain(|m| Some(m) != except.as_ref());
-        if members.is_empty() {
-            return Ok(0);
-        }
-        let session_keys: Vec<String> = members.iter().map(|m| keys.session_key_for(m)).collect();
-        let rows: Vec<Option<Session>> = client::mget_json(&mut conn, &session_keys).await?;
-
-        let mut del_keys = Vec::new();
-        let mut removed = 0u64;
-        for (session_key, row) in session_keys.into_iter().zip(rows) {
-            if let Some(session) = row {
-                del_keys.push(session_key);
-                del_keys.push(keys.session_hash_index(&session.token_hash));
-                removed += 1;
-            }
-        }
-
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        if !del_keys.is_empty() {
-            pipe.cmd("DEL").arg(&del_keys).ignore();
-        }
-        pipe.cmd("SREM").arg(&user_key).arg(&members).ignore();
-        let _: () = pipe
-            .query_async(&mut conn)
-            .await
-            .map_err(StorageError::new)?;
-        Ok(removed)
+        stores::delete_indexed::<Session>(
+            &mut conn,
+            keys,
+            &keys.user_sessions(user_id),
+            |m| keys.session_key_for(m),
+            except.as_deref(),
+        )
+        .await
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {

@@ -161,6 +161,7 @@ async fn expiring_checks(checks: &mut Checks, stores: &ExpiringStores) {
         session_revoke_races_creation,
         passkey_registration_round_trip,
         passkey_registration_delete_for_user,
+        passkey_registration_delete_races_creation,
         passkey_authentication_single_use,
         single_use_under_concurrency,
         passkey_challenge_purge_expired,
@@ -1686,6 +1687,76 @@ async fn passkey_registration_delete_for_user(stores: &ExpiringStores) {
         .await
         .expect("second delete");
     assert_eq!(dropped_again, 0);
+}
+
+async fn passkey_registration_delete_races_creation(stores: &ExpiringStores) {
+    let now = present();
+    let user_id = UserId::new();
+
+    let registration = || StoredPasskeyRegistration {
+        id: PasskeyChallengeId::new(),
+        purpose: RegistrationPurpose::AddPasskey,
+        user_id,
+        state: b"opaque-state".to_vec(),
+        created_at: now,
+        expires_at: days(1),
+        recovery_cool_down_until: None,
+    };
+    let put = |registration: StoredPasskeyRegistration| {
+        let challenges = stores.passkey_challenges.clone();
+        tokio::spawn(async move {
+            challenges
+                .put_registration(registration)
+                .await
+                .expect("put registration");
+        })
+    };
+
+    let mut put_ids = Vec::new();
+    for _ in 0..REVOKE_ROUNDS {
+        let batch: Vec<StoredPasskeyRegistration> = (0..RACERS).map(|_| registration()).collect();
+        let (before, after) = batch.split_at(RACERS / 2);
+        let mut tasks: Vec<_> = before.iter().cloned().map(put).collect();
+        let challenges = stores.passkey_challenges.clone();
+        tasks.push(tokio::spawn(async move {
+            challenges
+                .delete_registrations_for_user(user_id)
+                .await
+                .expect("delete registrations");
+        }));
+        tasks.extend(after.iter().cloned().map(put));
+        for task in tasks {
+            task.await.expect("race task");
+        }
+        put_ids.extend(batch.iter().map(|r| r.id));
+    }
+
+    let listed = stores
+        .passkey_challenges
+        .list_registrations_for_user(user_id)
+        .await
+        .expect("list")
+        .len();
+    let removed = stores
+        .passkey_challenges
+        .delete_registrations_for_user(user_id)
+        .await
+        .expect("second delete");
+    assert_eq!(
+        removed, listed as u64,
+        "the second delete removes every listed survivor",
+    );
+    for id in put_ids {
+        assert!(
+            stores
+                .passkey_challenges
+                .take_registration(id)
+                .await
+                .expect("take after second delete")
+                .is_none(),
+            "no registration survives the second delete",
+        );
+    }
 }
 
 async fn passkey_authentication_single_use(stores: &ExpiringStores) {
