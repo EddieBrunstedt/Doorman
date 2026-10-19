@@ -385,10 +385,7 @@ async fn rate_limit_per_ip_blocks_after_budget() {
         })
         .build();
 
-    let ctx = SessionContext {
-        ip: Some("9.9.9.9".into()),
-        user_agent: None,
-    };
+    let ctx = SessionContext::new(Some("9.9.9.9".parse().expect("ip")), None);
     h.signup
         .request_signup("a@example.com", None, ctx.clone())
         .await
@@ -428,10 +425,7 @@ async fn rate_limit_per_identifier_blocks_across_ips() {
             .request_signup(
                 "target@example.com",
                 None,
-                SessionContext {
-                    ip: Some(ip.into()),
-                    user_agent: None,
-                },
+                SessionContext::new(Some(ip.parse().expect("ip")), None),
             )
             .await
             .expect("within identifier budget");
@@ -442,10 +436,7 @@ async fn rate_limit_per_identifier_blocks_across_ips() {
         .request_signup(
             "target@example.com",
             None,
-            SessionContext {
-                ip: Some("3.3.3.3".into()),
-                user_agent: None,
-            },
+            SessionContext::new(Some("3.3.3.3".parse().expect("ip")), None),
         )
         .await
         .expect_err("identifier limited");
@@ -727,10 +718,7 @@ async fn denied_attempt_still_spends_rate_limit_budget() {
         })
         .build();
 
-    let ctx = SessionContext {
-        ip: Some("7.7.7.7".into()),
-        user_agent: None,
-    };
+    let ctx = SessionContext::new(Some("7.7.7.7".parse().expect("ip")), None);
 
     let first = h
         .signup

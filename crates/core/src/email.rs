@@ -17,6 +17,9 @@ use crate::error::EmailError;
 use crate::error::{EmailResult, Error, Result};
 use crate::storage::User;
 
+// The longest address SMTP can deliver to (RFC 5321's 256-byte path, less its angle brackets).
+pub const MAX_EMAIL_ADDRESS_LEN: usize = 254;
+
 // Only `parse` builds one, so storage never sees an address that skipped it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EmailAddress(String);
@@ -24,7 +27,11 @@ pub(crate) struct EmailAddress(String);
 impl EmailAddress {
     pub(crate) fn parse(input: &str) -> Result<Self> {
         let address = input.trim().to_ascii_lowercase();
-        if address.is_empty() || !address.contains('@') || address.chars().any(char::is_control) {
+        if address.is_empty()
+            || address.len() > MAX_EMAIL_ADDRESS_LEN
+            || !address.contains('@')
+            || address.chars().any(char::is_control)
+        {
             return Err(Error::InvalidEmail);
         }
         Ok(Self(address))
@@ -421,6 +428,24 @@ mod tests {
         assert!(EmailAddress::parse("").is_err());
         assert!(EmailAddress::parse("   ").is_err());
         assert!(EmailAddress::parse("a@b").is_ok());
+    }
+
+    #[test]
+    fn email_address_rejects_more_than_the_limit() {
+        let local = |len| "\u{e9}".repeat(len / 2) + &"a".repeat(len % 2);
+        let at_limit = local(MAX_EMAIL_ADDRESS_LEN - "@example.com".len()) + "@example.com";
+        assert_eq!(at_limit.len(), MAX_EMAIL_ADDRESS_LEN);
+        assert_eq!(
+            EmailAddress::parse(&at_limit)
+                .expect("at the limit")
+                .as_str(),
+            at_limit
+        );
+        let over_limit = format!("a{at_limit}");
+        assert!(matches!(
+            EmailAddress::parse(&over_limit),
+            Err(Error::InvalidEmail)
+        ));
     }
 
     #[test]

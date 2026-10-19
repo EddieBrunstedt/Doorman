@@ -30,6 +30,33 @@ use crate::storage::{
 };
 use crate::user_records::UserRecords;
 
+pub const MAX_PASSKEY_NAME_LEN: usize = 255;
+
+// Only `parse` builds one, so storage never sees a name that skipped it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PasskeyName(String);
+
+impl PasskeyName {
+    pub(crate) fn parse(input: Option<&str>) -> Result<Option<Self>> {
+        let Some(name) = input.map(str::trim).filter(|name| !name.is_empty()) else {
+            return Ok(None);
+        };
+        // Security notices quote the name, so a control character could forge lines in one.
+        if name.len() > MAX_PASSKEY_NAME_LEN || name.chars().any(char::is_control) {
+            return Err(Error::InvalidPasskeyName);
+        }
+        Ok(Some(Self(name.to_owned())))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn into_string(self) -> String {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct PasskeyRateLimits {
     pub authenticate_start_per_ip: Option<RateLimitPolicy>,
@@ -211,7 +238,7 @@ impl PasskeyManager {
             self.config.rate_limits.authenticate_start_per_ip,
             "passkey/authenticate/start",
             "ip",
-            context.ip.as_deref(),
+            context.ip(),
         )
         .await?;
 
@@ -238,7 +265,7 @@ impl PasskeyManager {
             self.config.rate_limits.authenticate_finish_per_ip,
             "passkey/authenticate/finish",
             "ip",
-            context.ip.as_deref(),
+            context.ip(),
         )
         .await?;
         enforce_rate_limit(
@@ -318,13 +345,14 @@ impl PasskeyManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<PasskeySummary> {
+        let name = PasskeyName::parse(name.as_deref())?;
         let user_id = session.user_id;
         let mut passkey =
             find_owned_passkey(self.passkeys.as_ref(), user_id, credential_id).await?;
         self.passkeys
-            .set_passkey_name(credential_id, name.as_deref())
+            .set_passkey_name(credential_id, name.as_ref().map(PasskeyName::as_str))
             .await?;
-        passkey.name = name;
+        passkey.name = name.map(PasskeyName::into_string);
         self.audit
             .emit(&context, AuditEventKind::PasskeyRenamed { user_id })
             .await;

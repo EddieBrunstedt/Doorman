@@ -329,10 +329,7 @@ async fn rate_limit_per_ip_blocks_after_budget() {
     let _ = provision_user(&h, "b@example.com").await;
     let _ = provision_user(&h, "c@example.com").await;
 
-    let ctx = SessionContext {
-        ip: Some("9.9.9.9".into()),
-        user_agent: None,
-    };
+    let ctx = SessionContext::new(Some("9.9.9.9".parse().expect("ip")), None);
     h.recovery
         .request_recovery("a@example.com", ctx.clone())
         .await

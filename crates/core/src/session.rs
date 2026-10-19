@@ -1,4 +1,5 @@
 use std::fmt;
+use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::ops::Deref;
 use std::time::Duration;
@@ -66,8 +67,35 @@ impl Default for SessionConfig {
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionContext {
-    pub ip: Option<String>,
-    pub user_agent: Option<String>,
+    ip: Option<String>,
+    user_agent: Option<String>,
+}
+
+impl SessionContext {
+    pub const MAX_USER_AGENT_LEN: usize = 1024;
+
+    pub fn new(ip: Option<IpAddr>, user_agent: Option<&str>) -> Self {
+        Self {
+            ip: ip.map(|ip| ip.to_canonical().to_string()),
+            user_agent: user_agent.and_then(bound_user_agent),
+        }
+    }
+
+    pub fn ip(&self) -> Option<&str> {
+        self.ip.as_deref()
+    }
+
+    pub fn user_agent(&self) -> Option<&str> {
+        self.user_agent.as_deref()
+    }
+}
+
+// A user agent only describes a session, so one that would not fit is cut down rather than
+// refusing the login.
+fn bound_user_agent(raw: &str) -> Option<String> {
+    let mut user_agent: String = raw.chars().filter(|c| !c.is_control()).collect();
+    user_agent.truncate(user_agent.floor_char_boundary(SessionContext::MAX_USER_AGENT_LEN));
+    (!user_agent.is_empty()).then_some(user_agent)
 }
 
 // Only core builds one, so a method that takes it acts on a session core resolved or issued, with
@@ -247,6 +275,19 @@ impl From<&Session> for SessionSummary {
 mod tests {
     use super::*;
     use crate::storage::{SessionId, UserId};
+
+    #[test]
+    fn session_context_bounds_the_user_agent_and_canonicalizes_the_ip() {
+        let mapped: IpAddr = "::ffff:192.0.2.1".parse().expect("ip");
+        let fits = "u".repeat(SessionContext::MAX_USER_AGENT_LEN - 1);
+        let context = SessionContext::new(Some(mapped), Some(&format!("{fits}\u{0}\u{e9}tail")));
+        assert_eq!(context.ip(), Some("192.0.2.1"));
+        assert_eq!(context.user_agent(), Some(fits.as_str()));
+
+        let blank = SessionContext::new(None, Some("\r\n"));
+        assert_eq!(blank.ip(), None);
+        assert_eq!(blank.user_agent(), None);
+    }
 
     #[test]
     fn default_config_builds() {

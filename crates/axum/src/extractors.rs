@@ -106,15 +106,7 @@ impl<S: Send + Sync> FromRequestParts<S> for RequestContext {
                         .to_owned(),
                 ))
             })?;
-        let user_agent = parts
-            .headers
-            .get(USER_AGENT)
-            .and_then(|h| h.to_str().ok())
-            .map(str::to_owned)
-            .filter(|s| !s.is_empty());
-        Ok(RequestContext(SessionContext {
-            ip: Some(ip.to_canonical().to_string()),
-            user_agent,
-        }))
+        let user_agent = parts.headers.get(USER_AGENT).and_then(|h| h.to_str().ok());
+        Ok(RequestContext(SessionContext::new(Some(ip), user_agent)))
     }
 }

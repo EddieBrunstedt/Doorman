@@ -8,7 +8,9 @@ use crate::challenge::{PasskeyChallenges, RedeemedRegistration};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result};
-use crate::passkey::{PasskeyConfig, PasskeyMetadata, StartedRegistration, encode_passkey};
+use crate::passkey::{
+    PasskeyConfig, PasskeyMetadata, PasskeyName, StartedRegistration, encode_passkey,
+};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::SessionContext;
 use crate::session_records::LiveSession;
@@ -155,6 +157,8 @@ impl PasskeyRegistrations {
         context: &SessionContext,
         finish: RegistrationFinish<'_>,
     ) -> Result<RegisteredPasskey> {
+        // Parsed before the challenge is redeemed, so a refused name costs no ceremony.
+        let name = PasskeyName::parse(name.as_deref())?;
         let purpose = finish.purpose();
         let redeemed = self
             .challenges
@@ -218,7 +222,7 @@ impl PasskeyRegistrations {
         &self,
         registration: &RedeemedRegistration,
         response: &RegisterPublicKeyCredential,
-        name: Option<String>,
+        name: Option<PasskeyName>,
         cool_down: RecoveryCoolDown,
     ) -> Result<StoredPasskey> {
         let user_id = registration.user.id;
@@ -236,7 +240,7 @@ impl PasskeyRegistrations {
             credential_id: passkey.cred_id().to_vec(),
             user_id,
             passkey: encode_passkey(&passkey)?,
-            name,
+            name: name.map(PasskeyName::into_string),
             created_at: self.clock.now(),
             last_used_at: None,
             aaguid: metadata.aaguid,

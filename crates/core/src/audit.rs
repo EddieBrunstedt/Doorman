@@ -40,8 +40,8 @@ impl Actor {
 impl From<&SessionContext> for Actor {
     fn from(context: &SessionContext) -> Self {
         Self::Subject {
-            ip: context.ip.clone(),
-            user_agent: context.user_agent.clone(),
+            ip: context.ip().map(str::to_owned),
+            user_agent: context.user_agent().map(str::to_owned),
         }
     }
 }

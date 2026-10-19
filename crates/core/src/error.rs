@@ -24,6 +24,9 @@ pub enum Error {
     #[error("invalid email address")]
     InvalidEmail,
 
+    #[error("invalid passkey name")]
+    InvalidPasskeyName,
+
     #[error("email address is already in use by another user")]
     EmailAlreadyInUse,
 

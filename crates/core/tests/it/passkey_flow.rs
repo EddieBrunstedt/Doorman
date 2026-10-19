@@ -8,7 +8,7 @@ use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::error::Error;
 use doorman_core::memory::InMemoryRateLimiter;
-use doorman_core::passkey::{PasskeyConfig, PasskeyRateLimits};
+use doorman_core::passkey::{MAX_PASSKEY_NAME_LEN, PasskeyConfig, PasskeyRateLimits};
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{
@@ -89,10 +89,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
         .finish_authentication(
             auth_challenge,
             &assertion,
-            SessionContext {
-                ip: Some("1.2.3.4".into()),
-                user_agent: Some("ua".into()),
-            },
+            SessionContext::new(Some("1.2.3.4".parse().expect("ip")), Some("ua")),
         )
         .await
         .expect("finish_authentication");
@@ -1195,6 +1192,90 @@ async fn rename_passkey_clears_name_with_none() {
 }
 
 #[tokio::test]
+async fn a_refused_passkey_name_leaves_the_registration_challenge_usable() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "naming@example.com").await;
+    let mut wa = authenticator();
+    let session = session_for(&h, &user).await;
+    let (challenge_id, ccr) = h
+        .session_manager
+        .start_passkey_registration(&session)
+        .await
+        .expect("start_registration");
+    let response = wa.do_registration(ccr);
+    let finish = |name: &str| {
+        h.session_manager.finish_passkey_registration(
+            &session,
+            challenge_id,
+            &response,
+            Some(name.to_owned()),
+            SessionContext::default(),
+        )
+    };
+
+    for name in [
+        "n".repeat(MAX_PASSKEY_NAME_LEN + 1),
+        "nul\u{0}name".to_owned(),
+        "line\nbreak".to_owned(),
+    ] {
+        let err = finish(&name).await.expect_err("name refused");
+        assert!(
+            matches!(err, Error::InvalidPasskeyName),
+            "{name:?}: {err:?}"
+        );
+    }
+    assert_eq!(passkey_count(&h, user.id).await, 0);
+
+    let passkey = finish("  Work laptop  ")
+        .await
+        .expect("a refused name redeems no challenge");
+    assert_eq!(passkey.name.as_deref(), Some("Work laptop"));
+}
+
+#[tokio::test]
+async fn rename_passkey_trims_the_name_and_refuses_an_invalid_one() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "trimmer@example.com").await;
+    let mut wa = authenticator();
+    let passkey = register_passkey(&h, user.id, &mut wa, Some("labelled")).await;
+    let session = session_for(&h, &user).await;
+    let rename = |name: &str| {
+        h.session_manager.rename_passkey(
+            &session,
+            &passkey.credential_id,
+            Some(name.to_owned()),
+            SessionContext::default(),
+        )
+    };
+    let stored_name = || async {
+        h.passkeys
+            .find_passkey_by_credential_id(&passkey.credential_id)
+            .await
+            .expect("find passkey")
+            .expect("passkey persisted")
+            .name
+    };
+
+    let at_limit = "\u{e9}".repeat(MAX_PASSKEY_NAME_LEN / 2) + "n";
+    assert_eq!(at_limit.len(), MAX_PASSKEY_NAME_LEN);
+    let renamed = rename(&at_limit).await.expect("a name at the limit");
+    assert_eq!(renamed.name.as_deref(), Some(at_limit.as_str()));
+
+    for name in [format!("\u{e9}{at_limit}"), "bell\u{7}".to_owned()] {
+        let err = rename(&name).await.expect_err("name refused");
+        assert!(
+            matches!(err, Error::InvalidPasskeyName),
+            "{name:?}: {err:?}"
+        );
+        assert_eq!(stored_name().await.as_deref(), Some(at_limit.as_str()));
+    }
+
+    let cleared = rename("   ").await.expect("a blank name");
+    assert_eq!(cleared.name, None, "a blank name clears it");
+    assert_eq!(stored_name().await, None);
+}
+
+#[tokio::test]
 async fn rename_passkey_refuses_other_users_passkey() {
     let h = Harness::fresh();
     let alice = make_user(&h, "a-rename@example.com").await;
@@ -1478,10 +1559,7 @@ async fn authenticate_start_is_rate_limited_per_ip() {
         })
         .build();
 
-    let from = |ip: &str| SessionContext {
-        ip: Some(ip.to_string()),
-        user_agent: None,
-    };
+    let from = |ip: &str| SessionContext::new(Some(ip.parse().expect("ip")), None);
 
     h.passkey
         .start_authentication(from("1.2.3.4"))

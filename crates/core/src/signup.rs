@@ -153,7 +153,7 @@ impl SignupManager {
                     self.config.rate_limits.request_per_ip,
                     "signup/request",
                     "ip",
-                    context.ip.as_deref(),
+                    context.ip(),
                 ),
                 (
                     self.config.rate_limits.request_per_identifier,

@@ -63,10 +63,7 @@ impl BulkRevocation {
 #[tokio::test]
 async fn a_login_issues_a_session_bound_to_its_token() {
     let h = Harness::fresh();
-    let context = SessionContext {
-        ip: Some("1.2.3.4".into()),
-        user_agent: Some("test-agent".into()),
-    };
+    let context = SessionContext::new(Some("1.2.3.4".parse().expect("ip")), Some("test-agent"));
     let alice = sign_in_from(&h, "alice@example.com", context).await;
     let issued = &alice.session;
 

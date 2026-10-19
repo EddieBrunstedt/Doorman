@@ -71,6 +71,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::SessionNotFound => (StatusCode::UNAUTHORIZED, "session_not_found"),
         Error::UserNotFound => (StatusCode::NOT_FOUND, "user_not_found"),
         Error::InvalidEmail => (StatusCode::BAD_REQUEST, "invalid_email"),
+        Error::InvalidPasskeyName => (StatusCode::BAD_REQUEST, "invalid_passkey_name"),
         Error::EmailAlreadyInUse => (StatusCode::CONFLICT, "email_already_in_use"),
         Error::InvalidEmailLink => (StatusCode::BAD_REQUEST, "invalid_email_link"),
         Error::InvalidPasskeyChallenge => (StatusCode::BAD_REQUEST, "invalid_passkey_challenge"),
@@ -136,6 +137,11 @@ mod tests {
             (Error::SessionNotFound, S::UNAUTHORIZED, "session_not_found"),
             (Error::UserNotFound, S::NOT_FOUND, "user_not_found"),
             (Error::InvalidEmail, S::BAD_REQUEST, "invalid_email"),
+            (
+                Error::InvalidPasskeyName,
+                S::BAD_REQUEST,
+                "invalid_passkey_name",
+            ),
             (
                 Error::EmailAlreadyInUse,
                 S::CONFLICT,

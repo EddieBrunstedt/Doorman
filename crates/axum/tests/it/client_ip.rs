@@ -62,7 +62,7 @@ fn router(limits: PasskeyRateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAud
         .route(
             "/context",
             get(|RequestContext(ctx): RequestContext| async move {
-                Json(json!({"ip": ctx.ip, "user_agent": ctx.user_agent}))
+                Json(json!({"ip": ctx.ip(), "user_agent": ctx.user_agent()}))
             }),
         )
         .layer(auth.session_layer());
