@@ -26,6 +26,7 @@ CREATE TABLE email_links (
     token_hash BLOB NOT NULL,
     purpose TEXT NOT NULL,
     user_id BLOB NOT NULL,
+    owner_email TEXT,
     new_email TEXT,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
@@ -54,6 +55,7 @@ CREATE TABLE passkey_registrations (
     purpose TEXT NOT NULL,
     user_id BLOB NOT NULL,
     state BLOB NOT NULL,
+    owner_email TEXT,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     recovery_cool_down_until TEXT

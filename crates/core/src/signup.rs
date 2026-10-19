@@ -233,7 +233,7 @@ impl SignupManager {
     }
 
     async fn send_link(&self, user: &User, context: &SessionContext) -> Result<()> {
-        let url = self.registration.issue_link(user.id).await?;
+        let url = self.registration.issue_link(user).await?;
         self.mailer
             .send_best_effort(user, "signup link", |templates| {
                 templates.signup_email(user, &url)

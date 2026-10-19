@@ -314,6 +314,7 @@ pub enum RedemptionFailureReason {
     UserNotFound,
     UserDisabled,
     SignupFinished,
+    EmailChanged,
 }
 
 #[async_trait]

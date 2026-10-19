@@ -26,6 +26,7 @@ CREATE TABLE email_links (
     token_hash BINARY(32) NOT NULL,
     purpose VARCHAR(32) NOT NULL,
     user_id BINARY(16) NOT NULL,
+    owner_email VARCHAR(255),
     new_email VARCHAR(255),
     created_at DATETIME(6) NOT NULL,
     expires_at DATETIME(6) NOT NULL,
@@ -54,6 +55,7 @@ CREATE TABLE passkey_registrations (
     purpose VARCHAR(32) NOT NULL,
     user_id BINARY(16) NOT NULL,
     state BLOB NOT NULL,
+    owner_email VARCHAR(255),
     created_at DATETIME(6) NOT NULL,
     expires_at DATETIME(6) NOT NULL,
     recovery_cool_down_until DATETIME(6)

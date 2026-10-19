@@ -80,8 +80,8 @@ impl EmailLinkRegistration {
         })
     }
 
-    pub(crate) async fn issue_link(&self, user_id: UserId) -> Result<String> {
-        self.links.issue(user_id, None).await
+    pub(crate) async fn issue_link(&self, owner: &User) -> Result<String> {
+        self.links.issue(owner, None).await
     }
 
     pub(crate) async fn redeem(

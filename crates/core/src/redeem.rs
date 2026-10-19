@@ -3,7 +3,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 
 use crate::audit::RedemptionFailureReason::{
-    Expired, Malformed, SignupFinished, Unknown, UserDisabled, UserNotFound, WrongPurpose,
+    EmailChanged, Expired, Malformed, SignupFinished, Unknown, UserDisabled, UserNotFound,
+    WrongPurpose,
 };
 use crate::audit::{AuditDispatch, AuditEventKind, RedemptionFailureReason, SecretKind};
 use crate::clock::Clock;
@@ -25,6 +26,7 @@ pub(crate) trait SingleUseSecret {
 
 pub(crate) trait OwnedSecret: SingleUseSecret {
     fn owner(&self) -> UserId;
+    fn owner_email(&self) -> Option<&str>;
     fn is_signup(purpose: Self::Purpose) -> bool;
 }
 
@@ -53,6 +55,10 @@ impl OwnedSecret for EmailLink {
         self.user_id
     }
 
+    fn owner_email(&self) -> Option<&str> {
+        self.owner_email.as_deref()
+    }
+
     fn is_signup(purpose: EmailLinkPurpose) -> bool {
         purpose == EmailLinkPurpose::Signup
     }
@@ -77,6 +83,10 @@ impl SingleUseSecret for StoredPasskeyRegistration {
 impl OwnedSecret for StoredPasskeyRegistration {
     fn owner(&self) -> UserId {
         self.user_id
+    }
+
+    fn owner_email(&self) -> Option<&str> {
+        self.owner_email.as_deref()
     }
 
     fn is_signup(purpose: RegistrationPurpose) -> bool {
@@ -148,9 +158,9 @@ impl Redeemer {
         Err(self.refuse(secret, owner, reason, context).await)
     }
 
-    // A secret issued to a user is good only while that user is active, and a signup secret only
-    // until signup has finished: from then on only recovery brings the user back, with its
-    // cool-down.
+    // A secret issued to a user is good only while that user is active, a secret issued against
+    // their email address only while that address is still theirs, and a signup secret only until
+    // signup has finished: from then on only recovery brings the user back, with its cool-down.
     pub(crate) async fn check_owned<S: OwnedSecret, T>(
         &self,
         taken: Option<S>,
@@ -159,7 +169,10 @@ impl Redeemer {
         context: &SessionContext,
     ) -> Result<(User, T)> {
         let secret = S::secret(expected);
-        let Some(owner) = taken.as_ref().map(OwnedSecret::owner) else {
+        let Some((owner, owner_email)) = taken
+            .as_ref()
+            .map(|taken| (taken.owner(), taken.owner_email().map(str::to_owned)))
+        else {
             return Err(self.refuse(secret, None, Unknown, context).await);
         };
         let value = self
@@ -167,6 +180,7 @@ impl Redeemer {
             .await?;
         let reason = match self.records.find_active(owner).await {
             Ok(user) if S::is_signup(expected) && user.has_finished_signup() => SignupFinished,
+            Ok(user) if owner_email.is_some() && user.email != owner_email => EmailChanged,
             Ok(user) => return Ok((user, value)),
             Err(Error::UserNotFound) => UserNotFound,
             Err(Error::UserDisabled) => UserDisabled,

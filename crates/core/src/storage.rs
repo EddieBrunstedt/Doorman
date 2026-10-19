@@ -288,6 +288,7 @@ pub struct StoredPasskeyRegistration {
     pub purpose: RegistrationPurpose,
     pub user_id: UserId,
     pub state: Vec<u8>,
+    pub owner_email: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub recovery_cool_down_until: Option<DateTime<Utc>>,
@@ -378,6 +379,7 @@ pub struct EmailLink {
     pub token_hash: TokenHash,
     pub user_id: UserId,
     pub purpose: EmailLinkPurpose,
+    pub owner_email: Option<String>,
     pub new_email: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -430,6 +432,7 @@ mod tests {
             token_hash: hash_token("an-email-link-token"),
             user_id: UserId::new(),
             purpose: EmailLinkPurpose::EmailChange,
+            owner_email: Some("old@example.com".to_string()),
             new_email: Some("new@example.com".to_string()),
             created_at: ts(1_000),
             expires_at: ts(2_000),
@@ -446,6 +449,7 @@ mod tests {
             purpose: RegistrationPurpose::Recovery,
             user_id: UserId::new(),
             state: vec![0x00, 0x01, 0xfe, 0xff],
+            owner_email: Some("user@example.com".to_string()),
             created_at: ts(1_000),
             expires_at: ts(2_000),
             recovery_cool_down_until: None,
@@ -457,6 +461,7 @@ mod tests {
         assert_eq!(reg.purpose, back.purpose);
         assert_eq!(reg.user_id, back.user_id);
         assert_eq!(reg.state, back.state);
+        assert_eq!(reg.owner_email, back.owner_email);
         assert_eq!(reg.created_at, back.created_at);
         assert_eq!(reg.expires_at, back.expires_at);
         assert_eq!(reg.recovery_cool_down_until, back.recovery_cool_down_until);

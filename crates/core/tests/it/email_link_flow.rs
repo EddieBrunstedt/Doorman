@@ -1,5 +1,6 @@
 use chrono::Duration as ChronoDuration;
 use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
+use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::error::Error;
 use doorman_core::session::SessionContext;
@@ -203,5 +204,25 @@ async fn a_tampered_link_is_refused_and_the_real_one_still_redeems() {
         link.redeem(&h, &token)
             .await
             .expect("the real link redeems");
+    }
+}
+
+#[tokio::test]
+async fn a_link_is_refused_once_its_owners_email_address_has_changed() {
+    for link in LINKS {
+        let h = Harness::fresh();
+        let (owner, token) = link.issue(&h).await;
+        h.users
+            .set_user_email(owner, "moved@example.com", h.clock.now())
+            .await
+            .expect("change address");
+
+        let err = link.redeem(&h, &token).await.expect_err("address changed");
+
+        assert!(matches!(err, Error::InvalidEmailLink), "{link:?}");
+        assert!(
+            audited_failure(&h, link, Some(owner), RedemptionFailureReason::EmailChanged),
+            "{link:?}"
+        );
     }
 }

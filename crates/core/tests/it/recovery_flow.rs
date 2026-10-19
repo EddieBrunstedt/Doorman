@@ -9,6 +9,7 @@ use doorman_core::audit::{
     AuditEventKind, RecoveryFailureReason, RedemptionFailureReason, SecretKind,
 };
 use doorman_core::clock::Clock;
+use doorman_core::destructive::DestructiveAction;
 use doorman_core::email::{EmailContent, EmailTemplates};
 use doorman_core::error::Error;
 use doorman_core::memory::InMemoryRateLimiter;
@@ -20,9 +21,9 @@ use doorman_core::storage::{PasskeyStore, User, UserStatus, UserStore};
 use doorman_test_support::MockClock;
 
 use crate::common::{
-    Harness, RECOVERY_URL, RP_ID, RP_NAME, authenticator, kinds, make_user, passkey_count,
-    provision_user, recovery_config, register_passkey, rp_origin, session_count, session_for,
-    token_from_email,
+    Harness, RECOVERY_URL, RP_ID, RP_NAME, authenticator, kinds, last_email_change_token,
+    make_user, passkey_count, provision_user, recovery_config, register_passkey, rp_origin,
+    session_count, session_for, token_from_email,
 };
 
 #[tokio::test]
@@ -200,6 +201,69 @@ async fn redeem_refused_for_disabled_user() {
             user_id: Some(id),
             secret: SecretKind::RecoveryLink,
             reason: RedemptionFailureReason::UserDisabled,
+        } if *id == user.id,
+    )));
+}
+
+#[tokio::test]
+async fn recovery_started_before_an_email_change_cannot_finish() {
+    let h = Harness::fresh();
+    let user = provision_user(&h, "old@example.com").await;
+    h.recovery
+        .request_recovery("old@example.com", SessionContext::default())
+        .await
+        .expect("request recovery");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access with a new passkey")
+        .expect("link queued");
+    let started = h
+        .recovery
+        .redeem_recovery_link(
+            &token_from_email(&link.body_text, RECOVERY_URL),
+            SessionContext::default(),
+        )
+        .await
+        .expect("redeem");
+
+    h.session_manager
+        .perform(
+            &session_for(&h, &user).await,
+            DestructiveAction::RequestEmailChange {
+                new_email: "new@example.com".into(),
+            },
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("request email change");
+    h.user
+        .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
+        .await
+        .expect("confirm email change");
+
+    let attestation = authenticator().do_registration(started.options);
+    let err = h
+        .recovery
+        .finish_recovery(
+            started.challenge_id,
+            &attestation,
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect_err("the recovery's address is no longer the user's");
+    assert!(matches!(err, Error::InvalidPasskeyChallenge), "got {err:?}");
+    assert_eq!(passkey_count(&h, user.id).await, 1);
+    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RedemptionFailed {
+            user_id: Some(id),
+            secret: SecretKind::RegistrationChallenge,
+            reason: RedemptionFailureReason::EmailChanged,
         } if *id == user.id,
     )));
 }

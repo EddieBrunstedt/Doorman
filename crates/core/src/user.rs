@@ -82,7 +82,7 @@ impl UserManager {
         }
 
         let user = self.records.find(session.user_id).await?;
-        let url = self.link.issue(user.id, Some(normalized.clone())).await?;
+        let url = self.link.issue(&user, Some(normalized.clone())).await?;
 
         // Whoever holds the session may own the new address, and its mail server
         // can take the link yet fail the send. So the old address hears of the

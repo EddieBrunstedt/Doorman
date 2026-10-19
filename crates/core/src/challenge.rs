@@ -111,6 +111,7 @@ impl PasskeyChallenges {
         user: &User,
         purpose: RegistrationPurpose,
         session_id: Option<SessionId>,
+        owner_email: Option<String>,
         cool_down: RecoveryCoolDown,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let user_id = user.id;
@@ -160,6 +161,7 @@ impl PasskeyChallenges {
                 purpose,
                 user_id,
                 state: encode_state(&state)?,
+                owner_email,
                 created_at: now,
                 expires_at: expiry(now, self.lifetime)?,
                 recovery_cool_down_until: cool_down.until(),

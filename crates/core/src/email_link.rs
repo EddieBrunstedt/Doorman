@@ -7,7 +7,7 @@ use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::redeem::Redeemer;
 use crate::session::SessionContext;
-use crate::storage::{EmailLink, EmailLinkPurpose, EmailLinkStore, User, UserId};
+use crate::storage::{EmailLink, EmailLinkPurpose, EmailLinkStore, User};
 use crate::token::{generate_token, hash_token};
 
 pub const TOKEN_PLACEHOLDER: &str = "{token}";
@@ -59,15 +59,16 @@ impl EmailLinks {
         })
     }
 
-    pub(crate) async fn issue(&self, user_id: UserId, new_email: Option<String>) -> Result<String> {
+    pub(crate) async fn issue(&self, owner: &User, new_email: Option<String>) -> Result<String> {
         let now = self.clock.now();
         let expires_at = expiry(now, self.lifetime)?;
         let (token, token_hash) = generate_token()?;
         self.links
             .replace_link(EmailLink {
                 token_hash,
-                user_id,
+                user_id: owner.id,
                 purpose: self.purpose,
+                owner_email: owner.email.clone(),
                 new_email,
                 created_at: now,
                 expires_at,

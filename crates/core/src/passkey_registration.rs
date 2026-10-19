@@ -38,6 +38,15 @@ impl RegistrationSource<'_> {
             Self::Session(session) => Some(session.id),
         }
     }
+
+    // An email link proved control of the owner's address, so its registration is good only
+    // while that address is theirs; a session proves nothing about the address.
+    fn owner_email(self) -> Option<String> {
+        match self {
+            Self::SignupLink(user) | Self::RecoveryLink(user) => user.email.clone(),
+            Self::Session(_) => None,
+        }
+    }
 }
 
 // Who finishes a registration must be who started it: the same kind of email link, or the same
@@ -122,7 +131,13 @@ impl PasskeyRegistrations {
         };
         let (challenge_id, options) = self
             .challenges
-            .issue_registration(&user, source.purpose(), source.session_id(), cool_down)
+            .issue_registration(
+                &user,
+                source.purpose(),
+                source.session_id(),
+                source.owner_email(),
+                cool_down,
+            )
             .await?;
         tracing::info!(outcome = "started", "passkey registration started");
         Ok(StartedRegistration {

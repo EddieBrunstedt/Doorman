@@ -454,6 +454,7 @@ async fn email_link_single_use(stores: &ExpiringStores) {
             token_hash: hash,
             user_id,
             purpose: EmailLinkPurpose::Signup,
+            owner_email: None,
             new_email: None,
             created_at: present(),
             expires_at: days(365),
@@ -484,6 +485,7 @@ async fn email_link_single_use(stores: &ExpiringStores) {
             token_hash: signup_hash,
             user_id,
             purpose: EmailLinkPurpose::Signup,
+            owner_email: None,
             new_email: None,
             created_at: present(),
             expires_at: days(365),
@@ -512,6 +514,7 @@ async fn email_link_email_change_payload(stores: &ExpiringStores) {
             token_hash: hash,
             user_id,
             purpose: EmailLinkPurpose::EmailChange,
+            owner_email: Some("old-address@example.com".to_string()),
             new_email: Some("new-address@example.com".to_string()),
             created_at: present(),
             expires_at: days(365),
@@ -530,6 +533,11 @@ async fn email_link_email_change_payload(stores: &ExpiringStores) {
         Some("new-address@example.com"),
         "the target address round-trips through storage",
     );
+    assert_eq!(
+        redeemed.owner_email.as_deref(),
+        Some("old-address@example.com"),
+        "the owner's address round-trips through storage",
+    );
 }
 
 fn link(raw: &str, user_id: UserId, purpose: EmailLinkPurpose) -> EmailLink {
@@ -537,6 +545,7 @@ fn link(raw: &str, user_id: UserId, purpose: EmailLinkPurpose) -> EmailLink {
         token_hash: hash_token(raw),
         user_id,
         purpose,
+        owner_email: Some(format!("{raw}@example.com")),
         new_email: None,
         created_at: present(),
         expires_at: days(365),
@@ -1549,6 +1558,8 @@ async fn passkey_registration_round_trip(stores: &ExpiringStores) {
         RegistrationPurpose::AddPasskey,
     ] {
         let challenge_id = PasskeyChallengeId::new();
+        let owner_email =
+            (purpose != RegistrationPurpose::AddPasskey).then(|| "owner@example.com".to_string());
         stores
             .passkey_challenges
             .put_registration(StoredPasskeyRegistration {
@@ -1556,6 +1567,7 @@ async fn passkey_registration_round_trip(stores: &ExpiringStores) {
                 purpose,
                 user_id,
                 state: state_blob.clone(),
+                owner_email: owner_email.clone(),
                 created_at: now,
                 expires_at: now + Duration::minutes(5),
                 recovery_cool_down_until: Some(cool_down_until),
@@ -1575,6 +1587,10 @@ async fn passkey_registration_round_trip(stores: &ExpiringStores) {
         assert_eq!(taken.created_at, now);
         assert_eq!(taken.expires_at, now + Duration::minutes(5));
         assert_eq!(taken.recovery_cool_down_until, Some(cool_down_until));
+        assert_eq!(
+            taken.owner_email, owner_email,
+            "owner's address round-trips"
+        );
         assert_eq!(
             taken.state, state_blob,
             "ceremony blob round-trips verbatim"
@@ -1606,6 +1622,7 @@ async fn passkey_registration_delete_for_user(stores: &ExpiringStores) {
                     purpose: RegistrationPurpose::AddPasskey,
                     user_id,
                     state: b"opaque-state".to_vec(),
+                    owner_email: None,
                     created_at: now,
                     expires_at: now + Duration::minutes(5),
                     recovery_cool_down_until: None,
@@ -1698,6 +1715,7 @@ async fn passkey_registration_delete_races_creation(stores: &ExpiringStores) {
         purpose: RegistrationPurpose::AddPasskey,
         user_id,
         state: b"opaque-state".to_vec(),
+        owner_email: None,
         created_at: now,
         expires_at: days(1),
         recovery_cool_down_until: None,
@@ -1814,6 +1832,7 @@ async fn passkey_challenge_purge_expired(stores: &ExpiringStores) {
             purpose: RegistrationPurpose::AddPasskey,
             user_id,
             state: b"expired-registration".to_vec(),
+            owner_email: None,
             created_at: days(-2),
             expires_at: days(-1),
             recovery_cool_down_until: None,
@@ -1838,6 +1857,7 @@ async fn passkey_challenge_purge_expired(stores: &ExpiringStores) {
             purpose: RegistrationPurpose::AddPasskey,
             user_id,
             state: b"live-registration".to_vec(),
+            owner_email: None,
             created_at: now,
             expires_at: days(365),
             recovery_cool_down_until: None,
@@ -1899,6 +1919,7 @@ async fn single_use_under_concurrency(stores: &ExpiringStores) {
             token_hash: hash,
             user_id,
             purpose: EmailLinkPurpose::Signup,
+            owner_email: None,
             new_email: None,
             created_at: now,
             expires_at: days(365),
@@ -1920,6 +1941,7 @@ async fn single_use_under_concurrency(stores: &ExpiringStores) {
             purpose: RegistrationPurpose::AddPasskey,
             user_id,
             state: b"race-registration".to_vec(),
+            owner_email: None,
             created_at: now,
             expires_at: days(365),
             recovery_cool_down_until: None,
@@ -2060,6 +2082,7 @@ async fn owner_indexes_track_removals(stores: &ExpiringStores) {
         purpose: RegistrationPurpose::AddPasskey,
         user_id,
         state: b"index-registration".to_vec(),
+        owner_email: None,
         created_at: days(-2),
         expires_at,
         recovery_cool_down_until: None,
@@ -2233,6 +2256,7 @@ async fn inserts_refuse_duplicate_keys(stores: &ExpiringStores) {
         token_hash: hash_token("duplicate-link"),
         user_id: owner,
         purpose: EmailLinkPurpose::Signup,
+        owner_email: None,
         new_email: None,
         created_at: now,
         expires_at: days(365),
@@ -2279,6 +2303,7 @@ async fn inserts_refuse_duplicate_keys(stores: &ExpiringStores) {
         purpose: RegistrationPurpose::AddPasskey,
         user_id: owner,
         state: b"duplicate-registration".to_vec(),
+        owner_email: None,
         created_at: now,
         expires_at: days(365),
         recovery_cool_down_until: None,

@@ -248,7 +248,7 @@ impl RecoveryManager {
             return Ok(());
         }
 
-        let url = self.registration.issue_link(user.id).await?;
+        let url = self.registration.issue_link(&user).await?;
         self.mailer
             .send_best_effort(&user, "recovery link", |templates| {
                 templates.recovery_email(&user, &url)

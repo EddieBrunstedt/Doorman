@@ -419,7 +419,7 @@ macro_rules! sqlx_stores {
                     pool: self.pool,
                     ph: $ph,
                     table: "email_links",
-                    cols: "token_hash, purpose, user_id, new_email, created_at, expires_at",
+                    cols: "token_hash, purpose, user_id, owner_email, new_email, created_at, expires_at",
                     filter: "token_hash = ?",
                     binds: [$crate::common::token_hash_bytes(hash)],
                     map: row_to_email_link,
@@ -468,6 +468,7 @@ macro_rules! sqlx_stores {
                 user_id: $crate::stores::__reexport::UserId(
                     $crate::common::uuid_from_row(user_id_bytes)?,
                 ),
+                owner_email: row.try_get("owner_email").map_err($crate::common::storage_err)?,
                 new_email: row.try_get("new_email").map_err($crate::common::storage_err)?,
                 created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
                 expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,
@@ -662,14 +663,15 @@ macro_rules! sqlx_stores {
                 value: $crate::stores::__reexport::StoredPasskeyRegistration,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "INSERT INTO passkey_registrations (id, purpose, user_id, state, created_at, expires_at, recovery_cool_down_until)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO passkey_registrations (id, purpose, user_id, state, owner_email, created_at, expires_at, recovery_cool_down_until)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(value.id.0))
                     .bind($crate::common::registration_purpose_to_str(value.purpose))
                     .bind($crate::common::uuid_to_bytes(value.user_id.0))
                     .bind(&value.state)
+                    .bind(&value.owner_email)
                     .bind($ts(value.created_at))
                     .bind($ts(value.expires_at))
                     .bind($ts(value.recovery_cool_down_until))
@@ -690,7 +692,7 @@ macro_rules! sqlx_stores {
                     pool: self.pool,
                     ph: $ph,
                     table: "passkey_registrations",
-                    cols: "id, purpose, user_id, state, created_at, expires_at, recovery_cool_down_until",
+                    cols: "id, purpose, user_id, state, owner_email, created_at, expires_at, recovery_cool_down_until",
                     filter: "id = ?",
                     binds: [$crate::common::uuid_to_bytes(id.0)],
                     map: row_to_registration,
@@ -717,7 +719,7 @@ macro_rules! sqlx_stores {
                 Vec<$crate::stores::__reexport::StoredPasskeyRegistration>,
             > {
                 let sql = $ph(
-                    "SELECT id, purpose, user_id, state, created_at, expires_at, recovery_cool_down_until
+                    "SELECT id, purpose, user_id, state, owner_email, created_at, expires_at, recovery_cool_down_until
                      FROM passkey_registrations WHERE user_id = ?",
                 );
                 let rows = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -807,6 +809,7 @@ macro_rules! sqlx_stores {
                     $crate::common::uuid_from_row(user_id_bytes)?,
                 ),
                 state,
+                owner_email: row.try_get("owner_email").map_err($crate::common::storage_err)?,
                 created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
                 expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,
                 recovery_cool_down_until: row
@@ -907,10 +910,11 @@ macro_rules! sqlx_replace_link {
     ) => {{
         let link = $link;
         let sql = $ph(
-            "INSERT INTO email_links (token_hash, purpose, user_id, new_email, created_at, expires_at)
-             VALUES (?, ?, ?, ?, ?, ?)
+            "INSERT INTO email_links (token_hash, purpose, user_id, owner_email, new_email, created_at, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (user_id, purpose) DO UPDATE SET
                  token_hash = excluded.token_hash,
+                 owner_email = excluded.owner_email,
                  new_email = excluded.new_email,
                  created_at = excluded.created_at,
                  expires_at = excluded.expires_at",
@@ -919,6 +923,7 @@ macro_rules! sqlx_replace_link {
             .bind($crate::common::token_hash_bytes(&link.token_hash))
             .bind($crate::common::purpose_to_str(link.purpose))
             .bind($crate::common::uuid_to_bytes(link.user_id.0))
+            .bind(&link.owner_email)
             .bind(&link.new_email)
             .bind($ts(link.created_at))
             .bind($ts(link.expires_at))
@@ -942,18 +947,19 @@ macro_rules! sqlx_replace_link {
         let user_id = $crate::common::uuid_to_bytes(link.user_id.0);
         let purpose = $crate::common::purpose_to_str(link.purpose);
         let update_sql = $ph(
-            "UPDATE email_links SET token_hash = ?, new_email = ?, created_at = ?, expires_at = ?
+            "UPDATE email_links SET token_hash = ?, owner_email = ?, new_email = ?, created_at = ?, expires_at = ?
              WHERE user_id = ? AND purpose = ?",
         );
         let insert_sql = $ph(
-            "INSERT INTO email_links (token_hash, purpose, user_id, new_email, created_at, expires_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO email_links (token_hash, purpose, user_id, owner_email, new_email, created_at, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         );
         let mut attempts = 0;
         loop {
             attempts += 1;
             let updated = ::sqlx::query(::sqlx::AssertSqlSafe(update_sql.clone()))
                 .bind($crate::common::token_hash_bytes(&link.token_hash))
+                .bind(&link.owner_email)
                 .bind(&link.new_email)
                 .bind($ts(link.created_at))
                 .bind($ts(link.expires_at))
@@ -971,6 +977,7 @@ macro_rules! sqlx_replace_link {
                 .bind($crate::common::token_hash_bytes(&link.token_hash))
                 .bind(purpose)
                 .bind(&user_id)
+                .bind(&link.owner_email)
                 .bind(&link.new_email)
                 .bind($ts(link.created_at))
                 .bind($ts(link.expires_at))

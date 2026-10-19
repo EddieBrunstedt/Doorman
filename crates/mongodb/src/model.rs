@@ -223,6 +223,9 @@ pub(crate) fn email_link_to_doc(token: &EmailLink) -> Document {
         "created_at": to_bson_dt(token.created_at),
         "expires_at": to_bson_dt(token.expires_at),
     };
+    if let Some(email) = &token.owner_email {
+        doc.insert("owner_email", email.clone());
+    }
     if let Some(email) = &token.new_email {
         doc.insert("new_email", email.clone());
     }
@@ -234,6 +237,7 @@ pub(crate) fn email_link_from_doc(doc: &Document) -> StorageResult<EmailLink> {
         token_hash: get_token_hash(doc, "token_hash")?,
         user_id: UserId(get_uuid(doc, "user_id")?),
         purpose: purpose_from_str(&get_str(doc, "purpose")?)?,
+        owner_email: get_opt_str(doc, "owner_email")?,
         new_email: get_opt_str(doc, "new_email")?,
         created_at: get_dt(doc, "created_at")?,
         expires_at: get_dt(doc, "expires_at")?,
@@ -299,6 +303,9 @@ pub(crate) fn pkreg_to_doc(value: &StoredPasskeyRegistration) -> Document {
         "created_at": to_bson_dt(value.created_at),
         "expires_at": to_bson_dt(value.expires_at),
     };
+    if let Some(email) = &value.owner_email {
+        doc.insert("owner_email", email.clone());
+    }
     if let Some(ts) = value.recovery_cool_down_until {
         doc.insert("recovery_cool_down_until", to_bson_dt(ts));
     }
@@ -311,6 +318,7 @@ pub(crate) fn pkreg_from_doc(doc: &Document) -> StorageResult<StoredPasskeyRegis
         purpose: registration_purpose_from_str(&get_str(doc, "purpose")?)?,
         user_id: UserId(get_uuid(doc, "user_id")?),
         state: get_bytes(doc, "state")?,
+        owner_email: get_opt_str(doc, "owner_email")?,
         created_at: get_dt(doc, "created_at")?,
         expires_at: get_dt(doc, "expires_at")?,
         recovery_cool_down_until: get_opt_dt(doc, "recovery_cool_down_until")?,
