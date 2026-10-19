@@ -15,6 +15,7 @@ use doorman_core::storage::{
     PasskeyChallengeStore, PasskeyStore, PasskeyUse, UserStatus, UserStore,
 };
 use doorman_test_support::MockClock;
+use webauthn_rs_proto::AuthenticatorTransport;
 
 use crate::common::{
     Harness, RP_ID, RP_NAME, assert_discoverable_request_options,
@@ -145,6 +146,38 @@ async fn registration_captures_device_metadata_and_surfaces_it_in_summary() {
     assert_eq!(summary.transports, passkey.transports);
     assert_eq!(summary.backup_eligible, passkey.backup_eligible);
     assert_eq!(summary.backup_state, passkey.backup_state);
+}
+
+#[tokio::test]
+async fn registration_stores_each_reported_transport_once() {
+    let h = Harness::fresh();
+    let user = make_user(&h, "transports@example.com").await;
+    let mut wa = authenticator();
+    let session = session_for(&h, &user).await;
+    let (challenge_id, ccr) = h
+        .session_manager
+        .start_passkey_registration(&session)
+        .await
+        .expect("start_registration");
+    let mut response = wa.do_registration(ccr);
+    // The client reports transports outside what the authenticator signs.
+    let mut reported = vec![AuthenticatorTransport::Hybrid];
+    reported.extend(std::iter::repeat_n(AuthenticatorTransport::Internal, 100));
+    reported.push(AuthenticatorTransport::Hybrid);
+    response.response.transports = Some(reported);
+
+    let passkey = h
+        .session_manager
+        .finish_passkey_registration(
+            &session,
+            challenge_id,
+            &response,
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish_registration");
+    assert_eq!(passkey.transports, ["hybrid", "internal"]);
 }
 
 #[tokio::test]

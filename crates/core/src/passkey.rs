@@ -32,6 +32,9 @@ use crate::user_records::UserRecords;
 
 pub const MAX_PASSKEY_NAME_LEN: usize = 255;
 
+// WebAuthn's own limit, which webauthn-rs leaves to the relying party to enforce.
+pub const MAX_CREDENTIAL_ID_LEN: usize = 1023;
+
 // Only `parse` builds one, so storage never sees a name that skipped it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PasskeyName(String);
@@ -443,12 +446,14 @@ impl PasskeyMetadata {
             }
             _ => None,
         };
-        let transports = cred
-            .transports
-            .unwrap_or_default()
-            .iter()
-            .map(|t| t.to_string())
-            .collect();
+        // The client reports transports unsigned, so a repeated one would grow the row unbounded.
+        let mut transports: Vec<String> = Vec::new();
+        for transport in cred.transports.unwrap_or_default() {
+            let transport = transport.to_string();
+            if !transports.contains(&transport) {
+                transports.push(transport);
+            }
+        }
         Self {
             aaguid,
             transports,
@@ -457,6 +462,15 @@ impl PasskeyMetadata {
             user_verified: cred.user_verified,
         }
     }
+}
+
+pub(crate) fn check_credential_id(credential_id: &[u8]) -> Result<()> {
+    if credential_id.len() > MAX_CREDENTIAL_ID_LEN {
+        return Err(Error::Webauthn(format!(
+            "credential ID exceeds {MAX_CREDENTIAL_ID_LEN} bytes"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn build_webauthn(config: &PasskeyConfig) -> Result<Webauthn> {
@@ -483,6 +497,15 @@ pub(crate) fn decode_passkey(bytes: &[u8]) -> Result<Passkey> {
 mod tests {
     use super::*;
     use url::Url;
+
+    #[test]
+    fn credential_id_is_refused_past_the_webauthn_limit() {
+        assert!(check_credential_id(&[0; MAX_CREDENTIAL_ID_LEN]).is_ok());
+        assert!(matches!(
+            check_credential_id(&[0; MAX_CREDENTIAL_ID_LEN + 1]),
+            Err(Error::Webauthn(_))
+        ));
+    }
 
     #[test]
     fn config_constructor_sets_default_lifetime() {

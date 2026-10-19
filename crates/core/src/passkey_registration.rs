@@ -9,7 +9,8 @@ use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::passkey::{
-    PasskeyConfig, PasskeyMetadata, PasskeyName, StartedRegistration, encode_passkey,
+    PasskeyConfig, PasskeyMetadata, PasskeyName, StartedRegistration, check_credential_id,
+    encode_passkey,
 };
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::SessionContext;
@@ -230,6 +231,10 @@ impl PasskeyRegistrations {
             .webauthn
             .finish_passkey_registration(response, &registration.state)
             .map_err(|e| Error::Webauthn(e.to_string()))?;
+        if let Err(err) = check_credential_id(passkey.cred_id()) {
+            tracing::warn!(%user_id, outcome = "credential_id_too_long", "passkey registration failed");
+            return Err(err);
+        }
 
         let metadata = PasskeyMetadata::from_passkey(&passkey);
         if !metadata.user_verified {
