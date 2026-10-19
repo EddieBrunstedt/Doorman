@@ -23,7 +23,8 @@ use crate::passkey_registration::{
 };
 use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
 use crate::security_notice::{SecurityNotice, SecurityNotices};
-use crate::session::{IssuedSession, ResolvedSession, SessionContext};
+use crate::session::{IssuedSession, SessionContext};
+use crate::session_records::LiveSession;
 use crate::storage::{
     PasskeyChallengeId, PasskeyStore, PasskeySummary, StoredPasskey, User, UserId,
 };
@@ -158,7 +159,7 @@ impl PasskeyManager {
     #[tracing::instrument(skip(self, session), fields(method = "passkey", user_id = %session.user_id))]
     pub(crate) async fn start_registration(
         &self,
-        session: &ResolvedSession,
+        session: &LiveSession,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
         let started = self
             .registrations
@@ -173,7 +174,7 @@ impl PasskeyManager {
     )]
     pub(crate) async fn finish_registration(
         &self,
-        session: &ResolvedSession,
+        session: &LiveSession,
         challenge_id: PasskeyChallengeId,
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
@@ -312,7 +313,7 @@ impl PasskeyManager {
     #[tracing::instrument(skip(self, session, credential_id, name, context), fields(user_id = %session.user_id))]
     pub(crate) async fn rename_passkey(
         &self,
-        session: &ResolvedSession,
+        session: &LiveSession,
         credential_id: &[u8],
         name: Option<String>,
         context: SessionContext,

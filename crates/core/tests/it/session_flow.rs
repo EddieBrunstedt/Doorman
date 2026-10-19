@@ -9,7 +9,10 @@ use doorman_core::error::Error;
 use doorman_core::session::{
     IssuedSession, ResolvedSession, SessionConfig, SessionContext, hash_token,
 };
-use doorman_core::storage::{SessionId, SessionStore, User};
+use doorman_core::storage::{
+    PasskeyChallengeId, PasskeyStore, SessionId, SessionStore, User, UserId, UserStore,
+};
+use webauthn_rs::prelude::CreationChallengeResponse;
 
 use crate::common::{
     Harness, RECOVERY_URL, SignedIn, authenticator, kinds, log_in, session_count,
@@ -122,6 +125,135 @@ async fn log_out_deletes_the_session_and_audits_it() {
         matches!(err, Some(Error::SessionNotFound)),
         "a session logs out once, got {err:?}"
     );
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SessionEnd {
+    LoggedOut,
+    Expired,
+}
+
+impl SessionEnd {
+    const ALL: [Self; 2] = [Self::LoggedOut, Self::Expired];
+
+    async fn apply(self, h: &Harness, session: &ResolvedSession) {
+        match self {
+            Self::LoggedOut => h.session_manager.log_out(session).await.expect("log out"),
+            Self::Expired => h.clock.advance(ChronoDuration::hours(2)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SessionWrite {
+    StartPasskeyRegistration,
+    FinishPasskeyRegistration,
+    RenamePasskey,
+    StartReauth,
+    Perform,
+}
+
+impl SessionWrite {
+    const ALL: [Self; 5] = [
+        Self::StartPasskeyRegistration,
+        Self::FinishPasskeyRegistration,
+        Self::RenamePasskey,
+        Self::StartReauth,
+        Self::Perform,
+    ];
+
+    async fn run(
+        self,
+        h: &Harness,
+        signed_in: &mut SignedIn,
+        session: &ResolvedSession,
+        pending: (PasskeyChallengeId, CreationChallengeResponse),
+    ) -> Result<(), Error> {
+        let sessions = &h.session_manager;
+        match self {
+            Self::StartPasskeyRegistration => {
+                sessions.start_passkey_registration(session).await.map(drop)
+            }
+            Self::FinishPasskeyRegistration => {
+                let (challenge_id, options) = pending;
+                let response = signed_in.authenticator.do_registration(options);
+                sessions
+                    .finish_passkey_registration(
+                        session,
+                        challenge_id,
+                        &response,
+                        None,
+                        SessionContext::default(),
+                    )
+                    .await
+                    .map(drop)
+            }
+            Self::RenamePasskey => sessions
+                .rename_passkey(
+                    session,
+                    &signed_in.credential_id,
+                    Some("renamed".into()),
+                    SessionContext::default(),
+                )
+                .await
+                .map(drop),
+            Self::StartReauth => sessions.start_reauth(session).await.map(drop),
+            Self::Perform => sessions
+                .perform(
+                    session,
+                    DestructiveAction::DeleteUser,
+                    None,
+                    SessionContext::default(),
+                )
+                .await
+                .map(drop),
+        }
+    }
+}
+
+async fn stored_state(
+    h: &Harness,
+    user_id: UserId,
+) -> (Option<User>, Vec<(Vec<u8>, Option<String>)>, usize) {
+    let user = h.users.find_user_by_id(user_id).await.expect("find user");
+    let passkeys = h
+        .passkeys
+        .list_passkeys_for_user(user_id)
+        .await
+        .expect("list passkeys")
+        .into_iter()
+        .map(|p| (p.credential_id, p.name))
+        .collect();
+    (user, passkeys, h.challenges.len())
+}
+
+#[tokio::test]
+async fn a_session_that_ended_after_it_was_resolved_writes_nothing() {
+    for end in SessionEnd::ALL {
+        for write in SessionWrite::ALL {
+            let h = Harness::fresh();
+            let mut alice = sign_in(&h, "alice@example.com").await;
+            let session = alice.session.session.clone();
+            let pending = h
+                .session_manager
+                .start_passkey_registration(&session)
+                .await
+                .expect("start while live");
+            end.apply(&h, &session).await;
+            let before = stored_state(&h, alice.user.id).await;
+
+            let result = write.run(&h, &mut alice, &session, pending).await;
+            assert!(
+                matches!(result, Err(Error::SessionNotFound)),
+                "{write:?} after {end:?}: got {result:?}",
+            );
+            assert_eq!(
+                stored_state(&h, alice.user.id).await,
+                before,
+                "{write:?} after {end:?} changed what is stored",
+            );
+        }
+    }
 }
 
 #[tokio::test]

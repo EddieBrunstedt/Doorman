@@ -157,7 +157,8 @@ impl SessionManager {
         &self,
         session: &ResolvedSession,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
-        self.passkey.start_registration(session).await
+        let session = self.records.reread(session).await?;
+        self.passkey.start_registration(&session).await
     }
 
     pub async fn finish_passkey_registration(
@@ -168,8 +169,9 @@ impl SessionManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<PasskeySummary> {
+        let session = self.records.reread(session).await?;
         self.passkey
-            .finish_registration(session, challenge_id, response, name, context)
+            .finish_registration(&session, challenge_id, response, name, context)
             .await
     }
 
@@ -184,8 +186,9 @@ impl SessionManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<PasskeySummary> {
+        let session = self.records.reread(session).await?;
         self.passkey
-            .rename_passkey(session, credential_id, name, context)
+            .rename_passkey(&session, credential_id, name, context)
             .await
     }
 
@@ -193,7 +196,8 @@ impl SessionManager {
         &self,
         session: &ResolvedSession,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
-        self.reauth.start(session).await
+        let session = self.records.reread(session).await?;
+        self.reauth.start(&session).await
     }
 
     pub async fn perform(

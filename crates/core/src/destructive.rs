@@ -6,7 +6,7 @@ use crate::reauth::{ReauthAction, ReauthManager, ReauthPolicy, ReauthProof};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::{ResolvedSession, SessionContext};
-use crate::session_records::SessionRecords;
+use crate::session_records::{LiveSession, SessionRecords};
 use crate::storage::SessionId;
 use crate::user::UserManager;
 
@@ -41,11 +41,11 @@ pub enum CurrentSession {
 // Only the gate builds one, and every destructive action's implementation takes one, so none of
 // them can run without passing it.
 pub(crate) struct Cleared {
-    session: ResolvedSession,
+    session: LiveSession,
 }
 
 impl Cleared {
-    pub(crate) fn session(&self) -> &ResolvedSession {
+    pub(crate) fn session(&self) -> &LiveSession {
         &self.session
     }
 }

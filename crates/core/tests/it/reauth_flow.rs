@@ -123,37 +123,6 @@ async fn every_destructive_action_refuses_cool_down_before_the_policy_asks_for_a
 }
 
 #[tokio::test]
-async fn the_gate_refuses_a_session_that_ended_after_it_was_resolved() {
-    let h = Harness::fresh();
-    let revoked = sign_in(&h, "revoked@example.com").await;
-    let session = revoked.session.session.clone();
-    h.session_manager
-        .log_out(&session)
-        .await
-        .expect("log out elsewhere");
-    let err = perform(&h, &session, DestructiveAction::DeleteUser, None).await;
-    assert!(matches!(err, Err(Error::SessionNotFound)), "got {err:?}");
-
-    let expired = sign_in(&h, "expired@example.com").await;
-    let session = expired.session.session.clone();
-    h.clock.advance(chrono::Duration::hours(2));
-    let err = perform(&h, &session, DestructiveAction::DeleteUser, None).await;
-    assert!(matches!(err, Err(Error::SessionNotFound)), "got {err:?}");
-
-    for user in [&revoked.user, &expired.user] {
-        assert!(
-            h.users
-                .find_user_by_id(user.id)
-                .await
-                .expect("lookup")
-                .is_some(),
-            "{} is untouched",
-            user.id
-        );
-    }
-}
-
-#[tokio::test]
 async fn gated_action_with_fresh_proof_succeeds_and_audits() {
     let h = gated_harness();
     let user = make_user(&h, "owner@example.com").await;

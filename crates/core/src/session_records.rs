@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,6 +12,19 @@ use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::{IssuedSession, ResolvedSession, SessionConfig, SessionContext, hash_token};
 use crate::storage::{Session, SessionId, SessionStore, SessionSummary, StoredPasskey, UserId};
 use crate::token::generate_token;
+
+// Only `SessionRecords::reread` builds one, so whatever takes it acts for a session that was still
+// live when the call reached core, not one revoked or expired since it was resolved.
+#[derive(Debug)]
+pub(crate) struct LiveSession(ResolvedSession);
+
+impl Deref for LiveSession {
+    type Target = ResolvedSession;
+
+    fn deref(&self) -> &ResolvedSession {
+        &self.0
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct SessionRecords {
@@ -145,9 +159,9 @@ impl SessionRecords {
         }
     }
 
-    // A destructive action reads its session again, so one revoked or expired since it was
-    // resolved no longer passes the gate.
-    pub(crate) async fn reread(&self, session: &ResolvedSession) -> Result<ResolvedSession> {
+    // Every write made for a session reads it again, so one revoked or expired since it was
+    // resolved writes nothing. Logging out needs no re-read: it only deletes the session.
+    pub(crate) async fn reread(&self, session: &ResolvedSession) -> Result<LiveSession> {
         let stored = self
             .sessions
             .find_session_by_id(session.id)
@@ -155,7 +169,7 @@ impl SessionRecords {
             .filter(|stored| stored.token_hash == *session.token_hash());
         let now = self.clock.now();
         let stored = live(stored, now).ok_or(Error::SessionNotFound)?;
-        Ok(ResolvedSession::new(stored, now))
+        Ok(LiveSession(ResolvedSession::new(stored, now)))
     }
 
     fn slide_due(&self, session: &Session, now: DateTime<Utc>) -> bool {

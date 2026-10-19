@@ -4,12 +4,13 @@ use doorman_core::audit::{Actor, AuditEvent, AuditEventKind, OperatorActor, Secr
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::security_notice::{NoticePolicy, OperatorNotice};
 use doorman_core::session::SessionContext;
-use doorman_core::storage::{PasskeyStore, SessionId, SessionStore, UserId, UserStatus, UserStore};
+use doorman_core::storage::{
+    PasskeyChallengeStore, PasskeyStore, SessionId, SessionStore, UserId, UserStatus, UserStore,
+};
 
 use crate::common::{
-    Harness, HarnessBuilder, RECOVERY_URL, assert_last_redemption_unknown, authenticator,
-    last_email_change_token, passkey_count, provision_user, session_count, session_for,
-    token_from_email,
+    Harness, HarnessBuilder, RECOVERY_URL, assert_last_redemption_unknown, last_email_change_token,
+    passkey_count, provision_user, session_count, session_for, token_from_email,
 };
 
 async fn first_credential_id(h: &Harness, user_id: UserId) -> Vec<u8> {
@@ -137,12 +138,11 @@ async fn operator_delete_cascades_all_stores() {
         .await
         .expect("request email change");
     let email_change_token = last_email_change_token(&h);
-    let (challenge_id, options) = h
+    let (challenge_id, _) = h
         .session_manager
         .start_passkey_registration(&session)
         .await
         .expect("start a pending registration");
-    let attestation = authenticator().do_registration(options);
 
     assert_eq!(
         session_count(&h, user.id).await,
@@ -175,19 +175,14 @@ async fn operator_delete_cascades_all_stores() {
     assert!(matches!(err, Error::InvalidEmailLink));
     assert_last_redemption_unknown(&h, SecretKind::EmailChangeLink);
 
-    let err = h
-        .session_manager
-        .finish_passkey_registration(
-            &session,
-            challenge_id,
-            &attestation,
-            None,
-            SessionContext::default(),
-        )
-        .await
-        .expect_err("the pending ceremony is gone");
-    assert!(matches!(err, Error::InvalidPasskeyChallenge));
-    assert_last_redemption_unknown(&h, SecretKind::RegistrationChallenge);
+    assert!(
+        h.challenges
+            .take_registration(challenge_id)
+            .await
+            .expect("take registration")
+            .is_none(),
+        "the pending ceremony is gone",
+    );
 }
 
 #[tokio::test]

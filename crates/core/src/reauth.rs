@@ -9,7 +9,8 @@ use crate::challenge::PasskeyChallenges;
 use crate::context::CoreDeps;
 use crate::error::Result;
 use crate::passkey::PasskeyConfig;
-use crate::session::{ResolvedSession, SessionContext};
+use crate::session::SessionContext;
+use crate::session_records::LiveSession;
 use crate::storage::PasskeyChallengeId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -67,7 +68,7 @@ impl ReauthManager {
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id))]
     pub(crate) async fn start(
         &self,
-        session: &ResolvedSession,
+        session: &LiveSession,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
         let (id, rcr) = self.challenges.issue_reauth(session).await?;
         tracing::info!(outcome = "started", "reauth started");
@@ -76,7 +77,7 @@ impl ReauthManager {
 
     pub(crate) async fn verify(
         &self,
-        session: &ResolvedSession,
+        session: &LiveSession,
         proof: &ReauthProof,
         context: &SessionContext,
     ) -> Result<()> {

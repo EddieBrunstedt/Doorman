@@ -10,7 +10,8 @@ use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::passkey::{PasskeyConfig, PasskeyMetadata, StartedRegistration, encode_passkey};
 use crate::recovery_cool_down::RecoveryCoolDown;
-use crate::session::{ResolvedSession, SessionContext};
+use crate::session::SessionContext;
+use crate::session_records::LiveSession;
 use crate::storage::{
     PasskeyChallengeId, PasskeyStore, RegistrationPurpose, SessionId, StoredPasskey, User, UserId,
 };
@@ -20,7 +21,7 @@ use crate::user_records::UserRecords;
 pub(crate) enum RegistrationSource<'a> {
     SignupLink(&'a User),
     RecoveryLink(&'a User),
-    Session(&'a ResolvedSession),
+    Session(&'a LiveSession),
 }
 
 impl RegistrationSource<'_> {
@@ -55,7 +56,7 @@ impl RegistrationSource<'_> {
 pub(crate) enum RegistrationFinish<'a> {
     SignupLink,
     RecoveryLink,
-    Session(&'a ResolvedSession),
+    Session(&'a LiveSession),
 }
 
 impl RegistrationFinish<'_> {
