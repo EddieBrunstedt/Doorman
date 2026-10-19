@@ -3,7 +3,10 @@ use std::time::Duration;
 use doorman_core::error::{StorageError, StorageResult};
 use mongodb::bson::doc;
 use mongodb::error::{ErrorKind, WriteFailure};
-use mongodb::options::IndexOptions;
+use mongodb::options::{
+    Acknowledgment, CollectionOptions, IndexOptions, ReadConcern, ReadPreference,
+    SelectionCriteria, WriteConcern,
+};
 use mongodb::{Collection, Database, IndexModel};
 
 pub(crate) type Coll = Collection<mongodb::bson::Document>;
@@ -29,28 +32,47 @@ impl MongoDb {
         Self { db }
     }
 
+    // Core refuses a login to a disabled user, and a request to a revoked session, only if every
+    // read sees every write that finished before it, from any process. The host's client may
+    // prefer secondaries or acknowledge unreplicated writes, so every collection overrides both.
+    fn collection(&self, name: &str) -> Coll {
+        self.db.collection_with_options(
+            name,
+            CollectionOptions::builder()
+                .selection_criteria(SelectionCriteria::ReadPreference(ReadPreference::Primary))
+                .read_concern(ReadConcern::majority())
+                .write_concern(
+                    WriteConcern::builder()
+                        .w(Acknowledgment::Majority)
+                        .journal(true)
+                        .build(),
+                )
+                .build(),
+        )
+    }
+
     pub(crate) fn users(&self) -> Coll {
-        self.db.collection("users")
+        self.collection("users")
     }
 
     pub(crate) fn sessions(&self) -> Coll {
-        self.db.collection("sessions")
+        self.collection("sessions")
     }
 
     pub(crate) fn email_links(&self) -> Coll {
-        self.db.collection("email_links")
+        self.collection("email_links")
     }
 
     pub(crate) fn passkeys(&self) -> Coll {
-        self.db.collection("passkeys")
+        self.collection("passkeys")
     }
 
     pub(crate) fn passkey_registrations(&self) -> Coll {
-        self.db.collection("passkey_registrations")
+        self.collection("passkey_registrations")
     }
 
     pub(crate) fn passkey_authentications(&self) -> Coll {
-        self.db.collection("passkey_authentications")
+        self.collection("passkey_authentications")
     }
 
     pub(crate) async fn ensure_indexes(&self) -> StorageResult<()> {
