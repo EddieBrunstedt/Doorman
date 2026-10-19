@@ -90,7 +90,7 @@ doc:
 #
 # It builds into its own target directory, so `verify` can run it beside the
 # test suite without either waiting on the other's build lock.
-check-features:
+check-features $CARGO_TERM_PROGRESS_WHEN="auto":
     CARGO_TARGET_DIR={{ features_target }} cargo check --workspace --locked
     CARGO_TARGET_DIR={{ features_target }} cargo hack check -p doorman --feature-powerset --depth 2 --locked
     CARGO_TARGET_DIR={{ features_target }} cargo hack check -p doorman-sqlx --feature-powerset --locked
@@ -114,6 +114,15 @@ deny:
 # The full local gate, running every check CI does except `deny`.
 verify: fmt-check dprint-check clippy doc msrv slow-checks
 
+# Both steps share the terminal, and each tool's in-place progress display
+# erases the other's lines, so the parallel run turns them off. nextest reports
+# only failing and slow tests, and prints failure output after the run, beside
+# the summary.
 [parallel]
 [private]
-slow-checks: check-features test
+slow-checks: (check-features "never") (test "--show-progress=none" "--cargo-quiet" "--status-level=slow" "--failure-output=final")
+
+# The same checks as `verify`, but the slow steps run one after another, so each
+# keeps its progress display: slower, but easier to watch.
+# The full local gate, for watching in a terminal.
+verify-human: fmt-check dprint-check clippy doc msrv check-features test
