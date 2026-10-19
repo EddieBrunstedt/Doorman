@@ -68,12 +68,14 @@ impl SessionRecords {
         context: &SessionContext,
     ) -> Result<IssuedSession> {
         let user_id = passkey.user_id;
+        let now = self.clock.now();
+        let cool_down = RecoveryCoolDown::of_passkey(passkey, now);
         if let Some(max) = self.config.max_sessions_per_user {
-            self.enforce_session_cap(user_id, max.get()).await?;
+            self.enforce_session_cap(user_id, max.get(), cool_down, now)
+                .await?;
         }
 
         let (token, token_hash) = generate_token()?;
-        let now = self.clock.now();
 
         let session = Session {
             id: SessionId::new(),
@@ -84,7 +86,7 @@ impl SessionRecords {
             expires_at: self.deadline(now, now),
             ip: context.ip.clone(),
             user_agent: context.user_agent.clone(),
-            recovery_cool_down_until: RecoveryCoolDown::of_passkey(passkey, now).until(),
+            recovery_cool_down_until: cool_down.until(),
         };
 
         self.sessions.create_session(session.clone()).await?;
@@ -105,15 +107,24 @@ impl SessionRecords {
         }
     }
 
-    async fn enforce_session_cap(&self, user_id: UserId, max: u32) -> Result<()> {
-        let mut active = self.list_summaries_for_user(user_id).await?;
+    async fn enforce_session_cap(
+        &self,
+        user_id: UserId,
+        max: u32,
+        cool_down: RecoveryCoolDown,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        let active = self.list_summaries_for_user(user_id).await?;
         let max = max as usize;
         if active.len() < max {
             return Ok(());
         }
         let evict = active.len() + 1 - max;
-        active.sort_by_key(|s| s.created_at);
-        for session in active.into_iter().take(evict) {
+        // Short of evictable sessions, the user goes over the cap rather than lose one outside
+        // cool-down; the next session outside it evicts down to the cap again.
+        let mut evictable = cool_down.evictable_by(active, now);
+        evictable.sort_by_key(|s| s.created_at);
+        for session in evictable.into_iter().take(evict) {
             self.revoke_session(&session, Actor::of_session(&session))
                 .await?;
         }

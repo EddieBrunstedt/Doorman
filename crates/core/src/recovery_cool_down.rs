@@ -59,6 +59,22 @@ impl RecoveryCoolDown {
         Ok(allowed)
     }
 
+    // A session in cool-down is refused revoking the user's sessions outside it, so starting one
+    // must not evict them either.
+    pub(crate) fn evictable_by(
+        self,
+        sessions: Vec<SessionSummary>,
+        now: DateTime<Utc>,
+    ) -> Vec<SessionSummary> {
+        if self == Self::NONE {
+            return sessions;
+        }
+        sessions
+            .into_iter()
+            .filter(|session| Self::of_session(session, now) != Self::NONE)
+            .collect()
+    }
+
     fn in_force(self, now: DateTime<Utc>) -> Self {
         Self(self.0.filter(|&until| now < until))
     }

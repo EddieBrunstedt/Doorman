@@ -11,7 +11,10 @@ use doorman_core::session::{
 };
 use doorman_core::storage::{SessionId, SessionStore, User};
 
-use crate::common::{Harness, SignedIn, kinds, session_in_cool_down_for, sign_in, sign_in_from};
+use crate::common::{
+    Harness, RECOVERY_URL, SignedIn, authenticator, kinds, log_in, session_count,
+    session_in_cool_down_for, sign_in, sign_in_from, token_from_email,
+};
 
 fn harness_with_lifetime(absolute_lifetime: Duration) -> Harness {
     Harness::builder()
@@ -173,6 +176,79 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
     );
 
     assert!(session_exists(&h, bob.session.session.id).await);
+}
+
+#[tokio::test]
+async fn session_cap_in_recovery_cool_down_evicts_only_sessions_in_it() {
+    let h = Harness::builder()
+        .session_config(SessionConfig {
+            absolute_lifetime: Duration::from_secs(60 * 60),
+            max_sessions_per_user: NonZeroU32::new(2),
+            ..SessionConfig::default()
+        })
+        .build();
+    let mut alice = sign_in(&h, "alice@example.com").await;
+    h.clock.advance(ChronoDuration::seconds(1));
+    let second = alice.log_in_again(&h).await;
+    h.clock.advance(ChronoDuration::seconds(1));
+
+    h.recovery
+        .request_recovery("alice@example.com", SessionContext::default())
+        .await
+        .expect("request recovery");
+    let link = h
+        .email
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|e| e.subject == "Recover access with a new passkey")
+        .expect("link queued");
+    let started = h
+        .recovery
+        .redeem_recovery_link(
+            &token_from_email(&link.body_text, RECOVERY_URL),
+            SessionContext::default(),
+        )
+        .await
+        .expect("redeem");
+    let mut recovered = authenticator();
+    let attestation = recovered.do_registration(started.options);
+    let recovery = h
+        .recovery
+        .finish_recovery(
+            started.challenge_id,
+            &attestation,
+            None,
+            SessionContext::default(),
+        )
+        .await
+        .expect("finish recovery");
+    h.clock.advance(ChronoDuration::seconds(1));
+    let login = log_in(
+        &h,
+        &mut recovered,
+        &recovery.passkey.credential_id,
+        SessionContext::default(),
+    )
+    .await;
+    assert!(login.session.is_in_recovery_cool_down());
+
+    for (session, kept, case) in [
+        (alice.session.session.id, true, "oldest outside cool-down"),
+        (second.session.id, true, "newer outside cool-down"),
+        (recovery.session.session.id, false, "recovery's own"),
+        (login.session.id, true, "newest in cool-down"),
+    ] {
+        assert_eq!(session_exists(&h, session).await, kept, "{case}");
+    }
+
+    h.clock.advance(ChronoDuration::seconds(1));
+    alice.log_in_again(&h).await;
+    assert_eq!(
+        session_count(&h, alice.user.id).await,
+        2,
+        "a session outside cool-down evicts down to the cap",
+    );
 }
 
 #[tokio::test]
