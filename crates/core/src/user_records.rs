@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
+use crate::email::EmailAddress;
 use crate::error::{Error, Result, StorageErrorKind};
 use crate::session::{IssuedSession, SessionContext};
 use crate::session_records::SessionRecords;
@@ -62,15 +63,15 @@ impl UserRecords {
         Ok(passkeys.len() as u64)
     }
 
-    pub(crate) async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
-        Ok(self.users.find_user_by_email(email).await?)
+    pub(crate) async fn find_by_email(&self, email: &EmailAddress) -> Result<Option<User>> {
+        Ok(self.users.find_user_by_email(email.as_str()).await?)
     }
 
-    pub(crate) async fn create(&self, email: &str) -> Result<Option<User>> {
+    pub(crate) async fn create(&self, email: &EmailAddress) -> Result<Option<User>> {
         let now = self.now();
         let user = User {
             id: UserId::new(),
-            email: Some(email.to_owned()),
+            email: Some(email.as_str().to_owned()),
             signed_up_at: None,
             status: UserStatus::Active,
             created_at: now,
@@ -93,8 +94,12 @@ impl UserRecords {
         })
     }
 
-    pub(crate) async fn change_email(&self, user_id: UserId, email: &str) -> Result<User> {
-        match self.users.set_user_email(user_id, email, self.now()).await {
+    pub(crate) async fn change_email(&self, user_id: UserId, email: &EmailAddress) -> Result<User> {
+        match self
+            .users
+            .set_user_email(user_id, email.as_str(), self.now())
+            .await
+        {
             Ok(()) => self.find(user_id).await,
             Err(e) => Err(match e.kind() {
                 StorageErrorKind::Conflict => Error::EmailAlreadyInUse,

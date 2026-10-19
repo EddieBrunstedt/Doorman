@@ -7,7 +7,7 @@ use webauthn_rs::prelude::RegisterPublicKeyCredential;
 use crate::assembly::AssemblyError;
 use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
-use crate::email::{self, Mailer};
+use crate::email::{EmailAddress, Mailer};
 use crate::email_link::TOKEN_PLACEHOLDER;
 use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
 use crate::error::{Error, Result};
@@ -144,8 +144,7 @@ impl SignupManager {
         invite_token: Option<&str>,
         context: SessionContext,
     ) -> Result<()> {
-        let email_normalized = email::normalize_email(email);
-        email::validate_email(&email_normalized)?;
+        let address = EmailAddress::parse(email)?;
 
         rate_limit::enforce_all(
             self.rate_limiter.as_ref(),
@@ -160,7 +159,7 @@ impl SignupManager {
                     self.config.rate_limits.request_per_identifier,
                     "signup/request",
                     "email",
-                    Some(email_normalized.as_str()),
+                    Some(address.as_str()),
                 ),
             ],
             || async {},
@@ -170,7 +169,7 @@ impl SignupManager {
         match self
             .config
             .policy
-            .evaluate(&email_normalized, invite_token, &context)
+            .evaluate(address.as_str(), invite_token, &context)
             .await?
         {
             SignupDecision::Allow => {}
@@ -191,11 +190,11 @@ impl SignupManager {
         }
 
         let records = &self.records;
-        if let Some(existing) = records.find_by_email(&email_normalized).await? {
+        if let Some(existing) = records.find_by_email(&address).await? {
             return self.request_for_existing(&existing, &context).await;
         }
-        let Some(user) = records.create(&email_normalized).await? else {
-            return match records.find_by_email(&email_normalized).await? {
+        let Some(user) = records.create(&address).await? else {
+            return match records.find_by_email(&address).await? {
                 Some(existing) => self.request_for_existing(&existing, &context).await,
                 None => Ok(()),
             };

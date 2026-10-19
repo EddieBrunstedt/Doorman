@@ -4,6 +4,7 @@ use std::time::Duration;
 use crate::assembly::{AssemblyError, validate_lifetime};
 use crate::clock::{Clock, expiry};
 use crate::context::CoreDeps;
+use crate::email::EmailAddress;
 use crate::error::{Error, Result};
 use crate::redeem::Redeemer;
 use crate::session::SessionContext;
@@ -59,7 +60,11 @@ impl EmailLinks {
         })
     }
 
-    pub(crate) async fn issue(&self, owner: &User, new_email: Option<String>) -> Result<String> {
+    pub(crate) async fn issue(
+        &self,
+        owner: &User,
+        new_email: Option<&EmailAddress>,
+    ) -> Result<String> {
         let now = self.clock.now();
         let expires_at = expiry(now, self.lifetime)?;
         let (token, token_hash) = generate_token()?;
@@ -69,7 +74,7 @@ impl EmailLinks {
                 user_id: owner.id,
                 purpose: self.purpose,
                 owner_email: owner.email.clone(),
-                new_email,
+                new_email: new_email.map(|address| address.as_str().to_owned()),
                 created_at: now,
                 expires_at,
             })
@@ -82,7 +87,7 @@ impl EmailLinks {
         &self,
         token: &str,
         context: &SessionContext,
-    ) -> Result<(User, Option<String>)> {
+    ) -> Result<(User, Option<EmailAddress>)> {
         let taken = self.links.redeem_link(&hash_token(token)).await?;
         let (user, new_email) = self
             .redeemer
@@ -94,11 +99,11 @@ impl EmailLinks {
 }
 
 // Only an email-change link carries an address: the one the user is changing to.
-fn carried_email(link: EmailLink) -> Result<Option<String>> {
+fn carried_email(link: EmailLink) -> Result<Option<EmailAddress>> {
     match (link.purpose, link.new_email) {
         (EmailLinkPurpose::EmailChange, None) => Err(Error::Internal(
             "email-change link carries no new email".to_string(),
         )),
-        (_, new_email) => Ok(new_email),
+        (_, new_email) => new_email.as_deref().map(EmailAddress::parse).transpose(),
     }
 }

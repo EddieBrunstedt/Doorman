@@ -4,7 +4,7 @@ use crate::assembly::AssemblyError;
 use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
-use crate::email::{self, Mailer};
+use crate::email::{EmailAddress, Mailer};
 use crate::email_link::{EmailLinks, TOKEN_PLACEHOLDER};
 use crate::error::{Error, Result};
 use crate::security_notice::{SecurityNotice, SecurityNotices};
@@ -73,16 +73,15 @@ impl UserManager {
         context: SessionContext,
     ) -> Result<()> {
         let session = cleared.session();
-        let normalized = email::normalize_email(new_email);
-        email::validate_email(&normalized)?;
+        let address = EmailAddress::parse(new_email)?;
 
-        if self.records.find_by_email(&normalized).await?.is_some() {
+        if self.records.find_by_email(&address).await?.is_some() {
             tracing::warn!(outcome = "email_in_use", "email change rejected");
             return Err(Error::EmailAlreadyInUse);
         }
 
         let user = self.records.find(session.user_id).await?;
-        let url = self.link.issue(&user, Some(normalized.clone())).await?;
+        let url = self.link.issue(&user, Some(&address)).await?;
 
         // Whoever holds the session may own the new address, and its mail server
         // can take the link yet fail the send. So the old address hears of the
@@ -91,7 +90,7 @@ impl UserManager {
             .send(
                 &user,
                 SecurityNotice::EmailChangeRequested {
-                    new_email: &normalized,
+                    new_email: address.as_str(),
                 },
             )
             .await;
@@ -107,8 +106,8 @@ impl UserManager {
         // in signup and recovery, that reveals nothing: the request needs a
         // session, and no user has the new address.
         self.mailer
-            .send(&normalized, |templates| {
-                templates.email_change_confirmation_email(&user, &normalized, &url)
+            .send(address.as_str(), |templates| {
+                templates.email_change_confirmation_email(&user, address.as_str(), &url)
             })
             .await?;
         Ok(())

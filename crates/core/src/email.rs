@@ -17,15 +17,22 @@ use crate::error::EmailError;
 use crate::error::{EmailResult, Error, Result};
 use crate::storage::User;
 
-pub fn normalize_email(email: &str) -> String {
-    email.trim().to_ascii_lowercase()
-}
+// Only `parse` builds one, so storage never sees an address that skipped it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EmailAddress(String);
 
-pub(crate) fn validate_email(email: &str) -> Result<()> {
-    if email.is_empty() || !email.contains('@') || email.chars().any(char::is_control) {
-        return Err(Error::InvalidEmail);
+impl EmailAddress {
+    pub(crate) fn parse(input: &str) -> Result<Self> {
+        let address = input.trim().to_ascii_lowercase();
+        if address.is_empty() || !address.contains('@') || address.chars().any(char::is_control) {
+            return Err(Error::InvalidEmail);
+        }
+        Ok(Self(address))
     }
-    Ok(())
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -399,23 +406,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_email_trims_and_lowercases() {
-        assert_eq!(normalize_email("  USER@Example.COM "), "user@example.com");
+    fn email_address_trims_and_lowercases_ascii_only() {
+        let parsed = |input| EmailAddress::parse(input).expect("valid");
+        assert_eq!(parsed("  USER@Example.COM ").as_str(), "user@example.com");
+        assert_eq!(
+            parsed("JOS\u{c9}@Example.com").as_str(),
+            "jos\u{c9}@example.com"
+        );
     }
 
     #[test]
-    fn validate_email_rejects_malformed() {
-        assert!(validate_email("nope").is_err());
-        assert!(validate_email("").is_err());
-        assert!(validate_email("a@b").is_ok());
+    fn email_address_rejects_malformed() {
+        assert!(EmailAddress::parse("nope").is_err());
+        assert!(EmailAddress::parse("").is_err());
+        assert!(EmailAddress::parse("   ").is_err());
+        assert!(EmailAddress::parse("a@b").is_ok());
     }
 
     #[test]
-    fn validate_email_rejects_embedded_control_characters() {
-        assert!(validate_email("a@b.com\r\nBcc: victim@evil.com").is_err());
-        assert!(validate_email("a@b.com\nSubject: spoofed").is_err());
-        assert!(validate_email("a@b.com\0").is_err());
-        assert!(validate_email("user@example.com").is_ok());
+    fn email_address_rejects_embedded_control_characters() {
+        assert!(EmailAddress::parse("a@b.com\r\nBcc: victim@evil.com").is_err());
+        assert!(EmailAddress::parse("a@b.com\nSubject: spoofed").is_err());
+        assert!(EmailAddress::parse("a@b.com\0").is_err());
+        assert!(EmailAddress::parse("user@example.com").is_ok());
     }
 
     #[tokio::test]

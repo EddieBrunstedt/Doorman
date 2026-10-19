@@ -6,7 +6,7 @@ use webauthn_rs::prelude::RegisterPublicKeyCredential;
 use crate::assembly::{AssemblyError, MAX_LIFETIME};
 use crate::audit::{AuditDispatch, AuditEventKind, RecoveryFailureReason};
 use crate::context::CoreDeps;
-use crate::email::{self, Mailer};
+use crate::email::{EmailAddress, Mailer};
 use crate::email_link::TOKEN_PLACEHOLDER;
 use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
 use crate::error::Result;
@@ -155,8 +155,7 @@ impl RecoveryManager {
         fields(method = "recovery", user_id = tracing::field::Empty),
     )]
     pub async fn request_recovery(&self, email: &str, context: SessionContext) -> Result<()> {
-        let email_normalized = email::normalize_email(email);
-        email::validate_email(&email_normalized)?;
+        let address = EmailAddress::parse(email)?;
 
         let rate_limits = &self.config.rate_limits;
         rate_limit::enforce_all(
@@ -172,13 +171,13 @@ impl RecoveryManager {
                     rate_limits.request_per_identifier,
                     "recovery/request",
                     "email",
-                    Some(email_normalized.as_str()),
+                    Some(address.as_str()),
                 ),
                 (
                     rate_limits.request_per_identifier_daily,
                     "recovery/request",
                     "email_daily",
-                    Some(email_normalized.as_str()),
+                    Some(address.as_str()),
                 ),
                 (
                     rate_limits.request_global,
@@ -201,7 +200,7 @@ impl RecoveryManager {
         )
         .await?;
 
-        let Some(user) = self.records.find_by_email(&email_normalized).await? else {
+        let Some(user) = self.records.find_by_email(&address).await? else {
             self.audit
                 .emit(
                     &context,
