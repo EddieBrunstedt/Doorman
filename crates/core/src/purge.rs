@@ -126,7 +126,7 @@ mod tests {
             created_at: now - chrono::Duration::hours(2),
             last_used_at: now - chrono::Duration::hours(2),
             expires_at,
-            ip: None,
+            ip: "192.0.2.1".parse().expect("ip"),
             user_agent: None,
             recovery_cool_down_until: None,
         };

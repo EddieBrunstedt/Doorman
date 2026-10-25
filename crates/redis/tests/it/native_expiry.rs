@@ -20,7 +20,7 @@ fn session(token: &str, now: DateTime<Utc>, expires_at: DateTime<Utc>) -> Sessio
         created_at: now,
         last_used_at: now,
         expires_at,
-        ip: None,
+        ip: "192.0.2.1".parse().expect("client IP"),
         user_agent: None,
         recovery_cool_down_until: None,
     }

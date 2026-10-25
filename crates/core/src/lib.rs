@@ -11,6 +11,7 @@ pub mod assembly;
 mod assertion;
 pub mod audit;
 mod challenge;
+pub mod client_ip;
 pub mod clock;
 mod context;
 pub mod destructive;

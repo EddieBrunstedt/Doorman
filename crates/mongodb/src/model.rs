@@ -33,10 +33,10 @@ fn to_binary(bytes: Vec<u8>) -> Binary {
 }
 
 pub(crate) use doorman_core::encoding::{
-    authentication_purpose_from_str, authentication_purpose_to_str, hex, purpose_from_str,
-    purpose_to_str as purpose_str, registration_purpose_from_str, registration_purpose_to_str,
-    session_transport_from_str, session_transport_to_str, user_status_from_parts,
-    user_status_to_str,
+    authentication_purpose_from_str, authentication_purpose_to_str, client_ip_from_str, hex,
+    purpose_from_str, purpose_to_str as purpose_str, registration_purpose_from_str,
+    registration_purpose_to_str, session_transport_from_str, session_transport_to_str,
+    user_status_from_parts, user_status_to_str,
 };
 
 pub(crate) fn get_str(doc: &Document, key: &str) -> StorageResult<String> {
@@ -189,10 +189,8 @@ pub(crate) fn session_to_doc(session: &Session) -> Document {
         "created_at": to_bson_dt(session.created_at),
         "last_used_at": to_bson_dt(session.last_used_at),
         "expires_at": to_bson_dt(session.expires_at),
+        "ip": session.ip.to_string(),
     };
-    if let Some(ip) = &session.ip {
-        doc.insert("ip", ip.clone());
-    }
     if let Some(ua) = &session.user_agent {
         doc.insert("user_agent", ua.clone());
     }
@@ -211,7 +209,7 @@ pub(crate) fn session_from_doc(doc: &Document) -> StorageResult<Session> {
         created_at: get_dt(doc, "created_at")?,
         last_used_at: get_dt(doc, "last_used_at")?,
         expires_at: get_dt(doc, "expires_at")?,
-        ip: get_opt_str(doc, "ip")?,
+        ip: client_ip_from_str(&get_str(doc, "ip")?)?,
         user_agent: get_opt_str(doc, "user_agent")?,
         recovery_cool_down_until: get_opt_dt(doc, "recovery_cool_down_until")?,
     })

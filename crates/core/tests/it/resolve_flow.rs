@@ -7,10 +7,11 @@ use doorman_core::audit::AuditEventKind;
 use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::passkey::StartedRegistration;
-use doorman_core::session::{IssuedSession, SessionConfig, SessionContext, hash_token};
+use doorman_core::session::{IssuedSession, SessionConfig, hash_token};
 use doorman_core::storage::{
     PasskeyChallengeId, SessionStore, SessionTransport, User, UserId, UserStatus, UserStore,
 };
+use doorman_test_support::request_context;
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::common::{
@@ -127,7 +128,7 @@ async fn a_revocation_reaches_another_process_at_once() {
         .expect("resolve")
         .expect("a live session");
     h.session_manager
-        .log_out(&session, SessionContext::default())
+        .log_out(&session, request_context())
         .await
         .expect("log out");
     let resolved = other
@@ -224,12 +225,12 @@ async fn the_user_read_is_fresh_in_every_process() {
                 new_email: "new@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("request email change");
     h.user
-        .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
+        .confirm_email_change(&last_email_change_token(&h), request_context())
         .await
         .expect("confirm email change");
 
@@ -253,12 +254,12 @@ async fn a_security_notice_goes_to_the_address_changed_in_another_process() {
                 new_email: "new@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("request email change");
     h.user
-        .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
+        .confirm_email_change(&last_email_change_token(&h), request_context())
         .await
         .expect("confirm email change");
 
@@ -268,7 +269,7 @@ async fn a_security_notice_goes_to_the_address_changed_in_another_process() {
             &session,
             DestructiveAction::RevokeOtherSessions,
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("revoke other sessions");
@@ -411,7 +412,7 @@ enum LockOut {
 }
 
 async fn redeem_emailed_link(h: &Harness, issuer: Issuer, token: &str) -> StartedRegistration {
-    let context = SessionContext::default();
+    let context = request_context();
     match issuer {
         Issuer::Signup => h.signup.redeem_signup_link(token, context).await,
         _ => h.recovery.redeem_recovery_link(token, context).await,
@@ -427,7 +428,7 @@ async fn ready_to_finish(h: &Harness, issuer: Issuer, email: &str) -> (UserId, F
             let passkey = register_passkey(h, user.id, &mut wa, None).await;
             let (challenge, options) = h
                 .passkey
-                .start_authentication(SessionContext::default())
+                .start_authentication(request_context())
                 .await
                 .expect("start login");
             let assertion = wa.do_authentication(options, &passkey.credential_id);
@@ -436,14 +437,14 @@ async fn ready_to_finish(h: &Harness, issuer: Issuer, email: &str) -> (UserId, F
         Issuer::Signup | Issuer::Recovery => {
             let (url, subject) = if let Issuer::Signup = issuer {
                 h.signup
-                    .request_signup(email, None, SessionContext::default())
+                    .request_signup(email, None, request_context())
                     .await
                     .expect("request signup");
                 (SIGNUP_URL, "Finish signing up")
             } else {
                 provision_user(h, email).await;
                 h.recovery
-                    .request_recovery(email, SessionContext::default())
+                    .request_recovery(email, request_context())
                     .await
                     .expect("request recovery");
                 (RECOVERY_URL, "Recover access with a new passkey")
@@ -477,7 +478,7 @@ async fn finish(
     finish: Finish,
     transport: SessionTransport,
 ) -> Result<IssuedSession, Error> {
-    let context = SessionContext::default();
+    let context = request_context();
     match finish {
         Finish::Login(challenge, assertion) => h
             .passkey

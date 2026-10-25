@@ -16,7 +16,7 @@ CREATE TABLE sessions (
     created_at TIMESTAMPTZ NOT NULL,
     last_used_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
-    ip TEXT,
+    ip TEXT NOT NULL,
     user_agent TEXT,
     recovery_cool_down_until TIMESTAMPTZ
 );

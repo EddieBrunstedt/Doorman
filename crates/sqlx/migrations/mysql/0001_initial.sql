@@ -17,7 +17,7 @@ CREATE TABLE sessions (
     created_at DATETIME(6) NOT NULL,
     last_used_at DATETIME(6) NOT NULL,
     expires_at DATETIME(6) NOT NULL,
-    ip VARCHAR(45),
+    ip VARCHAR(45) NOT NULL,
     user_agent TEXT,
     recovery_cool_down_until DATETIME(6)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

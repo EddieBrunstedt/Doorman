@@ -3,10 +3,10 @@ use doorman_core::audit::RecoveryFailureReason;
 use doorman_core::audit::{Actor, AuditEvent, AuditEventKind, OperatorActor, SecretKind};
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::security_notice::{NoticePolicy, OperatorNotice};
-use doorman_core::session::SessionContext;
 use doorman_core::storage::{
     PasskeyChallengeStore, PasskeyStore, SessionId, SessionStore, UserId, UserStatus, UserStore,
 };
+use doorman_test_support::request_context;
 
 use crate::common::{
     Harness, HarnessBuilder, RECOVERY_URL, assert_last_redemption_unknown, last_email_change_token,
@@ -133,7 +133,7 @@ async fn operator_delete_cascades_all_stores() {
                 new_email: "elsewhere@example.com".into(),
             },
             None,
-            Default::default(),
+            request_context(),
         )
         .await
         .expect("request email change");
@@ -169,7 +169,7 @@ async fn operator_delete_cascades_all_stores() {
 
     let err = h
         .user
-        .confirm_email_change(&email_change_token, SessionContext::default())
+        .confirm_email_change(&email_change_token, request_context())
         .await
         .expect_err("the email-change link is gone");
     assert!(matches!(err, Error::InvalidEmailLink));
@@ -348,7 +348,7 @@ async fn notice_policy_leaves_self_service_notices_alone() {
             &session,
             DestructiveAction::RemovePasskey { credential_id },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("remove passkey");
@@ -783,7 +783,7 @@ async fn disable_blocks_recovery_then_enable_restores_it() {
 
     let mail_before = h.email.sent().len();
     h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
+        .request_recovery("alice@example.com", request_context())
         .await
         .expect("silent ok for a disabled user");
 
@@ -808,7 +808,7 @@ async fn disable_blocks_recovery_then_enable_restores_it() {
         .await
         .expect("enable");
     h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
+        .request_recovery("alice@example.com", request_context())
         .await
         .expect("recovery request after enable");
     let link = h
@@ -821,7 +821,7 @@ async fn disable_blocks_recovery_then_enable_restores_it() {
     h.recovery
         .redeem_recovery_link(
             &token_from_email(&link.body_text, RECOVERY_URL),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("an enabled user can recover again");

@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::client_ip::ClientIp;
 use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::session::SessionContext;
@@ -22,7 +23,7 @@ pub struct AuditEvent {
 #[serde(tag = "actor_type", rename_all = "snake_case")]
 pub enum Actor {
     Subject {
-        ip: Option<String>,
+        ip: ClientIp,
         user_agent: Option<String>,
     },
     Operator(OperatorActor),
@@ -31,7 +32,7 @@ pub enum Actor {
 impl From<&SessionContext> for Actor {
     fn from(context: &SessionContext) -> Self {
         Self::Subject {
-            ip: context.ip().map(str::to_owned),
+            ip: context.ip(),
             user_agent: context.user_agent().map(str::to_owned),
         }
     }
@@ -380,10 +381,7 @@ impl fmt::Display for ActorDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
             Actor::Subject { ip, user_agent } => {
-                f.write_str("subject")?;
-                if let Some(ip) = ip {
-                    write!(f, " ip={}", Escaped(ip))?;
-                }
+                write!(f, "subject ip={ip}")?;
                 if let Some(user_agent) = user_agent {
                     write!(f, " ua={}", Escaped(user_agent))?;
                 }

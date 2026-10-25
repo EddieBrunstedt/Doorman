@@ -151,7 +151,7 @@ async fn reads_see_every_finished_write_when_the_host_prefers_secondaries() {
         created_at: now,
         last_used_at: now,
         expires_at: now + chrono::Duration::hours(1),
-        ip: None,
+        ip: "192.0.2.1".parse().expect("client IP"),
         user_agent: None,
         recovery_cool_down_until: None,
     };

@@ -5,10 +5,11 @@ use doorman_core::audit::{AuditEventKind, AuthFailureReason, RedemptionFailureRe
 use doorman_core::clock::Clock;
 use doorman_core::destructive::{CurrentSession, DestructiveAction};
 use doorman_core::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
-use doorman_core::session::{ResolvedSession, SessionContext};
+use doorman_core::session::ResolvedSession;
 use doorman_core::storage::{
     PasskeyStore, SessionId, SessionStore, StoredPasskey, UserStatus, UserStore,
 };
+use doorman_test_support::request_context;
 
 use crate::common::{
     Harness, authenticator, kinds, make_user, register_passkey, session_for,
@@ -58,7 +59,7 @@ async fn perform(
     proof: Option<ReauthProof>,
 ) -> Result<CurrentSession, Error> {
     h.session_manager
-        .perform(session, action, proof, SessionContext::default())
+        .perform(session, action, proof, request_context())
         .await
 }
 
@@ -136,7 +137,7 @@ async fn gated_action_with_fresh_proof_succeeds_and_audits() {
             &session,
             DestructiveAction::DeleteUser,
             Some(proof),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("delete succeeds with a fresh proof");
@@ -264,7 +265,7 @@ async fn challenge_is_single_use() {
                 credential_id: target,
             },
             Some(proof.clone()),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("first use succeeds");
@@ -278,7 +279,7 @@ async fn challenge_is_single_use() {
                 credential_id: other,
             },
             Some(proof),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("replayed challenge must be rejected");
@@ -295,7 +296,7 @@ async fn login_challenge_is_not_a_reauth_proof() {
 
     let (challenge_id, options) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start login");
     let assertion = wa.do_authentication(options, &passkey.credential_id);
@@ -309,7 +310,7 @@ async fn login_challenge_is_not_a_reauth_proof() {
                 challenge_id,
                 assertion,
             }),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("a login challenge cannot re-authenticate");
@@ -403,7 +404,7 @@ async fn expired_challenge_is_rejected() {
                 challenge_id,
                 assertion,
             }),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("expired challenge must be rejected");
@@ -455,7 +456,7 @@ async fn assertion_from_another_users_passkey_is_rejected() {
                 challenge_id,
                 assertion,
             }),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("an assertion from another user's passkey must be rejected");
@@ -515,7 +516,7 @@ async fn ending_the_acting_session_passes_no_gate() {
             let ended = match way {
                 EndActingSession::LogOut => h
                     .session_manager
-                    .log_out(&current, SessionContext::default())
+                    .log_out(&current, request_context())
                     .await
                     .map(|()| CurrentSession::Ended),
                 EndActingSession::RevokeIt => {
@@ -566,7 +567,7 @@ async fn register_passkey_in_cool_down(
             challenge_id,
             &response,
             Some("in cool-down".into()),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish registration");

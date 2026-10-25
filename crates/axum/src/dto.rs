@@ -3,7 +3,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use doorman_core::session::{IssuedSession, ResolvedSession};
 use doorman_core::storage::{
-    PasskeySummary, SessionId, SessionSummary, SessionTransport, User, UserId,
+    ClientIp, PasskeySummary, SessionId, SessionSummary, SessionTransport, User, UserId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +32,7 @@ pub struct SessionDto {
     pub transport: SessionTransport,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
-    pub ip: Option<String>,
+    pub ip: ClientIp,
     pub user_agent: Option<String>,
     pub device_label: Option<String>,
     pub is_current: bool,
@@ -45,7 +45,7 @@ impl SessionDto {
             transport: value.transport,
             created_at: value.created_at,
             expires_at: value.expires_at,
-            ip: value.ip.clone(),
+            ip: value.ip,
             user_agent: value.user_agent.clone(),
             device_label: value.user_agent.as_deref().and_then(device_label),
             is_current,
@@ -261,7 +261,7 @@ mod tests {
             created_at: now,
             last_used_at: now,
             expires_at: now,
-            ip: None,
+            ip: "192.0.2.1".parse().expect("client IP"),
             user_agent: ua.map(ToOwned::to_owned),
             recovery_cool_down_until: None,
         }

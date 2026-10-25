@@ -154,7 +154,7 @@ impl SignupManager {
                     self.config.rate_limits.request_per_ip,
                     "signup/request",
                     "ip",
-                    context.ip(),
+                    Some(context.ip().to_string().as_str()),
                 ),
                 (
                     self.config.rate_limits.request_per_identifier,

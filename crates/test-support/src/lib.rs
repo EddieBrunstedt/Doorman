@@ -11,11 +11,18 @@ use doorman_core::email::{Email, EmailSender};
 use doorman_core::email_link::TOKEN_PLACEHOLDER;
 use doorman_core::error::{EmailError, EmailResult};
 use doorman_core::metrics::{MetricEvent, MetricSink};
+use doorman_core::session::SessionContext;
 
 pub use authenticator::{
     ResidentAuthenticator, assert_discoverable_request_options,
     assert_resident_registration_options,
 };
+
+pub const CLIENT_IP: &str = "192.0.2.1";
+
+pub fn request_context() -> SessionContext {
+    SessionContext::new(CLIENT_IP.parse().expect("client IP"), None)
+}
 
 pub fn token_from_email(body: &str, template: &str) -> String {
     let prefix = template

@@ -135,7 +135,7 @@ impl SessionRecords {
             created_at: now,
             last_used_at: now,
             expires_at: self.deadline(now, now),
-            ip: context.ip().map(str::to_owned),
+            ip: context.ip(),
             user_agent: context.user_agent().map(str::to_owned),
             recovery_cool_down_until: cool_down.until(),
         };

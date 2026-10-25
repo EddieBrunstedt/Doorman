@@ -14,7 +14,7 @@ use doorman_core::session::SessionContext;
 use doorman_core::storage::{
     PasskeyChallengeStore, PasskeyStore, PasskeyUse, SessionTransport, UserStatus, UserStore,
 };
-use doorman_test_support::MockClock;
+use doorman_test_support::{MockClock, request_context};
 use webauthn_rs_proto::AuthenticatorTransport;
 
 use crate::common::{
@@ -51,7 +51,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
             challenge_id,
             &response,
             Some("Alice's Mac".into()),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish_registration");
@@ -61,13 +61,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
     assert_eq!(passkey_count(&h, user.id).await, 1);
     let err = h
         .session_manager
-        .finish_passkey_registration(
-            &session,
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&session, challenge_id, &response, None, request_context())
         .await
         .expect_err("challenge redeemed: the ceremony cannot be replayed");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
@@ -78,7 +72,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
 
     let (auth_challenge, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start_authentication");
     assert_discoverable_request_options(&rcr);
@@ -91,7 +85,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
             auth_challenge,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::new(Some("1.2.3.4".parse().expect("ip")), Some("ua")),
+            SessionContext::new("1.2.3.4".parse().expect("ip"), Some("ua")),
         )
         .await
         .expect("finish_authentication");
@@ -169,13 +163,7 @@ async fn registration_stores_each_reported_transport_once() {
 
     let passkey = h
         .session_manager
-        .finish_passkey_registration(
-            &session,
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&session, challenge_id, &response, None, request_context())
         .await
         .expect("finish_registration");
     assert_eq!(passkey.transports, ["hybrid", "internal"]);
@@ -193,7 +181,7 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
 
     let (bob_challenge, bob_options) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start bob");
     let bob_assertion = wa.do_authentication(bob_options, &bob_passkey.credential_id);
@@ -203,7 +191,7 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
             bob_challenge,
             &bob_assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish bob")
@@ -212,7 +200,7 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
 
     let (alice_challenge, alice_options) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start alice");
     let alice_assertion = wa.do_authentication(alice_options, &alice_passkey.credential_id);
@@ -222,7 +210,7 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
             alice_challenge,
             &alice_assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish alice")
@@ -239,7 +227,7 @@ async fn authentication_without_user_handle_is_rejected() {
 
     let (auth_id, options) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication_without_user_handle(options, &passkey.credential_id);
@@ -250,7 +238,7 @@ async fn authentication_without_user_handle_is_rejected() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("missing user handle must be rejected");
@@ -322,25 +310,13 @@ async fn finish_registration_rejects_unknown_challenge() {
         .expect("start");
     let response = wa.do_registration(ccr);
     h.session_manager
-        .finish_passkey_registration(
-            &session,
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&session, challenge_id, &response, None, request_context())
         .await
         .expect("first finish ok");
 
     let err = h
         .session_manager
-        .finish_passkey_registration(
-            &session,
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&session, challenge_id, &response, None, request_context())
         .await
         .expect_err("replayed challenge");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
@@ -362,13 +338,7 @@ async fn an_added_passkey_finishes_only_in_the_session_that_started_it() {
 
     let err = h
         .session_manager
-        .finish_passkey_registration(
-            &other,
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&other, challenge_id, &response, None, request_context())
         .await
         .expect_err("another session of the same user");
     assert!(
@@ -402,13 +372,7 @@ async fn finish_registration_rejects_expired_challenge() {
 
     let err = h
         .session_manager
-        .finish_passkey_registration(
-            &session,
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&session, challenge_id, &response, None, request_context())
         .await
         .expect_err("expired");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
@@ -448,13 +412,7 @@ async fn finish_registration_rejects_malformed_challenge() {
 
     let err = h
         .session_manager
-        .finish_passkey_registration(
-            &session,
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&session, challenge_id, &response, None, request_context())
         .await
         .expect_err("malformed");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
@@ -487,13 +445,7 @@ async fn finish_registration_against_deleted_user_writes_no_orphan_passkey() {
 
     let err = h
         .session_manager
-        .finish_passkey_registration(
-            &session,
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&session, challenge_id, &response, None, request_context())
         .await
         .expect_err("finishing against a deleted user must be rejected");
     assert!(
@@ -524,7 +476,7 @@ async fn finish_authentication_rejects_unknown_passkey() {
 
     let (auth_id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
@@ -540,7 +492,7 @@ async fn finish_authentication_rejects_unknown_passkey() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("missing passkey");
@@ -557,7 +509,7 @@ async fn finish_authentication_rejects_mismatched_user_handle() {
 
     let (auth_id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let mut assertion = wa.do_authentication(rcr, &alice_passkey.credential_id);
@@ -569,7 +521,7 @@ async fn finish_authentication_rejects_mismatched_user_handle() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("ownership mismatch");
@@ -604,7 +556,7 @@ async fn finish_authentication_rejects_tampered_signature() {
 
     let (auth_id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let mut assertion = wa.do_authentication(rcr, &passkey.credential_id);
@@ -619,7 +571,7 @@ async fn finish_authentication_rejects_tampered_signature() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("tampered signature must be rejected");
@@ -669,13 +621,7 @@ async fn finish_registration_rejects_tampered_attestation() {
 
     let err = h
         .session_manager
-        .finish_passkey_registration(
-            &session,
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&session, challenge_id, &response, None, request_context())
         .await
         .expect_err("tampered attestation must be rejected");
     assert!(matches!(err, Error::Webauthn(_)));
@@ -717,7 +663,7 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
 
     let (auth_id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
@@ -728,7 +674,7 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("counter regression must be rejected");
@@ -773,7 +719,7 @@ async fn finish_authentication_refuses_disabled_user() {
 
     let (auth_id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
@@ -784,7 +730,7 @@ async fn finish_authentication_refuses_disabled_user() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("disabled user must be refused");
@@ -827,7 +773,7 @@ async fn finish_authentication_refuses_disabled_user() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("challenge redeemed: the refused login cannot be replayed");
@@ -843,7 +789,7 @@ async fn finish_authentication_audits_unknown_passkey_failure() {
 
     let (auth_id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
@@ -858,7 +804,7 @@ async fn finish_authentication_audits_unknown_passkey_failure() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("missing passkey");
@@ -883,7 +829,7 @@ async fn finish_authentication_audits_expired_challenge_failure() {
 
     let (auth_id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
@@ -895,7 +841,7 @@ async fn finish_authentication_audits_expired_challenge_failure() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("expired challenge");
@@ -921,7 +867,7 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
 
     let (auth_id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
@@ -930,7 +876,7 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("first finish");
@@ -938,7 +884,7 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
 
     let (auth_id2, rcr2) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth 2");
     let assertion2 = wa.do_authentication(rcr2, &passkey.credential_id);
@@ -954,7 +900,7 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
             auth_id2,
             &assertion2,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("unknown challenge");
@@ -993,7 +939,7 @@ async fn finish_authentication_rejects_a_reauth_challenge() {
             reauth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("a re-authentication challenge cannot log in");
@@ -1028,7 +974,7 @@ async fn start_authentication_is_usernameless_and_does_not_look_up_email() {
     let h = Harness::fresh();
     let (_id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("should succeed without an email");
     assert_discoverable_request_options(&rcr);
@@ -1043,7 +989,7 @@ async fn finish_authentication_rejects_expired_challenge() {
 
     let (auth_id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
@@ -1055,7 +1001,7 @@ async fn finish_authentication_rejects_expired_challenge() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("expired challenge");
@@ -1078,7 +1024,7 @@ async fn remove_passkey_emits_audit_sends_notice_and_blocks_login() {
                 credential_id: passkey.credential_id.clone(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("remove");
@@ -1116,7 +1062,7 @@ async fn remove_passkey_refuses_other_users_passkey_without_notice() {
                 credential_id: passkey.credential_id.clone(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("ownership check");
@@ -1143,7 +1089,7 @@ async fn remove_missing_passkey_sends_no_notice() {
                 credential_id: b"missing passkey".to_vec(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("missing passkey");
@@ -1168,7 +1114,7 @@ async fn remove_passkey_notice_failure_does_not_undo_removal() {
                 credential_id: passkey.credential_id.clone(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("remove succeeds despite notice failure");
@@ -1206,7 +1152,7 @@ async fn remove_passkey_refused_during_recovery_cool_down() {
                 credential_id: passkey.credential_id.clone(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("removal must be refused during the cool-down");
@@ -1230,7 +1176,7 @@ async fn remove_passkey_refused_during_recovery_cool_down() {
                 credential_id: passkey.credential_id.clone(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("removal allowed once the cool-down lapses");
@@ -1252,7 +1198,7 @@ async fn rename_passkey_updates_name_emits_audit_and_sends_no_notice() {
             &session,
             &passkey.credential_id,
             Some("new phone".into()),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("rename");
@@ -1289,12 +1235,7 @@ async fn rename_passkey_clears_name_with_none() {
 
     let updated = h
         .session_manager
-        .rename_passkey(
-            &session,
-            &passkey.credential_id,
-            None,
-            SessionContext::default(),
-        )
+        .rename_passkey(&session, &passkey.credential_id, None, request_context())
         .await
         .expect("rename");
     assert_eq!(updated.name, None, "name cleared");
@@ -1318,7 +1259,7 @@ async fn a_refused_passkey_name_leaves_the_registration_challenge_usable() {
             challenge_id,
             &response,
             Some(name.to_owned()),
-            SessionContext::default(),
+            request_context(),
         )
     };
 
@@ -1353,7 +1294,7 @@ async fn rename_passkey_trims_the_name_and_refuses_an_invalid_one() {
             &session,
             &passkey.credential_id,
             Some(name.to_owned()),
-            SessionContext::default(),
+            request_context(),
         )
     };
     let stored_name = || async {
@@ -1399,7 +1340,7 @@ async fn rename_passkey_refuses_other_users_passkey() {
             &bob_session,
             &passkey.credential_id,
             Some("pwned".into()),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("ownership check");
@@ -1426,7 +1367,7 @@ async fn rename_missing_passkey_fails() {
             &session,
             b"missing passkey",
             Some("ghost".into()),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("missing passkey");
@@ -1448,7 +1389,7 @@ async fn rename_passkey_allowed_during_recovery_cool_down() {
             &in_cool_down,
             &passkey.credential_id,
             Some("renamed during cool-down".into()),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("rename allowed during the cool-down");
@@ -1470,13 +1411,7 @@ async fn start_registration_from_ordinary_session_carries_no_cool_down() {
     let response = wa.do_registration(ccr);
     let passkey = h
         .session_manager
-        .finish_passkey_registration(
-            &session,
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&session, challenge_id, &response, None, request_context())
         .await
         .expect("finish_registration");
 
@@ -1557,7 +1492,7 @@ async fn registration_is_rejected_once_passkey_cap_is_reached() {
             challenge_id,
             &response,
             Some("second".into()),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("passkey cap rejects the second registration");
@@ -1606,13 +1541,7 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
 
     let response = authenticator().do_registration(first_options);
     h.session_manager
-        .finish_passkey_registration(
-            &session,
-            first_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&session, first_id, &response, None, request_context())
         .await
         .expect("finish the first ceremony");
     h.session_manager
@@ -1668,7 +1597,7 @@ async fn authenticate_start_is_rate_limited_per_ip() {
         })
         .build();
 
-    let from = |ip: &str| SessionContext::new(Some(ip.parse().expect("ip")), None);
+    let from = |ip: &str| SessionContext::new(ip.parse().expect("ip"), None);
 
     h.passkey
         .start_authentication(from("1.2.3.4"))
@@ -1711,23 +1640,18 @@ async fn authenticate_finish_is_rate_limited_per_passkey() {
 
     let (id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start one");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
     h.passkey
-        .finish_authentication(
-            id,
-            &assertion,
-            SessionTransport::Cookie,
-            SessionContext::default(),
-        )
+        .finish_authentication(id, &assertion, SessionTransport::Cookie, request_context())
         .await
         .expect("first finish within budget");
 
     let (id2, rcr2) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start two");
     let assertion2 = wa.do_authentication(rcr2, &passkey.credential_id);
@@ -1737,7 +1661,7 @@ async fn authenticate_finish_is_rate_limited_per_passkey() {
             id2,
             &assertion2,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("second finish for the same passkey is limited");
@@ -1755,7 +1679,7 @@ async fn successful_login_records_login_and_latency_metrics() {
 
     let (auth_id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
@@ -1764,7 +1688,7 @@ async fn successful_login_records_login_and_latency_metrics() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish auth");
@@ -1798,7 +1722,7 @@ async fn failed_login_records_auth_failure_and_latency_metrics() {
 
     let (auth_id, rcr) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
@@ -1812,7 +1736,7 @@ async fn failed_login_records_auth_failure_and_latency_metrics() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("missing passkey");
@@ -1845,7 +1769,7 @@ async fn login_and_email_change_report_the_users_passkey_count() {
 
     let (challenge_id, options) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start login");
     let assertion = wa.do_authentication(options, &first.credential_id);
@@ -1855,7 +1779,7 @@ async fn login_and_email_change_report_the_users_passkey_count() {
             challenge_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish login");
@@ -1868,13 +1792,13 @@ async fn login_and_email_change_report_the_users_passkey_count() {
                 new_email: "new@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("request email change");
     let confirmed = h
         .user
-        .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
+        .confirm_email_change(&last_email_change_token(&h), request_context())
         .await
         .expect("confirm email change");
     assert_eq!(confirmed.passkey_count, 2);

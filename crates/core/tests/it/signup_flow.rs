@@ -13,7 +13,7 @@ use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
 use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy, SignupRateLimits};
 use doorman_core::storage::{PasskeyStore, SessionTransport, User, UserStore};
-use doorman_test_support::MockClock;
+use doorman_test_support::{MockClock, request_context};
 
 use crate::common::{
     Harness, SIGNUP_URL, authenticator, kinds, provision_user, signup_config, token_from_email, ts,
@@ -24,7 +24,7 @@ use crate::common::{
 async fn request_provisions_user_for_new_email() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("Alice@Example.com", None, SessionContext::default())
+        .request_signup("Alice@Example.com", None, request_context())
         .await
         .expect("request");
 
@@ -47,7 +47,7 @@ async fn request_provisions_user_for_new_email() {
 
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
     h.signup
-        .redeem_signup_link(&token, SessionContext::default())
+        .redeem_signup_link(&token, request_context())
         .await
         .expect("token persisted: the emailed link redeems");
 }
@@ -60,9 +60,9 @@ async fn concurrent_requests_for_one_new_email_both_succeed() {
     let (first, second, _) = within_deadline(async {
         tokio::join!(
             h.signup
-                .request_signup("race@example.com", None, SessionContext::default()),
+                .request_signup("race@example.com", None, request_context()),
             h.signup
-                .request_signup("race@example.com", None, SessionContext::default()),
+                .request_signup("race@example.com", None, request_context()),
             release.wait(),
         )
     })
@@ -74,7 +74,7 @@ async fn concurrent_requests_for_one_new_email_both_succeed() {
     assert_eq!(sent.len(), 2, "one link per request");
     let token = token_from_email(&sent[1].body_text, SIGNUP_URL);
     h.signup
-        .redeem_signup_link(&token, SessionContext::default())
+        .redeem_signup_link(&token, request_context())
         .await
         .expect("the latest link redeems");
 }
@@ -86,7 +86,7 @@ async fn request_for_email_with_passkeys_is_silent_and_audited() {
     let emails_before = h.email.sent().len();
 
     h.signup
-        .request_signup("alice@example.com", None, SessionContext::default())
+        .request_signup("alice@example.com", None, request_context())
         .await
         .expect("silent ok");
     assert_eq!(h.email.sent().len(), emails_before, "no extra link sent");
@@ -105,14 +105,14 @@ async fn request_for_email_with_passkeys_is_silent_and_audited() {
 async fn request_before_signup_finished_reissues_signup_link() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("alice@example.com", None, SessionContext::default())
+        .request_signup("alice@example.com", None, request_context())
         .await
         .expect("first request");
     assert_eq!(h.email.sent().len(), 1, "first link sent");
     let first_token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
 
     h.signup
-        .request_signup("alice@example.com", None, SessionContext::default())
+        .request_signup("alice@example.com", None, request_context())
         .await
         .expect("reissue");
     assert_eq!(h.email.sent().len(), 2, "fresh link re-sent");
@@ -121,12 +121,12 @@ async fn request_before_signup_finished_reissues_signup_link() {
     assert_ne!(first_token, second_token, "a fresh token was minted");
     let err = h
         .signup
-        .redeem_signup_link(&first_token, SessionContext::default())
+        .redeem_signup_link(&first_token, request_context())
         .await
         .expect_err("prior token no longer valid");
     assert!(matches!(err, Error::InvalidEmailLink));
     h.signup
-        .redeem_signup_link(&second_token, SessionContext::default())
+        .redeem_signup_link(&second_token, request_context())
         .await
         .expect("the fresh token redeems");
 
@@ -156,7 +156,7 @@ async fn request_after_signup_finished_sends_no_link_even_without_passkeys() {
     let mail_before = h.email.sent().len();
 
     h.signup
-        .request_signup("alice@example.com", None, SessionContext::default())
+        .request_signup("alice@example.com", None, request_context())
         .await
         .expect("silent ok");
 
@@ -200,16 +200,16 @@ fn assert_last_refused_as_signup_finished(h: &Harness, secret: SecretKind) {
 async fn signup_link_issued_before_signup_finished_is_refused_after() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("alice@example.com", None, SessionContext::default())
+        .request_signup("alice@example.com", None, request_context())
         .await
         .expect("first request");
     let started = h
         .signup
-        .redeem_signup_link(&last_signup_token(&h), SessionContext::default())
+        .redeem_signup_link(&last_signup_token(&h), request_context())
         .await
         .expect("redeem first link");
     h.signup
-        .request_signup("alice@example.com", None, SessionContext::default())
+        .request_signup("alice@example.com", None, request_context())
         .await
         .expect("second request");
     let spare = last_signup_token(&h);
@@ -220,14 +220,14 @@ async fn signup_link_issued_before_signup_finished_is_refused_after() {
             &authenticator().do_registration(started.options),
             None,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish signup");
 
     let err = h
         .signup
-        .redeem_signup_link(&spare, SessionContext::default())
+        .redeem_signup_link(&spare, request_context())
         .await
         .expect_err("the spare link no longer reaches the user");
     assert!(matches!(err, Error::InvalidEmailLink), "{err:?}");
@@ -246,12 +246,12 @@ async fn signup_link_issued_before_signup_finished_is_refused_after() {
 async fn signup_registration_cannot_finish_once_signup_finished_elsewhere() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("alice@example.com", None, SessionContext::default())
+        .request_signup("alice@example.com", None, request_context())
         .await
         .expect("request");
     let started = h
         .signup
-        .redeem_signup_link(&last_signup_token(&h), SessionContext::default())
+        .redeem_signup_link(&last_signup_token(&h), request_context())
         .await
         .expect("redeem");
     let user = h
@@ -273,7 +273,7 @@ async fn signup_registration_cannot_finish_once_signup_finished_elsewhere() {
             &authenticator().do_registration(started.options),
             None,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("a signup registration never reaches a user who finished signup");
@@ -292,14 +292,14 @@ async fn signup_registration_cannot_finish_once_signup_finished_elsewhere() {
 async fn redeem_starts_passkey_registration() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("user@example.com", None, SessionContext::default())
+        .request_signup("user@example.com", None, request_context())
         .await
         .expect("request");
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
 
     let outcome = h
         .signup
-        .redeem_signup_link(&token, SessionContext::default())
+        .redeem_signup_link(&token, request_context())
         .await
         .expect("redeem");
     let _ = outcome.challenge_id;
@@ -307,7 +307,7 @@ async fn redeem_starts_passkey_registration() {
 
     let err = h
         .signup
-        .redeem_signup_link(&token, SessionContext::default())
+        .redeem_signup_link(&token, request_context())
         .await
         .expect_err("token redeemed: the link cannot be replayed");
     assert!(matches!(err, Error::InvalidEmailLink));
@@ -332,13 +332,13 @@ async fn redeem_starts_passkey_registration() {
 async fn finish_sends_no_security_notice() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("alice@example.com", None, SessionContext::default())
+        .request_signup("alice@example.com", None, request_context())
         .await
         .expect("request");
     let token = token_from_email(&h.email.sent()[0].body_text, SIGNUP_URL);
     let started = h
         .signup
-        .redeem_signup_link(&token, SessionContext::default())
+        .redeem_signup_link(&token, request_context())
         .await
         .expect("redeem");
 
@@ -350,7 +350,7 @@ async fn finish_sends_no_security_notice() {
             &authenticator().do_registration(started.options),
             Some("alice device".into()),
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish");
@@ -364,7 +364,7 @@ async fn request_rejects_invalid_email() {
     let h = Harness::fresh();
     let err = h
         .signup
-        .request_signup("not-an-email", None, SessionContext::default())
+        .request_signup("not-an-email", None, request_context())
         .await
         .expect_err("invalid");
     assert!(matches!(err, Error::InvalidEmail));
@@ -388,7 +388,7 @@ async fn rate_limit_per_ip_blocks_after_budget() {
         })
         .build();
 
-    let ctx = SessionContext::new(Some("9.9.9.9".parse().expect("ip")), None);
+    let ctx = SessionContext::new("9.9.9.9".parse().expect("ip"), None);
     h.signup
         .request_signup("a@example.com", None, ctx.clone())
         .await
@@ -428,7 +428,7 @@ async fn rate_limit_per_identifier_blocks_across_ips() {
             .request_signup(
                 "target@example.com",
                 None,
-                SessionContext::new(Some(ip.parse().expect("ip")), None),
+                SessionContext::new(ip.parse().expect("ip"), None),
             )
             .await
             .expect("within identifier budget");
@@ -439,7 +439,7 @@ async fn rate_limit_per_identifier_blocks_across_ips() {
         .request_signup(
             "target@example.com",
             None,
-            SessionContext::new(Some("3.3.3.3".parse().expect("ip")), None),
+            SessionContext::new("3.3.3.3".parse().expect("ip"), None),
         )
         .await
         .expect_err("identifier limited");
@@ -451,21 +451,21 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
     let h = Harness::fresh();
 
     h.signup
-        .request_signup("fresh@example.com", None, SessionContext::default())
+        .request_signup("fresh@example.com", None, request_context())
         .await
         .expect("unknown address Ok");
     h.signup
-        .request_signup("fresh@example.com", None, SessionContext::default())
+        .request_signup("fresh@example.com", None, request_context())
         .await
         .expect("known address Ok");
 
     h.email.fail_after_successful_sends(h.email.sent().len());
     h.signup
-        .request_signup("another@example.com", None, SessionContext::default())
+        .request_signup("another@example.com", None, request_context())
         .await
         .expect("unknown address Ok despite send failure");
     h.signup
-        .request_signup("fresh@example.com", None, SessionContext::default())
+        .request_signup("fresh@example.com", None, request_context())
         .await
         .expect("known address Ok despite send failure");
 
@@ -495,7 +495,7 @@ async fn custom_emails_override_signup_subject_and_html() {
     let h = Harness::builder().emails(Arc::new(BrandedEmails)).build();
 
     h.signup
-        .request_signup("user@example.com", None, SessionContext::default())
+        .request_signup("user@example.com", None, request_context())
         .await
         .expect("request");
 
@@ -576,7 +576,7 @@ fn harness_with_policy(policy: Arc<dyn SignupPolicy>) -> Harness {
 async fn default_open_policy_completes_signup() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("open@example.com", None, SessionContext::default())
+        .request_signup("open@example.com", None, request_context())
         .await
         .expect("default-open request succeeds");
 
@@ -597,7 +597,7 @@ async fn deny_silently_returns_ok_without_email_or_user() {
     let h = harness_with_policy(policy.clone());
 
     h.signup
-        .request_signup("blocked@example.com", None, SessionContext::default())
+        .request_signup("blocked@example.com", None, request_context())
         .await
         .expect("silent denial returns Ok");
 
@@ -626,7 +626,7 @@ async fn deny_returns_typed_error_without_email_or_user() {
 
     let err = h
         .signup
-        .request_signup("blocked@example.com", None, SessionContext::default())
+        .request_signup("blocked@example.com", None, request_context())
         .await
         .expect_err("deny surfaces a typed error");
     assert!(matches!(err, Error::SignupNotAllowed));
@@ -655,12 +655,12 @@ async fn invite_token_is_passed_through_verbatim() {
         .request_signup(
             "invited@example.com",
             Some("opaque-invite-blob-123"),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("request");
     h.signup
-        .request_signup("walkin@example.com", None, SessionContext::default())
+        .request_signup("walkin@example.com", None, request_context())
         .await
         .expect("request");
 
@@ -682,7 +682,7 @@ async fn policy_error_propagates_and_provisions_nothing() {
 
     let err = h
         .signup
-        .request_signup("err@example.com", None, SessionContext::default())
+        .request_signup("err@example.com", None, request_context())
         .await
         .expect_err("policy store failure propagates");
     assert!(matches!(err, Error::Storage(_)));
@@ -721,7 +721,7 @@ async fn denied_attempt_still_spends_rate_limit_budget() {
         })
         .build();
 
-    let ctx = SessionContext::new(Some("7.7.7.7".parse().expect("ip")), None);
+    let ctx = SessionContext::new("7.7.7.7".parse().expect("ip"), None);
 
     let first = h
         .signup

@@ -18,7 +18,7 @@ use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use doorman_core::session::{SessionConfig, SessionContext};
 use doorman_core::storage::{PasskeyStore, SessionTransport, User, UserStore};
-use doorman_test_support::MockClock;
+use doorman_test_support::{MockClock, request_context};
 
 use crate::common::{
     Harness, RECOVERY_URL, RP_ID, RP_NAME, authenticator, kinds, last_email_change_token,
@@ -33,7 +33,7 @@ async fn request_for_registered_email_sends_link_and_notice() {
     let mail_before = h.email.sent().len();
 
     h.recovery
-        .request_recovery("Alice@Example.com", SessionContext::default())
+        .request_recovery("Alice@Example.com", request_context())
         .await
         .expect("recovery request");
 
@@ -71,7 +71,7 @@ async fn request_for_registered_email_sends_link_and_notice() {
     h.recovery
         .redeem_recovery_link(
             &token_from_email(&link_email.body_text, RECOVERY_URL),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("recovery token persisted: the emailed link redeems");
@@ -81,7 +81,7 @@ async fn request_for_registered_email_sends_link_and_notice() {
 async fn request_for_unknown_email_sends_nothing_but_audits() {
     let h = Harness::fresh();
     h.recovery
-        .request_recovery("ghost@example.com", SessionContext::default())
+        .request_recovery("ghost@example.com", request_context())
         .await
         .expect("silent ok");
 
@@ -105,7 +105,7 @@ async fn request_for_unknown_email_sends_nothing_but_audits() {
 async fn request_before_signup_finished_sends_nothing_but_audits() {
     let h = Harness::fresh();
     h.signup
-        .request_signup("alice@example.com", None, SessionContext::default())
+        .request_signup("alice@example.com", None, request_context())
         .await
         .expect("signup request");
     let user = h
@@ -117,7 +117,7 @@ async fn request_before_signup_finished_sends_nothing_but_audits() {
     let mail_before = h.email.sent().len();
 
     h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
+        .request_recovery("alice@example.com", request_context())
         .await
         .expect("silent ok before signup finished");
 
@@ -140,7 +140,7 @@ async fn recovery_started_before_an_email_change_cannot_finish() {
     let h = Harness::fresh();
     let user = provision_user(&h, "old@example.com").await;
     h.recovery
-        .request_recovery("old@example.com", SessionContext::default())
+        .request_recovery("old@example.com", request_context())
         .await
         .expect("request recovery");
     let link = h
@@ -154,7 +154,7 @@ async fn recovery_started_before_an_email_change_cannot_finish() {
         .recovery
         .redeem_recovery_link(
             &token_from_email(&link.body_text, RECOVERY_URL),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("redeem");
@@ -166,12 +166,12 @@ async fn recovery_started_before_an_email_change_cannot_finish() {
                 new_email: "new@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("request email change");
     h.user
-        .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
+        .confirm_email_change(&last_email_change_token(&h), request_context())
         .await
         .expect("confirm email change");
 
@@ -183,7 +183,7 @@ async fn recovery_started_before_an_email_change_cannot_finish() {
             &attestation,
             None,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("the recovery's address is no longer the user's");
@@ -220,13 +220,13 @@ async fn rate_limit_per_email_blocks_after_budget() {
 
     for _ in 0..2 {
         h.recovery
-            .request_recovery("target@example.com", SessionContext::default())
+            .request_recovery("target@example.com", request_context())
             .await
             .expect("within budget");
     }
     let err = h
         .recovery
-        .request_recovery("target@example.com", SessionContext::default())
+        .request_recovery("target@example.com", request_context())
         .await
         .expect_err("limited");
     assert!(matches!(err, Error::RateLimited { .. }));
@@ -260,7 +260,7 @@ async fn rate_limit_per_ip_blocks_after_budget() {
     let _ = provision_user(&h, "b@example.com").await;
     let _ = provision_user(&h, "c@example.com").await;
 
-    let ctx = SessionContext::new(Some("9.9.9.9".parse().expect("ip")), None);
+    let ctx = SessionContext::new("9.9.9.9".parse().expect("ip"), None);
     h.recovery
         .request_recovery("a@example.com", ctx.clone())
         .await
@@ -282,7 +282,7 @@ async fn finish_sends_only_the_recovery_completed_notice() {
     let h = Harness::fresh();
     provision_user(&h, "alice@example.com").await;
     h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
+        .request_recovery("alice@example.com", request_context())
         .await
         .expect("request");
     let link = h
@@ -295,7 +295,7 @@ async fn finish_sends_only_the_recovery_completed_notice() {
     let token = token_from_email(&link.body_text, RECOVERY_URL);
     let started = h
         .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
+        .redeem_recovery_link(&token, request_context())
         .await
         .expect("redeem");
 
@@ -306,7 +306,7 @@ async fn finish_sends_only_the_recovery_completed_notice() {
             &authenticator().do_registration(started.options),
             Some("backup device".into()),
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish");
@@ -327,7 +327,7 @@ async fn notice_send_failure_does_not_undo_successful_finish() {
     let h = Harness::fresh();
     let user = provision_user(&h, "alice@example.com").await;
     h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
+        .request_recovery("alice@example.com", request_context())
         .await
         .expect("request");
     let link = h
@@ -340,7 +340,7 @@ async fn notice_send_failure_does_not_undo_successful_finish() {
     let token = token_from_email(&link.body_text, RECOVERY_URL);
     let started = h
         .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
+        .redeem_recovery_link(&token, request_context())
         .await
         .expect("redeem");
     let passkeys_before = passkey_count(&h, user.id).await;
@@ -355,7 +355,7 @@ async fn notice_send_failure_does_not_undo_successful_finish() {
             &authenticator().do_registration(started.options),
             Some("failing notices device".into()),
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish still succeeds");
@@ -382,7 +382,7 @@ async fn request_rejects_invalid_email() {
     let h = Harness::fresh();
     let err = h
         .recovery
-        .request_recovery("not-an-email", SessionContext::default())
+        .request_recovery("not-an-email", request_context())
         .await
         .expect_err("invalid email");
     assert!(matches!(err, Error::InvalidEmail));
@@ -394,7 +394,7 @@ async fn recovery_request_invalidates_prior_recovery_token() {
     let _ = provision_user(&h, "alice@example.com").await;
 
     h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
+        .request_recovery("alice@example.com", request_context())
         .await
         .expect("first");
     let first_link = h
@@ -407,13 +407,13 @@ async fn recovery_request_invalidates_prior_recovery_token() {
     let first_token = token_from_email(&first_link.body_text, RECOVERY_URL);
 
     h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
+        .request_recovery("alice@example.com", request_context())
         .await
         .expect("second");
 
     let err = h
         .recovery
-        .redeem_recovery_link(&first_token, SessionContext::default())
+        .redeem_recovery_link(&first_token, request_context())
         .await
         .expect_err("first now invalid");
     assert!(matches!(err, Error::InvalidEmailLink));
@@ -425,11 +425,11 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
     let _ = provision_user(&h, "known@example.com").await;
 
     h.recovery
-        .request_recovery("ghost@example.com", SessionContext::default())
+        .request_recovery("ghost@example.com", request_context())
         .await
         .expect("unknown Ok");
     h.recovery
-        .request_recovery("known@example.com", SessionContext::default())
+        .request_recovery("known@example.com", request_context())
         .await
         .expect("known Ok");
 
@@ -444,11 +444,11 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
 
     h.email.fail_after_successful_sends(h.email.sent().len());
     h.recovery
-        .request_recovery("known@example.com", SessionContext::default())
+        .request_recovery("known@example.com", request_context())
         .await
         .expect("known Ok despite send failures");
     h.recovery
-        .request_recovery("ghost@example.com", SessionContext::default())
+        .request_recovery("ghost@example.com", request_context())
         .await
         .expect("unknown Ok despite send failures");
 
@@ -460,14 +460,14 @@ async fn request_response_shape_is_identical_known_unknown_and_on_send_failure()
         .expect("the second link was attempted");
     let err = h
         .recovery
-        .redeem_recovery_link(&first_token, SessionContext::default())
+        .redeem_recovery_link(&first_token, request_context())
         .await
         .expect_err("the earlier link was invalidated");
     assert!(matches!(err, Error::InvalidEmailLink));
     h.recovery
         .redeem_recovery_link(
             &token_from_email(&bounced_link.body_text, RECOVERY_URL),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("recovery token issued despite send failure");
@@ -511,7 +511,7 @@ async fn recovery_cool_down_runs_from_the_later_of_redeem_and_finish() {
         let _ = provision_user(&h, "alice@example.com").await;
 
         h.recovery
-            .request_recovery("alice@example.com", SessionContext::default())
+            .request_recovery("alice@example.com", request_context())
             .await
             .expect("request");
         let link = h
@@ -526,7 +526,7 @@ async fn recovery_cool_down_runs_from_the_later_of_redeem_and_finish() {
         let redeemed_at = h.clock.now();
         let started = h
             .recovery
-            .redeem_recovery_link(&token, SessionContext::default())
+            .redeem_recovery_link(&token, request_context())
             .await
             .expect("redeem");
         let mut wa = authenticator();
@@ -540,7 +540,7 @@ async fn recovery_cool_down_runs_from_the_later_of_redeem_and_finish() {
                 &attestation,
                 Some("backup device".into()),
                 SessionTransport::Cookie,
-                SessionContext::default(),
+                request_context(),
             )
             .await
             .expect("finish");
@@ -572,7 +572,7 @@ async fn recovery_created_passkey_login_inherits_active_cool_down() {
     let _ = provision_user(&h, "alice@example.com").await;
 
     h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
+        .request_recovery("alice@example.com", request_context())
         .await
         .expect("request");
     let link = h
@@ -585,7 +585,7 @@ async fn recovery_created_passkey_login_inherits_active_cool_down() {
     let token = token_from_email(&link.body_text, RECOVERY_URL);
     let started = h
         .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
+        .redeem_recovery_link(&token, request_context())
         .await
         .expect("redeem");
     let mut wa = authenticator();
@@ -597,14 +597,14 @@ async fn recovery_created_passkey_login_inherits_active_cool_down() {
             &attestation,
             Some("recovery device".into()),
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish");
 
     let (auth_id, options) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(options, &outcome.passkey.credential_id);
@@ -614,7 +614,7 @@ async fn recovery_created_passkey_login_inherits_active_cool_down() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish auth")
@@ -635,7 +635,7 @@ async fn pre_existing_passkey_login_stays_outside_recovery_cool_down() {
     let existing = register_passkey(&h, user.id, &mut existing_wa, Some("primary")).await;
 
     h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
+        .request_recovery("alice@example.com", request_context())
         .await
         .expect("request");
     let link = h
@@ -648,7 +648,7 @@ async fn pre_existing_passkey_login_stays_outside_recovery_cool_down() {
     let token = token_from_email(&link.body_text, RECOVERY_URL);
     let started = h
         .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
+        .redeem_recovery_link(&token, request_context())
         .await
         .expect("redeem");
     let mut recovery_wa = authenticator();
@@ -660,7 +660,7 @@ async fn pre_existing_passkey_login_stays_outside_recovery_cool_down() {
             &attestation,
             Some("recovery device".into()),
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish");
@@ -668,7 +668,7 @@ async fn pre_existing_passkey_login_stays_outside_recovery_cool_down() {
 
     let (auth_id, options) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = existing_wa.do_authentication(options, &existing.credential_id);
@@ -678,7 +678,7 @@ async fn pre_existing_passkey_login_stays_outside_recovery_cool_down() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish auth")
@@ -693,7 +693,7 @@ async fn recovery_created_passkey_login_after_cool_down_carries_no_cool_down() {
     let user = make_user(&h, "alice@example.com").await;
 
     h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
+        .request_recovery("alice@example.com", request_context())
         .await
         .expect("request");
     let link = h
@@ -706,7 +706,7 @@ async fn recovery_created_passkey_login_after_cool_down_carries_no_cool_down() {
     let token = token_from_email(&link.body_text, RECOVERY_URL);
     let started = h
         .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
+        .redeem_recovery_link(&token, request_context())
         .await
         .expect("redeem");
     let mut wa = authenticator();
@@ -718,7 +718,7 @@ async fn recovery_created_passkey_login_after_cool_down_carries_no_cool_down() {
             &attestation,
             Some("recovery device".into()),
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish");
@@ -730,7 +730,7 @@ async fn recovery_created_passkey_login_after_cool_down_carries_no_cool_down() {
 
     let (auth_id, options) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(options, &outcome.passkey.credential_id);
@@ -740,7 +740,7 @@ async fn recovery_created_passkey_login_after_cool_down_carries_no_cool_down() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish auth")
@@ -771,13 +771,7 @@ async fn passkey_registered_during_cool_down_inherits_its_deadline() {
     let response = wa.do_registration(ccr);
     let passkey = h
         .session_manager
-        .finish_passkey_registration(
-            &resolved,
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&resolved, challenge_id, &response, None, request_context())
         .await
         .expect("finish_registration");
 
@@ -789,7 +783,7 @@ async fn passkey_registered_during_cool_down_inherits_its_deadline() {
 
     let (auth_id, options) = h
         .passkey
-        .start_authentication(SessionContext::default())
+        .start_authentication(request_context())
         .await
         .expect("start auth");
     let assertion = wa.do_authentication(options, &passkey.credential_id);
@@ -799,7 +793,7 @@ async fn passkey_registered_during_cool_down_inherits_its_deadline() {
             auth_id,
             &assertion,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish auth")
@@ -837,13 +831,7 @@ async fn passkey_registered_after_cool_down_carries_no_cool_down() {
     let response = wa.do_registration(ccr);
     let passkey = h
         .session_manager
-        .finish_passkey_registration(
-            &resolved,
-            challenge_id,
-            &response,
-            None,
-            SessionContext::default(),
-        )
+        .finish_passkey_registration(&resolved, challenge_id, &response, None, request_context())
         .await
         .expect("finish_registration");
 
@@ -855,7 +843,7 @@ async fn drive_recovery_finish(
     email: &str,
 ) -> doorman_core::passkey::RegistrationOutcome {
     h.recovery
-        .request_recovery(email, SessionContext::default())
+        .request_recovery(email, request_context())
         .await
         .expect("request");
     let link = h
@@ -868,7 +856,7 @@ async fn drive_recovery_finish(
     let token = token_from_email(&link.body_text, RECOVERY_URL);
     let started = h
         .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
+        .redeem_recovery_link(&token, request_context())
         .await
         .expect("redeem");
     let mut wa = authenticator();
@@ -879,7 +867,7 @@ async fn drive_recovery_finish(
             &attestation,
             Some("recovery device".into()),
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish")
@@ -957,7 +945,7 @@ async fn custom_emails_override_recovery_subjects_and_html() {
     let mail_before = h.email.sent().len();
 
     h.recovery
-        .request_recovery("user@example.com", SessionContext::default())
+        .request_recovery("user@example.com", request_context())
         .await
         .expect("request");
 
@@ -995,7 +983,7 @@ async fn recovery_succeeds_when_at_passkey_cap() {
     assert_eq!(at_cap, CAP as usize, "user starts exactly at the cap");
 
     h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
+        .request_recovery("alice@example.com", request_context())
         .await
         .expect("request");
     let link = h
@@ -1009,7 +997,7 @@ async fn recovery_succeeds_when_at_passkey_cap() {
 
     let started = h
         .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
+        .redeem_recovery_link(&token, request_context())
         .await
         .expect("redeem");
     let mut recovery_wa = authenticator();
@@ -1021,7 +1009,7 @@ async fn recovery_succeeds_when_at_passkey_cap() {
             &attestation,
             Some("recovery device".into()),
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("recovery finishes despite the passkey cap");
@@ -1080,7 +1068,7 @@ async fn ordinary_registration_still_rejected_at_cap() {
             challenge_id,
             &response,
             Some("third device".into()),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("ordinary registration rejected at the cap");

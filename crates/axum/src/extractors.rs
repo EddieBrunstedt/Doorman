@@ -1,10 +1,11 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::Extensions;
 use axum::http::header::USER_AGENT;
 use axum::http::request::Parts;
 use doorman_core::Error;
+use doorman_core::client_ip::ClientIp;
 use doorman_core::error::StorageError;
 use doorman_core::session::{ResolvedSession, SessionContext};
 use doorman_core::storage::User;
@@ -76,9 +77,6 @@ fn auth_context(extensions: &Extensions) -> Result<Option<&AuthContext>, ErrorRe
     Ok(extensions.get::<AuthContext>())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClientIp(pub IpAddr);
-
 #[derive(Debug, Clone)]
 pub struct RequestContext(pub SessionContext);
 
@@ -89,12 +87,12 @@ impl<S: Send + Sync> FromRequestParts<S> for RequestContext {
         let ip = parts
             .extensions
             .get::<ClientIp>()
-            .map(|client| client.0)
+            .copied()
             .or_else(|| {
                 parts
                     .extensions
                     .get::<ConnectInfo<SocketAddr>>()
-                    .map(|peer| peer.0.ip())
+                    .map(|peer| ClientIp::new(peer.0.ip()))
             })
             .ok_or_else(|| {
                 ErrorResponse(Error::Internal(
@@ -103,6 +101,6 @@ impl<S: Send + Sync> FromRequestParts<S> for RequestContext {
                 ))
             })?;
         let user_agent = parts.headers.get(USER_AGENT).and_then(|h| h.to_str().ok());
-        Ok(RequestContext(SessionContext::new(Some(ip), user_agent)))
+        Ok(RequestContext(SessionContext::new(ip, user_agent)))
     }
 }

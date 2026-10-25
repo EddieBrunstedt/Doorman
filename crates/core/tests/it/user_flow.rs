@@ -2,8 +2,8 @@ use doorman_core::Error;
 use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
-use doorman_core::session::SessionContext;
 use doorman_core::storage::{PasskeyChallengeStore, UserStatus, UserStore};
+use doorman_test_support::request_context;
 
 use crate::common::{
     Harness, USER_URL, assert_last_redemption_unknown, authenticator, kinds,
@@ -25,7 +25,7 @@ async fn email_change_happy_path() {
                 new_email: "New@Example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("request email change");
@@ -62,7 +62,7 @@ async fn email_change_happy_path() {
     let token = token_from_email(&confirmation.body_text, USER_URL);
     let updated = h
         .user
-        .confirm_email_change(&token, SessionContext::default())
+        .confirm_email_change(&token, request_context())
         .await
         .expect("confirm email change");
     assert_eq!(updated.user.email.as_deref(), Some("new@example.com"));
@@ -76,9 +76,7 @@ async fn email_change_happy_path() {
     assert_eq!(stored.email.as_deref(), Some("new@example.com"));
 
     assert!(matches!(
-        h.user
-            .confirm_email_change(&token, SessionContext::default())
-            .await,
+        h.user.confirm_email_change(&token, request_context()).await,
         Err(Error::InvalidEmailLink),
     ));
 
@@ -113,7 +111,7 @@ async fn the_old_address_hears_of_an_email_change_even_when_its_link_fails_to_se
                 new_email: "new@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("a failed link send fails the request");
@@ -153,7 +151,7 @@ async fn email_change_confirm_refuses_address_claimed_since_request() {
                 new_email: "wanted@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("request email change");
@@ -162,7 +160,7 @@ async fn email_change_confirm_refuses_address_claimed_since_request() {
 
     let err = h
         .user
-        .confirm_email_change(&token, SessionContext::default())
+        .confirm_email_change(&token, request_context())
         .await
         .expect_err("an address claimed since the request is refused");
     assert!(matches!(err, Error::EmailAlreadyInUse), "got {err:?}");
@@ -187,7 +185,7 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
                 new_email: "wanted@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("request email change");
@@ -197,12 +195,9 @@ async fn signup_losing_the_race_to_an_email_change_succeeds_silently() {
     let (signed_up, confirmed) = within_deadline(async {
         tokio::join!(
             h.signup
-                .request_signup("wanted@example.com", None, SessionContext::default()),
+                .request_signup("wanted@example.com", None, request_context()),
             async {
-                let confirmed = h
-                    .user
-                    .confirm_email_change(&token, SessionContext::default())
-                    .await;
+                let confirmed = h.user.confirm_email_change(&token, request_context()).await;
                 release.wait().await;
                 confirmed
             },
@@ -245,7 +240,7 @@ async fn email_change_rejects_address_already_in_use() {
                 new_email: "taken@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("address already in use must be rejected");
@@ -273,7 +268,7 @@ async fn request_email_change_refused_during_recovery_cool_down() {
                 new_email: "new@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("email change must be refused during the cool-down");
@@ -298,7 +293,7 @@ async fn delete_user_refused_during_recovery_cool_down() {
             &in_cool_down,
             DestructiveAction::DeleteUser,
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("deletion must be refused during the cool-down");
@@ -333,7 +328,7 @@ async fn request_email_change_allowed_once_recovery_cool_down_lapses() {
                 new_email: "new@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("blocked during the cool-down");
@@ -348,7 +343,7 @@ async fn request_email_change_allowed_once_recovery_cool_down_lapses() {
                 new_email: "new@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("email change allowed once the cool-down lapses");
@@ -357,7 +352,7 @@ async fn request_email_change_allowed_once_recovery_cool_down_lapses() {
         "the confirmation email is sent after the cool-down lapses",
     );
     h.user
-        .confirm_email_change(&last_email_change_token(&h), SessionContext::default())
+        .confirm_email_change(&last_email_change_token(&h), request_context())
         .await
         .expect("the confirmation link issued after the cool-down lapses redeems");
 }
@@ -375,7 +370,7 @@ async fn delete_user_allowed_once_recovery_cool_down_lapses() {
             &in_cool_down,
             DestructiveAction::DeleteUser,
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("blocked during the cool-down");
@@ -387,7 +382,7 @@ async fn delete_user_allowed_once_recovery_cool_down_lapses() {
             &in_cool_down,
             DestructiveAction::DeleteUser,
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("deletion allowed once the cool-down lapses");
@@ -413,7 +408,7 @@ async fn confirm_refused_for_disabled_user() {
                 new_email: "new@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("request email change");
@@ -434,7 +429,7 @@ async fn confirm_refused_for_disabled_user() {
 
     let err = h
         .user
-        .confirm_email_change(&token, SessionContext::default())
+        .confirm_email_change(&token, request_context())
         .await
         .expect_err("disabled user must be refused");
     assert!(matches!(err, Error::UserDisabled));
@@ -467,7 +462,7 @@ async fn delete_user_cascades_all_stores() {
                 new_email: "elsewhere@example.com".into(),
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("request email change");
@@ -490,7 +485,7 @@ async fn delete_user_cascades_all_stores() {
             &session,
             DestructiveAction::DeleteUser,
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("delete user");
@@ -516,7 +511,7 @@ async fn delete_user_cascades_all_stores() {
 
     let err = h
         .user
-        .confirm_email_change(&email_change_token, SessionContext::default())
+        .confirm_email_change(&email_change_token, request_context())
         .await
         .expect_err("the email-change link is gone");
     assert!(matches!(err, Error::InvalidEmailLink));
@@ -555,7 +550,7 @@ async fn registration_challenge_outliving_its_user_is_refused() {
             challenge_id,
             &attestation,
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("a challenge whose user is gone is refused");

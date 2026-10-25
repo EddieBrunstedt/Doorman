@@ -111,7 +111,7 @@ async fn override_create_session_reuses_bundled_reads() {
         created_at: now,
         last_used_at: now,
         expires_at: now + Duration::hours(1),
-        ip: None,
+        ip: "192.0.2.1".parse().expect("client IP"),
         user_agent: None,
         recovery_cool_down_until: None,
     };

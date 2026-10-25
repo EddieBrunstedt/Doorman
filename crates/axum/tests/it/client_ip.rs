@@ -82,7 +82,7 @@ fn request(path: &str, peer: Option<&str>, client_ip: Option<&str>) -> Request<B
     if let Some(ip) = client_ip {
         request
             .extensions_mut()
-            .insert(ClientIp(ip.parse().expect("IP address")));
+            .insert(ip.parse::<ClientIp>().expect("IP address"));
     }
     request
 }
@@ -318,7 +318,7 @@ async fn signup_and_recovery_charge_socket_ip_and_audit_it() {
         assert!(!events.is_empty());
         for event in events {
             assert!(
-                matches!(event.actor, Actor::Subject { ip: Some(ref ip), .. } if ip == "192.0.2.1")
+                matches!(event.actor, Actor::Subject { ip, .. } if ip.to_string() == "192.0.2.1")
             );
         }
     }
@@ -340,7 +340,7 @@ async fn signup_session_and_audit_record_the_peer_despite_spoofing() {
         .await
         .expect("resolve")
         .expect("a live session");
-    assert_eq!(session.ip.as_deref(), Some(PEER));
+    assert_eq!(session.ip.to_string(), PEER);
     assert_eq!(session.user_agent.as_deref(), Some("signup agent"));
     let events = audit.events();
     assert!(
@@ -355,7 +355,7 @@ async fn signup_session_and_audit_record_the_peer_despite_spoofing() {
     );
     for event in events {
         assert!(
-            matches!(event.actor, Actor::Subject { ip: Some(ref ip), user_agent: Some(ref ua) } if ip == PEER && ua == "signup agent")
+            matches!(event.actor, Actor::Subject { ip, user_agent: Some(ref ua) } if ip.to_string() == PEER && ua == "signup agent")
         );
     }
 }
@@ -382,7 +382,7 @@ async fn log_out_audits_the_request_not_the_login() {
     assert_eq!(
         revoked.actor,
         Actor::Subject {
-            ip: Some(PEER.to_owned()),
+            ip: PEER.parse().expect("peer"),
             user_agent: Some("logout agent".to_owned()),
         },
     );

@@ -166,7 +166,7 @@ impl RecoveryManager {
                     rate_limits.request_per_ip,
                     "recovery/request",
                     "ip",
-                    context.ip(),
+                    Some(context.ip().to_string().as_str()),
                 ),
                 (
                     rate_limits.request_per_identifier,

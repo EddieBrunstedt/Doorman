@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use crate::client_ip::ClientIp;
 #[cfg(doc)]
 use crate::error::StorageErrorKind;
 use crate::error::StorageResult;
@@ -129,7 +130,7 @@ pub struct Session {
     pub created_at: DateTime<Utc>,
     pub last_used_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
-    pub ip: Option<String>,
+    pub ip: ClientIp,
     pub user_agent: Option<String>,
     pub recovery_cool_down_until: Option<DateTime<Utc>>,
 }
@@ -142,7 +143,7 @@ pub struct SessionSummary {
     pub created_at: DateTime<Utc>,
     pub last_used_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
-    pub ip: Option<String>,
+    pub ip: ClientIp,
     pub user_agent: Option<String>,
     pub recovery_cool_down_until: Option<DateTime<Utc>>,
 }
@@ -427,7 +428,7 @@ mod tests {
             created_at: ts(1_000),
             last_used_at: ts(1_000),
             expires_at: ts(2_000),
-            ip: Some("203.0.113.7".to_string()),
+            ip: "203.0.113.7".parse().expect("ip"),
             user_agent: Some("doorman-test/1.0".to_string()),
             recovery_cool_down_until: Some(ts(1_500)),
         };

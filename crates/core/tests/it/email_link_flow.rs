@@ -5,8 +5,8 @@ use doorman_core::audit::{
 use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::error::Error;
-use doorman_core::session::SessionContext;
 use doorman_core::storage::{User, UserId, UserStatus, UserStore};
+use doorman_test_support::request_context;
 
 use crate::common::{
     Harness, RECOVERY_URL, SIGNUP_URL, USER_URL, kinds, operator, provision_user, session_for,
@@ -44,7 +44,7 @@ impl Link {
         match self {
             Link::Signup => {
                 h.signup
-                    .request_signup("new@example.com", None, SessionContext::default())
+                    .request_signup("new@example.com", None, request_context())
                     .await
                     .expect("request signup");
                 h.users
@@ -58,7 +58,7 @@ impl Link {
     }
 
     async fn request(self, h: &Harness, owner: &User) -> Result<(), Error> {
-        let context = SessionContext::default();
+        let context = request_context();
         match self {
             Link::Signup => {
                 h.signup
@@ -103,7 +103,7 @@ impl Link {
     }
 
     async fn redeem(self, h: &Harness, token: &str) -> Result<(), Error> {
-        let context = SessionContext::default();
+        let context = request_context();
         match self {
             Link::Signup => h.signup.redeem_signup_link(token, context).await.map(drop),
             Link::Recovery => h

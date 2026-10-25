@@ -1,5 +1,4 @@
 use std::fmt;
-use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::ops::Deref;
 use std::time::Duration;
@@ -11,6 +10,7 @@ use webauthn_rs::prelude::{
 };
 
 use crate::audit::Actor;
+use crate::client_ip::ClientIp;
 use crate::context::CoreDeps;
 use crate::destructive::{CurrentSession, DestructiveAction, DestructiveActions};
 use crate::error::Result;
@@ -68,24 +68,24 @@ impl Default for SessionConfig {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SessionContext {
-    ip: Option<String>,
+    ip: ClientIp,
     user_agent: Option<String>,
 }
 
 impl SessionContext {
     pub const MAX_USER_AGENT_LEN: usize = 1024;
 
-    pub fn new(ip: Option<IpAddr>, user_agent: Option<&str>) -> Self {
+    pub fn new(ip: ClientIp, user_agent: Option<&str>) -> Self {
         Self {
-            ip: ip.map(|ip| ip.to_canonical().to_string()),
+            ip,
             user_agent: user_agent.and_then(bound_user_agent),
         }
     }
 
-    pub fn ip(&self) -> Option<&str> {
-        self.ip.as_deref()
+    pub fn ip(&self) -> ClientIp {
+        self.ip
     }
 
     pub fn user_agent(&self) -> Option<&str> {
@@ -277,7 +277,7 @@ impl From<&Session> for SessionSummary {
             created_at: value.created_at,
             last_used_at: value.last_used_at,
             expires_at: value.expires_at,
-            ip: value.ip.clone(),
+            ip: value.ip,
             user_agent: value.user_agent.clone(),
             recovery_cool_down_until: value.recovery_cool_down_until,
         }
@@ -290,15 +290,13 @@ mod tests {
     use crate::storage::{SessionId, UserId};
 
     #[test]
-    fn session_context_bounds_the_user_agent_and_canonicalizes_the_ip() {
-        let mapped: IpAddr = "::ffff:192.0.2.1".parse().expect("ip");
+    fn session_context_bounds_the_user_agent() {
+        let ip: ClientIp = "192.0.2.1".parse().expect("ip");
         let fits = "u".repeat(SessionContext::MAX_USER_AGENT_LEN - 1);
-        let context = SessionContext::new(Some(mapped), Some(&format!("{fits}\u{0}\u{e9}tail")));
-        assert_eq!(context.ip(), Some("192.0.2.1"));
+        let context = SessionContext::new(ip, Some(&format!("{fits}\u{0}\u{e9}tail")));
         assert_eq!(context.user_agent(), Some(fits.as_str()));
 
-        let blank = SessionContext::new(None, Some("\r\n"));
-        assert_eq!(blank.ip(), None);
+        let blank = SessionContext::new(ip, Some("\r\n"));
         assert_eq!(blank.user_agent(), None);
     }
 
@@ -324,7 +322,7 @@ mod tests {
             created_at,
             last_used_at,
             expires_at,
-            ip: Some("203.0.113.7".to_string()),
+            ip: "203.0.113.7".parse().expect("ip"),
             user_agent: Some("doorman-test/1.0".to_string()),
             recovery_cool_down_until: Some(cool_down),
         };
@@ -356,7 +354,7 @@ mod tests {
             created_at: now,
             last_used_at: now,
             expires_at: now,
-            ip: None,
+            ip: "192.0.2.1".parse().expect("ip"),
             user_agent: None,
             recovery_cool_down_until: None,
         };

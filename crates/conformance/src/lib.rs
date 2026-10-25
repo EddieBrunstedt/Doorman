@@ -464,7 +464,9 @@ async fn expiring_hold_values_at_core_limits(stores: &ExpiringStores) {
             created_at: present(),
             last_used_at: present(),
             expires_at: days(1),
-            ip: Some("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff".to_string()),
+            ip: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+                .parse()
+                .expect("client IP"),
             user_agent: Some(at_limit(
                 SessionContext::MAX_USER_AGENT_LEN,
                 "agent",
@@ -940,7 +942,7 @@ async fn sessions_crud_and_queries(stores: &ExpiringStores) {
         created_at: now,
         last_used_at: now,
         expires_at: now + Duration::hours(1),
-        ip: Some("203.0.113.1".into()),
+        ip: "203.0.113.1".parse().expect("client IP"),
         user_agent: Some("agent".into()),
         recovery_cool_down_until: cool_down,
     };
@@ -972,7 +974,7 @@ async fn sessions_crud_and_queries(stores: &ExpiringStores) {
     assert_eq!(by_hash.id, with_cool_down.id);
     assert_eq!(by_hash.transport, SessionTransport::Bearer);
     assert_eq!(by_hash.recovery_cool_down_until, Some(cool_down_until));
-    assert_eq!(by_hash.ip.as_deref(), Some("203.0.113.1"));
+    assert_eq!(by_hash.ip.to_string(), "203.0.113.1");
 
     let by_id = sessions
         .find_session_by_id(with_cool_down.id)
@@ -1057,7 +1059,7 @@ async fn sessions_purge_expired(stores: &ExpiringStores) {
         created_at: now - Duration::hours(2),
         last_used_at: now - Duration::hours(2),
         expires_at: now - Duration::hours(1),
-        ip: None,
+        ip: "192.0.2.1".parse().expect("client IP"),
         user_agent: None,
         recovery_cool_down_until: None,
     };
@@ -1069,7 +1071,7 @@ async fn sessions_purge_expired(stores: &ExpiringStores) {
         created_at: now,
         last_used_at: now,
         expires_at: now + Duration::hours(1),
-        ip: None,
+        ip: "192.0.2.1".parse().expect("client IP"),
         user_agent: None,
         recovery_cool_down_until: None,
     };
@@ -1116,7 +1118,7 @@ async fn session_touch_slides_deadline(stores: &ExpiringStores) {
         created_at,
         last_used_at: created_at,
         expires_at: days(365),
-        ip: Some("203.0.113.9".into()),
+        ip: "203.0.113.9".parse().expect("client IP"),
         user_agent: Some("touch-agent".into()),
         recovery_cool_down_until: Some(days(516)),
     };
@@ -1178,7 +1180,7 @@ async fn session_touch_does_not_resurrect(stores: &ExpiringStores) {
         created_at,
         last_used_at: created_at,
         expires_at: days(365),
-        ip: None,
+        ip: "192.0.2.1".parse().expect("client IP"),
         user_agent: None,
         recovery_cool_down_until: None,
     };
@@ -1247,7 +1249,7 @@ async fn session_touch_races_revoke(stores: &ExpiringStores) {
             created_at: now,
             last_used_at: now,
             expires_at: days(365),
-            ip: None,
+            ip: "192.0.2.1".parse().expect("client IP"),
             user_agent: None,
             recovery_cool_down_until: None,
         })
@@ -1335,7 +1337,7 @@ async fn session_revoke_races_creation(stores: &ExpiringStores) {
         created_at: now,
         last_used_at: now,
         expires_at: days(365),
-        ip: None,
+        ip: "192.0.2.1".parse().expect("client IP"),
         user_agent: None,
         recovery_cool_down_until: None,
     };
@@ -2214,7 +2216,7 @@ async fn owner_indexes_track_removals(stores: &ExpiringStores) {
         created_at: days(-2),
         last_used_at: days(-2),
         expires_at,
-        ip: None,
+        ip: "192.0.2.1".parse().expect("client IP"),
         user_agent: None,
         recovery_cool_down_until: None,
     };
@@ -2414,7 +2416,7 @@ async fn inserts_refuse_duplicate_keys(stores: &ExpiringStores) {
         created_at: now,
         last_used_at: now,
         expires_at: days(365),
-        ip: None,
+        ip: "192.0.2.1".parse().expect("client IP"),
         user_agent: None,
         recovery_cool_down_until: None,
     };

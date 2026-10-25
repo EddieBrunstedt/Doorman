@@ -228,7 +228,7 @@ macro_rules! sqlx_stores {
                     .bind($ts(session.created_at))
                     .bind($ts(session.last_used_at))
                     .bind($ts(session.expires_at))
-                    .bind(&session.ip)
+                    .bind(session.ip.to_string())
                     .bind(&session.user_agent)
                     .bind($ts(session.recovery_cool_down_until))
                     .execute(&self.pool)
@@ -372,6 +372,7 @@ macro_rules! sqlx_stores {
             let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage_err)?;
             let hash_bytes: Vec<u8> = row.try_get("token_hash").map_err($crate::common::storage_err)?;
             let transport: String = row.try_get("transport").map_err($crate::common::storage_err)?;
+            let ip: String = row.try_get("ip").map_err($crate::common::storage_err)?;
             Ok($crate::stores::__reexport::Session {
                 id: $crate::stores::__reexport::SessionId(
                     $crate::common::uuid_from_row(id_bytes)?,
@@ -384,7 +385,7 @@ macro_rules! sqlx_stores {
                 created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
                 last_used_at: row.try_get("last_used_at").map_err($crate::common::storage_err)?,
                 expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,
-                ip: row.try_get("ip").map_err($crate::common::storage_err)?,
+                ip: $crate::common::client_ip_from_str(&ip)?,
                 user_agent: row.try_get("user_agent").map_err($crate::common::storage_err)?,
                 recovery_cool_down_until: row
                     .try_get("recovery_cool_down_until")

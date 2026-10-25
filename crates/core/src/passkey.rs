@@ -245,7 +245,7 @@ impl PasskeyManager {
             self.config.rate_limits.authenticate_start_per_ip,
             "passkey/authenticate/start",
             "ip",
-            context.ip(),
+            Some(context.ip().to_string().as_str()),
         )
         .await?;
 
@@ -274,7 +274,7 @@ impl PasskeyManager {
             self.config.rate_limits.authenticate_finish_per_ip,
             "passkey/authenticate/finish",
             "ip",
-            context.ip(),
+            Some(context.ip().to_string().as_str()),
         )
         .await?;
         enforce_rate_limit(

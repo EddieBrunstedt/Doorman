@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::client_ip::ClientIp;
 use crate::error::{StorageError, StorageResult};
 use crate::storage::{
     AuthenticationPurpose, EmailLinkPurpose, RegistrationPurpose, SessionTransport, UserStatus,
@@ -78,6 +79,11 @@ pub fn session_transport_from_str(raw: &str) -> StorageResult<SessionTransport> 
             "unknown session transport `{other}` in storage"
         ))),
     }
+}
+
+pub fn client_ip_from_str(raw: &str) -> StorageResult<ClientIp> {
+    raw.parse()
+        .map_err(|_| StorageError::msg(format!("invalid client IP `{raw}` in storage")))
 }
 
 pub fn user_status_to_str(status: &UserStatus) -> &'static str {
@@ -220,6 +226,14 @@ mod tests {
             );
         }
         assert!(session_transport_from_str("nope").is_err());
+    }
+
+    #[test]
+    fn client_ip_round_trips_and_refuses_garbage() {
+        for raw in ["192.0.2.1", "2001:db8::1"] {
+            assert_eq!(client_ip_from_str(raw).unwrap().to_string(), raw);
+        }
+        assert!(client_ip_from_str("nope").is_err());
     }
 
     #[test]

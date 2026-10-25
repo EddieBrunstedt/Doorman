@@ -6,8 +6,9 @@ use doorman_core::error::Error;
 use doorman_core::passkey::{
     PasskeyConfig, PasskeyRateLimits, RegistrationOutcome, StartedRegistration,
 };
-use doorman_core::session::{ResolvedSession, SessionContext};
+use doorman_core::session::ResolvedSession;
 use doorman_core::storage::{PasskeyChallengeId, SessionTransport, User, UserStatus, UserStore};
+use doorman_test_support::request_context;
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
 use crate::common::{
@@ -28,7 +29,7 @@ impl Link {
         match self {
             Link::Signup => {
                 h.signup
-                    .request_signup("new@example.com", None, SessionContext::default())
+                    .request_signup("new@example.com", None, request_context())
                     .await
                     .expect("signup request");
                 let email = h.email.sent().pop().expect("signup link queued");
@@ -43,7 +44,7 @@ impl Link {
             Link::Recovery => {
                 let user = provision_user(h, "alice@example.com").await;
                 h.recovery
-                    .request_recovery("alice@example.com", SessionContext::default())
+                    .request_recovery("alice@example.com", request_context())
                     .await
                     .expect("recovery request");
                 let email = h
@@ -59,7 +60,7 @@ impl Link {
     }
 
     async fn redeem(self, h: &Harness, token: &str) -> Result<StartedRegistration, Error> {
-        let context = SessionContext::default();
+        let context = request_context();
         match self {
             Link::Signup => h.signup.redeem_signup_link(token, context).await,
             Link::Recovery => h.recovery.redeem_recovery_link(token, context).await,
@@ -73,7 +74,7 @@ impl Link {
     ) -> Result<RegistrationOutcome, Error> {
         let response = authenticator().do_registration(started.options);
         let name = Some("new device".to_owned());
-        let context = SessionContext::default();
+        let context = request_context();
         match self {
             Link::Signup => {
                 h.signup
@@ -200,7 +201,7 @@ async fn redeeming_an_email_link_replaces_unfinished_registrations_rather_than_h
                 stale_id,
                 &authenticator().do_registration(stale_options),
                 None,
-                SessionContext::default(),
+                request_context(),
             )
             .await
             .expect_err("the unfinished registration was replaced");
@@ -236,7 +237,7 @@ async fn finishing_an_email_link_registration_drops_registrations_started_since_
                 meanwhile_id,
                 &authenticator().do_registration(meanwhile_options),
                 None,
-                SessionContext::default(),
+                request_context(),
             )
             .await
             .expect_err("the registration started meanwhile was dropped");
@@ -364,7 +365,7 @@ async fn finish(
     challenge_id: PasskeyChallengeId,
     response: &RegisterPublicKeyCredential,
 ) -> Error {
-    let context = SessionContext::default;
+    let context = request_context;
     match finish {
         Finish::Signup => h
             .signup

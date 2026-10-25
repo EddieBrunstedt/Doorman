@@ -35,7 +35,10 @@ use doorman_core::storage::{
 };
 use doorman_core::user::{UserConfig, UserManager};
 pub use doorman_test_support::token_from_email;
-use doorman_test_support::{CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock};
+use doorman_test_support::{
+    CLIENT_IP, CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock,
+    request_context,
+};
 pub use doorman_test_support::{
     ResidentAuthenticator, assert_discoverable_request_options,
     assert_resident_registration_options,
@@ -559,7 +562,7 @@ async fn stored_session(
             last_used_at: now,
             // Outlives any recovery cool-down a test sets, as a real session outlives the default one.
             expires_at: now + chrono::Duration::days(30),
-            ip: None,
+            ip: CLIENT_IP.parse().expect("ip"),
             user_agent: None,
             recovery_cool_down_until: cool_down,
         })
@@ -592,7 +595,7 @@ pub async fn register_passkey(
             challenge_id,
             &response,
             name.map(ToOwned::to_owned),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish_registration");
@@ -610,7 +613,7 @@ pub async fn register_passkey(
 
 pub async fn provision_user(h: &Harness, email: &str) -> User {
     h.signup
-        .request_signup(email, None, SessionContext::default())
+        .request_signup(email, None, request_context())
         .await
         .expect("signup request");
     let signup_email = h
@@ -624,7 +627,7 @@ pub async fn provision_user(h: &Harness, email: &str) -> User {
 
     let started = h
         .signup
-        .redeem_signup_link(&token, SessionContext::default())
+        .redeem_signup_link(&token, request_context())
         .await
         .expect("signup redeem");
 
@@ -637,7 +640,7 @@ pub async fn provision_user(h: &Harness, email: &str) -> User {
             &attestation,
             Some("initial device".into()),
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("signup finish");
@@ -657,14 +660,14 @@ impl SignedIn {
             h,
             &mut self.authenticator,
             &self.credential_id,
-            SessionContext::default(),
+            request_context(),
         )
         .await
     }
 }
 
 pub async fn sign_in(h: &Harness, email: &str) -> SignedIn {
-    sign_in_from(h, email, SessionContext::default()).await
+    sign_in_from(h, email, request_context()).await
 }
 
 pub async fn sign_in_from(h: &Harness, email: &str, context: SessionContext) -> SignedIn {

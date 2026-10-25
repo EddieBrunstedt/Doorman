@@ -3,6 +3,7 @@ pub use crate::audit::{
     Actor, AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, OperatorActor,
     RecoveryFailureReason, RedemptionFailureReason, SecretKind, SignupFailureReason,
 };
+pub use crate::client_ip::ClientIp;
 pub use crate::clock::{Clock, SystemClock};
 pub use crate::destructive::{CurrentSession, DestructiveAction};
 #[cfg(feature = "file-email")]

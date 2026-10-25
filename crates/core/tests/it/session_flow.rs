@@ -13,6 +13,7 @@ use doorman_core::storage::{
     PasskeyChallengeId, PasskeyStore, SessionId, SessionStore, SessionTransport, User, UserId,
     UserStore,
 };
+use doorman_test_support::request_context;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
 use crate::common::{
@@ -56,7 +57,7 @@ impl BulkRevocation {
             Self::LogOutEverywhere => DestructiveAction::LogOutEverywhere,
         };
         h.session_manager
-            .perform(session, action, None, SessionContext::default())
+            .perform(session, action, None, request_context())
             .await
     }
 }
@@ -64,13 +65,13 @@ impl BulkRevocation {
 #[tokio::test]
 async fn a_login_issues_a_session_bound_to_its_token() {
     let h = Harness::fresh();
-    let context = SessionContext::new(Some("1.2.3.4".parse().expect("ip")), Some("test-agent"));
+    let context = SessionContext::new("1.2.3.4".parse().expect("ip"), Some("test-agent"));
     let alice = sign_in_from(&h, "alice@example.com", context).await;
     let issued = &alice.session;
 
     assert_eq!(h.sessions.len(), 1);
     assert_eq!(issued.session.user_id, alice.user.id);
-    assert_eq!(issued.session.ip.as_deref(), Some("1.2.3.4"));
+    assert_eq!(issued.session.ip.to_string(), "1.2.3.4");
     let stored = h
         .sessions
         .find_session_by_id(issued.session.id)
@@ -103,7 +104,7 @@ async fn log_out_deletes_the_session_and_audits_it() {
     let session = &alice.session.session;
 
     h.session_manager
-        .log_out(session, SessionContext::default())
+        .log_out(session, request_context())
         .await
         .expect("log out");
     assert!(h.sessions.is_empty());
@@ -124,7 +125,7 @@ async fn log_out_deletes_the_session_and_audits_it() {
 
     let err = h
         .session_manager
-        .log_out(session, SessionContext::default())
+        .log_out(session, request_context())
         .await
         .err();
     assert!(
@@ -146,7 +147,7 @@ impl SessionEnd {
         match self {
             Self::LoggedOut => h
                 .session_manager
-                .log_out(session, SessionContext::default())
+                .log_out(session, request_context())
                 .await
                 .expect("log out"),
             Self::Expired => h.clock.advance(ChronoDuration::hours(2)),
@@ -193,7 +194,7 @@ impl SessionWrite {
                         challenge_id,
                         &response,
                         None,
-                        SessionContext::default(),
+                        request_context(),
                     )
                     .await
                     .map(drop)
@@ -203,7 +204,7 @@ impl SessionWrite {
                     session,
                     &signed_in.credential_id,
                     Some("renamed".into()),
-                    SessionContext::default(),
+                    request_context(),
                 )
                 .await
                 .map(drop),
@@ -213,7 +214,7 @@ impl SessionWrite {
                     session,
                     DestructiveAction::DeleteUser,
                     None,
-                    SessionContext::default(),
+                    request_context(),
                 )
                 .await
                 .map(drop),
@@ -335,7 +336,7 @@ async fn session_cap_in_recovery_cool_down_evicts_only_sessions_in_it() {
     h.clock.advance(ChronoDuration::seconds(1));
 
     h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
+        .request_recovery("alice@example.com", request_context())
         .await
         .expect("request recovery");
     let link = h
@@ -349,7 +350,7 @@ async fn session_cap_in_recovery_cool_down_evicts_only_sessions_in_it() {
         .recovery
         .redeem_recovery_link(
             &token_from_email(&link.body_text, RECOVERY_URL),
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("redeem");
@@ -362,7 +363,7 @@ async fn session_cap_in_recovery_cool_down_evicts_only_sessions_in_it() {
             &attestation,
             None,
             SessionTransport::Cookie,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("finish recovery");
@@ -371,7 +372,7 @@ async fn session_cap_in_recovery_cool_down_evicts_only_sessions_in_it() {
         &h,
         &mut recovered,
         &recovery.passkey.credential_id,
-        SessionContext::default(),
+        request_context(),
     )
     .await;
     assert!(login.session.is_in_recovery_cool_down());
@@ -459,7 +460,7 @@ async fn revoke_others_keeps_only_the_acting_session_audits_and_notifies() {
             current,
             DestructiveAction::RevokeOtherSessions,
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("revoke other sessions");
@@ -516,8 +517,8 @@ impl ActingRequest {
 
 #[tokio::test]
 async fn revocations_and_destructive_actions_audit_the_request_not_the_login() {
-    let login = SessionContext::new(Some("198.51.100.1".parse().expect("ip")), Some("login"));
-    let request = SessionContext::new(Some("203.0.113.9".parse().expect("ip")), Some("request"));
+    let login = SessionContext::new("198.51.100.1".parse().expect("ip"), Some("login"));
+    let request = SessionContext::new("203.0.113.9".parse().expect("ip"), Some("request"));
     for acting in ActingRequest::ALL {
         let h = Harness::builder()
             .session_config(SessionConfig {
@@ -617,7 +618,7 @@ async fn log_out_everywhere_ends_every_session_of_the_user_only() {
             current,
             DestructiveAction::LogOutEverywhere,
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("log out everywhere");
@@ -736,12 +737,7 @@ async fn a_destructive_action_reports_whether_it_ended_the_acting_session() {
 
         let reported = h
             .session_manager
-            .perform(
-                current,
-                action(&alice, &other),
-                None,
-                SessionContext::default(),
-            )
+            .perform(current, action(&alice, &other), None, request_context())
             .await
             .unwrap_or_else(|err| panic!("{name}: {err:?}"));
 
@@ -769,7 +765,7 @@ async fn revoke_notifies_only_for_another_session() {
                 id: other.session.id,
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("revoke other");
@@ -785,7 +781,7 @@ async fn revoke_notifies_only_for_another_session() {
             current,
             DestructiveAction::RevokeSession { id: current.id },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect("revoke self");
@@ -811,7 +807,7 @@ async fn revoke_hides_another_users_session() {
                 id: bob.session.session.id,
             },
             None,
-            SessionContext::default(),
+            request_context(),
         )
         .await
         .expect_err("alice cannot revoke bob's session");

@@ -11,10 +11,9 @@ use doorman_core::rate_limit::NoopRateLimiter;
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::RecoveryConfig;
 use doorman_core::security_notice::{NoticePolicy, OperatorNotice};
-use doorman_core::session::SessionContext;
 use doorman_core::signup::SignupConfig;
 use doorman_core::user::UserConfig;
-use doorman_test_support::CapturingEmailSender;
+use doorman_test_support::{CapturingEmailSender, request_context};
 
 fn core_builder(email: Arc<dyn EmailSender>) -> AuthCoreBuilder {
     AuthCore::builder(InMemoryStorage::new().all_stores())
@@ -70,7 +69,7 @@ async fn service_drives_the_managers_the_core_assembled() {
 
     auth.state()
         .signup()
-        .request_signup("wire@example.com", None, SessionContext::default())
+        .request_signup("wire@example.com", None, request_context())
         .await
         .expect("request signup");
     assert_eq!(
