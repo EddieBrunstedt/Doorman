@@ -5,15 +5,16 @@ use async_trait::async_trait;
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
 use crate::assembly::AssemblyError;
-use crate::audit::{AuditDispatch, AuditEventKind};
+use crate::audit::{AuditDispatch, AuditEventKind, SignupFailureReason};
 use crate::context::CoreDeps;
 use crate::email::{EmailAddress, Mailer};
-use crate::email_link::TOKEN_PLACEHOLDER;
+use crate::email_link::{Issued, TOKEN_PLACEHOLDER};
 use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
 use crate::error::{Error, Result};
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
+use crate::redeem::OwnerRefusal;
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, User};
 use crate::user_records::UserRecords;
@@ -189,53 +190,53 @@ impl SignupManager {
             }
         }
 
-        let records = &self.records;
-        if let Some(existing) = records.find_by_email(&address).await? {
-            return self.request_for_existing(&existing, &context).await;
-        }
-        let Some(user) = records.create(&address).await? else {
-            return match records.find_by_email(&address).await? {
-                Some(existing) => self.request_for_existing(&existing, &context).await,
-                None => Ok(()),
-            };
+        let Some(user) = self.find_or_create(&address).await? else {
+            return Ok(());
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
-        self.send_link(&user, &context).await?;
+        let url = match self.registration.issue_link(&user).await? {
+            Issued::Link(url) => url,
+            Issued::Refused(refusal) => {
+                let reason = match refusal {
+                    OwnerRefusal::UserDisabled => SignupFailureReason::UserDisabled,
+                    OwnerRefusal::WrongSignupStage => SignupFailureReason::SignupFinished,
+                };
+                self.audit
+                    .emit(
+                        &context,
+                        AuditEventKind::SignupFailed {
+                            user_id: user.id,
+                            reason,
+                        },
+                    )
+                    .await;
+                tracing::info!(outcome = "refused", reason = ?reason, "signup request (silent)");
+                return Ok(());
+            }
+        };
+        self.send_link(&user, &url, &context).await;
         tracing::info!(outcome = "sent", "signup email sent");
         Ok(())
     }
 
-    async fn request_for_existing(&self, existing: &User, context: &SessionContext) -> Result<()> {
-        tracing::Span::current().record("user_id", tracing::field::display(existing.id));
-
-        // Once signup has finished, only recovery brings the user back, with its cool-down.
-        if !existing.has_finished_signup() {
-            self.send_link(existing, context).await?;
-            tracing::info!(
-                outcome = "reissued",
-                "signup email re-sent before signup finished"
-            );
-            return Ok(());
+    // `None` when a concurrent request created the user and it was gone again by the time this one
+    // looked.
+    async fn find_or_create(&self, address: &EmailAddress) -> Result<Option<User>> {
+        let records = &self.records;
+        if let Some(existing) = records.find_by_email(address).await? {
+            return Ok(Some(existing));
         }
-
-        self.audit
-            .emit(
-                context,
-                AuditEventKind::SignupRequested {
-                    user_id: existing.id,
-                },
-            )
-            .await;
-        tracing::info!(outcome = "already_registered", "signup request (silent)");
-        Ok(())
+        match records.create(address).await? {
+            Some(user) => Ok(Some(user)),
+            None => records.find_by_email(address).await,
+        }
     }
 
-    async fn send_link(&self, user: &User, context: &SessionContext) -> Result<()> {
-        let url = self.registration.issue_link(user).await?;
+    async fn send_link(&self, user: &User, url: &str, context: &SessionContext) {
         self.mailer
             .send_best_effort(user, "signup link", |templates| {
-                templates.signup_email(user, &url)
+                templates.signup_email(user, url)
             })
             .await;
         self.audit
@@ -244,7 +245,6 @@ impl SignupManager {
                 AuditEventKind::SignupRequested { user_id: user.id },
             )
             .await;
-        Ok(())
     }
 
     #[tracing::instrument(

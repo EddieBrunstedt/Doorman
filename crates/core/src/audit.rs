@@ -156,6 +156,10 @@ pub enum AuditEventKind {
     SignupLinkRedeemed {
         user_id: UserId,
     },
+    SignupFailed {
+        user_id: UserId,
+        reason: SignupFailureReason,
+    },
     RecoveryRequested {
         user_id: Option<UserId>,
     },
@@ -226,6 +230,7 @@ impl AuditEventKind {
             | Self::PasskeyRenamed { user_id }
             | Self::SignupRequested { user_id }
             | Self::SignupLinkRedeemed { user_id }
+            | Self::SignupFailed { user_id, .. }
             | Self::RecoveryLinkRedeemed { user_id }
             | Self::EmailChangeRequested { user_id }
             | Self::EmailChangeCompleted { user_id }
@@ -249,6 +254,7 @@ impl AuditEventKind {
     pub fn severity(&self) -> AuditSeverity {
         match self {
             Self::AuthenticationFailed { .. }
+            | Self::SignupFailed { .. }
             | Self::RecoveryFailed { .. }
             | Self::ReauthFailed { .. }
             | Self::RedemptionFailed { .. }
@@ -269,6 +275,14 @@ pub enum AuthFailureReason {
     UserVerificationMissing,
     BadAssertion,
     UserDisabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SignupFailureReason {
+    UserDisabled,
+    SignupFinished,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,6 +319,7 @@ pub enum RedemptionFailureReason {
     UserNotFound,
     UserDisabled,
     SignupFinished,
+    SignupUnfinished,
     EmailChanged,
 }
 

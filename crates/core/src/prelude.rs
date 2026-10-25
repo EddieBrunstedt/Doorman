@@ -1,7 +1,7 @@
 pub use crate::assembly::{AssemblyError, AuthCore, AuthCoreBuilder};
 pub use crate::audit::{
     Actor, AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, OperatorActor,
-    RecoveryFailureReason, RedemptionFailureReason, SecretKind,
+    RecoveryFailureReason, RedemptionFailureReason, SecretKind, SignupFailureReason,
 };
 pub use crate::clock::{Clock, SystemClock};
 pub use crate::destructive::{CurrentSession, DestructiveAction};

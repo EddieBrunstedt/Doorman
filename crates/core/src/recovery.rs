@@ -7,12 +7,13 @@ use crate::assembly::{AssemblyError, MAX_LIFETIME};
 use crate::audit::{AuditDispatch, AuditEventKind, RecoveryFailureReason};
 use crate::context::CoreDeps;
 use crate::email::{EmailAddress, Mailer};
-use crate::email_link::TOKEN_PLACEHOLDER;
+use crate::email_link::{Issued, TOKEN_PLACEHOLDER};
 use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
 use crate::error::Result;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
+use crate::redeem::OwnerRefusal;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
 use crate::storage::PasskeyChallengeId;
@@ -220,34 +221,27 @@ impl RecoveryManager {
         };
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
 
-        if !user.status.is_active() {
-            self.audit
-                .emit(
-                    &context,
-                    AuditEventKind::RecoveryFailed {
-                        user_id: Some(user.id),
-                        reason: RecoveryFailureReason::UserDisabled,
-                    },
-                )
-                .await;
-            return Ok(());
-        }
-
-        // There is no access to regain until signup has finished; a signup link finishes it.
-        if !user.has_finished_signup() {
-            self.audit
-                .emit(
-                    &context,
-                    AuditEventKind::RecoveryFailed {
-                        user_id: Some(user.id),
-                        reason: RecoveryFailureReason::SignupUnfinished,
-                    },
-                )
-                .await;
-            return Ok(());
-        }
-
-        let url = self.registration.issue_link(&user).await?;
+        let url = match self.registration.issue_link(&user).await? {
+            Issued::Link(url) => url,
+            Issued::Refused(refusal) => {
+                let reason = match refusal {
+                    OwnerRefusal::UserDisabled => RecoveryFailureReason::UserDisabled,
+                    // There is no access to regain until signup has finished; a signup link
+                    // finishes it.
+                    OwnerRefusal::WrongSignupStage => RecoveryFailureReason::SignupUnfinished,
+                };
+                self.audit
+                    .emit(
+                        &context,
+                        AuditEventKind::RecoveryFailed {
+                            user_id: Some(user.id),
+                            reason,
+                        },
+                    )
+                    .await;
+                return Ok(());
+            }
+        };
         self.mailer
             .send_best_effort(&user, "recovery link", |templates| {
                 templates.recovery_email(&user, &url)

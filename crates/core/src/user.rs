@@ -5,8 +5,9 @@ use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
 use crate::email::{EmailAddress, Mailer};
-use crate::email_link::{EmailLinks, TOKEN_PLACEHOLDER};
+use crate::email_link::{EmailLinks, Issued, TOKEN_PLACEHOLDER};
 use crate::error::{Error, Result};
+use crate::redeem::OwnerRefusal;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
 use crate::storage::{EmailLinkPurpose, User};
@@ -80,7 +81,19 @@ impl UserManager {
         }
 
         let user = self.records.find(session.user_id).await?;
-        let url = self.link.issue(&user, Some(&address)).await?;
+        let url = match self.link.issue(&user, Some(&address)).await? {
+            Issued::Link(url) => url,
+            Issued::Refused(OwnerRefusal::UserDisabled) => {
+                tracing::warn!(outcome = "user_disabled", "email change rejected");
+                return Err(Error::UserDisabled);
+            }
+            // Only a user who has finished signup holds a session.
+            Issued::Refused(OwnerRefusal::WrongSignupStage) => {
+                return Err(Error::Internal(
+                    "a session is held by a user who has not finished signup".to_string(),
+                ));
+            }
+        };
 
         // Whoever holds the session may own the new address, and its mail server
         // can take the link yet fail the send. So the old address hears of the

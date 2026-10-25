@@ -6,7 +6,7 @@ use crate::clock::{Clock, expiry};
 use crate::context::CoreDeps;
 use crate::email::EmailAddress;
 use crate::error::{Error, Result};
-use crate::redeem::Redeemer;
+use crate::redeem::{OwnedSecret, OwnerRefusal, Redeemer, owner_refusal};
 use crate::session::SessionContext;
 use crate::storage::{EmailLink, EmailLinkPurpose, EmailLinkStore, User};
 use crate::token::{generate_token, hash_token};
@@ -14,6 +14,13 @@ use crate::token::{generate_token, hash_token};
 pub const TOKEN_PLACEHOLDER: &str = "{token}";
 
 const PLACEHOLDER_URL_HOST: &str = "example.invalid";
+
+#[must_use]
+#[derive(Debug)]
+pub(crate) enum Issued {
+    Link(String),
+    Refused(OwnerRefusal),
+}
 
 #[derive(Clone)]
 pub(crate) struct EmailLinks {
@@ -64,7 +71,12 @@ impl EmailLinks {
         &self,
         owner: &User,
         new_email: Option<&EmailAddress>,
-    ) -> Result<String> {
+    ) -> Result<Issued> {
+        // Redemption checks the owner again, since they can change once the link is out; this
+        // check only keeps a link that could never redeem from being sent.
+        if let Some(refusal) = owner_refusal(owner, EmailLink::signup_stage(self.purpose)) {
+            return Ok(Issued::Refused(refusal));
+        }
         let now = self.clock.now();
         let expires_at = expiry(now, self.lifetime)?;
         let (token, token_hash) = generate_token()?;
@@ -80,7 +92,9 @@ impl EmailLinks {
             })
             .await?;
 
-        Ok(self.template.replace(TOKEN_PLACEHOLDER, &token))
+        Ok(Issued::Link(
+            self.template.replace(TOKEN_PLACEHOLDER, &token),
+        ))
     }
 
     pub(crate) async fn redeem(

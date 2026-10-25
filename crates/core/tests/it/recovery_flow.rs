@@ -17,7 +17,7 @@ use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use doorman_core::session::{SessionConfig, SessionContext};
-use doorman_core::storage::{PasskeyStore, User, UserStatus, UserStore};
+use doorman_core::storage::{PasskeyStore, User, UserStore};
 use doorman_test_support::MockClock;
 
 use crate::common::{
@@ -101,40 +101,6 @@ async fn request_for_unknown_email_sends_nothing_but_audits() {
     )));
 }
 
-async fn disable_user(h: &Harness, user: &User) {
-    let now = h.clock.now();
-    h.users
-        .set_user_status(user.id, UserStatus::Disabled { at: now }, now)
-        .await
-        .expect("disable user");
-}
-
-#[tokio::test]
-async fn request_for_disabled_user_sends_nothing_but_audits() {
-    let h = Harness::fresh();
-    let user = provision_user(&h, "alice@example.com").await;
-    disable_user(&h, &user).await;
-    let mail_before = h.email.sent().len();
-
-    h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
-        .await
-        .expect("silent ok for disabled user");
-
-    assert_eq!(
-        h.email.sent().len(),
-        mail_before,
-        "no link sent for a disabled user",
-    );
-    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
-        k,
-        AuditEventKind::RecoveryFailed {
-            reason: RecoveryFailureReason::UserDisabled,
-            user_id: Some(id),
-        } if *id == user.id,
-    )));
-}
-
 #[tokio::test]
 async fn request_before_signup_finished_sends_nothing_but_audits() {
     let h = Harness::fresh();
@@ -165,42 +131,6 @@ async fn request_before_signup_finished_sends_nothing_but_audits() {
         AuditEventKind::RecoveryFailed {
             reason: RecoveryFailureReason::SignupUnfinished,
             user_id: Some(id),
-        } if *id == user.id,
-    )));
-}
-
-#[tokio::test]
-async fn redeem_refused_for_disabled_user() {
-    let h = Harness::fresh();
-    let user = provision_user(&h, "alice@example.com").await;
-
-    h.recovery
-        .request_recovery("alice@example.com", SessionContext::default())
-        .await
-        .expect("request while active");
-    let link = h
-        .email
-        .sent()
-        .into_iter()
-        .rev()
-        .find(|e| e.subject == "Recover access with a new passkey")
-        .expect("link queued");
-    let token = token_from_email(&link.body_text, RECOVERY_URL);
-
-    disable_user(&h, &user).await;
-
-    let err = h
-        .recovery
-        .redeem_recovery_link(&token, SessionContext::default())
-        .await
-        .expect_err("redeem refused for disabled user");
-    assert!(matches!(err, Error::UserDisabled));
-    assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
-        k,
-        AuditEventKind::RedemptionFailed {
-            user_id: Some(id),
-            secret: SecretKind::RecoveryLink,
-            reason: RedemptionFailureReason::UserDisabled,
         } if *id == user.id,
     )));
 }

@@ -2,7 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
+use doorman_core::audit::{
+    AuditEventKind, RedemptionFailureReason, SecretKind, SignupFailureReason,
+};
 use doorman_core::clock::Clock;
 use doorman_core::email::{EmailContent, EmailTemplates};
 use doorman_core::error::{Error, Result, StorageError};
@@ -80,12 +82,8 @@ async fn concurrent_requests_for_one_new_email_both_succeed() {
 #[tokio::test]
 async fn request_for_email_with_passkeys_is_silent_and_audited() {
     let h = Harness::fresh();
-    provision_user(&h, "alice@example.com").await;
+    let user = provision_user(&h, "alice@example.com").await;
     let emails_before = h.email.sent().len();
-    let signup_requested_before = kinds(&h.audit.events())
-        .into_iter()
-        .filter(|k| matches!(k, AuditEventKind::SignupRequested { .. }))
-        .count();
 
     h.signup
         .request_signup("alice@example.com", None, SessionContext::default())
@@ -93,13 +91,12 @@ async fn request_for_email_with_passkeys_is_silent_and_audited() {
         .expect("silent ok");
     assert_eq!(h.email.sent().len(), emails_before, "no extra link sent");
 
-    let signup_requested = kinds(&h.audit.events())
-        .into_iter()
-        .filter(|k| matches!(k, AuditEventKind::SignupRequested { .. }))
-        .count();
     assert_eq!(
-        signup_requested,
-        signup_requested_before + 1,
+        kinds(&h.audit.events()).last(),
+        Some(&AuditEventKind::SignupFailed {
+            user_id: user.id,
+            reason: SignupFailureReason::SignupFinished,
+        }),
         "silent request still audited",
     );
 }
@@ -164,10 +161,13 @@ async fn request_after_signup_finished_sends_no_link_even_without_passkeys() {
         .expect("silent ok");
 
     assert_eq!(h.email.sent().len(), mail_before, "no signup link sent");
-    assert!(matches!(
+    assert_eq!(
         kinds(&h.audit.events()).last(),
-        Some(AuditEventKind::SignupRequested { user_id }) if *user_id == user.id
-    ));
+        Some(&AuditEventKind::SignupFailed {
+            user_id: user.id,
+            reason: SignupFailureReason::SignupFinished,
+        }),
+    );
 }
 
 fn last_signup_token(h: &Harness) -> String {

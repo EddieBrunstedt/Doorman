@@ -5,7 +5,7 @@ use webauthn_rs::prelude::RegisterPublicKeyCredential;
 use crate::assembly::AssemblyError;
 use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
-use crate::email_link::EmailLinks;
+use crate::email_link::{EmailLinks, Issued};
 use crate::error::Result;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::{
@@ -80,7 +80,7 @@ impl EmailLinkRegistration {
         })
     }
 
-    pub(crate) async fn issue_link(&self, owner: &User) -> Result<String> {
+    pub(crate) async fn issue_link(&self, owner: &User) -> Result<Issued> {
         self.links.issue(owner, None).await
     }
 

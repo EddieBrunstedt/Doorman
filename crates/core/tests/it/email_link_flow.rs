@@ -1,10 +1,12 @@
 use chrono::Duration as ChronoDuration;
-use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
+use doorman_core::audit::{
+    AuditEventKind, RecoveryFailureReason, RedemptionFailureReason, SecretKind, SignupFailureReason,
+};
 use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::error::Error;
 use doorman_core::session::SessionContext;
-use doorman_core::storage::{UserId, UserStore};
+use doorman_core::storage::{User, UserId, UserStatus, UserStore};
 
 use crate::common::{
     Harness, RECOVERY_URL, SIGNUP_URL, USER_URL, kinds, provision_user, session_for,
@@ -37,8 +39,9 @@ impl Link {
         }
     }
 
-    async fn issue(self, h: &Harness) -> (UserId, String) {
-        let owner = match self {
+    // Signup creates the user it sends a link to, so its owner already holds one.
+    async fn owner(self, h: &Harness) -> User {
+        match self {
             Link::Signup => {
                 h.signup
                     .request_signup("new@example.com", None, SessionContext::default())
@@ -49,32 +52,42 @@ impl Link {
                     .await
                     .expect("find user")
                     .expect("signup provisioned the user")
-                    .id
+            }
+            Link::Recovery | Link::EmailChange => provision_user(h, "alice@example.com").await,
+        }
+    }
+
+    async fn request(self, h: &Harness, owner: &User) -> Result<(), Error> {
+        let context = SessionContext::default();
+        match self {
+            Link::Signup => {
+                h.signup
+                    .request_signup("new@example.com", None, context)
+                    .await
             }
             Link::Recovery => {
-                let user = provision_user(h, "alice@example.com").await;
                 h.recovery
-                    .request_recovery("alice@example.com", SessionContext::default())
+                    .request_recovery("alice@example.com", context)
                     .await
-                    .expect("request recovery");
-                user.id
             }
-            Link::EmailChange => {
-                let user = provision_user(h, "alice@example.com").await;
-                h.session_manager
-                    .perform(
-                        &session_for(h, &user).await,
-                        DestructiveAction::RequestEmailChange {
-                            new_email: "new@example.com".into(),
-                        },
-                        None,
-                        SessionContext::default(),
-                    )
-                    .await
-                    .expect("request email change");
-                user.id
-            }
-        };
+            Link::EmailChange => h
+                .session_manager
+                .perform(
+                    &session_for(h, owner).await,
+                    DestructiveAction::RequestEmailChange {
+                        new_email: "new@example.com".into(),
+                    },
+                    None,
+                    context,
+                )
+                .await
+                .map(drop),
+        }
+    }
+
+    async fn issue(self, h: &Harness) -> (UserId, String) {
+        let owner = self.owner(h).await;
+        self.request(h, &owner).await.expect("request link");
         let prefix = self.template().split('{').next().expect("template prefix");
         let email = h
             .email
@@ -83,7 +96,10 @@ impl Link {
             .rev()
             .find(|e| e.body_text.contains(prefix))
             .expect("link sent");
-        (owner, token_from_email(&email.body_text, self.template()))
+        (
+            owner.id,
+            token_from_email(&email.body_text, self.template()),
+        )
     }
 
     async fn redeem(self, h: &Harness, token: &str) -> Result<(), Error> {
@@ -98,6 +114,29 @@ impl Link {
             Link::EmailChange => h.user.confirm_email_change(token, context).await.map(drop),
         }
     }
+}
+
+fn refused_issue(link: Link, owner: UserId) -> Option<AuditEventKind> {
+    match link {
+        Link::Signup => Some(AuditEventKind::SignupFailed {
+            user_id: owner,
+            reason: SignupFailureReason::UserDisabled,
+        }),
+        Link::Recovery => Some(AuditEventKind::RecoveryFailed {
+            user_id: Some(owner),
+            reason: RecoveryFailureReason::UserDisabled,
+        }),
+        Link::EmailChange => None,
+    }
+}
+
+// Through the store, so only the status changes: the owner keeps their sessions and links.
+async fn disable(h: &Harness, owner: UserId) {
+    let now = h.clock.now();
+    h.users
+        .set_user_status(owner, UserStatus::Disabled { at: now }, now)
+        .await
+        .expect("disable owner");
 }
 
 fn audited_failure(
@@ -222,6 +261,46 @@ async fn a_link_is_refused_once_its_owners_email_address_has_changed() {
         assert!(matches!(err, Error::InvalidEmailLink), "{link:?}");
         assert!(
             audited_failure(&h, link, Some(owner), RedemptionFailureReason::EmailChanged),
+            "{link:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn no_link_is_issued_to_a_disabled_user() {
+    for link in LINKS {
+        let h = Harness::fresh();
+        let owner = link.owner(&h).await;
+        disable(&h, owner.id).await;
+        let mail_before = h.email.sent().len();
+
+        let result = link.request(&h, &owner).await;
+
+        assert_eq!(h.email.sent().len(), mail_before, "{link:?}");
+        match refused_issue(link, owner.id) {
+            // Signup and recovery answer a disabled user as they answer anyone, so the response
+            // reveals nothing about them.
+            Some(refusal) => {
+                result.expect("silent ok");
+                assert!(kinds(&h.audit.events()).contains(&refusal), "{link:?}");
+            }
+            None => assert!(matches!(result, Err(Error::UserDisabled)), "{link:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_link_is_refused_while_its_owner_is_disabled() {
+    for link in LINKS {
+        let h = Harness::fresh();
+        let (owner, token) = link.issue(&h).await;
+        disable(&h, owner).await;
+
+        let err = link.redeem(&h, &token).await.expect_err("owner disabled");
+
+        assert!(matches!(err, Error::UserDisabled), "{link:?}");
+        assert!(
+            audited_failure(&h, link, Some(owner), RedemptionFailureReason::UserDisabled),
             "{link:?}"
         );
     }
