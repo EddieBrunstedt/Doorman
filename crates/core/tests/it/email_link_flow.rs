@@ -9,7 +9,7 @@ use doorman_core::session::SessionContext;
 use doorman_core::storage::{User, UserId, UserStatus, UserStore};
 
 use crate::common::{
-    Harness, RECOVERY_URL, SIGNUP_URL, USER_URL, kinds, provision_user, session_for,
+    Harness, RECOVERY_URL, SIGNUP_URL, USER_URL, kinds, operator, provision_user, session_for,
     token_from_email,
 };
 
@@ -301,6 +301,27 @@ async fn a_link_is_refused_while_its_owner_is_disabled() {
         assert!(matches!(err, Error::UserDisabled), "{link:?}");
         assert!(
             audited_failure(&h, link, Some(owner), RedemptionFailureReason::UserDisabled),
+            "{link:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_link_from_before_a_disable_is_refused_after_an_enable() {
+    for link in LINKS {
+        let h = Harness::fresh();
+        let (owner, token) = link.issue(&h).await;
+        h.operator
+            .disable(owner, operator())
+            .await
+            .expect("disable");
+        h.operator.enable(owner, operator()).await.expect("enable");
+
+        let err = link.redeem(&h, &token).await.expect_err("link deleted");
+
+        assert!(matches!(err, Error::InvalidEmailLink), "{link:?}");
+        assert!(
+            audited_failure(&h, link, None, RedemptionFailureReason::Unknown),
             "{link:?}"
         );
     }

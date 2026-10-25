@@ -3,7 +3,7 @@ use std::time::Duration;
 use chrono::Duration as ChronoDuration;
 use doorman_core::Error;
 use doorman_core::assembly::AssemblyError;
-use doorman_core::audit::{AuditEventKind, OperatorActor};
+use doorman_core::audit::AuditEventKind;
 use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::passkey::StartedRegistration;
@@ -14,7 +14,7 @@ use doorman_core::storage::{
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::common::{
-    Harness, RECOVERY_URL, SIGNUP_URL, authenticator, last_email_change_token, make_user,
+    Harness, RECOVERY_URL, SIGNUP_URL, authenticator, last_email_change_token, make_user, operator,
     provision_user, register_passkey, session_count, sign_in, token_from_email, within_deadline,
 };
 
@@ -367,10 +367,6 @@ fn slide_interval_must_be_strictly_below_the_idle_timeout() {
         "a slide interval equal to the idle timeout is rejected, got {err:?}",
     );
     assert!(build(idle - Duration::from_secs(1)).is_ok());
-}
-
-fn operator() -> OperatorActor {
-    OperatorActor::new("support-agent-7", None, None, None).expect("operator actor")
 }
 
 // Every flow that starts a session, driven up to its last call.

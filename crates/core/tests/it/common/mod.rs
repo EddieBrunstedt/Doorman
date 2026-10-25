@@ -8,7 +8,7 @@ use tokio::sync::Barrier;
 use chrono::{DateTime, TimeZone, Utc};
 use doorman_core::assembly::{AssemblyError, AuthCore};
 use doorman_core::audit::{
-    AuditEvent, AuditEventKind, AuditSink, RedemptionFailureReason, SecretKind,
+    AuditEvent, AuditEventKind, AuditSink, OperatorActor, RedemptionFailureReason, SecretKind,
 };
 use doorman_core::clock::Clock;
 use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
@@ -60,6 +60,10 @@ pub fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
 
 pub fn kinds(events: &[AuditEvent]) -> Vec<AuditEventKind> {
     events.iter().map(|e| e.kind.clone()).collect()
+}
+
+pub fn operator() -> OperatorActor {
+    OperatorActor::new("support-agent-7", None, None, None).expect("operator actor")
 }
 
 pub fn signup_config() -> SignupConfig {

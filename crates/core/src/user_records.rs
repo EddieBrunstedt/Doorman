@@ -115,7 +115,14 @@ impl UserRecords {
         self.users
             .set_user_status(user_id, UserStatus::Disabled { at: now }, now)
             .await?;
-        self.sessions.revoke_all_for_user(user_id).await
+        let revoked_count = self.sessions.revoke_all_for_user(user_id).await?;
+        // Redemption refuses these while the user is disabled; deleting them keeps an enable from
+        // bringing them back.
+        self.links.delete_links_for_user(user_id).await?;
+        self.challenges
+            .delete_registrations_for_user(user_id)
+            .await?;
+        Ok(revoked_count)
     }
 
     pub(crate) async fn issue_session(
@@ -159,10 +166,6 @@ impl UserRecords {
         // and leaves a delete that fails partway with a user who cannot log in.
         self.disable(user_id).await?;
         self.passkeys.delete_passkeys_for_user(user_id).await?;
-        self.links.delete_links_for_user(user_id).await?;
-        self.challenges
-            .delete_registrations_for_user(user_id)
-            .await?;
         self.users.delete_user(user_id).await?;
 
         self.audit

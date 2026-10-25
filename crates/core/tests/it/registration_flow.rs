@@ -11,8 +11,8 @@ use doorman_core::storage::{PasskeyChallengeId, User, UserStatus, UserStore};
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
 use crate::common::{
-    Harness, RECOVERY_URL, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds, passkey_count,
-    provision_user, rp_origin, session_count, session_for, token_from_email,
+    Harness, RECOVERY_URL, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds, operator,
+    passkey_count, provision_user, rp_origin, session_count, session_for, token_from_email,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -262,6 +262,39 @@ async fn an_email_link_registration_cannot_finish_for_a_disabled_user() {
         assert_eq!(
             session_count(&h, user.id).await,
             sessions_before,
+            "{link:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_email_link_registration_from_before_a_disable_cannot_finish_after_an_enable() {
+    for link in LINKS {
+        let h = Harness::fresh();
+        let (user, token) = link.issue(&h).await;
+        let started = link.redeem(&h, &token).await.expect("redeem while active");
+        h.operator
+            .disable(user.id, operator())
+            .await
+            .expect("disable");
+        h.operator
+            .enable(user.id, operator())
+            .await
+            .expect("enable");
+        let passkeys_before = passkey_count(&h, user.id).await;
+
+        let err = link
+            .finish(&h, started)
+            .await
+            .expect_err("registration deleted");
+
+        assert!(
+            matches!(err, Error::InvalidPasskeyChallenge),
+            "{link:?}: {err:?}"
+        );
+        assert_eq!(
+            passkey_count(&h, user.id).await,
+            passkeys_before,
             "{link:?}"
         );
     }
