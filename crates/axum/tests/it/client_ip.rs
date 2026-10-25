@@ -53,10 +53,7 @@ fn router(limits: PasskeyRateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAud
         .limiter(Arc::new(InMemoryRateLimiter::new(clock.clone())))
         .build()
         .expect("auth core built");
-    let auth = AuthService::builder(core)
-        .external_origin(ORIGIN.parse().expect("origin"))
-        .build()
-        .expect("build");
+    let auth = AuthService::builder(core).build().expect("build");
     let app = Router::new()
         .merge(auth.router())
         .route(

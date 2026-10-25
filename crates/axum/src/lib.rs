@@ -9,7 +9,7 @@
 
 pub mod config;
 mod cookies;
-pub mod csrf;
+mod csrf;
 pub mod dto;
 pub mod error;
 pub mod extractors;
@@ -24,7 +24,6 @@ pub use doorman_core as core;
 
 pub use builder::{AuthServiceBuilder, BuilderError};
 pub use config::CookieConfig;
-pub use csrf::CsrfConfig;
 pub use error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use extractors::{AuthSession, AuthUser, ClientIp, OptionalAuthUser, RequestContext};
 pub use session::{AuthContext, SessionLayer};

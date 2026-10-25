@@ -186,6 +186,10 @@ impl PasskeyManager {
         }
     }
 
+    pub fn rp_origins(&self) -> impl Iterator<Item = &Url> {
+        std::iter::once(&self.config.rp_origin).chain(&self.config.additional_origins)
+    }
+
     #[tracing::instrument(skip(self, session), fields(method = "passkey", user_id = %session.user_id))]
     pub(crate) async fn start_registration(
         &self,

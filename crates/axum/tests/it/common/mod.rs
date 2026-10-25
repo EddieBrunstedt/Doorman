@@ -9,7 +9,6 @@ use axum::http::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::routing::get;
 use doorman_axum::config::CookieConfig;
-use doorman_axum::csrf::CsrfConfig;
 use doorman_axum::dto::{
     AuthResponse, PasskeyChallenge, PasskeyDto, Reauthentication, RecoveryRedeemRequest,
     RecoveryRequest, RegistrationFinishRequest, SignupRedeemRequest, SignupRequest,
@@ -102,12 +101,10 @@ impl TestApp {
             .reauthentication(ReauthPolicy::disabled());
         let core = customise_core(core).build().expect("auth core built");
 
-        let http = AuthService::builder(core)
-            .csrf(CsrfConfig::disabled())
-            .cookie(CookieConfig {
-                secure: false,
-                ..CookieConfig::default()
-            });
+        let http = AuthService::builder(core).cookie(CookieConfig {
+            secure: false,
+            ..CookieConfig::default()
+        });
         let auth = customise_http(http).build().expect("auth built");
         let sessions = auth.state().sessions().clone();
 
@@ -401,8 +398,10 @@ impl Call<'_> {
         self.header("authorization", &format!("Bearer {token}"))
     }
 
+    // A browser sends the session cookie from the application's own page with this header.
     pub fn cookie(self, token: &str) -> Self {
         self.header(COOKIE.as_str(), &format!("doorman_session={token}"))
+            .header("sec-fetch-site", "same-origin")
     }
 
     pub fn header(mut self, name: &str, value: &str) -> Self {

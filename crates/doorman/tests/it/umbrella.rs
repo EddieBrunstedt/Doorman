@@ -38,7 +38,6 @@ async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn 
         })
         .build()?;
     let auth = AuthService::builder(core)
-        .external_origin(origin)
         .cookie(CookieConfig::default())
         .build()?;
 

@@ -102,7 +102,9 @@ async fn starting_a_session_replaces_the_cookie_the_request_carried() {
         if !carried_live {
             log_out(&app, &alice.token).await;
         }
-        let app = app.default_header("cookie", &format!("doorman_session={}", alice.token));
+        let app = app
+            .default_header("cookie", &format!("doorman_session={}", alice.token))
+            .default_header("sec-fetch-site", "same-origin");
 
         let reply = match start {
             SessionStart::Login => {

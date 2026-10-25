@@ -42,7 +42,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         })
         .build()?;
     let auth = AuthService::builder(core)
-        .external_origin(external_origin.clone())
         .cookie(CookieConfig {
             secure: external_origin.scheme() == "https",
             ..CookieConfig::default()

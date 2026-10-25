@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use doorman_axum::config::CookieConfig;
-use doorman_axum::csrf::CsrfConfig;
 use doorman_axum::{AuthService, AuthServiceBuilder, BuilderError};
 use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
 use doorman_core::audit::NoopAuditSink;
@@ -49,7 +48,7 @@ fn core() -> AuthCore {
 }
 
 fn valid_builder() -> AuthServiceBuilder {
-    AuthService::builder(core()).csrf(CsrfConfig::disabled())
+    AuthService::builder(core())
 }
 
 #[test]
@@ -65,10 +64,7 @@ async fn service_drives_the_managers_the_core_assembled() {
         .notice_policy(policy.clone())
         .build()
         .expect("core");
-    let auth = AuthService::builder(core)
-        .csrf(CsrfConfig::disabled())
-        .build()
-        .expect("build");
+    let auth = AuthService::builder(core).build().expect("build");
 
     assert_eq!(*auth.state().operator().notice_policy(), policy);
 
@@ -81,36 +77,6 @@ async fn service_drives_the_managers_the_core_assembled() {
         email.sent().len(),
         1,
         "signup request should enqueue exactly one link email via the core's transport"
-    );
-}
-
-#[test]
-fn csrf_decision_required_when_neither_origin_nor_config_set() {
-    let err = AuthService::builder(core()).build().err();
-    assert!(
-        matches!(err, Some(BuilderError::CsrfDecisionRequired)),
-        "expected CsrfDecisionRequired with neither origin nor csrf config, got: {err:?}"
-    );
-}
-
-#[test]
-fn external_origin_satisfies_the_csrf_decision() {
-    let err = AuthService::builder(core())
-        .external_origin("https://app.test".parse().expect("origin"))
-        .build()
-        .err();
-    assert!(
-        err.is_none(),
-        "setting an external origin should satisfy the CSRF decision, got: {err:?}"
-    );
-}
-
-#[test]
-fn explicit_csrf_disabled_satisfies_the_csrf_decision() {
-    let err = valid_builder().build().err();
-    assert!(
-        err.is_none(),
-        "explicit CsrfConfig::disabled() should satisfy the CSRF decision, got: {err:?}"
     );
 }
 

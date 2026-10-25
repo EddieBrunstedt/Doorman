@@ -1,88 +1,78 @@
-use axum::http::{HeaderMap, Method, header};
+use axum::http::{HeaderMap, HeaderName, Method, header};
 use url::Url;
 
 use crate::cookies::{bearer_token, read_cookie};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CsrfConfig {
-    external_origin: Option<Url>,
-}
+const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
 
-impl CsrfConfig {
-    pub fn new(external_origin: Url) -> Self {
-        Self {
-            external_origin: Some(external_origin),
-        }
+#[derive(Debug, Clone)]
+pub(crate) struct TrustedOrigins(Vec<Url>);
+
+impl TrustedOrigins {
+    pub(crate) fn new(origins: impl IntoIterator<Item = Url>) -> Self {
+        Self(origins.into_iter().collect())
     }
 
-    pub fn disabled() -> Self {
-        Self {
-            external_origin: None,
-        }
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        self.external_origin.is_some()
-    }
-
-    pub(crate) fn enabled_config(self) -> Option<Self> {
-        if self.is_enabled() { Some(self) } else { None }
-    }
-
-    fn external_origin(&self) -> Option<&Url> {
-        self.external_origin.as_ref()
+    fn contains(&self, candidate: &Url) -> bool {
+        self.0.iter().any(|trusted| same_origin(candidate, trusted))
     }
 }
 
-pub(crate) fn should_reject(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    UntrustedOrigin,
+    UnknownOrigin,
+}
+
+// Every state-changing request is checked, not only those carrying the session cookie: one
+// that starts a session would otherwise let another site log the browser in as someone else.
+pub(crate) fn check(
     method: &Method,
     headers: &HeaderMap,
     session_cookie_name: &str,
-    config: &CsrfConfig,
-) -> bool {
+    trusted: &TrustedOrigins,
+) -> Result<(), Refusal> {
+    // A browser can attach a bearer token only by holding it, so it is no ambient credential.
     if is_safe_method(method) || bearer_token(headers).is_some() {
-        return false;
+        return Ok(());
     }
 
-    let Some(expected_origin) = config.external_origin() else {
-        return false;
-    };
-
-    let has_cookie_session = read_cookie(headers, session_cookie_name)
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
-    if !has_cookie_session {
-        return false;
+    if let Some(site) = headers.get(SEC_FETCH_SITE) {
+        if matches!(site.as_bytes(), b"same-origin" | b"none") {
+            return Ok(());
+        }
+        return origin_is_trusted(headers, trusted);
     }
 
-    if let Some(matches) = header_origin_matches(headers, header::ORIGIN, expected_origin) {
-        return !matches;
+    if headers.contains_key(header::ORIGIN) {
+        return origin_is_trusted(headers, trusted);
     }
 
-    if let Some(matches) = header_origin_matches(headers, header::REFERER, expected_origin) {
-        return !matches;
+    // Every browser names the request's origin in one of the headers above, so a request with
+    // neither came from something other than a browser page, unless it carries the cookie.
+    if has_session_cookie(headers, session_cookie_name) {
+        return Err(Refusal::UnknownOrigin);
     }
-
-    true
+    Ok(())
 }
 
 fn is_safe_method(method: &Method) -> bool {
     matches!(method, &Method::GET | &Method::HEAD | &Method::OPTIONS)
 }
 
-fn header_origin_matches(
-    headers: &HeaderMap,
-    name: header::HeaderName,
-    expected: &Url,
-) -> Option<bool> {
-    let raw = headers.get(name)?;
-    Some(
-        raw.to_str()
-            .ok()
-            .and_then(|value| Url::parse(value).ok())
-            .map(|url| same_origin(&url, expected))
-            .unwrap_or(false),
-    )
+fn origin_is_trusted(headers: &HeaderMap, trusted: &TrustedOrigins) -> Result<(), Refusal> {
+    let Some(raw) = headers.get(header::ORIGIN) else {
+        return Err(Refusal::UnknownOrigin);
+    };
+    let origin = raw.to_str().ok().and_then(|value| Url::parse(value).ok());
+    match origin {
+        Some(origin) if trusted.contains(&origin) => Ok(()),
+        _ => Err(Refusal::UntrustedOrigin),
+    }
+}
+
+fn has_session_cookie(headers: &HeaderMap, session_cookie_name: &str) -> bool {
+    read_cookie(headers, session_cookie_name).is_some_and(|value| !value.trim().is_empty())
 }
 
 fn same_origin(candidate: &Url, expected: &Url) -> bool {
@@ -96,135 +86,120 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
 
-    fn config() -> CsrfConfig {
-        CsrfConfig::new(Url::parse("https://app.test/base").expect("valid url"))
+    const APP: &str = "https://app.test";
+    const API_CLIENT: &str = "https://admin.app.test";
+    const EVIL: &str = "https://evil.test";
+
+    fn trusted() -> TrustedOrigins {
+        TrustedOrigins::new([
+            Url::parse("https://app.test/base").expect("valid url"),
+            Url::parse(API_CLIENT).expect("valid url"),
+        ])
     }
 
-    fn headers(
-        cookie: bool,
+    #[derive(Debug, Clone, Copy)]
+    enum Credential {
+        Absent,
+        Cookie,
+        Bearer,
+        Both,
+    }
+
+    #[derive(Debug)]
+    struct Case {
+        method: Method,
+        credential: Credential,
+        sec_fetch_site: Option<&'static str>,
         origin: Option<&'static str>,
         referer: Option<&'static str>,
-    ) -> HeaderMap {
+        expected: Result<(), Refusal>,
+    }
+
+    fn case(
+        credential: Credential,
+        sec_fetch_site: Option<&'static str>,
+        origin: Option<&'static str>,
+        expected: Result<(), Refusal>,
+    ) -> Case {
+        Case {
+            method: Method::POST,
+            credential,
+            sec_fetch_site,
+            origin,
+            referer: None,
+            expected,
+        }
+    }
+
+    fn headers(case: &Case) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        if cookie {
+        if matches!(case.credential, Credential::Cookie | Credential::Both) {
             headers.insert(
                 header::COOKIE,
                 HeaderValue::from_static("doorman_session=tok"),
             );
         }
-        if let Some(origin) = origin {
-            headers.insert(header::ORIGIN, HeaderValue::from_static(origin));
+        if matches!(case.credential, Credential::Bearer | Credential::Both) {
+            headers.insert(
+                header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer bearer-token"),
+            );
         }
-        if let Some(referer) = referer {
-            headers.insert(header::REFERER, HeaderValue::from_static(referer));
+        let named = [
+            (SEC_FETCH_SITE, case.sec_fetch_site),
+            (header::ORIGIN, case.origin),
+            (header::REFERER, case.referer),
+        ];
+        for (name, value) in named {
+            if let Some(value) = value {
+                headers.insert(name, HeaderValue::from_static(value));
+            }
         }
         headers
     }
 
     #[test]
-    fn same_origin_post_is_allowed() {
-        let headers = headers(true, Some("https://app.test"), None);
-        assert!(!should_reject(
-            &Method::POST,
-            &headers,
-            "doorman_session",
-            &config()
-        ));
-    }
+    fn a_state_changing_request_must_come_from_the_application() {
+        use Credential::*;
+        let untrusted = Err(Refusal::UntrustedOrigin);
+        let unknown = Err(Refusal::UnknownOrigin);
+        let cases = [
+            case(Cookie, Some("same-origin"), None, Ok(())),
+            case(Cookie, Some("none"), None, Ok(())),
+            case(Cookie, Some("same-site"), Some(API_CLIENT), Ok(())),
+            case(Cookie, Some("cross-site"), Some(APP), Ok(())),
+            case(Cookie, Some("cross-site"), Some(EVIL), untrusted),
+            case(Cookie, Some("same-site"), None, unknown),
+            case(Cookie, Some("same-site"), Some("null"), untrusted),
+            case(Cookie, None, Some(APP), Ok(())),
+            case(Cookie, None, Some("https://app.test:8443"), untrusted),
+            case(Cookie, None, Some("http://app.test"), untrusted),
+            case(Cookie, None, Some(EVIL), untrusted),
+            case(Cookie, None, None, unknown),
+            case(Absent, Some("same-origin"), None, Ok(())),
+            case(Absent, Some("cross-site"), Some(EVIL), untrusted),
+            case(Absent, Some("cross-site"), None, unknown),
+            case(Absent, None, Some(EVIL), untrusted),
+            case(Absent, None, None, Ok(())),
+            case(Bearer, Some("cross-site"), Some(EVIL), Ok(())),
+            case(Both, Some("cross-site"), Some(EVIL), Ok(())),
+            Case {
+                referer: Some("https://app.test/settings"),
+                ..case(Cookie, None, None, unknown)
+            },
+            Case {
+                method: Method::GET,
+                ..case(Cookie, Some("cross-site"), Some(EVIL), Ok(()))
+            },
+            Case {
+                method: Method::DELETE,
+                ..case(Absent, Some("cross-site"), Some(EVIL), untrusted)
+            },
+        ];
 
-    #[test]
-    fn cross_origin_post_with_cookie_is_rejected() {
-        let headers = headers(true, Some("https://evil.test"), None);
-        assert!(should_reject(
-            &Method::POST,
-            &headers,
-            "doorman_session",
-            &config()
-        ));
-    }
-
-    #[test]
-    fn referer_is_used_when_origin_is_absent() {
-        let headers = headers(true, None, Some("https://app.test/settings"));
-        assert!(!should_reject(
-            &Method::DELETE,
-            &headers,
-            "doorman_session",
-            &config()
-        ));
-    }
-
-    #[test]
-    fn origin_takes_precedence_over_referer() {
-        let headers = headers(
-            true,
-            Some("https://evil.test"),
-            Some("https://app.test/settings"),
-        );
-        assert!(should_reject(
-            &Method::POST,
-            &headers,
-            "doorman_session",
-            &config()
-        ));
-    }
-
-    #[test]
-    fn bearer_request_is_allowed_even_with_cookie() {
-        let mut headers = headers(true, Some("https://evil.test"), None);
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer bearer-token"),
-        );
-        assert!(!should_reject(
-            &Method::POST,
-            &headers,
-            "doorman_session",
-            &config()
-        ));
-    }
-
-    #[test]
-    fn missing_origin_and_referer_with_cookie_is_rejected() {
-        let headers = headers(true, None, None);
-        assert!(should_reject(
-            &Method::POST,
-            &headers,
-            "doorman_session",
-            &config()
-        ));
-    }
-
-    #[test]
-    fn missing_origin_and_referer_without_cookie_is_allowed() {
-        let headers = headers(false, None, None);
-        assert!(!should_reject(
-            &Method::POST,
-            &headers,
-            "doorman_session",
-            &config()
-        ));
-    }
-
-    #[test]
-    fn safe_methods_are_allowed() {
-        let headers = headers(true, Some("https://evil.test"), None);
-        assert!(!should_reject(
-            &Method::GET,
-            &headers,
-            "doorman_session",
-            &config()
-        ));
-    }
-
-    #[test]
-    fn disabled_config_allows_everything() {
-        let headers = headers(true, Some("https://evil.test"), None);
-        assert!(!should_reject(
-            &Method::POST,
-            &headers,
-            "doorman_session",
-            &CsrfConfig::disabled()
-        ));
+        for case in cases {
+            let result = check(&case.method, &headers(&case), "doorman_session", &trusted());
+            assert_eq!(result, case.expected, "{case:?}");
+        }
     }
 }

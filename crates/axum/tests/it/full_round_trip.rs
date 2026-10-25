@@ -56,7 +56,6 @@ async fn signup_login_recovery_round_trip() {
         .build()
         .expect("auth core built");
     let auth = AuthService::builder(core)
-        .external_origin(origin.clone())
         .cookie(CookieConfig::default())
         .build()
         .expect("auth built");

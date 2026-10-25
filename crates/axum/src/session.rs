@@ -12,7 +12,7 @@ use tracing::Instrument;
 
 use crate::config::CookieConfig;
 use crate::cookies::{bearer_token, read_cookie};
-use crate::csrf::{self, CsrfConfig};
+use crate::csrf::{self, TrustedOrigins};
 use crate::error::csrf_rejection_response;
 
 #[derive(Clone)]
@@ -30,7 +30,7 @@ pub(crate) struct SessionUnresolved;
 pub(crate) struct SessionLayerState {
     pub(crate) sessions: SessionManager,
     pub(crate) cookie: CookieConfig,
-    pub(crate) csrf: Option<CsrfConfig>,
+    pub(crate) trusted_origins: TrustedOrigins,
 }
 
 #[derive(Clone)]
@@ -86,9 +86,13 @@ where
         Box::pin(
             async move {
                 let cookie_name = &state.cookie.session_cookie_name;
-                if let Some(config) = state.csrf.as_ref()
-                    && csrf::should_reject(req.method(), req.headers(), cookie_name, config)
-                {
+                if let Err(refusal) = csrf::check(
+                    req.method(),
+                    req.headers(),
+                    cookie_name,
+                    &state.trusted_origins,
+                ) {
+                    tracing::info!(?refusal, "refused a cross-origin request");
                     return Ok(csrf_rejection_response());
                 }
 

@@ -7,16 +7,12 @@ use url::Url;
 use crate::AuthService;
 use crate::config::CookieConfig;
 use crate::cookies::clear_session_cookie;
-use crate::csrf::CsrfConfig;
+use crate::csrf::TrustedOrigins;
 use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::AuthState;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuilderError {
-    #[error(
-        "a CSRF decision is required: set external_origin to enable origin checks, or pass CsrfConfig::disabled() to opt out"
-    )]
-    CsrfDecisionRequired,
     #[error("cookie name `{name}` carries a {prefix} prefix but {requirement}")]
     InvalidCookiePrefix {
         name: String,
@@ -30,8 +26,7 @@ pub enum BuilderError {
 pub struct AuthServiceBuilder {
     core: AuthCore,
     cookie_config: Option<CookieConfig>,
-    csrf_config: Option<CsrfConfig>,
-    external_origin: Option<Url>,
+    trusted_origins: Vec<Url>,
 }
 
 impl AuthServiceBuilder {
@@ -39,8 +34,7 @@ impl AuthServiceBuilder {
         Self {
             core,
             cookie_config: None,
-            csrf_config: None,
-            external_origin: None,
+            trusted_origins: Vec::new(),
         }
     }
 
@@ -49,13 +43,8 @@ impl AuthServiceBuilder {
         self
     }
 
-    pub fn csrf(mut self, config: CsrfConfig) -> Self {
-        self.csrf_config = Some(config);
-        self
-    }
-
-    pub fn external_origin(mut self, origin: Url) -> Self {
-        self.external_origin = Some(origin);
+    pub fn trusted_origin(mut self, origin: Url) -> Self {
+        self.trusted_origins.push(origin);
         self
     }
 
@@ -67,17 +56,19 @@ impl AuthServiceBuilder {
             return Err(BuilderError::InvalidCookieAttributes);
         }
 
-        let csrf_config = match (self.csrf_config, self.external_origin) {
-            (Some(config), _) => config,
-            (None, Some(origin)) => CsrfConfig::new(origin),
-            (None, None) => return Err(BuilderError::CsrfDecisionRequired),
-        }
-        .enabled_config();
+        // The relying party's origins are where the application's pages run passkey ceremonies,
+        // so they are the origins its requests come from.
+        let trusted_origins = TrustedOrigins::new(
+            core.passkey
+                .rp_origins()
+                .cloned()
+                .chain(self.trusted_origins),
+        );
 
         let layer_state = Arc::new(SessionLayerState {
             sessions: core.sessions.clone(),
             cookie: cookie_config.clone(),
-            csrf: csrf_config,
+            trusted_origins,
         });
 
         let state = AuthState {
