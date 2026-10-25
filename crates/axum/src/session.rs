@@ -27,6 +27,9 @@ pub struct AuthContext {
 #[derive(Clone, Copy)]
 pub(crate) struct SessionUnresolved;
 
+#[derive(Clone, Copy)]
+pub(crate) struct SessionLayerApplied;
+
 pub(crate) struct SessionLayerState {
     pub(crate) sessions: SessionManager,
     pub(crate) cookie: CookieConfig,
@@ -77,6 +80,12 @@ where
     fn call(&mut self, mut req: Request<Body>) -> Self::Future {
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
+        // doorman's router applies this layer to its own routes, and the host applies it again
+        // around them; the outer one has already checked and resolved the request.
+        if req.extensions().get::<SessionLayerApplied>().is_some() {
+            return Box::pin(inner.call(req));
+        }
+        req.extensions_mut().insert(SessionLayerApplied);
         let state = self.state.clone();
         let span = tracing::info_span!(
             "doorman.session",

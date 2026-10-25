@@ -10,7 +10,7 @@ use doorman_core::session::{ResolvedSession, SessionContext};
 use doorman_core::storage::User;
 
 use crate::error::ErrorResponse;
-use crate::session::{AuthContext, SessionUnresolved};
+use crate::session::{AuthContext, SessionLayerApplied, SessionUnresolved};
 
 #[derive(Clone)]
 pub struct AuthSession {
@@ -72,6 +72,13 @@ impl<S: Send + Sync> FromRequestParts<S> for OptionalAuthUser {
 }
 
 fn auth_context(extensions: &Extensions) -> Result<Option<&AuthContext>, ErrorResponse> {
+    // Without the layer no request has a session, so answering 401 would hide the mistake.
+    if extensions.get::<SessionLayerApplied>().is_none() {
+        return Err(ErrorResponse(Error::Internal(
+            "no SessionLayer handled this request: apply AuthService::session_layer() to the route"
+                .to_owned(),
+        )));
+    }
     if extensions.get::<SessionUnresolved>().is_some() {
         return Err(ErrorResponse(Error::Storage(StorageError::msg(
             "the request's session could not be resolved",

@@ -44,7 +44,10 @@ impl AuthService {
     }
 
     pub fn router(&self) -> Router {
-        Router::new().nest("/auth", routes::router(self.state.clone()))
+        // The routes carry the layer themselves, so they stay checked however the host wires them.
+        Router::new()
+            .nest("/auth", routes::router(self.state.clone()))
+            .route_layer(self.session_layer())
     }
 
     pub fn session_layer(&self) -> SessionLayer {

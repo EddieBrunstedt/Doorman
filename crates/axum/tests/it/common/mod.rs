@@ -73,6 +73,21 @@ impl TestApp {
         customise_core: impl FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
         customise_http: impl FnOnce(AuthServiceBuilder) -> AuthServiceBuilder,
     ) -> Self {
+        Self::assemble(storage, customise_core, customise_http, |auth| {
+            host_routes(auth).layer(auth.session_layer())
+        })
+    }
+
+    pub fn without_host_layer(storage: Storage) -> Self {
+        Self::assemble(storage, |b| b, |b| b, host_routes)
+    }
+
+    fn assemble(
+        storage: Storage,
+        customise_core: impl FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
+        customise_http: impl FnOnce(AuthServiceBuilder) -> AuthServiceBuilder,
+        compose: impl FnOnce(&AuthService) -> Router,
+    ) -> Self {
         let email = Arc::new(CapturingEmailSender::new());
         let users = storage.records.users.clone();
         let core = AuthCore::builder(storage)
@@ -108,10 +123,7 @@ impl TestApp {
         let auth = customise_http(http).build().expect("auth built");
         let sessions = auth.state().sessions().clone();
 
-        let router = Router::new()
-            .merge(auth.router())
-            .route("/me", get(me))
-            .layer(auth.session_layer());
+        let router = compose(&auth);
 
         TestApp {
             router,
@@ -499,6 +511,10 @@ impl Server {
         let _ = self.shutdown.send(());
         let _ = self.handle.await;
     }
+}
+
+fn host_routes(auth: &AuthService) -> Router {
+    Router::new().merge(auth.router()).route("/me", get(me))
 }
 
 async fn me(AuthUser(user): AuthUser) -> String {
