@@ -3,17 +3,17 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
-use axum::http::{HeaderMap, Request};
-use axum::response::Response;
+use axum::http::Request;
+use axum::response::{IntoResponse, Response};
 use doorman_core::session::{ResolvedSession, SessionManager};
 use tower_layer::Layer;
 use tower_service::Service;
 use tracing::Instrument;
 
 use crate::config::CookieConfig;
-use crate::cookies::{bearer_token, read_cookie};
+use crate::credential::{self, Credential};
 use crate::csrf::{self, TrustedOrigins};
-use crate::error::csrf_rejection_response;
+use crate::error::LayerRefusal;
 
 #[derive(Clone)]
 pub struct AuthContext {
@@ -93,19 +93,29 @@ where
         );
         Box::pin(
             async move {
-                let cookie_name = &state.cookie.session_cookie_name;
+                let credential = match credential::read(
+                    req.headers(),
+                    &state.cookie.session_cookie_name,
+                    state.sessions.allows_bearer_sessions(),
+                ) {
+                    Ok(credential) => credential,
+                    Err(_) => {
+                        tracing::info!("refused a request carrying two credentials");
+                        return Ok(LayerRefusal::AmbiguousCredential.into_response());
+                    }
+                };
                 if let Err(refusal) = csrf::check(
                     req.method(),
                     req.headers(),
-                    cookie_name,
+                    credential.as_ref().map(|c| c.transport),
                     &state.trusted_origins,
                 ) {
                     tracing::info!(?refusal, "refused a cross-origin request");
-                    return Ok(csrf_rejection_response());
+                    return Ok(LayerRefusal::CrossOrigin.into_response());
                 }
 
-                if let Some(token) = extract_token(req.headers(), cookie_name) {
-                    match state.sessions.resolve(&token).await {
+                if let Some(Credential { token, transport }) = credential {
+                    match state.sessions.resolve(&token, transport).await {
                         Ok(Some(resolved)) => {
                             let span = tracing::Span::current();
                             span.record("session_id", tracing::field::display(resolved.id));
@@ -126,68 +136,5 @@ where
             }
             .instrument(span),
         )
-    }
-}
-
-pub(crate) fn extract_token(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
-    if let Some(token) = bearer_token(headers) {
-        return Some(token.to_owned());
-    }
-    read_cookie(headers, cookie_name)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::http::{HeaderValue, header};
-
-    #[test]
-    fn bearer_header_wins_over_cookie() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer header-token"),
-        );
-        headers.insert(
-            header::COOKIE,
-            HeaderValue::from_static("doorman_session=cookie-token"),
-        );
-        assert_eq!(
-            extract_token(&headers, "doorman_session"),
-            Some("header-token".into())
-        );
-    }
-
-    #[test]
-    fn cookie_fallback_when_no_bearer() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::COOKIE,
-            HeaderValue::from_static("doorman_session=cookie-token"),
-        );
-        assert_eq!(
-            extract_token(&headers, "doorman_session"),
-            Some("cookie-token".into())
-        );
-    }
-
-    #[test]
-    fn no_token_returns_none() {
-        let headers = HeaderMap::new();
-        assert_eq!(extract_token(&headers, "doorman_session"), None);
-    }
-
-    #[test]
-    fn bearer_without_value_is_ignored() {
-        let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer  "));
-        headers.insert(
-            header::COOKIE,
-            HeaderValue::from_static("doorman_session=cookie-token"),
-        );
-        assert_eq!(
-            extract_token(&headers, "doorman_session"),
-            Some("cookie-token".into())
-        );
     }
 }

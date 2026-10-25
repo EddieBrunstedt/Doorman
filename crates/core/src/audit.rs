@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::session::SessionContext;
-use crate::storage::{SessionId, UserId};
+use crate::storage::{SessionId, SessionTransport, UserId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEvent {
@@ -128,6 +128,7 @@ pub enum AuditEventKind {
     SessionCreated {
         user_id: UserId,
         session_id: SessionId,
+        transport: SessionTransport,
     },
     SessionRevoked {
         user_id: UserId,

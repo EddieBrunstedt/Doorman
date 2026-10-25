@@ -12,7 +12,7 @@ use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
 use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy, SignupRateLimits};
-use doorman_core::storage::{PasskeyStore, User, UserStore};
+use doorman_core::storage::{PasskeyStore, SessionTransport, User, UserStore};
 use doorman_test_support::MockClock;
 
 use crate::common::{
@@ -219,6 +219,7 @@ async fn signup_link_issued_before_signup_finished_is_refused_after() {
             started.challenge_id,
             &authenticator().do_registration(started.options),
             None,
+            SessionTransport::Cookie,
             SessionContext::default(),
         )
         .await
@@ -271,6 +272,7 @@ async fn signup_registration_cannot_finish_once_signup_finished_elsewhere() {
             started.challenge_id,
             &authenticator().do_registration(started.options),
             None,
+            SessionTransport::Cookie,
             SessionContext::default(),
         )
         .await
@@ -347,6 +349,7 @@ async fn finish_sends_no_security_notice() {
             started.challenge_id,
             &authenticator().do_registration(started.options),
             Some("alice device".into()),
+            SessionTransport::Cookie,
             SessionContext::default(),
         )
         .await

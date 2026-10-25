@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use axum::http::{Method, StatusCode};
 use chrono::{DateTime, Utc};
 use doorman_axum::config::CookieConfig;
-use doorman_axum::dto::AuthResponse;
 use doorman_core::clock::Clock;
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::memory::InMemoryStorage;
@@ -13,19 +12,22 @@ use doorman_core::session::{DEFAULT_SESSION_LIFETIME, SessionConfig};
 use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId, UserStatus};
 use doorman_test_support::MockClock;
 
-use crate::common::{Call, ResidentAuthenticator, TestApp, rp_origin};
+use crate::common::{
+    Client, ResidentAuthenticator, TestApp, TestSession, rp_origin, session_config,
+};
 
 #[tokio::test]
 async fn a_login_sets_a_session_cookie_that_authenticates() {
     let app = TestApp::new();
-    let (_, mut authenticator) = app.signup("alice@example.com").await;
+    let (_, mut authenticator) = app.signup_as(Client::Browser, "alice@example.com").await;
     let credential_id = authenticator.credential_ids()[0].clone();
 
-    let login = app.log_in(&mut authenticator, &credential_id).await;
+    let login = app
+        .log_in_as(Client::Browser, &mut authenticator, &credential_id)
+        .await;
     assert_eq!(login.status, StatusCode::OK);
-    let auth: AuthResponse = login.json();
+    let auth = login.session(Client::Browser);
     let set_cookie = login.set_cookie().expect("login sets the session cookie");
-    assert!(set_cookie.contains(&format!("doorman_session={}", auth.token)));
     assert!(set_cookie.contains("HttpOnly"));
     assert!(
         set_cookie.contains(&format!("Max-Age={}", DEFAULT_SESSION_LIFETIME.as_secs())),
@@ -44,7 +46,7 @@ fn always_sliding_app() -> TestApp {
             b.session(SessionConfig {
                 idle_timeout: Some(IDLE),
                 slide_interval: Duration::ZERO,
-                ..SessionConfig::default()
+                ..session_config()
             })
         },
         |b| b,
@@ -60,7 +62,7 @@ async fn ending_a_session_clears_its_cookie() {
         (Method::DELETE, "/auth/sessions/{current}"),
     ] {
         let app = always_sliding_app();
-        let session = app.session_for("alice@example.com").await;
+        let session = app.session_as(Client::Browser, "alice@example.com").await;
         let target = path.replace("{current}", &session.session.id.0.to_string());
 
         let reply = app
@@ -72,10 +74,7 @@ async fn ending_a_session_clears_its_cookie() {
         let set_cookie = reply.set_cookie().expect("the cookie is cleared");
         assert!(set_cookie.contains("doorman_session=;"), "{method} {path}");
         assert!(set_cookie.contains("Max-Age=0"), "{method} {path}");
-        assert!(
-            !app.is_authenticated(&session.token).await,
-            "{method} {path}"
-        );
+        assert!(!app.is_authenticated(&session).await, "{method} {path}");
     }
 }
 
@@ -97,34 +96,33 @@ async fn starting_a_session_replaces_the_cookie_the_request_carried() {
     .flat_map(|start| [(start, true), (start, false)])
     {
         let app = always_sliding_app();
-        let (_, mut bob) = app.signup("bob@example.com").await;
-        let alice = app.session_for("alice@example.com").await;
+        let (_, mut bob) = app.signup_as(Client::Browser, "bob@example.com").await;
+        let alice = app.session_as(Client::Browser, "alice@example.com").await;
         if !carried_live {
-            log_out(&app, &alice.token).await;
+            log_out(&app, &alice).await;
         }
-        let app = app
-            .default_header("cookie", &format!("doorman_session={}", alice.token))
-            .default_header("sec-fetch-site", "same-origin");
+        let app = app.default_header("cookie", &format!("doorman_session={}", alice.token));
 
         let reply = match start {
             SessionStart::Login => {
                 let credential_id = bob.credential_ids()[0].clone();
-                app.log_in(&mut bob, &credential_id).await
+                app.log_in_as(Client::Browser, &mut bob, &credential_id)
+                    .await
             }
             SessionStart::Signup => {
                 let mut carol = ResidentAuthenticator::new(&rp_origin());
-                app.finish_signup("carol@example.com", &mut carol).await
+                app.finish_signup(Client::Browser, "carol@example.com", &mut carol)
+                    .await
             }
-            SessionStart::Recovery => app.finish_recovery("bob@example.com", &mut bob).await,
+            SessionStart::Recovery => {
+                app.finish_recovery(Client::Browser, "bob@example.com", &mut bob)
+                    .await
+            }
         };
 
         assert_eq!(reply.status, StatusCode::OK, "{start:?} {carried_live}");
-        let started: AuthResponse = reply.json();
-        let set_cookie = reply.set_cookie().expect("the new session's cookie is set");
-        assert!(
-            set_cookie.contains(&format!("doorman_session={};", started.token)),
-            "{start:?} {carried_live}: {set_cookie}"
-        );
+        let started = reply.session(Client::Browser);
+        assert_ne!(started.token, alice.token, "{start:?} {carried_live}");
     }
 }
 
@@ -136,7 +134,9 @@ async fn a_refused_login_sets_no_cookie() {
         .await;
     let credential_id = authenticator.credential_ids()[0].clone();
 
-    let login = app.log_in(&mut authenticator, &credential_id).await;
+    let login = app
+        .log_in_as(Client::Browser, &mut authenticator, &credential_id)
+        .await;
 
     assert_eq!(login.status, StatusCode::FORBIDDEN);
     assert_eq!(login.error_code(), "user_disabled");
@@ -152,7 +152,7 @@ fn sliding_app(clock: Arc<MockClock>) -> TestApp {
             b.clock(clock as Arc<dyn Clock>).session(SessionConfig {
                 absolute_lifetime: ABSOLUTE,
                 idle_timeout: Some(IDLE),
-                ..SessionConfig::default()
+                ..session_config()
             })
         },
         |b| {
@@ -170,7 +170,9 @@ async fn a_session_cookie_lives_until_the_absolute_deadline_despite_an_idle_time
     let (_, mut authenticator) = app.signup("alice@example.com").await;
     let credential_id = authenticator.credential_ids()[0].clone();
 
-    let login = app.log_in(&mut authenticator, &credential_id).await;
+    let login = app
+        .log_in_as(Client::Browser, &mut authenticator, &credential_id)
+        .await;
 
     assert_eq!(login.status, StatusCode::OK);
     let set_cookie = login.set_cookie().expect("login sets the session cookie");
@@ -180,54 +182,43 @@ async fn a_session_cookie_lives_until_the_absolute_deadline_despite_an_idle_time
     );
 }
 
-fn me<'a>(app: &'a TestApp, token: &str, by_cookie: bool) -> Call<'a> {
-    let call = app.get("/me");
-    if by_cookie {
-        call.cookie(token)
-    } else {
-        call.bearer(token)
-    }
-}
-
 #[tokio::test]
 async fn a_slid_session_sets_no_cookie() {
-    for by_cookie in [true, false] {
+    for client in [Client::Browser, Client::Bearer] {
         let clock = Arc::new(MockClock::new(Utc::now()));
         let app = sliding_app(clock.clone());
-        let session = app.session_for("alice@example.com").await;
+        let session = app.session_as(client, "alice@example.com").await;
 
         clock.advance(chrono::Duration::minutes(2));
-        let slid = me(&app, &session.token, by_cookie).send().await;
+        let slid = app.get("/me").session(&session).send().await;
 
-        assert_eq!(slid.status, StatusCode::OK, "by cookie: {by_cookie}");
-        assert!(slid.set_cookie().is_none(), "by cookie: {by_cookie}");
+        assert_eq!(slid.status, StatusCode::OK, "{client:?}");
+        assert!(slid.set_cookie().is_none(), "{client:?}");
     }
 }
 
-async fn log_out(app: &TestApp, token: &str) {
-    let reply = app.post("/auth/logout").bearer(token).send().await;
+async fn log_out(app: &TestApp, session: &TestSession) {
+    let reply = app.post("/auth/logout").session(session).send().await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
 async fn a_token_without_a_live_session_is_refused_and_sets_no_cookie() {
-    let clock = Arc::new(MockClock::new(Utc::now()));
-    let app = sliding_app(clock.clone());
-    let revoked = app.session_for("alice@example.com").await;
-    log_out(&app, &revoked.token).await;
-    let idled_out = app.session_for("bob@example.com").await;
-    clock.advance(chrono::Duration::from_std(IDLE).expect("idle") + chrono::Duration::seconds(1));
+    for client in [Client::Browser, Client::Bearer] {
+        let clock = Arc::new(MockClock::new(Utc::now()));
+        let app = sliding_app(clock.clone());
+        let revoked = app.session_as(client, "alice@example.com").await;
+        log_out(&app, &revoked).await;
+        let idled_out = app.session_as(client, "bob@example.com").await;
+        clock.advance(
+            chrono::Duration::from_std(IDLE).expect("idle") + chrono::Duration::seconds(1),
+        );
 
-    for (name, token) in [("revoked", &revoked.token), ("idled out", &idled_out.token)] {
-        for by_cookie in [true, false] {
-            let reply = me(&app, token, by_cookie).send().await;
-            assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{name} {by_cookie}");
-            assert_eq!(
-                reply.error_code(),
-                "session_not_found",
-                "{name} {by_cookie}"
-            );
-            assert!(reply.set_cookie().is_none(), "{name} {by_cookie}");
+        for (name, session) in [("revoked", &revoked), ("idled out", &idled_out)] {
+            let reply = app.get("/me").session(session).send().await;
+            assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{name} {client:?}");
+            assert_eq!(reply.error_code(), "session_not_found", "{name} {client:?}");
+            assert!(reply.set_cookie().is_none(), "{name} {client:?}");
         }
     }
 }
@@ -239,7 +230,7 @@ async fn a_session_store_failure_refuses_the_request() {
     storage.expiring.sessions = Arc::new(UnavailableSessionStore);
     let app = TestApp::with_storage(storage, |b| b, |b| b);
 
-    let reply = me(&app, "a-session-token", true).send().await;
+    let reply = app.get("/me").cookie("a-session-token").send().await;
 
     assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(reply.error_code(), "storage_error");

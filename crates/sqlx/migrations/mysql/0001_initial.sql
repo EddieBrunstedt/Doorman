@@ -13,6 +13,7 @@ CREATE TABLE sessions (
     id BINARY(16) PRIMARY KEY,
     user_id BINARY(16) NOT NULL,
     token_hash BINARY(32) NOT NULL UNIQUE,
+    transport VARCHAR(32) NOT NULL,
     created_at DATETIME(6) NOT NULL,
     last_used_at DATETIME(6) NOT NULL,
     expires_at DATETIME(6) NOT NULL,

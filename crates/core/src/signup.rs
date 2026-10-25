@@ -16,7 +16,7 @@ use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
 use crate::redeem::OwnerRefusal;
 use crate::session::SessionContext;
-use crate::storage::{PasskeyChallengeId, User};
+use crate::storage::{PasskeyChallengeId, SessionTransport, User};
 use crate::user_records::UserRecords;
 
 #[derive(Debug, Clone)]
@@ -268,10 +268,11 @@ impl SignupManager {
         challenge_id: PasskeyChallengeId,
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
+        transport: SessionTransport,
         context: SessionContext,
     ) -> Result<RegistrationOutcome> {
         self.registration
-            .finish(challenge_id, response, name, context)
+            .finish(challenge_id, response, name, transport, context)
             .await
     }
 }

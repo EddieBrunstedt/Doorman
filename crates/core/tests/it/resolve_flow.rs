@@ -9,13 +9,14 @@ use doorman_core::destructive::DestructiveAction;
 use doorman_core::passkey::StartedRegistration;
 use doorman_core::session::{IssuedSession, SessionConfig, SessionContext, hash_token};
 use doorman_core::storage::{
-    PasskeyChallengeId, SessionStore, User, UserId, UserStatus, UserStore,
+    PasskeyChallengeId, SessionStore, SessionTransport, User, UserId, UserStatus, UserStore,
 };
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::common::{
-    Harness, RECOVERY_URL, SIGNUP_URL, authenticator, last_email_change_token, make_user, operator,
-    provision_user, register_passkey, session_count, sign_in, token_from_email, within_deadline,
+    Harness, RECOVERY_URL, SIGNUP_URL, authenticator, kinds, last_email_change_token, make_user,
+    operator, provision_user, register_passkey, session_count, sign_in, token_from_email,
+    within_deadline,
 };
 
 fn sliding_config() -> SessionConfig {
@@ -46,7 +47,7 @@ async fn a_request_reads_its_session_row_and_nothing_else() {
         h.user_store.clear_reads();
         let resolved = h
             .session_manager
-            .resolve(&token)
+            .resolve(&token, SessionTransport::Cookie)
             .await
             .expect("resolve")
             .expect("a live session");
@@ -61,7 +62,7 @@ async fn an_unknown_token_is_no_session() {
     let h = Harness::fresh();
     let resolved = h
         .session_manager
-        .resolve("not-a-session")
+        .resolve("not-a-session", SessionTransport::Cookie)
         .await
         .expect("resolve");
     assert!(resolved.is_none(), "got {resolved:?}");
@@ -77,14 +78,18 @@ async fn a_session_past_its_deadline_is_no_session_and_is_not_audited() {
         .build();
     let (_, token) = signed_in(&h, "alice@example.com").await;
     h.session_manager
-        .resolve(&token)
+        .resolve(&token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("a live session");
 
     h.clock.advance(ChronoDuration::seconds(30));
     let audited = h.audit.len();
-    let resolved = h.session_manager.resolve(&token).await.expect("resolve");
+    let resolved = h
+        .session_manager
+        .resolve(&token, SessionTransport::Cookie)
+        .await
+        .expect("resolve");
     assert!(resolved.is_none(), "got {resolved:?}");
     assert_eq!(h.audit.len(), audited, "an expiry is not audited");
 }
@@ -95,7 +100,11 @@ async fn a_failing_session_store_is_an_error_not_no_session() {
     let (_, token) = signed_in(&h, "alice@example.com").await;
 
     h.session_store.fail_reads();
-    let err = h.session_manager.resolve(&token).await.err();
+    let err = h
+        .session_manager
+        .resolve(&token, SessionTransport::Cookie)
+        .await
+        .err();
     assert!(matches!(err, Some(Error::Storage(_))), "got {err:?}");
 }
 
@@ -106,14 +115,14 @@ async fn a_revocation_reaches_another_process_at_once() {
     let (_, token) = signed_in(&h, "alice@example.com").await;
     other
         .sessions
-        .resolve(&token)
+        .resolve(&token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("the other process resolves the session");
 
     let session = h
         .session_manager
-        .resolve(&token)
+        .resolve(&token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("a live session");
@@ -121,7 +130,11 @@ async fn a_revocation_reaches_another_process_at_once() {
         .log_out(&session, SessionContext::default())
         .await
         .expect("log out");
-    let resolved = other.sessions.resolve(&token).await.expect("resolve");
+    let resolved = other
+        .sessions
+        .resolve(&token, SessionTransport::Cookie)
+        .await
+        .expect("resolve");
     assert!(resolved.is_none(), "got {resolved:?}");
 }
 
@@ -132,7 +145,7 @@ async fn a_disable_reaches_another_process_at_once() {
     let (user, token) = signed_in(&h, "alice@example.com").await;
     other
         .sessions
-        .resolve(&token)
+        .resolve(&token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("a live session");
@@ -141,7 +154,11 @@ async fn a_disable_reaches_another_process_at_once() {
         .disable(user.id, operator())
         .await
         .expect("disable");
-    let resolved = other.sessions.resolve(&token).await.expect("resolve");
+    let resolved = other
+        .sessions
+        .resolve(&token, SessionTransport::Cookie)
+        .await
+        .expect("resolve");
     assert!(resolved.is_none(), "got {resolved:?}");
 }
 
@@ -152,7 +169,7 @@ async fn a_delete_reaches_another_process_at_once() {
     let (user, token) = signed_in(&h, "alice@example.com").await;
     other
         .sessions
-        .resolve(&token)
+        .resolve(&token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("a live session");
@@ -161,7 +178,11 @@ async fn a_delete_reaches_another_process_at_once() {
         .delete_user(user.id, operator())
         .await
         .expect("delete");
-    let resolved = other.sessions.resolve(&token).await.expect("resolve");
+    let resolved = other
+        .sessions
+        .resolve(&token, SessionTransport::Cookie)
+        .await
+        .expect("resolve");
     assert!(resolved.is_none(), "got {resolved:?}");
 }
 
@@ -176,7 +197,7 @@ async fn access_is_the_session_row_whatever_the_user_row_says() {
         .expect("disable outside doorman");
 
     h.session_manager
-        .resolve(&token)
+        .resolve(&token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("a status written outside doorman leaves the session in place");
@@ -189,7 +210,7 @@ async fn the_user_read_is_fresh_in_every_process() {
     let (user, token) = signed_in(&h, "old@example.com").await;
     let session = h
         .session_manager
-        .resolve(&token)
+        .resolve(&token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("a live session");
@@ -264,7 +285,7 @@ async fn a_request_after_the_slide_interval_slides() {
     let now = h.clock.now();
     let resolved = h
         .session_manager
-        .resolve(&token)
+        .resolve(&token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("a live session");
@@ -288,7 +309,7 @@ async fn read_within_the_slide_interval_does_not_slide() {
     h.clock.advance(ChronoDuration::seconds(90));
     let first = h
         .session_manager
-        .resolve(&token)
+        .resolve(&token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("a live session");
@@ -296,7 +317,7 @@ async fn read_within_the_slide_interval_does_not_slide() {
     h.clock.advance(ChronoDuration::seconds(30));
     let second = h
         .session_manager
-        .resolve(&token)
+        .resolve(&token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("a live session");
@@ -316,7 +337,7 @@ async fn slide_is_clamped_at_the_absolute_cap() {
         h.clock.advance(ChronoDuration::minutes(5));
         let resolved = h
             .session_manager
-            .resolve(&token)
+            .resolve(&token, SessionTransport::Cookie)
             .await
             .expect("resolve")
             .expect("a live session");
@@ -341,7 +362,7 @@ async fn without_an_idle_timeout_nothing_slides() {
     h.clock.advance(ChronoDuration::minutes(30));
     let resolved = h
         .session_manager
-        .resolve(&token)
+        .resolve(&token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("a live session");
@@ -377,6 +398,7 @@ enum Issuer {
     Recovery,
 }
 
+#[derive(Clone)]
 enum Finish {
     Login(PasskeyChallengeId, PublicKeyCredential),
     Registration(Issuer, PasskeyChallengeId, RegisterPublicKeyCredential),
@@ -450,22 +472,26 @@ async fn ready_to_finish(h: &Harness, issuer: Issuer, email: &str) -> (UserId, F
     }
 }
 
-async fn finish(h: &Harness, finish: Finish) -> Result<IssuedSession, Error> {
+async fn finish(
+    h: &Harness,
+    finish: Finish,
+    transport: SessionTransport,
+) -> Result<IssuedSession, Error> {
     let context = SessionContext::default();
     match finish {
         Finish::Login(challenge, assertion) => h
             .passkey
-            .finish_authentication(challenge, &assertion, context)
+            .finish_authentication(challenge, &assertion, transport, context)
             .await
             .map(|outcome| outcome.session),
         Finish::Registration(Issuer::Signup, challenge, attestation) => h
             .signup
-            .finish_signup(challenge, &attestation, None, context)
+            .finish_signup(challenge, &attestation, None, transport, context)
             .await
             .map(|outcome| outcome.session),
         Finish::Registration(_, challenge, attestation) => h
             .recovery
-            .finish_recovery(challenge, &attestation, None, context)
+            .finish_recovery(challenge, &attestation, None, transport, context)
             .await
             .map(|outcome| outcome.session),
     }
@@ -483,7 +509,7 @@ async fn a_session_issued_while_the_user_is_locked_out_does_not_survive() {
             // The lock-out lands while the new session is being written.
             let held = h.session_store.hold_next_session_write();
             let (issued, ()) = within_deadline(async {
-                tokio::join!(finish(&h, ready), async {
+                tokio::join!(finish(&h, ready, SessionTransport::Cookie), async {
                     held.wait().await;
                     match lock_out {
                         LockOut::Disable => other.operator.disable(user_id, operator()).await,
@@ -516,4 +542,97 @@ async fn a_session_issued_while_the_user_is_locked_out_does_not_survive() {
             );
         }
     }
+}
+
+fn allowing_bearer_sessions() -> SessionConfig {
+    SessionConfig {
+        allow_bearer_sessions: true,
+        ..SessionConfig::default()
+    }
+}
+
+#[tokio::test]
+async fn a_session_resolves_only_by_the_transport_it_started_with() {
+    use SessionTransport::{Bearer, Cookie};
+    for issuer in [Issuer::Login, Issuer::Signup, Issuer::Recovery] {
+        for (transport, other) in [(Cookie, Bearer), (Bearer, Cookie)] {
+            let h = Harness::builder()
+                .session_config(allowing_bearer_sessions())
+                .build();
+            let (user_id, ready) = ready_to_finish(&h, issuer, "alice@example.com").await;
+            let audited_before = h.audit.events().len();
+
+            let issued = finish(&h, ready, transport).await.expect("session issued");
+
+            let case = format!("{issuer:?} {transport:?}");
+            assert_eq!(issued.session.transport, transport, "{case}");
+            assert!(
+                kinds(&h.audit.events()[audited_before..]).contains(
+                    &AuditEventKind::SessionCreated {
+                        user_id,
+                        session_id: issued.session.id,
+                        transport,
+                    }
+                ),
+                "{case}: the audit names the transport",
+            );
+            let resolved = h
+                .session_manager
+                .resolve(&issued.token, transport)
+                .await
+                .expect("resolve");
+            assert_eq!(resolved.map(|s| s.id), Some(issued.session.id), "{case}");
+            let resolved = h
+                .session_manager
+                .resolve(&issued.token, other)
+                .await
+                .expect("resolve");
+            assert!(resolved.is_none(), "{case}: resolved by {other:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_bearer_session_is_refused_before_the_ceremony_uses_anything_unless_the_host_allows_them()
+{
+    for issuer in [Issuer::Login, Issuer::Signup, Issuer::Recovery] {
+        let h = Harness::fresh();
+        let (user_id, ready) = ready_to_finish(&h, issuer, "alice@example.com").await;
+        let sessions_before = session_count(&h, user_id).await;
+
+        let refused = finish(&h, ready.clone(), SessionTransport::Bearer).await;
+
+        assert!(
+            matches!(refused, Err(Error::BearerSessionNotAllowed)),
+            "{issuer:?}: got {refused:?}"
+        );
+        assert_eq!(
+            session_count(&h, user_id).await,
+            sessions_before,
+            "{issuer:?}"
+        );
+        finish(&h, ready, SessionTransport::Cookie)
+            .await
+            .unwrap_or_else(|e| panic!("{issuer:?}: the refusal used up the ceremony: {e:?}"));
+    }
+}
+
+#[tokio::test]
+async fn a_host_that_stops_allowing_bearer_sessions_stops_honouring_them() {
+    let h = Harness::builder()
+        .session_config(allowing_bearer_sessions())
+        .build();
+    let (_, ready) = ready_to_finish(&h, Issuer::Login, "alice@example.com").await;
+    let issued = finish(&h, ready, SessionTransport::Bearer)
+        .await
+        .expect("bearer session issued");
+
+    let restarted = h.another_process_with(SessionConfig::default());
+    let resolved = restarted
+        .sessions
+        .resolve(&issued.token, SessionTransport::Bearer)
+        .await
+        .expect("resolve");
+
+    assert!(resolved.is_none(), "got {resolved:?}");
 }

@@ -10,8 +10,8 @@ use crate::error::{Error, Result, StorageErrorKind};
 use crate::session::{IssuedSession, SessionContext};
 use crate::session_records::SessionRecords;
 use crate::storage::{
-    EmailLinkStore, PasskeyChallengeStore, PasskeyStore, StoredPasskey, User, UserId, UserStatus,
-    UserStore,
+    EmailLinkStore, PasskeyChallengeStore, PasskeyStore, SessionTransport, StoredPasskey, User,
+    UserId, UserStatus, UserStore,
 };
 
 #[derive(Clone)]
@@ -125,13 +125,18 @@ impl UserRecords {
         Ok(revoked_count)
     }
 
+    pub(crate) fn check_session_allowed(&self, transport: SessionTransport) -> Result<()> {
+        self.sessions.check_allowed(transport)
+    }
+
     pub(crate) async fn issue_session(
         &self,
         passkey: &StoredPasskey,
+        transport: SessionTransport,
         context: SessionContext,
     ) -> Result<IssuedSession> {
         let user_id = passkey.user_id;
-        let issued = self.sessions.create(passkey, &context).await?;
+        let issued = self.sessions.create(passkey, transport, &context).await?;
         // Disable and delete change the user before deleting their sessions, so if that delete
         // missed this session, this read sees the change. The token is handed out only after it.
         if let Err(error) = self.find_active(user_id).await {
@@ -145,6 +150,7 @@ impl UserRecords {
                 AuditEventKind::SessionCreated {
                     user_id,
                     session_id: issued.session.id,
+                    transport,
                 },
             )
             .await;

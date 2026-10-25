@@ -26,7 +26,7 @@ use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::{IssuedSession, SessionContext};
 use crate::session_records::LiveSession;
 use crate::storage::{
-    PasskeyChallengeId, PasskeyStore, PasskeySummary, StoredPasskey, User, UserId,
+    PasskeyChallengeId, PasskeyStore, PasskeySummary, SessionTransport, StoredPasskey, User, UserId,
 };
 use crate::user_records::UserRecords;
 
@@ -262,9 +262,11 @@ impl PasskeyManager {
         &self,
         challenge_id: PasskeyChallengeId,
         response: &PublicKeyCredential,
+        transport: SessionTransport,
         context: SessionContext,
     ) -> Result<AuthenticationOutcome> {
         let _latency = AuthLatencyGuard::start(self.metrics.clone());
+        self.records.check_session_allowed(transport)?;
 
         let passkey_dim = URL_SAFE_NO_PAD.encode(response.raw_id.as_ref());
         enforce_rate_limit(
@@ -310,7 +312,7 @@ impl PasskeyManager {
 
         let session = self
             .records
-            .issue_session(&passkey, context.clone())
+            .issue_session(&passkey, transport, context.clone())
             .await?;
         let passkey_count = self.records.count_passkeys(user_id).await?;
         self.metrics.record(MetricEvent::LoginSucceeded);

@@ -7,8 +7,10 @@
     clippy::unwrap_used
 )]
 
+mod browser;
 pub mod config;
 mod cookies;
+mod credential;
 mod csrf;
 pub mod dto;
 pub mod error;

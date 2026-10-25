@@ -152,7 +152,7 @@ mod tests {
     use super::*;
     use crate::core::error::StorageError;
     use crate::core::memory::InMemoryStorage;
-    use crate::core::storage::{Session, SessionId, TokenHash, UserId};
+    use crate::core::storage::{Session, SessionId, SessionTransport, TokenHash, UserId};
     use doorman_test_support::MockClock;
 
     fn args(items: &[&str]) -> Vec<String> {
@@ -164,6 +164,7 @@ mod tests {
             id: SessionId::new(),
             user_id,
             token_hash: TokenHash([tag; 32]),
+            transport: SessionTransport::Cookie,
             created_at: now - chrono::Duration::hours(2),
             last_used_at: now - chrono::Duration::hours(2),
             expires_at,

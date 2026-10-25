@@ -7,8 +7,9 @@ use doorman_core::passkey::{MAX_CREDENTIAL_ID_LEN, MAX_PASSKEY_NAME_LEN};
 use doorman_core::session::{SessionContext, hash_token};
 use doorman_core::storage::{
     AuthenticationPurpose, EmailLink, EmailLinkPurpose, ExpiringStores, PasskeyChallengeId,
-    PasskeyUse, RecordStores, RegistrationPurpose, Session, SessionId, Storage, StoredPasskey,
-    StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId, UserStatus,
+    PasskeyUse, RecordStores, RegistrationPurpose, Session, SessionId, SessionTransport, Storage,
+    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
+    UserStatus,
 };
 
 // After any real date a run happens on: a backend that expires rows by its own
@@ -459,6 +460,7 @@ async fn expiring_hold_values_at_core_limits(stores: &ExpiringStores) {
             id: SessionId::new(),
             user_id,
             token_hash: hash_token(&format!("session-at-limits-{i}")),
+            transport: SessionTransport::Cookie,
             created_at: present(),
             last_used_at: present(),
             expires_at: days(1),
@@ -927,10 +929,14 @@ async fn sessions_crud_and_queries(stores: &ExpiringStores) {
     let other_user = UserId::new();
 
     let sessions = &stores.sessions;
-    let mk = |token: &str, owner: UserId, cool_down: Option<DateTime<Utc>>| Session {
+    let mk = |token: &str,
+              owner: UserId,
+              transport: SessionTransport,
+              cool_down: Option<DateTime<Utc>>| Session {
         id: SessionId::new(),
         user_id: owner,
         token_hash: hash_token(token),
+        transport,
         created_at: now,
         last_used_at: now,
         expires_at: now + Duration::hours(1),
@@ -939,12 +945,17 @@ async fn sessions_crud_and_queries(stores: &ExpiringStores) {
         recovery_cool_down_until: cool_down,
     };
 
-    let keep = mk("keep", user_id, None);
-    let other_a = mk("other-a", user_id, None);
-    let other_b = mk("other-b", user_id, None);
-    let neighbour = mk("neighbour", other_user, None);
+    let keep = mk("keep", user_id, SessionTransport::Cookie, None);
+    let other_a = mk("other-a", user_id, SessionTransport::Cookie, None);
+    let other_b = mk("other-b", user_id, SessionTransport::Cookie, None);
+    let neighbour = mk("neighbour", other_user, SessionTransport::Cookie, None);
     let cool_down_until = now + Duration::hours(24);
-    let with_cool_down = mk("cool-down", user_id, Some(cool_down_until));
+    let with_cool_down = mk(
+        "cool-down",
+        user_id,
+        SessionTransport::Bearer,
+        Some(cool_down_until),
+    );
 
     for session in [&keep, &other_a, &other_b, &neighbour, &with_cool_down] {
         sessions
@@ -959,6 +970,7 @@ async fn sessions_crud_and_queries(stores: &ExpiringStores) {
         .expect("find by hash")
         .expect("session present");
     assert_eq!(by_hash.id, with_cool_down.id);
+    assert_eq!(by_hash.transport, SessionTransport::Bearer);
     assert_eq!(by_hash.recovery_cool_down_until, Some(cool_down_until));
     assert_eq!(by_hash.ip.as_deref(), Some("203.0.113.1"));
 
@@ -967,6 +979,7 @@ async fn sessions_crud_and_queries(stores: &ExpiringStores) {
         .await
         .expect("find by id")
         .expect("session present");
+    assert_eq!(by_id.transport, SessionTransport::Bearer);
     assert_eq!(by_id.recovery_cool_down_until, Some(cool_down_until));
 
     let listed = sessions.list_for_user(user_id).await.expect("list");
@@ -977,6 +990,17 @@ async fn sessions_crud_and_queries(stores: &ExpiringStores) {
         listed_ids, expected,
         "list returns only this user's sessions"
     );
+    for session in &listed {
+        let expected = if session.id == with_cool_down.id {
+            SessionTransport::Bearer
+        } else {
+            SessionTransport::Cookie
+        };
+        assert_eq!(
+            session.transport, expected,
+            "list keeps each session's transport"
+        );
+    }
 
     let removed = sessions
         .delete_sessions_for_user(user_id, Some(keep.id))
@@ -1029,6 +1053,7 @@ async fn sessions_purge_expired(stores: &ExpiringStores) {
         id: SessionId::new(),
         user_id,
         token_hash: hash_token("expired-session"),
+        transport: SessionTransport::Cookie,
         created_at: now - Duration::hours(2),
         last_used_at: now - Duration::hours(2),
         expires_at: now - Duration::hours(1),
@@ -1040,6 +1065,7 @@ async fn sessions_purge_expired(stores: &ExpiringStores) {
         id: SessionId::new(),
         user_id,
         token_hash: hash_token("live-session"),
+        transport: SessionTransport::Cookie,
         created_at: now,
         last_used_at: now,
         expires_at: now + Duration::hours(1),
@@ -1086,6 +1112,7 @@ async fn session_touch_slides_deadline(stores: &ExpiringStores) {
         id: SessionId::new(),
         user_id,
         token_hash,
+        transport: SessionTransport::Bearer,
         created_at,
         last_used_at: created_at,
         expires_at: days(365),
@@ -1147,6 +1174,7 @@ async fn session_touch_does_not_resurrect(stores: &ExpiringStores) {
         id: SessionId::new(),
         user_id,
         token_hash: hash_token("touch-never-created"),
+        transport: SessionTransport::Cookie,
         created_at,
         last_used_at: created_at,
         expires_at: days(365),
@@ -1169,6 +1197,7 @@ async fn session_touch_does_not_resurrect(stores: &ExpiringStores) {
 
     let revoked = Session {
         token_hash: hash_token("touch-after-delete"),
+        transport: SessionTransport::Cookie,
         ..phantom.clone()
     };
     let revoked = Session {
@@ -1214,6 +1243,7 @@ async fn session_touch_races_revoke(stores: &ExpiringStores) {
             id: SessionId::new(),
             user_id,
             token_hash: hash_token(&format!("touch-race-{i}")),
+            transport: SessionTransport::Cookie,
             created_at: now,
             last_used_at: now,
             expires_at: days(365),
@@ -1301,6 +1331,7 @@ async fn session_revoke_races_creation(stores: &ExpiringStores) {
         id: SessionId::new(),
         user_id,
         token_hash: hash_token(&token),
+        transport: SessionTransport::Cookie,
         created_at: now,
         last_used_at: now,
         expires_at: days(365),
@@ -2179,6 +2210,7 @@ async fn owner_indexes_track_removals(stores: &ExpiringStores) {
         id: SessionId::new(),
         user_id,
         token_hash: hash_token(token),
+        transport: SessionTransport::Cookie,
         created_at: days(-2),
         last_used_at: days(-2),
         expires_at,
@@ -2378,6 +2410,7 @@ async fn inserts_refuse_duplicate_keys(stores: &ExpiringStores) {
         id: SessionId::new(),
         user_id,
         token_hash: hash_token(token),
+        transport: SessionTransport::Cookie,
         created_at: now,
         last_used_at: now,
         expires_at: days(365),
@@ -2404,6 +2437,7 @@ async fn inserts_refuse_duplicate_keys(stores: &ExpiringStores) {
         sessions
             .create_session(Session {
                 token_hash: original.token_hash,
+                transport: SessionTransport::Cookie,
                 ..session(intruder, "unused")
             })
             .await,

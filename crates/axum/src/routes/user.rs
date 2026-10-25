@@ -30,7 +30,7 @@ async fn request_email_change(
         new_email: body.new_email,
     };
     let current = perform(&state, &auth, action, body.reauthentication, context).await?;
-    no_content(&state, current)
+    no_content(&state, &auth, current)
 }
 
 async fn confirm_email_change(
@@ -64,5 +64,5 @@ async fn delete_user(
         context,
     )
     .await?;
-    no_content(&state, current)
+    no_content(&state, &auth, current)
 }

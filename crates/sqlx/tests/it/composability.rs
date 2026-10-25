@@ -4,9 +4,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
+use doorman_core::encoding::session_transport_to_str;
 use doorman_core::error::StorageResult;
 use doorman_core::session::hash_token;
-use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
+use doorman_core::storage::{
+    Session, SessionId, SessionStore, SessionTransport, TokenHash, UserId,
+};
 use doorman_sqlx::SqliteStorage;
 use sqlx::SqlitePool;
 
@@ -20,12 +23,13 @@ impl SessionStore for AuditedSessions {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, user_id, token_hash, transport, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.0.as_bytes().to_vec())
         .bind(session.user_id.0.as_bytes().to_vec())
         .bind(session.token_hash.0.to_vec())
+        .bind(session_transport_to_str(session.transport))
         .bind(session.created_at)
         .bind(session.last_used_at)
         .bind(session.expires_at)
@@ -112,6 +116,7 @@ async fn override_create_session_reuses_bundled_reads() {
         id: SessionId::new(),
         user_id,
         token_hash: hash_token("composability-token"),
+        transport: SessionTransport::Cookie,
         created_at: now,
         last_used_at: now,
         expires_at: now + Duration::hours(1),

@@ -12,6 +12,7 @@ CREATE TABLE sessions (
     id BLOB PRIMARY KEY,
     user_id BLOB NOT NULL,
     token_hash BLOB NOT NULL UNIQUE,
+    transport TEXT NOT NULL,
     created_at TEXT NOT NULL,
     last_used_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,

@@ -19,7 +19,7 @@ use crate::reauth::{ReauthManager, ReauthProof};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session_records::SessionRecords;
 use crate::storage::{
-    PasskeyChallengeId, PasskeySummary, Session, SessionSummary, TokenHash, User,
+    PasskeyChallengeId, PasskeySummary, Session, SessionSummary, SessionTransport, TokenHash, User,
 };
 pub use crate::token::hash_token;
 use crate::user_records::UserRecords;
@@ -53,6 +53,7 @@ pub struct SessionConfig {
     pub idle_timeout: Option<Duration>,
     pub slide_interval: Duration,
     pub max_sessions_per_user: Option<NonZeroU32>,
+    pub allow_bearer_sessions: bool,
 }
 
 impl Default for SessionConfig {
@@ -62,6 +63,7 @@ impl Default for SessionConfig {
             idle_timeout: None,
             slide_interval: DEFAULT_SLIDE_INTERVAL,
             max_sessions_per_user: None,
+            allow_bearer_sessions: false,
         }
     }
 }
@@ -163,8 +165,16 @@ impl SessionManager {
         }
     }
 
-    pub async fn resolve(&self, token: &str) -> Result<Option<ResolvedSession>> {
-        self.records.resolve(token).await
+    pub async fn resolve(
+        &self,
+        token: &str,
+        transport: SessionTransport,
+    ) -> Result<Option<ResolvedSession>> {
+        self.records.resolve(token, transport).await
+    }
+
+    pub fn allows_bearer_sessions(&self) -> bool {
+        self.records.allows(SessionTransport::Bearer)
     }
 
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id))]
@@ -247,6 +257,7 @@ impl From<Session> for SessionSummary {
         Self {
             id: value.id,
             user_id: value.user_id,
+            transport: value.transport,
             created_at: value.created_at,
             last_used_at: value.last_used_at,
             expires_at: value.expires_at,
@@ -262,6 +273,7 @@ impl From<&Session> for SessionSummary {
         Self {
             id: value.id,
             user_id: value.user_id,
+            transport: value.transport,
             created_at: value.created_at,
             last_used_at: value.last_used_at,
             expires_at: value.expires_at,
@@ -308,6 +320,7 @@ mod tests {
             id: SessionId::new(),
             user_id: UserId::new(),
             token_hash: TokenHash([7u8; 32]),
+            transport: SessionTransport::Bearer,
             created_at,
             last_used_at,
             expires_at,
@@ -319,6 +332,7 @@ mod tests {
         let summary = SessionSummary::from(&session);
         assert_eq!(summary.id, session.id);
         assert_eq!(summary.user_id, session.user_id);
+        assert_eq!(summary.transport, SessionTransport::Bearer);
         assert_eq!(summary.created_at, created_at);
         assert_eq!(summary.last_used_at, last_used_at);
         assert_eq!(summary.expires_at, expires_at);
@@ -338,6 +352,7 @@ mod tests {
             id: SessionId::new(),
             user_id: UserId::new(),
             token_hash: hash_token("does-not-matter"),
+            transport: SessionTransport::Cookie,
             created_at: now,
             last_used_at: now,
             expires_at: now,

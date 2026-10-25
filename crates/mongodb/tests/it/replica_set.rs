@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use doorman_core::session::hash_token;
-use doorman_core::storage::{Session, SessionId, StoredPasskey, User, UserId, UserStatus};
+use doorman_core::storage::{
+    Session, SessionId, SessionTransport, StoredPasskey, User, UserId, UserStatus,
+};
 use doorman_mongodb::MongoDbStorage;
 use mongodb::bson::doc;
 use mongodb::{Client, Database};
@@ -145,6 +147,7 @@ async fn reads_see_every_finished_write_when_the_host_prefers_secondaries() {
         id: SessionId::new(),
         user_id,
         token_hash: hash_token("replica-set-session"),
+        transport: SessionTransport::Cookie,
         created_at: now,
         last_used_at: now,
         expires_at: now + chrono::Duration::hours(1),

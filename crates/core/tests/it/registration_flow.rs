@@ -7,7 +7,7 @@ use doorman_core::passkey::{
     PasskeyConfig, PasskeyRateLimits, RegistrationOutcome, StartedRegistration,
 };
 use doorman_core::session::{ResolvedSession, SessionContext};
-use doorman_core::storage::{PasskeyChallengeId, User, UserStatus, UserStore};
+use doorman_core::storage::{PasskeyChallengeId, SessionTransport, User, UserStatus, UserStore};
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
 use crate::common::{
@@ -77,12 +77,24 @@ impl Link {
         match self {
             Link::Signup => {
                 h.signup
-                    .finish_signup(started.challenge_id, &response, name, context)
+                    .finish_signup(
+                        started.challenge_id,
+                        &response,
+                        name,
+                        SessionTransport::Cookie,
+                        context,
+                    )
                     .await
             }
             Link::Recovery => {
                 h.recovery
-                    .finish_recovery(started.challenge_id, &response, name, context)
+                    .finish_recovery(
+                        started.challenge_id,
+                        &response,
+                        name,
+                        SessionTransport::Cookie,
+                        context,
+                    )
                     .await
             }
         }
@@ -139,6 +151,7 @@ async fn an_email_link_registration_stores_the_passkey_and_starts_a_session() {
                 AuditEventKind::SessionCreated {
                     user_id: user.id,
                     session_id: outcome.session.session.id,
+                    transport: SessionTransport::Cookie,
                 },
                 AuditEventKind::LoginSucceeded { user_id: user.id },
             ],
@@ -355,12 +368,24 @@ async fn finish(
     match finish {
         Finish::Signup => h
             .signup
-            .finish_signup(challenge_id, response, None, context())
+            .finish_signup(
+                challenge_id,
+                response,
+                None,
+                SessionTransport::Cookie,
+                context(),
+            )
             .await
             .map(drop),
         Finish::Recovery => h
             .recovery
-            .finish_recovery(challenge_id, response, None, context())
+            .finish_recovery(
+                challenge_id,
+                response,
+                None,
+                SessionTransport::Cookie,
+                context(),
+            )
             .await
             .map(drop),
         Finish::AddPasskey => h

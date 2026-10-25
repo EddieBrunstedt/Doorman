@@ -1,17 +1,18 @@
 use axum::Json;
 use axum::Router;
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use doorman_core::destructive::{CurrentSession, DestructiveAction};
 use doorman_core::passkey::{RegistrationOutcome, StartedRegistration};
 use doorman_core::reauth::ReauthProof;
 use doorman_core::session::{IssuedSession, SessionContext};
-use doorman_core::storage::{PasskeyChallengeId, User};
+use doorman_core::storage::{PasskeyChallengeId, SessionTransport, User};
 use uuid::Uuid;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
+use crate::browser::sent_by_browser;
 use crate::cookies::{clear_session_cookie, session_cookie};
-use crate::dto::{AuthResponse, PasskeyChallenge, Reauthentication};
+use crate::dto::{AuthResponse, BearerAuthResponse, PasskeyChallenge, Reauthentication};
 use crate::error::ErrorResponse;
 use crate::extractors::AuthSession;
 use crate::state::AuthState;
@@ -23,6 +24,20 @@ pub(crate) mod sessions;
 pub(crate) mod signup;
 pub(crate) mod user;
 
+// A page script can read any response body, so a request a browser sends never starts a session
+// whose token travels in one. The refusal comes before the ceremony uses anything up.
+pub(crate) fn session_transport(
+    headers: &HeaderMap,
+    requested: Option<SessionTransport>,
+) -> Result<SessionTransport, ErrorResponse> {
+    match requested.unwrap_or(SessionTransport::Cookie) {
+        SessionTransport::Bearer if sent_by_browser(headers) => {
+            Err(ErrorResponse(doorman_core::Error::BearerSessionNotAllowed))
+        }
+        transport => Ok(transport),
+    }
+}
+
 // Only the routes that start or end a session write its cookie. A cookie written on any other
 // response could reach the browser after a newer one and overwrite it.
 pub(crate) fn auth_success(
@@ -31,23 +46,32 @@ pub(crate) fn auth_success(
     passkey_count: u64,
     issued: IssuedSession,
 ) -> Result<Response, ErrorResponse> {
-    let cookie = session_cookie(
-        state.cookie_config(),
-        &issued.token,
-        issued.absolute_lifetime,
-    )?;
-    let body = AuthResponse::from_issued(user, passkey_count, issued);
-    let mut response = Json(body).into_response();
-    response.headers_mut().insert(header::SET_COOKIE, cookie);
-    Ok(response)
+    match issued.session.transport {
+        SessionTransport::Cookie => {
+            let cookie = session_cookie(
+                state.cookie_config(),
+                &issued.token,
+                issued.absolute_lifetime,
+            )?;
+            let body = AuthResponse::new(user, passkey_count, &issued.session);
+            let mut response = Json(body).into_response();
+            response.headers_mut().insert(header::SET_COOKIE, cookie);
+            Ok(response)
+        }
+        SessionTransport::Bearer => {
+            let body = BearerAuthResponse::from_issued(user, passkey_count, issued);
+            Ok(Json(body).into_response())
+        }
+    }
 }
 
 pub(crate) fn no_content(
     state: &AuthState,
+    auth: &AuthSession,
     current: CurrentSession,
 ) -> Result<Response, ErrorResponse> {
     let mut response = StatusCode::NO_CONTENT.into_response();
-    if current == CurrentSession::Ended {
+    if current == CurrentSession::Ended && auth.session.transport == SessionTransport::Cookie {
         let cookie = clear_session_cookie(state.cookie_config())?;
         response.headers_mut().insert(header::SET_COOKIE, cookie);
     }

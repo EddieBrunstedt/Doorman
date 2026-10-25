@@ -2,13 +2,13 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use axum::http::StatusCode;
-use doorman_axum::dto::{AuthResponse, PasskeyDto, SessionDto, SignupRequest, UserDto};
+use doorman_axum::dto::{PasskeyDto, SessionDto, SignupRequest, UserDto};
 use doorman_core::error::Result;
 use doorman_core::session::SessionContext;
 use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy, SignupRateLimits};
 use serde_json::{Value, json};
 
-use crate::common::{ResidentAuthenticator, SIGNUP_URL, TestApp, USER_URL, rp_origin};
+use crate::common::{Client, ResidentAuthenticator, SIGNUP_URL, TestApp, USER_URL, rp_origin};
 
 #[tokio::test]
 async fn signup_registers_a_passkey_and_starts_a_session() {
@@ -18,7 +18,7 @@ async fn signup_registers_a_passkey_and_starts_a_session() {
 
     assert_eq!(auth.user.email.as_deref(), Some("alice@example.com"));
     assert_eq!(auth.user.passkey_count, 1);
-    assert!(app.is_authenticated(&auth.token).await);
+    assert!(app.is_authenticated(&auth).await);
 }
 
 #[tokio::test]
@@ -96,9 +96,9 @@ async fn login_is_discoverable_and_starts_a_session() {
     let credential_id = authenticator.credential_ids()[0].clone();
     let login = app.log_in(&mut authenticator, &credential_id).await;
     assert_eq!(login.status, StatusCode::OK);
-    let logged_in: AuthResponse = login.json();
+    let logged_in = login.session(Client::Bearer);
     assert_eq!(logged_in.user.id, signed_up.user.id);
-    assert!(app.is_authenticated(&logged_in.token).await);
+    assert!(app.is_authenticated(&logged_in).await);
 }
 
 #[tokio::test]
@@ -106,7 +106,7 @@ async fn passkeys_are_added_listed_renamed_and_removed() {
     let app = TestApp::new();
     let (auth, mut authenticator) = app.signup("alice@example.com").await;
 
-    let added = app.register_passkey(&mut authenticator, &auth.token).await;
+    let added = app.register_passkey(&mut authenticator, &auth).await;
     assert_eq!(added.name.as_deref(), Some("backup device"));
 
     let list = app.get("/auth/passkey").bearer(&auth.token).send().await;
@@ -154,8 +154,8 @@ async fn sessions_are_listed_and_revoked() {
         .send()
         .await;
     assert_eq!(revoke_one.status, StatusCode::NO_CONTENT);
-    assert!(!app.is_authenticated(&other.token).await);
-    assert!(app.is_authenticated(&third.token).await);
+    assert!(!app.is_authenticated(&other).await);
+    assert!(app.is_authenticated(&third).await);
 
     let revoke_others = app
         .delete("/auth/sessions")
@@ -163,8 +163,8 @@ async fn sessions_are_listed_and_revoked() {
         .send()
         .await;
     assert_eq!(revoke_others.status, StatusCode::NO_CONTENT);
-    assert!(!app.is_authenticated(&third.token).await);
-    assert!(app.is_authenticated(&caller.token).await);
+    assert!(!app.is_authenticated(&third).await);
+    assert!(app.is_authenticated(&caller).await);
 }
 
 #[tokio::test]
@@ -202,5 +202,5 @@ async fn recovery_registers_a_new_passkey_and_starts_a_session() {
 
     assert_eq!(recovered.user.id, signed_up.user.id);
     assert_eq!(recovered.user.passkey_count, 2);
-    assert!(app.is_authenticated(&recovered.token).await);
+    assert!(app.is_authenticated(&recovered).await);
 }

@@ -49,12 +49,29 @@ pub(crate) fn error_response(err: &Error) -> Response {
     response
 }
 
-pub(crate) fn csrf_rejection_response() -> Response {
-    json_error(
-        StatusCode::FORBIDDEN,
-        "csrf_origin_mismatch",
-        "CSRF origin check failed".to_owned(),
-    )
+// The session layer refuses these before any route runs, so they have no domain error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayerRefusal {
+    CrossOrigin,
+    AmbiguousCredential,
+}
+
+impl IntoResponse for LayerRefusal {
+    fn into_response(self) -> Response {
+        let (status, code, message) = match self {
+            LayerRefusal::CrossOrigin => (
+                StatusCode::FORBIDDEN,
+                "csrf_origin_mismatch",
+                "CSRF origin check failed",
+            ),
+            LayerRefusal::AmbiguousCredential => (
+                StatusCode::BAD_REQUEST,
+                "ambiguous_credential",
+                "the request carries both a session cookie and a bearer token",
+            ),
+        };
+        json_error(status, code, message.to_owned())
+    }
 }
 
 fn json_error(status: StatusCode, code: &'static str, message: String) -> Response {
@@ -69,6 +86,7 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
         Error::Email(_) => (StatusCode::INTERNAL_SERVER_ERROR, "email_error"),
         Error::SessionNotFound => (StatusCode::UNAUTHORIZED, "session_not_found"),
+        Error::BearerSessionNotAllowed => (StatusCode::FORBIDDEN, "bearer_session_not_allowed"),
         Error::UserNotFound => (StatusCode::NOT_FOUND, "user_not_found"),
         Error::InvalidEmail => (StatusCode::BAD_REQUEST, "invalid_email"),
         Error::InvalidPasskeyName => (StatusCode::BAD_REQUEST, "invalid_passkey_name"),
@@ -135,6 +153,11 @@ mod tests {
                 "email_error",
             ),
             (Error::SessionNotFound, S::UNAUTHORIZED, "session_not_found"),
+            (
+                Error::BearerSessionNotAllowed,
+                S::FORBIDDEN,
+                "bearer_session_not_allowed",
+            ),
             (Error::UserNotFound, S::NOT_FOUND, "user_not_found"),
             (Error::InvalidEmail, S::BAD_REQUEST, "invalid_email"),
             (
@@ -228,13 +251,26 @@ mod tests {
     }
 
     #[test]
-    fn csrf_rejection_uses_the_shared_body() {
-        let response = csrf_rejection_response();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        let body: serde_json::Value =
-            serde_json::from_slice(&body_bytes(response)).expect("json body");
-        assert_eq!(body["error"]["code"], "csrf_origin_mismatch");
-        assert_eq!(body["error"]["message"], "CSRF origin check failed");
+    fn layer_refusals_use_the_shared_body() {
+        let cases = [
+            (
+                LayerRefusal::CrossOrigin,
+                StatusCode::FORBIDDEN,
+                "csrf_origin_mismatch",
+            ),
+            (
+                LayerRefusal::AmbiguousCredential,
+                StatusCode::BAD_REQUEST,
+                "ambiguous_credential",
+            ),
+        ];
+        for (refusal, status, code) in cases {
+            let response = refusal.into_response();
+            assert_eq!(response.status(), status, "{refusal:?}");
+            let body: serde_json::Value =
+                serde_json::from_slice(&body_bytes(response)).expect("json body");
+            assert_eq!(body["error"]["code"], code, "{refusal:?}");
+        }
     }
 
     #[test]

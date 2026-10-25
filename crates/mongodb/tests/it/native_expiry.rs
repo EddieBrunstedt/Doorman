@@ -2,7 +2,8 @@ use chrono::{DateTime, Duration, Utc};
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
     AuthenticationPurpose, EmailLink, EmailLinkPurpose, PasskeyChallengeId, RegistrationPurpose,
-    Session, SessionId, StoredPasskeyAuthentication, StoredPasskeyRegistration, UserId,
+    Session, SessionId, SessionTransport, StoredPasskeyAuthentication, StoredPasskeyRegistration,
+    UserId,
 };
 use doorman_mongodb::MongoDbStorage;
 use mongodb::Database;
@@ -80,6 +81,7 @@ async fn every_row_expires_at_its_deadline() {
         id: SessionId::new(),
         user_id: UserId::new(),
         token_hash: hash_token("native-expiry-session"),
+        transport: SessionTransport::Cookie,
         created_at: now,
         last_used_at: now,
         expires_at: now + Duration::hours(1),

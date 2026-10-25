@@ -13,7 +13,9 @@ use crate::passkey_registration::{
 };
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
-use crate::storage::{EmailLinkPurpose, PasskeyChallengeId, PasskeySummary, User, UserId};
+use crate::storage::{
+    EmailLinkPurpose, PasskeyChallengeId, PasskeySummary, SessionTransport, User, UserId,
+};
 use crate::user_records::UserRecords;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,8 +105,10 @@ impl EmailLinkRegistration {
         challenge_id: PasskeyChallengeId,
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
+        transport: SessionTransport,
         context: SessionContext,
     ) -> Result<RegistrationOutcome> {
+        self.records.check_session_allowed(transport)?;
         let RegisteredPasskey {
             user,
             passkey,
@@ -118,7 +122,7 @@ impl EmailLinkRegistration {
         self.registrations.invalidate_pending(user.id).await?;
         let session = self
             .records
-            .issue_session(&passkey, context.clone())
+            .issue_session(&passkey, transport, context.clone())
             .await?;
         self.audit
             .emit(

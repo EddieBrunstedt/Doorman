@@ -27,7 +27,7 @@ async fn logout(
     RequestContext(context): RequestContext,
 ) -> Result<Response, ErrorResponse> {
     state.core.sessions.log_out(&auth.session, context).await?;
-    no_content(&state, CurrentSession::Ended)
+    no_content(&state, &auth, CurrentSession::Ended)
 }
 
 async fn logout_all(
@@ -39,7 +39,7 @@ async fn logout_all(
     let reauth = body.and_then(|Json(b)| b.reauthentication);
     let action = DestructiveAction::LogOutEverywhere;
     let current = perform(&state, &auth, action, reauth, context).await?;
-    no_content(&state, current)
+    no_content(&state, &auth, current)
 }
 
 async fn list(
@@ -69,7 +69,7 @@ async fn remove(
     let reauth = body.and_then(|Json(b)| b.reauthentication);
     let action = DestructiveAction::RevokeSession { id };
     let current = perform(&state, &auth, action, reauth, context).await?;
-    no_content(&state, current)
+    no_content(&state, &auth, current)
 }
 
 async fn remove_others(
@@ -81,5 +81,5 @@ async fn remove_others(
     let reauth = body.and_then(|Json(b)| b.reauthentication);
     let action = DestructiveAction::RevokeOtherSessions;
     let current = perform(&state, &auth, action, reauth, context).await?;
-    no_content(&state, current)
+    no_content(&state, &auth, current)
 }

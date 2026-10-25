@@ -113,11 +113,19 @@ impl User {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionTransport {
+    Cookie,
+    Bearer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     pub id: SessionId,
     pub user_id: UserId,
     pub token_hash: TokenHash,
+    pub transport: SessionTransport,
     pub created_at: DateTime<Utc>,
     pub last_used_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -130,6 +138,7 @@ pub struct Session {
 pub struct SessionSummary {
     pub id: SessionId,
     pub user_id: UserId,
+    pub transport: SessionTransport,
     pub created_at: DateTime<Utc>,
     pub last_used_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -414,6 +423,7 @@ mod tests {
             id: SessionId::new(),
             user_id: UserId::new(),
             token_hash: hash_token("a-session-token"),
+            transport: SessionTransport::Bearer,
             created_at: ts(1_000),
             last_used_at: ts(1_000),
             expires_at: ts(2_000),

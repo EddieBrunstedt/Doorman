@@ -4,8 +4,8 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use axum::{Router, routing::get};
 use doorman_axum::dto::{
-    AuthResponse, PasskeyChallenge, RecoveryRedeemRequest, RecoveryRequest,
-    RegistrationFinishRequest, SignupRedeemRequest, SignupRequest,
+    BearerAuthResponse, PasskeyAuthenticateFinishRequest, PasskeyChallenge, RecoveryRedeemRequest,
+    RecoveryRequest, RegistrationFinishRequest, SignupRedeemRequest, SignupRequest,
 };
 use doorman_axum::prelude::*;
 use doorman_core::email_link::TOKEN_PLACEHOLDER;
@@ -51,6 +51,10 @@ async fn signup_login_recovery_round_trip() {
         })
         .user(UserConfig {
             url_template: format!("{base}/user/email?token={TOKEN_PLACEHOLDER}"),
+            ..Default::default()
+        })
+        .session(SessionConfig {
+            allow_bearer_sessions: true,
             ..Default::default()
         })
         .build()
@@ -123,12 +127,14 @@ async fn signup_login_recovery_round_trip() {
             challenge_id: challenge.challenge_id,
             response: attestation,
             name: Some("primary device".into()),
+            transport: Some(SessionTransport::Bearer),
         })
         .send()
         .await
         .expect("signup finish");
     assert_eq!(finish.status(), StatusCode::OK);
-    let signed_up: AuthResponse = finish.json().await.expect("finish body");
+    assert!(finish.headers().get("set-cookie").is_none());
+    let signed_up: BearerAuthResponse = finish.json().await.expect("finish body");
     assert!(!signed_up.token.is_empty(), "signup issued a session token");
 
     let start = client
@@ -142,15 +148,16 @@ async fn signup_login_recovery_round_trip() {
     let assertion = authenticator.do_authentication(challenge.options, &login_credential_id);
     let finish = client
         .post(url("/auth/passkey/authenticate/finish"))
-        .json(&serde_json::json!({
-            "challenge_id": challenge.challenge_id,
-            "response": assertion,
-        }))
+        .json(&PasskeyAuthenticateFinishRequest {
+            challenge_id: challenge.challenge_id,
+            response: assertion,
+            transport: Some(SessionTransport::Bearer),
+        })
         .send()
         .await
         .expect("authenticate finish");
     assert_eq!(finish.status(), StatusCode::OK);
-    let logged_in: AuthResponse = finish.json().await.expect("authenticate finish body");
+    let logged_in: BearerAuthResponse = finish.json().await.expect("authenticate finish body");
     assert_eq!(logged_in.user.id, signed_up.user.id, "same user");
 
     let me = client
@@ -203,12 +210,13 @@ async fn signup_login_recovery_round_trip() {
             challenge_id: challenge.challenge_id,
             response: attestation,
             name: Some("recovery device".into()),
+            transport: Some(SessionTransport::Bearer),
         })
         .send()
         .await
         .expect("recovery finish");
     assert_eq!(finish.status(), StatusCode::OK);
-    let recovered: AuthResponse = finish.json().await.expect("recovery finish body");
+    let recovered: BearerAuthResponse = finish.json().await.expect("recovery finish body");
     assert_eq!(
         recovered.user.id, signed_up.user.id,
         "recovered the same user"

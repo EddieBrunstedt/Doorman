@@ -10,7 +10,8 @@ use doorman_core::session::{
     IssuedSession, ResolvedSession, SessionConfig, SessionContext, hash_token,
 };
 use doorman_core::storage::{
-    PasskeyChallengeId, PasskeyStore, SessionId, SessionStore, User, UserId, UserStore,
+    PasskeyChallengeId, PasskeyStore, SessionId, SessionStore, SessionTransport, User, UserId,
+    UserStore,
 };
 use webauthn_rs::prelude::CreationChallengeResponse;
 
@@ -80,7 +81,7 @@ async fn a_login_issues_a_session_bound_to_its_token() {
 
     let resolved = h
         .session_manager
-        .resolve(&issued.token)
+        .resolve(&issued.token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("a live session");
@@ -89,6 +90,7 @@ async fn a_login_issues_a_session_bound_to_its_token() {
         kinds(&h.audit.events()).contains(&AuditEventKind::SessionCreated {
             user_id: alice.user.id,
             session_id: issued.session.id,
+            transport: SessionTransport::Cookie,
         }),
         "the new session is audited",
     );
@@ -108,7 +110,7 @@ async fn log_out_deletes_the_session_and_audits_it() {
 
     let resolved = h
         .session_manager
-        .resolve(&alice.session.token)
+        .resolve(&alice.session.token, SessionTransport::Cookie)
         .await
         .expect("resolve");
     assert!(resolved.is_none(), "got {resolved:?}");
@@ -299,7 +301,7 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
 
     let resolved = h
         .session_manager
-        .resolve(&first.token)
+        .resolve(&first.token, SessionTransport::Cookie)
         .await
         .expect("resolve");
     assert!(
@@ -359,6 +361,7 @@ async fn session_cap_in_recovery_cool_down_evicts_only_sessions_in_it() {
             started.challenge_id,
             &attestation,
             None,
+            SessionTransport::Cookie,
             SessionContext::default(),
         )
         .await

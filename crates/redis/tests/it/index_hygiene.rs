@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use crate::common::Backend;
 use chrono::{DateTime, Duration, Utc};
 use doorman_core::session::hash_token;
-use doorman_core::storage::{Session, SessionId, UserId};
+use doorman_core::storage::{Session, SessionId, SessionTransport, UserId};
 use redis::aio::MultiplexedConnection;
 
 fn session_key(prefix: &str, id: SessionId) -> String {
@@ -29,6 +29,7 @@ fn session(user_id: UserId, token: &str, now: DateTime<Utc>) -> Session {
         id: SessionId::new(),
         user_id,
         token_hash: hash_token(token),
+        transport: SessionTransport::Cookie,
         created_at: now,
         last_used_at: now,
         expires_at: now + Duration::hours(1),

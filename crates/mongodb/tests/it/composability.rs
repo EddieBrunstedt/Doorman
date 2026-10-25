@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use doorman_core::error::StorageResult;
 use doorman_core::session::hash_token;
-use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
+use doorman_core::storage::{
+    Session, SessionId, SessionStore, SessionTransport, TokenHash, UserId,
+};
 use doorman_mongodb::{MongoDbStorage, session_to_document};
 use mongodb::Collection;
 use mongodb::bson::{Document, doc};
@@ -105,6 +107,7 @@ async fn override_create_session_reuses_bundled_reads() {
         id: SessionId::new(),
         user_id,
         token_hash: hash_token("composability-token"),
+        transport: SessionTransport::Cookie,
         created_at: now,
         last_used_at: now,
         expires_at: now + Duration::hours(1),

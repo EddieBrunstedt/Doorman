@@ -8,18 +8,14 @@ use doorman_core::error::StorageResult;
 use doorman_core::memory::InMemoryStorage;
 use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 
-use crate::common::TestApp;
+use crate::common::{Client, TestApp};
 
 #[tokio::test]
 async fn doormans_routes_are_checked_and_authenticated_without_the_hosts_layer() {
     let app = TestApp::without_host_layer(InMemoryStorage::new().all_stores());
-    let session = app.session_for("alice@example.com").await;
+    let session = app.session_as(Client::Browser, "alice@example.com").await;
 
-    let listed = app
-        .get("/auth/sessions")
-        .bearer(&session.token)
-        .send()
-        .await;
+    let listed = app.get("/auth/sessions").session(&session).send().await;
     let forged = app
         .post("/auth/logout")
         .header("cookie", &format!("doorman_session={}", session.token))

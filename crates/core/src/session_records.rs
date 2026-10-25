@@ -10,7 +10,9 @@ use crate::clock::Clock;
 use crate::error::{Error, Result};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::{IssuedSession, ResolvedSession, SessionConfig, SessionContext, hash_token};
-use crate::storage::{Session, SessionId, SessionStore, SessionSummary, StoredPasskey, UserId};
+use crate::storage::{
+    Session, SessionId, SessionStore, SessionSummary, SessionTransport, StoredPasskey, UserId,
+};
 use crate::token::generate_token;
 
 // Only `SessionRecords::reread` builds one, so whatever takes it acts for a session that was still
@@ -61,7 +63,15 @@ impl SessionRecords {
         skip_all,
         fields(session_id = tracing::field::Empty, user_id = tracing::field::Empty),
     )]
-    pub(crate) async fn resolve(&self, token: &str) -> Result<Option<ResolvedSession>> {
+    pub(crate) async fn resolve(
+        &self,
+        token: &str,
+        transport: SessionTransport,
+    ) -> Result<Option<ResolvedSession>> {
+        // A host that stops allowing bearer sessions stops honouring those it already issued.
+        if !self.allows(transport) {
+            return Ok(None);
+        }
         let stored = self
             .sessions
             .find_session_by_token_hash(&hash_token(token))
@@ -70,8 +80,31 @@ impl SessionRecords {
         let Some(session) = live(stored, now) else {
             return Ok(None);
         };
+        // A token travels only the way its session started, so one that turns up any other way
+        // was taken from where it belongs.
+        if session.transport != transport {
+            tracing::warn!(outcome = "wrong_transport", "session validate failed");
+            return Ok(None);
+        }
         let session = self.slide(session, now).await;
         Ok(Some(ResolvedSession::new(session, now)))
+    }
+
+    pub(crate) fn allows(&self, transport: SessionTransport) -> bool {
+        match transport {
+            SessionTransport::Cookie => true,
+            SessionTransport::Bearer => self.config.allow_bearer_sessions,
+        }
+    }
+
+    // A flow checks this before its ceremony uses anything up, so a refused request can be
+    // retried with a transport the host allows.
+    pub(crate) fn check_allowed(&self, transport: SessionTransport) -> Result<()> {
+        if self.allows(transport) {
+            Ok(())
+        } else {
+            Err(Error::BearerSessionNotAllowed)
+        }
     }
 
     // Only `UserRecords::issue_session` calls this: it checks the user once the row is written,
@@ -79,8 +112,10 @@ impl SessionRecords {
     pub(crate) async fn create(
         &self,
         passkey: &StoredPasskey,
+        transport: SessionTransport,
         context: &SessionContext,
     ) -> Result<IssuedSession> {
+        self.check_allowed(transport)?;
         let user_id = passkey.user_id;
         let now = self.clock.now();
         let cool_down = RecoveryCoolDown::of_passkey(passkey, now);
@@ -96,6 +131,7 @@ impl SessionRecords {
             id: SessionId::new(),
             user_id,
             token_hash,
+            transport,
             created_at: now,
             last_used_at: now,
             expires_at: self.deadline(now, now),

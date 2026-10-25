@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::post;
 use doorman_core::signup::SignupManager;
@@ -10,7 +10,7 @@ use webauthn_rs::prelude::CreationChallengeResponse;
 use crate::dto::{PasskeyChallenge, RegistrationFinishRequest, SignupRedeemRequest, SignupRequest};
 use crate::error::ErrorResponse;
 use crate::extractors::RequestContext;
-use crate::routes::{parse_challenge_id, redeem_response, registration_success};
+use crate::routes::{parse_challenge_id, redeem_response, registration_success, session_transport};
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
@@ -49,11 +49,13 @@ async fn redeem(
 async fn finish(
     State(state): State<AuthState>,
     RequestContext(context): RequestContext,
+    headers: HeaderMap,
     Json(body): Json<RegistrationFinishRequest>,
 ) -> Result<Response, ErrorResponse> {
+    let transport = session_transport(&headers, body.transport)?;
     let challenge_id = parse_challenge_id(&body.challenge_id)?;
     let outcome = manager(&state)
-        .finish_signup(challenge_id, &body.response, body.name, context)
+        .finish_signup(challenge_id, &body.response, body.name, transport, context)
         .await?;
     registration_success(&state, outcome)
 }

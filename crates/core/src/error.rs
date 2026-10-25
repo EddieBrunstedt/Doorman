@@ -18,6 +18,9 @@ pub enum Error {
     #[error("session not found")]
     SessionNotFound,
 
+    #[error("this request may not start a bearer session")]
+    BearerSessionNotAllowed,
+
     #[error("user not found")]
     UserNotFound,
 

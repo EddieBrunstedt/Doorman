@@ -6,7 +6,8 @@ use doorman_core::encoding::hex;
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
     AuthenticationPurpose, EmailLink, EmailLinkPurpose, PasskeyChallengeId, RegistrationPurpose,
-    Session, SessionId, StoredPasskeyAuthentication, StoredPasskeyRegistration, UserId,
+    Session, SessionId, SessionTransport, StoredPasskeyAuthentication, StoredPasskeyRegistration,
+    UserId,
 };
 use redis::aio::MultiplexedConnection;
 
@@ -15,6 +16,7 @@ fn session(token: &str, now: DateTime<Utc>, expires_at: DateTime<Utc>) -> Sessio
         id: SessionId::new(),
         user_id: UserId::new(),
         token_hash: hash_token(token),
+        transport: SessionTransport::Cookie,
         created_at: now,
         last_used_at: now,
         expires_at,

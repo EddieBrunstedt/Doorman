@@ -10,8 +10,10 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode
 use axum::routing::get;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::dto::{
-    AuthResponse, PasskeyChallenge, PasskeyDto, Reauthentication, RecoveryRedeemRequest,
-    RecoveryRequest, RegistrationFinishRequest, SignupRedeemRequest, SignupRequest,
+    AuthResponse, BearerAuthResponse, PasskeyAuthenticateFinishRequest, PasskeyChallenge,
+    PasskeyDto, PasskeyRegisterFinishRequest, Reauthentication, RecoveryRedeemRequest,
+    RecoveryRequest, RegistrationFinishRequest, SessionDto, SignupRedeemRequest, SignupRequest,
+    UserDto,
 };
 use doorman_axum::extractors::AuthUser;
 use doorman_axum::{AuthService, AuthServiceBuilder};
@@ -23,9 +25,9 @@ use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
-use doorman_core::session::SessionManager;
+use doorman_core::session::{SessionConfig, SessionManager};
 use doorman_core::signup::{SignupConfig, SignupRateLimits};
-use doorman_core::storage::{Storage, UserId, UserStatus, UserStore};
+use doorman_core::storage::{SessionTransport, Storage, UserId, UserStatus, UserStore};
 use doorman_core::user::UserConfig;
 pub use doorman_test_support::ResidentAuthenticator;
 use doorman_test_support::{CapturingEmailSender, token_from_email};
@@ -42,6 +44,46 @@ pub const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
 pub const USER_URL: &str = "https://app.test/email-change?token={token}";
 pub const RP_ORIGIN: &str = "http://localhost:8080";
 pub const PEER: &str = "127.0.0.1";
+
+// How a test client keeps its session: a browser page, or a bearer client such as a native app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Client {
+    Browser,
+    Bearer,
+}
+
+impl Client {
+    pub fn transport(self) -> SessionTransport {
+        match self {
+            Client::Browser => SessionTransport::Cookie,
+            Client::Bearer => SessionTransport::Bearer,
+        }
+    }
+
+    pub fn requested_transport(self) -> Option<SessionTransport> {
+        match self {
+            Client::Browser => None,
+            Client::Bearer => Some(SessionTransport::Bearer),
+        }
+    }
+}
+
+// A session as its client holds it: a browser's token comes from the cookie it was set.
+#[derive(Debug, Clone)]
+pub struct TestSession {
+    pub user: UserDto,
+    pub session: SessionDto,
+    pub token: String,
+    pub client: Client,
+}
+
+// Lets the harness's bearer clients start sessions; a test that sets its own config starts from it.
+pub fn session_config() -> SessionConfig {
+    SessionConfig {
+        allow_bearer_sessions: true,
+        ..SessionConfig::default()
+    }
+}
 
 pub struct TestApp {
     router: Router,
@@ -113,7 +155,8 @@ impl TestApp {
                 url_template: USER_URL.to_string(),
                 ..UserConfig::default()
             })
-            .reauthentication(ReauthPolicy::disabled());
+            .reauthentication(ReauthPolicy::disabled())
+            .session(session_config());
         let core = customise_core(core).build().expect("auth core built");
 
         let http = AuthService::builder(core).cookie(CookieConfig {
@@ -194,15 +237,22 @@ impl TestApp {
         }
     }
 
-    pub async fn session_for(&self, email: &str) -> AuthResponse {
+    pub async fn session_for(&self, email: &str) -> TestSession {
+        self.session_as(Client::Bearer, email).await
+    }
+
+    pub async fn session_as(&self, client: Client, email: &str) -> TestSession {
         let stored = self
             .authenticators
             .lock()
             .expect("authenticators lock")
             .remove(email);
         let (session, authenticator) = match stored {
-            Some(mut authenticator) => (self.log_in_again(&mut authenticator).await, authenticator),
-            None => self.signup(email).await,
+            Some(mut authenticator) => (
+                self.log_in_again_as(client, &mut authenticator).await,
+                authenticator,
+            ),
+            None => self.signup_as(client, email).await,
         };
         self.authenticators
             .lock()
@@ -211,15 +261,23 @@ impl TestApp {
         session
     }
 
-    pub async fn log_in_again(&self, authenticator: &mut ResidentAuthenticator) -> AuthResponse {
+    pub async fn log_in_again(&self, authenticator: &mut ResidentAuthenticator) -> TestSession {
+        self.log_in_again_as(Client::Bearer, authenticator).await
+    }
+
+    pub async fn log_in_again_as(
+        &self,
+        client: Client,
+        authenticator: &mut ResidentAuthenticator,
+    ) -> TestSession {
         let credential_id = authenticator
             .credential_ids()
             .into_iter()
             .next()
             .expect("the authenticator holds a passkey");
-        let reply = self.log_in(authenticator, &credential_id).await;
+        let reply = self.log_in_as(client, authenticator, &credential_id).await;
         assert_eq!(reply.status, StatusCode::OK);
-        reply.json()
+        reply.session(client)
     }
 
     pub async fn set_user_status(&self, user_id: UserId, status: UserStatus) {
@@ -241,20 +299,41 @@ impl TestApp {
         token_from_email(&email.body_text, template)
     }
 
-    pub async fn signup(&self, email: &str) -> (AuthResponse, ResidentAuthenticator) {
+    pub async fn signup(&self, email: &str) -> (TestSession, ResidentAuthenticator) {
+        self.signup_as(Client::Bearer, email).await
+    }
+
+    pub async fn signup_as(
+        &self,
+        client: Client,
+        email: &str,
+    ) -> (TestSession, ResidentAuthenticator) {
         let mut authenticator = ResidentAuthenticator::new(&rp_origin());
-        let finish = self.finish_signup(email, &mut authenticator).await;
+        let finish = self.finish_signup(client, email, &mut authenticator).await;
         assert_eq!(finish.status, StatusCode::OK);
-        (finish.json(), authenticator)
+        (finish.session(client), authenticator)
     }
 
     pub async fn finish_signup(
         &self,
+        client: Client,
+        email: &str,
+        authenticator: &mut ResidentAuthenticator,
+    ) -> Reply {
+        self.finish_signup_asking(client, client.requested_transport(), email, authenticator)
+            .await
+    }
+
+    pub async fn finish_signup_asking(
+        &self,
+        client: Client,
+        transport: Option<SessionTransport>,
         email: &str,
         authenticator: &mut ResidentAuthenticator,
     ) -> Reply {
         let request = self
             .post("/auth/signup/request")
+            .sent_by(client)
             .json(&SignupRequest {
                 email: email.into(),
                 invite_token: None,
@@ -265,6 +344,7 @@ impl TestApp {
 
         let redeem = self
             .post("/auth/signup/redeem")
+            .sent_by(client)
             .json(&SignupRedeemRequest {
                 token: self.last_link(SIGNUP_URL),
             })
@@ -274,10 +354,12 @@ impl TestApp {
         let challenge: PasskeyChallenge<CreationChallengeResponse> = redeem.json();
 
         self.post("/auth/signup/finish")
+            .sent_by(client)
             .json(&RegistrationFinishRequest {
                 challenge_id: challenge.challenge_id,
                 response: authenticator.do_registration(challenge.options),
                 name: Some("first device".into()),
+                transport,
             })
             .send()
             .await
@@ -287,19 +369,34 @@ impl TestApp {
         &self,
         email: &str,
         authenticator: &mut ResidentAuthenticator,
-    ) -> AuthResponse {
-        let finish = self.finish_recovery(email, authenticator).await;
+    ) -> TestSession {
+        let finish = self
+            .finish_recovery(Client::Bearer, email, authenticator)
+            .await;
         assert_eq!(finish.status, StatusCode::OK);
-        finish.json()
+        finish.session(Client::Bearer)
     }
 
     pub async fn finish_recovery(
         &self,
+        client: Client,
+        email: &str,
+        authenticator: &mut ResidentAuthenticator,
+    ) -> Reply {
+        self.finish_recovery_asking(client, client.requested_transport(), email, authenticator)
+            .await
+    }
+
+    pub async fn finish_recovery_asking(
+        &self,
+        client: Client,
+        transport: Option<SessionTransport>,
         email: &str,
         authenticator: &mut ResidentAuthenticator,
     ) -> Reply {
         let request = self
             .post("/auth/recovery/request")
+            .sent_by(client)
             .json(&RecoveryRequest {
                 email: email.into(),
             })
@@ -309,6 +406,7 @@ impl TestApp {
 
         let redeem = self
             .post("/auth/recovery/redeem")
+            .sent_by(client)
             .json(&RecoveryRedeemRequest {
                 token: self.last_link(RECOVERY_URL),
             })
@@ -318,10 +416,12 @@ impl TestApp {
         let challenge: PasskeyChallenge<CreationChallengeResponse> = redeem.json();
 
         self.post("/auth/recovery/finish")
+            .sent_by(client)
             .json(&RegistrationFinishRequest {
                 challenge_id: challenge.challenge_id,
                 response: authenticator.do_registration(challenge.options),
                 name: Some("recovery device".into()),
+                transport,
             })
             .send()
             .await
@@ -330,11 +430,11 @@ impl TestApp {
     pub async fn register_passkey(
         &self,
         authenticator: &mut ResidentAuthenticator,
-        bearer: &str,
+        session: &TestSession,
     ) -> PasskeyDto {
         let start = self
             .post("/auth/passkey/register/start")
-            .bearer(bearer)
+            .session(session)
             .send()
             .await;
         assert_eq!(start.status, StatusCode::OK);
@@ -342,8 +442,8 @@ impl TestApp {
 
         let finish = self
             .post("/auth/passkey/register/finish")
-            .bearer(bearer)
-            .json(&RegistrationFinishRequest {
+            .session(session)
+            .json(&PasskeyRegisterFinishRequest {
                 challenge_id: challenge.challenge_id,
                 response: authenticator.do_registration(challenge.options),
                 name: Some("backup device".into()),
@@ -359,14 +459,46 @@ impl TestApp {
         authenticator: &mut ResidentAuthenticator,
         credential_id: &[u8],
     ) -> Reply {
-        let start = self.post("/auth/passkey/authenticate/start").send().await;
+        self.log_in_as(Client::Bearer, authenticator, credential_id)
+            .await
+    }
+
+    pub async fn log_in_as(
+        &self,
+        client: Client,
+        authenticator: &mut ResidentAuthenticator,
+        credential_id: &[u8],
+    ) -> Reply {
+        self.log_in_asking(
+            client,
+            client.requested_transport(),
+            authenticator,
+            credential_id,
+        )
+        .await
+    }
+
+    pub async fn log_in_asking(
+        &self,
+        client: Client,
+        transport: Option<SessionTransport>,
+        authenticator: &mut ResidentAuthenticator,
+        credential_id: &[u8],
+    ) -> Reply {
+        let start = self
+            .post("/auth/passkey/authenticate/start")
+            .sent_by(client)
+            .send()
+            .await;
         assert_eq!(start.status, StatusCode::OK);
         let challenge: PasskeyChallenge<RequestChallengeResponse> = start.json();
         self.post("/auth/passkey/authenticate/finish")
-            .json(&serde_json::json!({
-                "challenge_id": challenge.challenge_id,
-                "response": authenticator.do_authentication(challenge.options, credential_id),
-            }))
+            .sent_by(client)
+            .json(&PasskeyAuthenticateFinishRequest {
+                challenge_id: challenge.challenge_id,
+                response: authenticator.do_authentication(challenge.options, credential_id),
+                transport,
+            })
             .send()
             .await
     }
@@ -374,9 +506,13 @@ impl TestApp {
     pub async fn reauth(
         &self,
         authenticator: &mut ResidentAuthenticator,
-        bearer: &str,
+        session: &TestSession,
     ) -> Reauthentication {
-        let start = self.post("/auth/reauth/start").bearer(bearer).send().await;
+        let start = self
+            .post("/auth/reauth/start")
+            .session(session)
+            .send()
+            .await;
         assert_eq!(start.status, StatusCode::OK);
         let challenge: PasskeyChallenge<RequestChallengeResponse> = start.json();
         Reauthentication {
@@ -385,8 +521,8 @@ impl TestApp {
         }
     }
 
-    pub async fn is_authenticated(&self, bearer: &str) -> bool {
-        let me = self.get("/me").bearer(bearer).send().await;
+    pub async fn is_authenticated(&self, session: &TestSession) -> bool {
+        let me = self.get("/me").session(session).send().await;
         match me.status {
             StatusCode::OK => true,
             StatusCode::UNAUTHORIZED => false,
@@ -413,7 +549,25 @@ impl Call<'_> {
     // A browser sends the session cookie from the application's own page with this header.
     pub fn cookie(self, token: &str) -> Self {
         self.header(COOKIE.as_str(), &format!("doorman_session={token}"))
-            .header("sec-fetch-site", "same-origin")
+            .sent_from_page()
+    }
+
+    pub fn sent_from_page(self) -> Self {
+        self.header("sec-fetch-site", "same-origin")
+    }
+
+    pub fn sent_by(self, client: Client) -> Self {
+        match client {
+            Client::Browser => self.sent_from_page(),
+            Client::Bearer => self,
+        }
+    }
+
+    pub fn session(self, session: &TestSession) -> Self {
+        match session.client {
+            Client::Browser => self.cookie(&session.token),
+            Client::Bearer => self.bearer(&session.token),
+        }
     }
 
     pub fn header(mut self, name: &str, value: &str) -> Self {
@@ -473,6 +627,46 @@ impl Reply {
                 String::from_utf8_lossy(&self.body)
             )
         })
+    }
+
+    // Each transport's token travels only its own way, so the reply is checked for the other.
+    pub fn session(&self, client: Client) -> TestSession {
+        match client {
+            Client::Browser => {
+                let body: serde_json::Value = self.json();
+                assert!(
+                    body.get("token").is_none(),
+                    "a cookie session's token reached the body: {body}"
+                );
+                let auth: AuthResponse = self.json();
+                TestSession {
+                    user: auth.user,
+                    session: auth.session,
+                    token: self.session_cookie().expect("the session cookie is set"),
+                    client,
+                }
+            }
+            Client::Bearer => {
+                assert!(
+                    self.set_cookie().is_none(),
+                    "a bearer session set a cookie: {:?}",
+                    self.headers
+                );
+                let auth: BearerAuthResponse = self.json();
+                TestSession {
+                    user: auth.user,
+                    session: auth.session,
+                    token: auth.token,
+                    client,
+                }
+            }
+        }
+    }
+
+    pub fn session_cookie(&self) -> Option<String> {
+        let cookie = self.set_cookie()?;
+        let value = cookie.strip_prefix("doorman_session=")?.split(';').next()?;
+        (!value.is_empty()).then(|| value.to_owned())
     }
 
     pub fn error_code(&self) -> String {

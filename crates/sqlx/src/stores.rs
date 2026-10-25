@@ -217,13 +217,14 @@ macro_rules! sqlx_stores {
                 session: $crate::stores::__reexport::Session,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "INSERT INTO sessions (id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO sessions (id, user_id, token_hash, transport, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(session.id.0))
                     .bind($crate::common::uuid_to_bytes(session.user_id.0))
                     .bind($crate::common::token_hash_bytes(&session.token_hash))
+                    .bind($crate::common::session_transport_to_str(session.transport))
                     .bind($ts(session.created_at))
                     .bind($ts(session.last_used_at))
                     .bind($ts(session.expires_at))
@@ -262,7 +263,7 @@ macro_rules! sqlx_stores {
                 Option<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
-                    "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
+                    "SELECT id, user_id, token_hash, transport, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
                      FROM sessions WHERE token_hash = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -280,7 +281,7 @@ macro_rules! sqlx_stores {
                 Option<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
-                    "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
+                    "SELECT id, user_id, token_hash, transport, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
                      FROM sessions WHERE id = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -298,7 +299,7 @@ macro_rules! sqlx_stores {
                 Vec<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
-                    "SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
+                    "SELECT id, user_id, token_hash, transport, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
                      FROM sessions WHERE user_id = ?",
                 );
                 let rows = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -370,6 +371,7 @@ macro_rules! sqlx_stores {
             let id_bytes: Vec<u8> = row.try_get("id").map_err($crate::common::storage_err)?;
             let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage_err)?;
             let hash_bytes: Vec<u8> = row.try_get("token_hash").map_err($crate::common::storage_err)?;
+            let transport: String = row.try_get("transport").map_err($crate::common::storage_err)?;
             Ok($crate::stores::__reexport::Session {
                 id: $crate::stores::__reexport::SessionId(
                     $crate::common::uuid_from_row(id_bytes)?,
@@ -378,6 +380,7 @@ macro_rules! sqlx_stores {
                     $crate::common::uuid_from_row(user_id_bytes)?,
                 ),
                 token_hash: $crate::common::token_hash_from_bytes(&hash_bytes)?,
+                transport: $crate::common::session_transport_from_str(&transport)?,
                 created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
                 last_used_at: row.try_get("last_used_at").map_err($crate::common::storage_err)?,
                 expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,

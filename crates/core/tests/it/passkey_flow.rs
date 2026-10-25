@@ -12,7 +12,7 @@ use doorman_core::passkey::{MAX_PASSKEY_NAME_LEN, PasskeyConfig, PasskeyRateLimi
 use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{
-    PasskeyChallengeStore, PasskeyStore, PasskeyUse, UserStatus, UserStore,
+    PasskeyChallengeStore, PasskeyStore, PasskeyUse, SessionTransport, UserStatus, UserStore,
 };
 use doorman_test_support::MockClock;
 use webauthn_rs_proto::AuthenticatorTransport;
@@ -90,6 +90,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
         .finish_authentication(
             auth_challenge,
             &assertion,
+            SessionTransport::Cookie,
             SessionContext::new(Some("1.2.3.4".parse().expect("ip")), Some("ua")),
         )
         .await
@@ -198,7 +199,12 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
     let bob_assertion = wa.do_authentication(bob_options, &bob_passkey.credential_id);
     let bob_issued = h
         .passkey
-        .finish_authentication(bob_challenge, &bob_assertion, SessionContext::default())
+        .finish_authentication(
+            bob_challenge,
+            &bob_assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect("finish bob")
         .session;
@@ -212,7 +218,12 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
     let alice_assertion = wa.do_authentication(alice_options, &alice_passkey.credential_id);
     let alice_issued = h
         .passkey
-        .finish_authentication(alice_challenge, &alice_assertion, SessionContext::default())
+        .finish_authentication(
+            alice_challenge,
+            &alice_assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect("finish alice")
         .session;
@@ -235,7 +246,12 @@ async fn authentication_without_user_handle_is_rejected() {
 
     let err = h
         .passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("missing user handle must be rejected");
     assert!(matches!(err, Error::PasskeyOwnershipMismatch));
@@ -520,7 +536,12 @@ async fn finish_authentication_rejects_unknown_passkey() {
 
     let err = h
         .passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("missing passkey");
     assert!(matches!(err, Error::PasskeyNotFound));
@@ -544,7 +565,12 @@ async fn finish_authentication_rejects_mismatched_user_handle() {
 
     let err = h
         .passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("ownership mismatch");
     assert!(matches!(err, Error::PasskeyOwnershipMismatch));
@@ -589,7 +615,12 @@ async fn finish_authentication_rejects_tampered_signature() {
 
     let err = h
         .passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("tampered signature must be rejected");
     assert!(matches!(err, Error::Webauthn(_)));
@@ -693,7 +724,12 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
 
     let err = h
         .passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("counter regression must be rejected");
     assert!(matches!(err, Error::PasskeyPossibleCompromise));
@@ -744,7 +780,12 @@ async fn finish_authentication_refuses_disabled_user() {
 
     let err = h
         .passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("disabled user must be refused");
     assert!(matches!(err, Error::UserDisabled));
@@ -782,7 +823,12 @@ async fn finish_authentication_refuses_disabled_user() {
 
     let err = h
         .passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("challenge redeemed: the refused login cannot be replayed");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
@@ -808,7 +854,12 @@ async fn finish_authentication_audits_unknown_passkey_failure() {
 
     let err = h
         .passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("missing passkey");
     assert!(matches!(err, Error::PasskeyNotFound));
@@ -840,7 +891,12 @@ async fn finish_authentication_audits_expired_challenge_failure() {
 
     let err = h
         .passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("expired challenge");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
@@ -870,7 +926,12 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
         .expect("start auth");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
     h.passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect("first finish");
     let audit_before = h.audit.events().len();
@@ -889,7 +950,12 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
 
     let err = h
         .passkey
-        .finish_authentication(auth_id2, &assertion2, SessionContext::default())
+        .finish_authentication(
+            auth_id2,
+            &assertion2,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("unknown challenge");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
@@ -923,7 +989,12 @@ async fn finish_authentication_rejects_a_reauth_challenge() {
 
     let err = h
         .passkey
-        .finish_authentication(reauth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            reauth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("a re-authentication challenge cannot log in");
     assert!(
@@ -980,7 +1051,12 @@ async fn finish_authentication_rejects_expired_challenge() {
 
     let err = h
         .passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("expired challenge");
     assert!(matches!(err, Error::InvalidPasskeyChallenge));
@@ -1640,7 +1716,12 @@ async fn authenticate_finish_is_rate_limited_per_passkey() {
         .expect("start one");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
     h.passkey
-        .finish_authentication(id, &assertion, SessionContext::default())
+        .finish_authentication(
+            id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect("first finish within budget");
 
@@ -1652,7 +1733,12 @@ async fn authenticate_finish_is_rate_limited_per_passkey() {
     let assertion2 = wa.do_authentication(rcr2, &passkey.credential_id);
     let err = h
         .passkey
-        .finish_authentication(id2, &assertion2, SessionContext::default())
+        .finish_authentication(
+            id2,
+            &assertion2,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("second finish for the same passkey is limited");
     assert!(matches!(err, Error::RateLimited { .. }));
@@ -1674,7 +1760,12 @@ async fn successful_login_records_login_and_latency_metrics() {
         .expect("start auth");
     let assertion = wa.do_authentication(rcr, &passkey.credential_id);
     h.passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect("finish auth");
 
@@ -1717,7 +1808,12 @@ async fn failed_login_records_auth_failure_and_latency_metrics() {
         .expect("delete passkey");
 
     h.passkey
-        .finish_authentication(auth_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            auth_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect_err("missing passkey");
 
@@ -1755,7 +1851,12 @@ async fn login_and_email_change_report_the_users_passkey_count() {
     let assertion = wa.do_authentication(options, &first.credential_id);
     let login = h
         .passkey
-        .finish_authentication(challenge_id, &assertion, SessionContext::default())
+        .finish_authentication(
+            challenge_id,
+            &assertion,
+            SessionTransport::Cookie,
+            SessionContext::default(),
+        )
         .await
         .expect("finish login");
     assert_eq!(login.passkey_count, 2);

@@ -4,7 +4,9 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::error::{StorageError, StorageResult};
-use crate::storage::{AuthenticationPurpose, EmailLinkPurpose, RegistrationPurpose, UserStatus};
+use crate::storage::{
+    AuthenticationPurpose, EmailLinkPurpose, RegistrationPurpose, SessionTransport, UserStatus,
+};
 
 pub fn purpose_to_str(purpose: EmailLinkPurpose) -> &'static str {
     match purpose {
@@ -57,6 +59,23 @@ pub fn registration_purpose_from_str(raw: &str) -> StorageResult<RegistrationPur
         "add_passkey" => Ok(RegistrationPurpose::AddPasskey),
         other => Err(StorageError::msg(format!(
             "unknown registration purpose `{other}` in storage"
+        ))),
+    }
+}
+
+pub fn session_transport_to_str(transport: SessionTransport) -> &'static str {
+    match transport {
+        SessionTransport::Cookie => "cookie",
+        SessionTransport::Bearer => "bearer",
+    }
+}
+
+pub fn session_transport_from_str(raw: &str) -> StorageResult<SessionTransport> {
+    match raw {
+        "cookie" => Ok(SessionTransport::Cookie),
+        "bearer" => Ok(SessionTransport::Bearer),
+        other => Err(StorageError::msg(format!(
+            "unknown session transport `{other}` in storage"
         ))),
     }
 }
@@ -188,6 +207,19 @@ mod tests {
             );
         }
         assert!(registration_purpose_from_str("nope").is_err());
+    }
+
+    #[test]
+    fn session_transport_round_trips_and_matches_serde() {
+        for t in [SessionTransport::Cookie, SessionTransport::Bearer] {
+            let raw = session_transport_to_str(t);
+            assert_eq!(session_transport_from_str(raw).unwrap(), t);
+            assert_eq!(
+                serde_json::to_value(t).unwrap(),
+                serde_json::Value::String(raw.to_string())
+            );
+        }
+        assert!(session_transport_from_str("nope").is_err());
     }
 
     #[test]

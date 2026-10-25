@@ -22,6 +22,12 @@ Passkey-only authentication for a single application: passkeys are the only way 
 
 **Session**: A logged-in period that begins with a login, signup, or recovery, and ends when it expires or is revoked.
 
+**Cookie session**: A session whose token travels only in an HttpOnly cookie, so no page script can read it. Every session a browser starts is one. `SessionTransport::Cookie` in identifiers.
+
+**Bearer session**: A session whose token travels only in an `Authorization: Bearer` header. Only a bearer client can start one, and only when the host allows bearer sessions. `SessionTransport::Bearer` in identifiers.
+
+**Bearer client**: A client other than a browser, such as a native app, that asks for a bearer session and keeps its token itself.
+
 **Email link**: A single-use link, bound to one purpose, that proves control of an email address. It never starts a session by itself. _Avoid_: magic link, verification link, verification token
 
 **Redeem**: To use up a single-use secret, such as an email link, so that it can never be used again. _Avoid_: consume

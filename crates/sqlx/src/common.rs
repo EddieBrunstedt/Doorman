@@ -91,5 +91,5 @@ pub(crate) fn uuid_from_row(b: Vec<u8>) -> StorageResult<Uuid> {
 pub(crate) use doorman_core::encoding::{
     aaguid_from_str, aaguid_to_str, authentication_purpose_from_str, authentication_purpose_to_str,
     purpose_from_str, purpose_to_str, registration_purpose_from_str, registration_purpose_to_str,
-    transports_from_str, transports_to_str,
+    session_transport_from_str, session_transport_to_str, transports_from_str, transports_to_str,
 };

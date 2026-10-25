@@ -35,7 +35,8 @@ fn to_binary(bytes: Vec<u8>) -> Binary {
 pub(crate) use doorman_core::encoding::{
     authentication_purpose_from_str, authentication_purpose_to_str, hex, purpose_from_str,
     purpose_to_str as purpose_str, registration_purpose_from_str, registration_purpose_to_str,
-    user_status_from_parts, user_status_to_str,
+    session_transport_from_str, session_transport_to_str, user_status_from_parts,
+    user_status_to_str,
 };
 
 pub(crate) fn get_str(doc: &Document, key: &str) -> StorageResult<String> {
@@ -184,6 +185,7 @@ pub(crate) fn session_to_doc(session: &Session) -> Document {
         "_id": session_id_str(session.id),
         "user_id": session.user_id.0.to_string(),
         "token_hash": token_hash_bin,
+        "transport": session_transport_to_str(session.transport),
         "created_at": to_bson_dt(session.created_at),
         "last_used_at": to_bson_dt(session.last_used_at),
         "expires_at": to_bson_dt(session.expires_at),
@@ -205,6 +207,7 @@ pub(crate) fn session_from_doc(doc: &Document) -> StorageResult<Session> {
         id: SessionId(get_uuid(doc, "_id")?),
         user_id: UserId(get_uuid(doc, "user_id")?),
         token_hash: get_token_hash(doc, "token_hash")?,
+        transport: session_transport_from_str(&get_str(doc, "transport")?)?,
         created_at: get_dt(doc, "created_at")?,
         last_used_at: get_dt(doc, "last_used_at")?,
         expires_at: get_dt(doc, "expires_at")?,

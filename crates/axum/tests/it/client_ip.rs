@@ -12,6 +12,7 @@ use doorman_axum::prelude::*;
 use doorman_core::audit::{Actor, AuditEventKind};
 use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
 use doorman_core::passkey::PasskeyRateLimits;
+use doorman_core::storage::SessionTransport;
 use doorman_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -335,7 +336,7 @@ async fn signup_session_and_audit_record_the_peer_despite_spoofing() {
 
     let session = app
         .sessions
-        .resolve(&auth.token)
+        .resolve(&auth.token, SessionTransport::Bearer)
         .await
         .expect("resolve")
         .expect("a live session");

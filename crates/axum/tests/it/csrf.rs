@@ -4,7 +4,7 @@ use doorman_core::passkey::PasskeyConfig;
 use url::Url;
 use webauthn_rs::prelude::RequestChallengeResponse;
 
-use crate::common::{Call, RP_ORIGIN, TestApp, rp_origin};
+use crate::common::{Call, Client, RP_ORIGIN, TestApp, rp_origin};
 
 const EVIL_ORIGIN: &str = "https://evil.test";
 const RELATED_ORIGIN: &str = "https://related.test";
@@ -98,55 +98,43 @@ async fn another_site_cannot_log_the_browser_in() {
 
 #[tokio::test]
 async fn a_cookie_request_that_changes_state_must_come_from_the_application() {
-    #[derive(Debug, Clone, Copy)]
-    enum Credential {
-        Cookie,
-        Bearer,
-        Both,
-    }
     type Headers = &'static [(&'static str, &'static str)];
-    let cases: [(Credential, Headers, StatusCode); 7] = [
+    let cases: [(Client, Headers, StatusCode); 6] = [
         (
-            Credential::Cookie,
+            Client::Browser,
             &[("sec-fetch-site", "same-origin")],
             StatusCode::NO_CONTENT,
         ),
         (
-            Credential::Cookie,
+            Client::Browser,
             &[("origin", RP_ORIGIN)],
             StatusCode::NO_CONTENT,
         ),
         (
-            Credential::Cookie,
+            Client::Browser,
             &[("sec-fetch-site", "cross-site"), ("origin", EVIL_ORIGIN)],
             StatusCode::FORBIDDEN,
         ),
         (
-            Credential::Cookie,
+            Client::Browser,
             &[("referer", "http://localhost:8080/settings")],
             StatusCode::FORBIDDEN,
         ),
-        (Credential::Cookie, &[], StatusCode::FORBIDDEN),
+        (Client::Browser, &[], StatusCode::FORBIDDEN),
         (
-            Credential::Bearer,
-            &[("sec-fetch-site", "cross-site"), ("origin", EVIL_ORIGIN)],
-            StatusCode::NO_CONTENT,
-        ),
-        (
-            Credential::Both,
+            Client::Bearer,
             &[("sec-fetch-site", "cross-site"), ("origin", EVIL_ORIGIN)],
             StatusCode::NO_CONTENT,
         ),
     ];
 
-    for (credential, headers, expected) in cases {
+    for (client, headers, expected) in cases {
         let app = TestApp::new();
-        let session = app.session_for("alice@example.com").await;
+        let session = app.session_as(client, "alice@example.com").await;
         let mut call = app.delete(&format!("/auth/sessions/{}", session.session.id));
-        call = match credential {
-            Credential::Cookie => with_cookie(call, &session.token),
-            Credential::Bearer => call.bearer(&session.token),
-            Credential::Both => with_cookie(call, &session.token).bearer(&session.token),
+        call = match client {
+            Client::Browser => with_cookie(call, &session.token),
+            Client::Bearer => call.bearer(&session.token),
         };
         for (name, value) in headers {
             call = call.header(name, value);
@@ -154,11 +142,11 @@ async fn a_cookie_request_that_changes_state_must_come_from_the_application() {
 
         let reply = call.send().await;
 
-        let case = format!("{credential:?} {headers:?}");
+        let case = format!("{client:?} {headers:?}");
         assert_eq!(reply.status, expected, "{case}");
         if expected == StatusCode::FORBIDDEN {
             assert_eq!(reply.error_code(), "csrf_origin_mismatch", "{case}");
-            assert!(app.is_authenticated(&session.token).await, "{case}");
+            assert!(app.is_authenticated(&session).await, "{case}");
         }
     }
 }
@@ -186,7 +174,7 @@ async fn the_relying_party_origins_and_the_hosts_trusted_origins_are_the_applica
             },
             |b| b.trusted_origin(host_trusted),
         );
-        let session = app.session_for("alice@example.com").await;
+        let session = app.session_as(Client::Browser, "alice@example.com").await;
 
         let reply = with_cookie(app.post("/auth/logout"), &session.token)
             .header("sec-fetch-site", "cross-site")
@@ -201,7 +189,7 @@ async fn the_relying_party_origins_and_the_hosts_trusted_origins_are_the_applica
 #[tokio::test]
 async fn a_cookie_read_is_not_checked() {
     let app = TestApp::new();
-    let session = app.session_for("alice@example.com").await;
+    let session = app.session_as(Client::Browser, "alice@example.com").await;
 
     let reply = from_another_site(with_cookie(app.get("/me"), &session.token))
         .send()

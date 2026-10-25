@@ -51,7 +51,7 @@ async fn a_session_id_that_is_malformed_or_another_users_is_not_found() {
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{id}");
         assert_eq!(reply.error_code(), "session_not_found", "{id}");
     }
-    assert!(app.is_authenticated(&bob.token).await);
+    assert!(app.is_authenticated(&bob).await);
 }
 
 #[tokio::test]
@@ -102,7 +102,7 @@ async fn destructive_routes_refuse_a_session_in_recovery_cool_down() {
             "{method} {path}"
         );
     }
-    assert!(app.is_authenticated(&signed_up.token).await);
+    assert!(app.is_authenticated(&signed_up).await);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -143,7 +143,7 @@ async fn gated_routes_require_and_accept_a_reauthentication() {
             Gated::DeleteUser => (Method::DELETE, "/auth/user".to_owned()),
             Gated::RemovePasskey => {
                 let mut backup = ResidentAuthenticator::new(&rp_origin());
-                let extra = app.register_passkey(&mut backup, &auth.token).await;
+                let extra = app.register_passkey(&mut backup, &auth).await;
                 (
                     Method::DELETE,
                     format!("/auth/passkey/{}", extra.credential_id),
@@ -174,7 +174,7 @@ async fn gated_routes_require_and_accept_a_reauthentication() {
         assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{gated:?}");
         assert_eq!(refused.error_code(), "reauth_required", "{gated:?}");
 
-        let proof = app.reauth(&mut authenticator, &auth.token).await;
+        let proof = app.reauth(&mut authenticator, &auth).await;
         let accepted = app
             .call(method, &path)
             .bearer(&auth.token)

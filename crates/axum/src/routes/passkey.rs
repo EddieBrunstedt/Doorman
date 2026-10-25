@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::routing::{delete, get, post};
 use base64::Engine;
@@ -10,11 +11,11 @@ use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use crate::dto::{
     DestructiveActionRequest, PasskeyAuthenticateFinishRequest, PasskeyChallenge, PasskeyDto,
-    PasskeyRenameRequest, RegistrationFinishRequest,
+    PasskeyRegisterFinishRequest, PasskeyRenameRequest,
 };
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, RequestContext};
-use crate::routes::{auth_success, no_content, parse_challenge_id, perform};
+use crate::routes::{auth_success, no_content, parse_challenge_id, perform, session_transport};
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
@@ -46,7 +47,7 @@ async fn register_finish(
     State(state): State<AuthState>,
     auth: AuthSession,
     RequestContext(context): RequestContext,
-    Json(body): Json<RegistrationFinishRequest>,
+    Json(body): Json<PasskeyRegisterFinishRequest>,
 ) -> Result<Json<PasskeyDto>, ErrorResponse> {
     let challenge_id = parse_challenge_id(&body.challenge_id)?;
     let passkey = state
@@ -77,13 +78,15 @@ async fn authenticate_start(
 async fn authenticate_finish(
     State(state): State<AuthState>,
     RequestContext(context): RequestContext,
+    headers: HeaderMap,
     Json(body): Json<PasskeyAuthenticateFinishRequest>,
 ) -> Result<Response, ErrorResponse> {
+    let transport = session_transport(&headers, body.transport)?;
     let challenge_id = parse_challenge_id(&body.challenge_id)?;
     let outcome = state
         .core
         .passkey
-        .finish_authentication(challenge_id, &body.response, context)
+        .finish_authentication(challenge_id, &body.response, transport, context)
         .await?;
     auth_success(
         &state,
@@ -114,7 +117,7 @@ async fn remove(
     let reauth = body.and_then(|Json(b)| b.reauthentication);
     let action = DestructiveAction::RemovePasskey { credential_id };
     let current = perform(&state, &auth, action, reauth, context).await?;
-    no_content(&state, current)
+    no_content(&state, &auth, current)
 }
 
 async fn rename(

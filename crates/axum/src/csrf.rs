@@ -1,9 +1,8 @@
-use axum::http::{HeaderMap, HeaderName, Method, header};
+use axum::http::{HeaderMap, Method, header};
+use doorman_core::storage::SessionTransport;
 use url::Url;
 
-use crate::cookies::{bearer_token, read_cookie};
-
-const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
+use crate::browser::{SEC_FETCH_SITE, sent_by_browser};
 
 #[derive(Debug, Clone)]
 pub(crate) struct TrustedOrigins(Vec<Url>);
@@ -29,31 +28,31 @@ pub(crate) enum Refusal {
 pub(crate) fn check(
     method: &Method,
     headers: &HeaderMap,
-    session_cookie_name: &str,
+    credential: Option<SessionTransport>,
     trusted: &TrustedOrigins,
 ) -> Result<(), Refusal> {
-    // A browser can attach a bearer token only by holding it, so it is no ambient credential.
-    if is_safe_method(method) || bearer_token(headers).is_some() {
+    // A bearer session's token never reaches a browser page, so a page can attach it only by
+    // being handed it; it is no ambient credential.
+    if is_safe_method(method) || credential == Some(SessionTransport::Bearer) {
         return Ok(());
     }
 
-    if let Some(site) = headers.get(SEC_FETCH_SITE) {
-        if matches!(site.as_bytes(), b"same-origin" | b"none") {
-            return Ok(());
-        }
-        return origin_is_trusted(headers, trusted);
+    if !sent_by_browser(headers) {
+        // A session cookie belongs to a browser, so a request carrying it without naming its
+        // origin can't be shown to come from the application.
+        return match credential {
+            Some(SessionTransport::Cookie) => Err(Refusal::UnknownOrigin),
+            _ => Ok(()),
+        };
     }
 
-    if headers.contains_key(header::ORIGIN) {
-        return origin_is_trusted(headers, trusted);
+    let fetched_from_application = headers
+        .get(SEC_FETCH_SITE)
+        .is_some_and(|site| matches!(site.as_bytes(), b"same-origin" | b"none"));
+    if fetched_from_application {
+        return Ok(());
     }
-
-    // Every browser names the request's origin in one of the headers above, so a request with
-    // neither came from something other than a browser page, unless it carries the cookie.
-    if has_session_cookie(headers, session_cookie_name) {
-        return Err(Refusal::UnknownOrigin);
-    }
-    Ok(())
+    origin_is_trusted(headers, trusted)
 }
 
 fn is_safe_method(method: &Method) -> bool {
@@ -69,10 +68,6 @@ fn origin_is_trusted(headers: &HeaderMap, trusted: &TrustedOrigins) -> Result<()
         Some(origin) if trusted.contains(&origin) => Ok(()),
         _ => Err(Refusal::UntrustedOrigin),
     }
-}
-
-fn has_session_cookie(headers: &HeaderMap, session_cookie_name: &str) -> bool {
-    read_cookie(headers, session_cookie_name).is_some_and(|value| !value.trim().is_empty())
 }
 
 fn same_origin(candidate: &Url, expected: &Url) -> bool {
@@ -102,7 +97,16 @@ mod tests {
         Absent,
         Cookie,
         Bearer,
-        Both,
+    }
+
+    impl Credential {
+        fn transport(self) -> Option<SessionTransport> {
+            match self {
+                Credential::Absent => None,
+                Credential::Cookie => Some(SessionTransport::Cookie),
+                Credential::Bearer => Some(SessionTransport::Bearer),
+            }
+        }
     }
 
     #[derive(Debug)]
@@ -133,18 +137,6 @@ mod tests {
 
     fn headers(case: &Case) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        if matches!(case.credential, Credential::Cookie | Credential::Both) {
-            headers.insert(
-                header::COOKIE,
-                HeaderValue::from_static("doorman_session=tok"),
-            );
-        }
-        if matches!(case.credential, Credential::Bearer | Credential::Both) {
-            headers.insert(
-                header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer bearer-token"),
-            );
-        }
         let named = [
             (SEC_FETCH_SITE, case.sec_fetch_site),
             (header::ORIGIN, case.origin),
@@ -182,7 +174,7 @@ mod tests {
             case(Absent, None, Some(EVIL), untrusted),
             case(Absent, None, None, Ok(())),
             case(Bearer, Some("cross-site"), Some(EVIL), Ok(())),
-            case(Both, Some("cross-site"), Some(EVIL), Ok(())),
+            case(Bearer, None, None, Ok(())),
             Case {
                 referer: Some("https://app.test/settings"),
                 ..case(Cookie, None, None, unknown)
@@ -198,7 +190,12 @@ mod tests {
         ];
 
         for case in cases {
-            let result = check(&case.method, &headers(&case), "doorman_session", &trusted());
+            let result = check(
+                &case.method,
+                &headers(&case),
+                case.credential.transport(),
+                &trusted(),
+            );
             assert_eq!(result, case.expected, "{case:?}");
         }
     }

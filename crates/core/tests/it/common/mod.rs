@@ -30,8 +30,8 @@ use doorman_core::session::{
 };
 use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
 use doorman_core::storage::{
-    ExpiringStores, PasskeyStore, RecordStores, Session, SessionId, SessionStore, Storage,
-    StoredPasskey, TokenHash, User, UserId, UserStatus, UserStore,
+    ExpiringStores, PasskeyStore, RecordStores, Session, SessionId, SessionStore, SessionTransport,
+    Storage, StoredPasskey, TokenHash, User, UserId, UserStatus, UserStore,
 };
 use doorman_core::user::{UserConfig, UserManager};
 pub use doorman_test_support::token_from_email;
@@ -276,12 +276,16 @@ impl Harness {
     }
 
     pub fn another_process(&self) -> AuthCore {
+        self.another_process_with(self.session_config.clone())
+    }
+
+    pub fn another_process_with(&self, session_config: SessionConfig) -> AuthCore {
         AuthCore::builder(self.storage.clone())
             .clock(self.clock.clone() as Arc<dyn Clock>)
             .audit(self.audit.clone() as Arc<dyn AuditSink>)
             .email(self.email.clone() as Arc<dyn EmailSender>)
             .limiter(Arc::new(NoopRateLimiter))
-            .session(self.session_config.clone())
+            .session(session_config)
             .passkey(PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME))
             .signup(signup_config())
             .recovery(recovery_config())
@@ -550,6 +554,7 @@ async fn stored_session(
             id,
             user_id,
             token_hash: hash_token(&token),
+            transport: SessionTransport::Cookie,
             created_at: now,
             last_used_at: now,
             // Outlives any recovery cool-down a test sets, as a real session outlives the default one.
@@ -561,7 +566,7 @@ async fn stored_session(
         .await
         .expect("store session");
     h.session_manager
-        .resolve(&token)
+        .resolve(&token, SessionTransport::Cookie)
         .await
         .expect("resolve")
         .expect("resolve stored session")
@@ -631,6 +636,7 @@ pub async fn provision_user(h: &Harness, email: &str) -> User {
             started.challenge_id,
             &attestation,
             Some("initial device".into()),
+            SessionTransport::Cookie,
             SessionContext::default(),
         )
         .await
@@ -687,7 +693,7 @@ pub async fn log_in(
         .expect("start login");
     let assertion = wa.do_authentication(options, credential_id);
     h.passkey
-        .finish_authentication(challenge_id, &assertion, context)
+        .finish_authentication(challenge_id, &assertion, SessionTransport::Cookie, context)
         .await
         .expect("finish login")
         .session

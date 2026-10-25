@@ -12,6 +12,7 @@ CREATE TABLE sessions (
     id BYTEA PRIMARY KEY,
     user_id BYTEA NOT NULL,
     token_hash BYTEA NOT NULL UNIQUE,
+    transport TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     last_used_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,

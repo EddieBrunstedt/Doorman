@@ -1,8 +1,10 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
-use doorman_core::session::IssuedSession;
-use doorman_core::storage::{PasskeySummary, SessionId, SessionSummary, User, UserId};
+use doorman_core::session::{IssuedSession, ResolvedSession};
+use doorman_core::storage::{
+    PasskeySummary, SessionId, SessionSummary, SessionTransport, User, UserId,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +29,7 @@ impl UserDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionDto {
     pub id: SessionId,
+    pub transport: SessionTransport,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub ip: Option<String>,
@@ -39,6 +42,7 @@ impl SessionDto {
     pub fn new(value: &SessionSummary, is_current: bool) -> Self {
         Self {
             id: value.id,
+            transport: value.transport,
             created_at: value.created_at,
             expires_at: value.expires_at,
             ip: value.ip.clone(),
@@ -86,16 +90,33 @@ fn device_label(ua: &str) -> Option<String> {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+// A cookie session's token goes only in its cookie, so this response has no field that could
+// carry it to a page script.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthResponse {
+    pub user: UserDto,
+    pub session: SessionDto,
+}
+
+impl AuthResponse {
+    pub fn new(user: &User, passkey_count: u64, session: &ResolvedSession) -> Self {
+        Self {
+            user: UserDto::from_user(user, passkey_count),
+            session: SessionDto::new(session, true),
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct BearerAuthResponse {
     pub user: UserDto,
     pub session: SessionDto,
     pub token: String,
 }
 
-impl std::fmt::Debug for AuthResponse {
+impl std::fmt::Debug for BearerAuthResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AuthResponse")
+        f.debug_struct("BearerAuthResponse")
             .field("user", &self.user)
             .field("session", &self.session)
             .field("token", &"<redacted>")
@@ -103,7 +124,7 @@ impl std::fmt::Debug for AuthResponse {
     }
 }
 
-impl AuthResponse {
+impl BearerAuthResponse {
     pub fn from_issued(user: &User, passkey_count: u64, issued: IssuedSession) -> Self {
         Self {
             user: UserDto::from_user(user, passkey_count),
@@ -158,6 +179,16 @@ pub struct RegistrationFinishRequest {
     pub response: webauthn_rs::prelude::RegisterPublicKeyCredential,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub transport: Option<SessionTransport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasskeyRegisterFinishRequest {
+    pub challenge_id: String,
+    pub response: webauthn_rs::prelude::RegisterPublicKeyCredential,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,10 +237,12 @@ pub struct PasskeyChallenge<T> {
     pub options: T,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PasskeyAuthenticateFinishRequest {
     pub challenge_id: String,
     pub response: webauthn_rs::prelude::PublicKeyCredential,
+    #[serde(default)]
+    pub transport: Option<SessionTransport>,
 }
 
 #[cfg(test)]
@@ -224,6 +257,7 @@ mod tests {
         SessionSummary {
             id: SessionId::new(),
             user_id: UserId::new(),
+            transport: SessionTransport::Bearer,
             created_at: now,
             last_used_at: now,
             expires_at: now,
@@ -233,19 +267,36 @@ mod tests {
         }
     }
 
+    fn user_dto() -> UserDto {
+        UserDto {
+            id: UserId::new(),
+            email: Some("user@example.com".to_string()),
+            created_at: Utc
+                .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            passkey_count: 1,
+        }
+    }
+
     #[test]
-    fn auth_response_debug_redacts_token() {
-        let now = Utc
-            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
-            .single()
-            .expect("valid timestamp");
+    fn a_cookie_session_response_has_no_token() {
         let response = AuthResponse {
-            user: UserDto {
-                id: UserId::new(),
-                email: Some("user@example.com".to_string()),
-                created_at: now,
-                passkey_count: 1,
-            },
+            user: user_dto(),
+            session: SessionDto::new(&session_with_ua(None), true),
+        };
+
+        let json = serde_json::to_value(&response).expect("serialize");
+        assert_eq!(
+            json.as_object().map(|body| body.keys().collect::<Vec<_>>()),
+            Some(vec![&"session".to_owned(), &"user".to_owned()]),
+        );
+    }
+
+    #[test]
+    fn bearer_auth_response_debug_redacts_token() {
+        let response = BearerAuthResponse {
+            user: user_dto(),
             session: SessionDto::new(&session_with_ua(None), true),
             token: "super-secret-bearer-token".to_string(),
         };
@@ -256,8 +307,6 @@ mod tests {
             "Debug output leaked the cleartext token: {rendered}"
         );
         assert!(rendered.contains("<redacted>"), "expected redaction marker");
-        let json = serde_json::to_string(&response).expect("serialize");
-        assert!(json.contains("super-secret-bearer-token"));
     }
 
     #[test]

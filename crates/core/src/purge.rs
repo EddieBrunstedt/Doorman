@@ -53,8 +53,8 @@ mod tests {
     use crate::memory::InMemoryStorage;
     use crate::storage::{
         AuthenticationPurpose, EmailLink, EmailLinkPurpose, PasskeyChallengeId,
-        RegistrationPurpose, Session, SessionId, SessionStore, StoredPasskeyAuthentication,
-        StoredPasskeyRegistration, TokenHash, UserId,
+        RegistrationPurpose, Session, SessionId, SessionStore, SessionTransport,
+        StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, UserId,
     };
 
     struct UnavailableSessionStore;
@@ -122,6 +122,7 @@ mod tests {
             id: SessionId::new(),
             user_id,
             token_hash: TokenHash([tag; 32]),
+            transport: SessionTransport::Cookie,
             created_at: now - chrono::Duration::hours(2),
             last_used_at: now - chrono::Duration::hours(2),
             expires_at,
