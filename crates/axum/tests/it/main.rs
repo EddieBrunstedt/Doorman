@@ -3,7 +3,6 @@ mod client_ip;
 mod common;
 mod cookies;
 mod csrf;
-mod extractors;
 mod full_round_trip;
 mod refusals;
 mod routes;

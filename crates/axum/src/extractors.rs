@@ -12,19 +12,9 @@ use doorman_core::storage::User;
 use crate::error::ErrorResponse;
 use crate::session::{AuthContext, SessionLayerApplied, SessionUnresolved};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AuthSession {
     pub session: ResolvedSession,
-    pub token: String,
-}
-
-impl std::fmt::Debug for AuthSession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AuthSession")
-            .field("session", &self.session)
-            .field("token", &"<redacted>")
-            .finish()
-    }
 }
 
 impl<S: Send + Sync> FromRequestParts<S> for AuthSession {
@@ -34,7 +24,6 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthSession {
         match auth_context(&parts.extensions)? {
             Some(ctx) => Ok(AuthSession {
                 session: ctx.session.clone(),
-                token: ctx.token.clone(),
             }),
             None => Err(ErrorResponse(Error::SessionNotFound)),
         }

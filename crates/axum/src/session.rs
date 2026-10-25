@@ -18,7 +18,6 @@ use crate::error::csrf_rejection_response;
 #[derive(Clone)]
 pub struct AuthContext {
     pub session: ResolvedSession,
-    pub token: String,
     pub(crate) sessions: SessionManager,
 }
 
@@ -113,7 +112,6 @@ where
                             span.record("user_id", tracing::field::display(resolved.user_id));
                             req.extensions_mut().insert(AuthContext {
                                 session: resolved,
-                                token,
                                 sessions: state.sessions.clone(),
                             });
                         }
