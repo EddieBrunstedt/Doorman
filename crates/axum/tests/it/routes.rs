@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use doorman_axum::dto::{PasskeyDto, SessionDto, SignupRequest, UserDto};
 use doorman_core::error::Result;
 use doorman_core::session::SessionContext;
-use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy, SignupRateLimits};
+use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy};
 use serde_json::{Value, json};
 
 use crate::common::{Client, ResidentAuthenticator, SIGNUP_URL, TestApp, USER_URL, rp_origin};
@@ -48,7 +48,6 @@ async fn signup_request_hands_the_invite_token_to_the_policy() {
             move |b| {
                 b.signup(SignupConfig {
                     url_template: SIGNUP_URL.to_string(),
-                    rate_limits: SignupRateLimits::disabled(),
                     policy,
                     ..SignupConfig::default()
                 })

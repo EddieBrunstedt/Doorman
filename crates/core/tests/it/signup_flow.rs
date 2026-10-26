@@ -9,9 +9,9 @@ use doorman_core::clock::Clock;
 use doorman_core::email::{EmailContent, EmailTemplates};
 use doorman_core::error::{Error, Result, StorageError};
 use doorman_core::memory::InMemoryRateLimiter;
-use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
+use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter, RateLimits};
 use doorman_core::session::SessionContext;
-use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy, SignupRateLimits};
+use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy};
 use doorman_core::storage::{PasskeyStore, SessionTransport, User, UserStore};
 use doorman_test_support::{MockClock, request_context};
 
@@ -371,82 +371,6 @@ async fn request_rejects_invalid_email() {
 }
 
 #[tokio::test]
-async fn rate_limit_per_ip_blocks_after_budget() {
-    let clock_for_limiter = Arc::new(MockClock::new(ts(2026, 1, 1)));
-    let limiter = Arc::new(InMemoryRateLimiter::new(
-        clock_for_limiter as Arc<dyn Clock>,
-    )) as Arc<dyn RateLimiter>;
-    let policy = RateLimitPolicy::new(2, Duration::from_secs(60 * 60));
-    let h = Harness::builder()
-        .signup_limiter(limiter)
-        .signup_config(SignupConfig {
-            rate_limits: SignupRateLimits {
-                request_per_ip: Some(policy),
-                ..SignupRateLimits::disabled()
-            },
-            ..signup_config()
-        })
-        .build();
-
-    let ctx = SessionContext::new("9.9.9.9".parse().expect("ip"), None);
-    h.signup
-        .request_signup("a@example.com", None, ctx.clone())
-        .await
-        .expect("1");
-    h.signup
-        .request_signup("b@example.com", None, ctx.clone())
-        .await
-        .expect("2");
-    let err = h
-        .signup
-        .request_signup("c@example.com", None, ctx)
-        .await
-        .expect_err("limited");
-    assert!(matches!(err, Error::RateLimited { .. }));
-}
-
-#[tokio::test]
-async fn rate_limit_per_identifier_blocks_across_ips() {
-    let clock_for_limiter = Arc::new(MockClock::new(ts(2026, 1, 1)));
-    let limiter = Arc::new(InMemoryRateLimiter::new(
-        clock_for_limiter as Arc<dyn Clock>,
-    )) as Arc<dyn RateLimiter>;
-    let policy = RateLimitPolicy::new(2, Duration::from_secs(60 * 60));
-    let h = Harness::builder()
-        .signup_limiter(limiter)
-        .signup_config(SignupConfig {
-            rate_limits: SignupRateLimits {
-                request_per_identifier: Some(policy),
-                ..SignupRateLimits::disabled()
-            },
-            ..signup_config()
-        })
-        .build();
-
-    for ip in ["1.1.1.1", "2.2.2.2"] {
-        h.signup
-            .request_signup(
-                "target@example.com",
-                None,
-                SessionContext::new(ip.parse().expect("ip"), None),
-            )
-            .await
-            .expect("within identifier budget");
-    }
-
-    let err = h
-        .signup
-        .request_signup(
-            "target@example.com",
-            None,
-            SessionContext::new("3.3.3.3".parse().expect("ip"), None),
-        )
-        .await
-        .expect_err("identifier limited");
-    assert!(matches!(err, Error::RateLimited { .. }));
-}
-
-#[tokio::test]
 async fn request_response_shape_is_identical_known_unknown_and_on_send_failure() {
     let h = Harness::fresh();
 
@@ -710,12 +634,12 @@ async fn denied_attempt_still_spends_rate_limit_budget() {
     )) as Arc<dyn RateLimiter>;
     let policy = StubPolicy::new(StubOutcome::Deny(None));
     let h = Harness::builder()
-        .signup_limiter(limiter)
+        .limiter(limiter)
+        .rate_limits(RateLimits {
+            signup_request_per_ip: Some(RateLimitPolicy::new(1, Duration::from_secs(60 * 60))),
+            ..RateLimits::disabled()
+        })
         .signup_config(SignupConfig {
-            rate_limits: SignupRateLimits {
-                request_per_ip: Some(RateLimitPolicy::new(1, Duration::from_secs(60 * 60))),
-                ..SignupRateLimits::disabled()
-            },
             policy: policy.clone(),
             ..signup_config()
         })

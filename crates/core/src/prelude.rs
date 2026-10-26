@@ -20,16 +20,16 @@ pub use crate::passkey::{
 };
 pub use crate::purge::PurgeSummary;
 pub use crate::rate_limit::{
-    NoopRateLimiter, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter,
+    RateLimit, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter, RateLimits,
 };
 pub use crate::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
-pub use crate::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
+pub use crate::recovery::{RecoveryConfig, RecoveryManager};
 pub use crate::security_notice::{NoticePolicy, OperatorNotice};
 pub use crate::session::{
     IssuedSession, ResolvedSession, SessionConfig, SessionContext, SessionManager,
 };
 pub use crate::signup::{
-    OpenSignupPolicy, SignupConfig, SignupDecision, SignupManager, SignupPolicy, SignupRateLimits,
+    OpenSignupPolicy, SignupConfig, SignupDecision, SignupManager, SignupPolicy,
 };
 pub use crate::storage::{
     AuthenticationPurpose, EmailLink, EmailLinkPurpose, EmailLinkStore, ExpiringStores,

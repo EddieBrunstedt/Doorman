@@ -7,7 +7,7 @@ use doorman_core::audit::NoopAuditSink;
 use doorman_core::email::EmailSender;
 use doorman_core::memory::InMemoryStorage;
 use doorman_core::passkey::PasskeyConfig;
-use doorman_core::rate_limit::NoopRateLimiter;
+use doorman_core::rate_limit::RateLimits;
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::RecoveryConfig;
 use doorman_core::security_notice::{NoticePolicy, OperatorNotice};
@@ -24,7 +24,7 @@ fn core_builder(email: Arc<dyn EmailSender>) -> AuthCoreBuilder {
             "doorman tests",
         ))
         .audit(Arc::new(NoopAuditSink))
-        .limiter(Arc::new(NoopRateLimiter))
+        .rate_limits(RateLimits::disabled())
         .signup(SignupConfig {
             url_template: "https://app.test/signup?token={token}".to_string(),
             ..SignupConfig::default()

@@ -2,8 +2,6 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
@@ -21,7 +19,7 @@ use crate::metrics::{MetricEvent, MetricSink};
 use crate::passkey_registration::{
     PasskeyRegistrations, RegisteredPasskey, RegistrationFinish, RegistrationSource,
 };
-use crate::rate_limit::{self, RateLimitKey, RateLimitPolicy, RateLimiter};
+use crate::rate_limit::{Attempt, RateLimitEnforcer};
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::{IssuedSession, SessionContext};
 use crate::session_records::LiveSession;
@@ -60,40 +58,6 @@ impl PasskeyName {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct PasskeyRateLimits {
-    pub authenticate_start_per_ip: Option<RateLimitPolicy>,
-    pub authenticate_finish_per_ip: Option<RateLimitPolicy>,
-    pub authenticate_finish_per_passkey: Option<RateLimitPolicy>,
-}
-
-impl PasskeyRateLimits {
-    pub const DEFAULT_START_PER_IP: RateLimitPolicy =
-        RateLimitPolicy::new(60, Duration::from_secs(60));
-    pub const DEFAULT_FINISH_PER_IP: RateLimitPolicy =
-        RateLimitPolicy::new(60, Duration::from_secs(60));
-    pub const DEFAULT_FINISH_PER_PASSKEY: RateLimitPolicy =
-        RateLimitPolicy::new(30, Duration::from_secs(60));
-
-    pub const fn disabled() -> Self {
-        Self {
-            authenticate_start_per_ip: None,
-            authenticate_finish_per_ip: None,
-            authenticate_finish_per_passkey: None,
-        }
-    }
-}
-
-impl Default for PasskeyRateLimits {
-    fn default() -> Self {
-        Self {
-            authenticate_start_per_ip: Some(Self::DEFAULT_START_PER_IP),
-            authenticate_finish_per_ip: Some(Self::DEFAULT_FINISH_PER_IP),
-            authenticate_finish_per_passkey: Some(Self::DEFAULT_FINISH_PER_PASSKEY),
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct PasskeyConfig {
     pub rp_id: String,
@@ -101,7 +65,6 @@ pub struct PasskeyConfig {
     pub rp_name: String,
     pub additional_origins: Vec<Url>,
     pub challenge_lifetime: Duration,
-    pub rate_limits: PasskeyRateLimits,
     pub max_passkeys_per_user: Option<NonZeroU32>,
     pub max_pending_registrations_per_user: Option<NonZeroU32>,
 }
@@ -116,7 +79,6 @@ impl PasskeyConfig {
             rp_name: rp_name.into(),
             additional_origins: Vec::new(),
             challenge_lifetime: Self::DEFAULT_CHALLENGE_LIFETIME,
-            rate_limits: PasskeyRateLimits::default(),
             max_passkeys_per_user: None,
             max_pending_registrations_per_user: None,
         }
@@ -160,7 +122,7 @@ pub struct PasskeyManager {
     records: UserRecords,
     audit: AuditDispatch,
     notices: SecurityNotices,
-    rate_limiter: Arc<dyn RateLimiter>,
+    rate_limits: RateLimitEnforcer,
     metrics: Arc<dyn MetricSink>,
     config: PasskeyConfig,
 }
@@ -180,7 +142,7 @@ impl PasskeyManager {
             records: UserRecords::new(deps),
             audit: deps.audit.clone(),
             notices: deps.notices.clone(),
-            rate_limiter: deps.rate_limiter.clone(),
+            rate_limits: deps.rate_limits.clone(),
             metrics: deps.metrics.clone(),
             config,
         }
@@ -240,14 +202,9 @@ impl PasskeyManager {
         &self,
         context: SessionContext,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
-        rate_limit::enforce(
-            self.rate_limiter.as_ref(),
-            &[(
-                self.config.rate_limits.authenticate_start_per_ip,
-                RateLimitKey::per_client_ip("passkey/authenticate/start", context.ip()),
-            )],
-        )
-        .await?;
+        self.rate_limits
+            .enforce(&context, Attempt::LoginStart)
+            .await?;
 
         let (id, rcr) = self.challenges.issue_login().await?;
         tracing::info!(outcome = "started", "passkey authentication started");
@@ -268,22 +225,14 @@ impl PasskeyManager {
         let _latency = AuthLatencyGuard::start(self.metrics.clone());
         self.records.check_session_allowed(transport)?;
 
-        let limits = &self.config.rate_limits;
-        rate_limit::enforce(
-            self.rate_limiter.as_ref(),
-            &[
-                (
-                    limits.authenticate_finish_per_ip,
-                    RateLimitKey::per_client_ip("passkey/authenticate/finish", context.ip()),
-                ),
-                (
-                    limits.authenticate_finish_per_passkey,
-                    RateLimitKey::new("passkey/authenticate/finish")
-                        .with("passkey", URL_SAFE_NO_PAD.encode(response.raw_id.as_ref())),
-                ),
-            ],
-        )
-        .await?;
+        self.rate_limits
+            .enforce(
+                &context,
+                Attempt::LoginFinish {
+                    passkey: response.raw_id.as_ref(),
+                },
+            )
+            .await?;
 
         let pending = self.challenges.redeem_login(challenge_id, &context).await?;
 

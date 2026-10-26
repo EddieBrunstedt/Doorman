@@ -13,7 +13,7 @@ use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
 use crate::error::{Error, Result};
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
-use crate::rate_limit::{self, RateLimitKey, RateLimitPolicy, RateLimiter};
+use crate::rate_limit::{Attempt, RateLimitEnforcer};
 use crate::redeem::OwnerRefusal;
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, SessionTransport, User};
@@ -55,37 +55,7 @@ impl SignupPolicy for OpenSignupPolicy {
 pub struct SignupConfig {
     pub token_lifetime: Duration,
     pub url_template: String,
-    pub rate_limits: SignupRateLimits,
     pub policy: Arc<dyn SignupPolicy>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct SignupRateLimits {
-    pub request_per_ip: Option<RateLimitPolicy>,
-    pub request_per_identifier: Option<RateLimitPolicy>,
-}
-
-impl SignupRateLimits {
-    pub const DEFAULT_PER_IP: RateLimitPolicy =
-        RateLimitPolicy::new(5, Duration::from_secs(60 * 60));
-    pub const DEFAULT_PER_IDENTIFIER: RateLimitPolicy =
-        RateLimitPolicy::new(3, Duration::from_secs(60 * 60));
-
-    pub const fn disabled() -> Self {
-        Self {
-            request_per_ip: None,
-            request_per_identifier: None,
-        }
-    }
-}
-
-impl Default for SignupRateLimits {
-    fn default() -> Self {
-        Self {
-            request_per_ip: Some(Self::DEFAULT_PER_IP),
-            request_per_identifier: Some(Self::DEFAULT_PER_IDENTIFIER),
-        }
-    }
 }
 
 impl SignupConfig {
@@ -97,7 +67,6 @@ impl Default for SignupConfig {
         Self {
             token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
             url_template: format!("https://example.invalid/signup?token={TOKEN_PLACEHOLDER}"),
-            rate_limits: SignupRateLimits::default(),
             policy: Arc::new(OpenSignupPolicy),
         }
     }
@@ -108,7 +77,7 @@ pub struct SignupManager {
     records: UserRecords,
     registration: EmailLinkRegistration,
     mailer: Mailer,
-    rate_limiter: Arc<dyn RateLimiter>,
+    rate_limits: RateLimitEnforcer,
     audit: AuditDispatch,
     config: SignupConfig,
 }
@@ -129,7 +98,7 @@ impl SignupManager {
                 config.token_lifetime,
             )?,
             mailer: deps.mailer.clone(),
-            rate_limiter: deps.rate_limiter.clone(),
+            rate_limits: deps.rate_limits.clone(),
             audit: deps.audit.clone(),
             config,
         })
@@ -147,22 +116,9 @@ impl SignupManager {
     ) -> Result<()> {
         let address = EmailAddress::parse(email)?;
 
-        const OPERATION: &str = "signup/request";
-        let limits = &self.config.rate_limits;
-        rate_limit::enforce(
-            self.rate_limiter.as_ref(),
-            &[
-                (
-                    limits.request_per_ip,
-                    RateLimitKey::per_client_ip(OPERATION, context.ip()),
-                ),
-                (
-                    limits.request_per_identifier,
-                    RateLimitKey::new(OPERATION).with("email", address.as_str()),
-                ),
-            ],
-        )
-        .await?;
+        self.rate_limits
+            .enforce(&context, Attempt::SignupRequest { email: &address })
+            .await?;
 
         match self
             .config

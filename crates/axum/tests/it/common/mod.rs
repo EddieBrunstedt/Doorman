@@ -23,10 +23,11 @@ use doorman_core::clock::SystemClock;
 use doorman_core::email::EmailSender;
 use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
 use doorman_core::passkey::PasskeyConfig;
+use doorman_core::rate_limit::RateLimits;
 use doorman_core::reauth::ReauthPolicy;
-use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
+use doorman_core::recovery::RecoveryConfig;
 use doorman_core::session::{SessionConfig, SessionManager};
-use doorman_core::signup::{SignupConfig, SignupRateLimits};
+use doorman_core::signup::SignupConfig;
 use doorman_core::storage::{SessionTransport, Storage, UserId, UserStatus, UserStore};
 use doorman_core::user::UserConfig;
 pub use doorman_test_support::ResidentAuthenticator;
@@ -141,14 +142,20 @@ impl TestApp {
             ))
             .audit(Arc::new(NoopAuditSink))
             .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
+            .rate_limits(RateLimits {
+                signup_request_per_ip: None,
+                signup_request_per_email: None,
+                recovery_request_per_ip: None,
+                recovery_request_per_email: None,
+                recovery_request_per_email_daily: None,
+                ..RateLimits::default()
+            })
             .signup(SignupConfig {
                 url_template: SIGNUP_URL.to_string(),
-                rate_limits: SignupRateLimits::disabled(),
                 ..SignupConfig::default()
             })
             .recovery(RecoveryConfig {
                 url_template: RECOVERY_URL.to_string(),
-                rate_limits: RecoveryRateLimits::disabled(),
                 ..RecoveryConfig::default()
             })
             .user(UserConfig {

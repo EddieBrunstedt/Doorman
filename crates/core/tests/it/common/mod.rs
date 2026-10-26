@@ -20,15 +20,15 @@ use doorman_core::memory::{
 use doorman_core::metrics::MetricSink;
 use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
-use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
+use doorman_core::rate_limit::{RateLimiter, RateLimits};
 use doorman_core::reauth::ReauthPolicy;
-use doorman_core::recovery::{RecoveryConfig, RecoveryManager, RecoveryRateLimits};
+use doorman_core::recovery::{RecoveryConfig, RecoveryManager};
 use doorman_core::security_notice::NoticePolicy;
 use doorman_core::session::hash_token;
 use doorman_core::session::{
     IssuedSession, ResolvedSession, SessionConfig, SessionContext, SessionManager,
 };
-use doorman_core::signup::{SignupConfig, SignupManager, SignupRateLimits};
+use doorman_core::signup::{SignupConfig, SignupManager};
 use doorman_core::storage::{
     ExpiringStores, PasskeyStore, RecordStores, Session, SessionId, SessionStore, SessionTransport,
     Storage, StoredPasskey, TokenHash, User, UserId, UserStatus, UserStore,
@@ -72,7 +72,6 @@ pub fn operator() -> OperatorActor {
 pub fn signup_config() -> SignupConfig {
     SignupConfig {
         url_template: SIGNUP_URL.to_string(),
-        rate_limits: SignupRateLimits::disabled(),
         ..SignupConfig::default()
     }
 }
@@ -80,7 +79,6 @@ pub fn signup_config() -> SignupConfig {
 pub fn recovery_config() -> RecoveryConfig {
     RecoveryConfig {
         url_template: RECOVERY_URL.to_string(),
-        rate_limits: RecoveryRateLimits::disabled(),
         ..RecoveryConfig::default()
     }
 }
@@ -287,7 +285,7 @@ impl Harness {
             .clock(self.clock.clone() as Arc<dyn Clock>)
             .audit(self.audit.clone() as Arc<dyn AuditSink>)
             .email(self.email.clone() as Arc<dyn EmailSender>)
-            .limiter(Arc::new(NoopRateLimiter))
+            .rate_limits(RateLimits::disabled())
             .session(session_config)
             .passkey(PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME))
             .signup(signup_config())
@@ -307,8 +305,8 @@ pub struct HarnessBuilder {
     recovery: RecoveryConfig,
     session_config: SessionConfig,
     passkey: PasskeyConfig,
-    signup_limiter: Arc<dyn RateLimiter>,
-    recovery_limiter: Arc<dyn RateLimiter>,
+    limiter: Option<Arc<dyn RateLimiter>>,
+    rate_limits: RateLimits,
     emails: Arc<dyn EmailTemplates>,
     notice_policy: NoticePolicy,
     reauth_policy: ReauthPolicy,
@@ -324,8 +322,8 @@ impl HarnessBuilder {
                 ..SessionConfig::default()
             },
             passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
-            signup_limiter: Arc::new(NoopRateLimiter),
-            recovery_limiter: Arc::new(NoopRateLimiter),
+            limiter: None,
+            rate_limits: RateLimits::disabled(),
             emails: Arc::new(DefaultEmailTemplates),
             notice_policy: NoticePolicy::default(),
             reauth_policy: ReauthPolicy::disabled(),
@@ -357,13 +355,13 @@ impl HarnessBuilder {
         self
     }
 
-    pub fn signup_limiter(mut self, limiter: Arc<dyn RateLimiter>) -> Self {
-        self.signup_limiter = limiter;
+    pub fn limiter(mut self, limiter: Arc<dyn RateLimiter>) -> Self {
+        self.limiter = Some(limiter);
         self
     }
 
-    pub fn recovery_limiter(mut self, limiter: Arc<dyn RateLimiter>) -> Self {
-        self.recovery_limiter = limiter;
+    pub fn rate_limits(mut self, limits: RateLimits) -> Self {
+        self.rate_limits = limits;
         self
     }
 
@@ -417,13 +415,16 @@ impl HarnessBuilder {
             },
         };
 
-        let core = AuthCore::builder(storage.clone())
+        let mut core = AuthCore::builder(storage.clone());
+        if let Some(limiter) = self.limiter {
+            core = core.limiter(limiter);
+        }
+        let core = core
             .clock(clock.clone() as Arc<dyn Clock>)
             .audit(audit.clone() as Arc<dyn AuditSink>)
             .email(email.clone() as Arc<dyn EmailSender>)
             .emails(self.emails)
-            .limiter(self.signup_limiter)
-            .recovery_limiter(self.recovery_limiter)
+            .rate_limits(self.rate_limits)
             .metrics(metrics.clone() as Arc<dyn MetricSink>)
             .session(self.session_config.clone())
             .passkey(self.passkey)

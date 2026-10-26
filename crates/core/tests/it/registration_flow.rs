@@ -3,9 +3,7 @@ use std::num::NonZeroU32;
 use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::error::Error;
-use doorman_core::passkey::{
-    PasskeyConfig, PasskeyRateLimits, RegistrationOutcome, StartedRegistration,
-};
+use doorman_core::passkey::{PasskeyConfig, RegistrationOutcome, StartedRegistration};
 use doorman_core::session::ResolvedSession;
 use doorman_core::storage::{PasskeyChallengeId, SessionTransport, User, UserStatus, UserStore};
 use doorman_test_support::request_context;
@@ -167,7 +165,6 @@ async fn redeeming_an_email_link_replaces_unfinished_registrations_rather_than_h
     for link in LINKS {
         let h = Harness::builder()
             .passkey_config(PasskeyConfig {
-                rate_limits: PasskeyRateLimits::disabled(),
                 max_pending_registrations_per_user: NonZeroU32::new(1),
                 ..PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
             })

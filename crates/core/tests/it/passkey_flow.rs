@@ -1,34 +1,27 @@
 use std::num::NonZeroU32;
-use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::Duration as ChronoDuration;
 use doorman_core::audit::{AuditEventKind, AuthFailureReason, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::error::Error;
-use doorman_core::memory::InMemoryRateLimiter;
-use doorman_core::passkey::{MAX_PASSKEY_NAME_LEN, PasskeyConfig, PasskeyRateLimits};
-use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
+use doorman_core::passkey::{MAX_PASSKEY_NAME_LEN, PasskeyConfig};
 use doorman_core::session::SessionContext;
 use doorman_core::storage::{
     PasskeyChallengeStore, PasskeyStore, PasskeyUse, SessionTransport, UserStatus, UserStore,
 };
-use doorman_test_support::{MockClock, request_context};
+use doorman_test_support::request_context;
 use webauthn_rs_proto::AuthenticatorTransport;
 
 use crate::common::{
     Harness, RP_ID, RP_NAME, assert_discoverable_request_options,
     assert_resident_registration_options, authenticator, kinds, last_email_change_token, make_user,
     passkey_count, register_passkey, rp_origin, session_count, session_for,
-    session_in_cool_down_for, ts,
+    session_in_cool_down_for,
 };
 
 fn base_passkey_config() -> PasskeyConfig {
-    PasskeyConfig {
-        rate_limits: PasskeyRateLimits::disabled(),
-        ..PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
-    }
+    PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
 }
 
 #[tokio::test]
@@ -1576,96 +1569,6 @@ async fn expired_registrations_do_not_count_toward_the_pending_cap() {
         .start_passkey_registration(&session_for(&h, &user).await)
         .await
         .expect("the expired registration no longer holds the only slot");
-}
-
-#[tokio::test]
-async fn authenticate_start_is_rate_limited_per_ip() {
-    let limiter = Arc::new(InMemoryRateLimiter::new(
-        Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
-    )) as Arc<dyn RateLimiter>;
-    let h = Harness::builder()
-        .signup_limiter(limiter)
-        .passkey_config(PasskeyConfig {
-            rate_limits: PasskeyRateLimits {
-                authenticate_start_per_ip: Some(RateLimitPolicy::new(
-                    1,
-                    Duration::from_secs(60 * 60),
-                )),
-                ..PasskeyRateLimits::disabled()
-            },
-            ..PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
-        })
-        .build();
-
-    let from = |ip: &str| SessionContext::new(ip.parse().expect("ip"), None);
-
-    h.passkey
-        .start_authentication(from("1.2.3.4"))
-        .await
-        .expect("first attempt within budget");
-    let err = h
-        .passkey
-        .start_authentication(from("1.2.3.4"))
-        .await
-        .expect_err("second attempt from same ip is limited");
-    assert!(matches!(err, Error::RateLimited { .. }));
-
-    h.passkey
-        .start_authentication(from("5.6.7.8"))
-        .await
-        .expect("different ip is unaffected");
-}
-
-#[tokio::test]
-async fn authenticate_finish_is_rate_limited_per_passkey() {
-    let limiter = Arc::new(InMemoryRateLimiter::new(
-        Arc::new(MockClock::new(ts(2026, 1, 1))) as Arc<dyn Clock>,
-    )) as Arc<dyn RateLimiter>;
-    let h = Harness::builder()
-        .signup_limiter(limiter)
-        .passkey_config(PasskeyConfig {
-            rate_limits: PasskeyRateLimits {
-                authenticate_finish_per_passkey: Some(RateLimitPolicy::new(
-                    1,
-                    Duration::from_secs(60 * 60),
-                )),
-                ..PasskeyRateLimits::disabled()
-            },
-            ..PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
-        })
-        .build();
-    let user = make_user(&h, "finish-rl@example.com").await;
-    let mut wa = authenticator();
-    let passkey = register_passkey(&h, user.id, &mut wa, Some("device")).await;
-
-    let (id, rcr) = h
-        .passkey
-        .start_authentication(request_context())
-        .await
-        .expect("start one");
-    let assertion = wa.do_authentication(rcr, &passkey.credential_id);
-    h.passkey
-        .finish_authentication(id, &assertion, SessionTransport::Cookie, request_context())
-        .await
-        .expect("first finish within budget");
-
-    let (id2, rcr2) = h
-        .passkey
-        .start_authentication(request_context())
-        .await
-        .expect("start two");
-    let assertion2 = wa.do_authentication(rcr2, &passkey.credential_id);
-    let err = h
-        .passkey
-        .finish_authentication(
-            id2,
-            &assertion2,
-            SessionTransport::Cookie,
-            request_context(),
-        )
-        .await
-        .expect_err("second finish for the same passkey is limited");
-    assert!(matches!(err, Error::RateLimited { .. }));
 }
 
 #[tokio::test]

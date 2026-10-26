@@ -10,7 +10,7 @@ use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::operator::OperatorManager;
 use crate::passkey::{PasskeyConfig, PasskeyManager, build_webauthn};
 use crate::passkey_registration::PasskeyRegistrations;
-use crate::rate_limit::RateLimiter;
+use crate::rate_limit::{RateLimitEnforcer, RateLimiter, RateLimits};
 use crate::reauth::{ReauthManager, ReauthPolicy};
 use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
 use crate::security_notice::{NoticePolicy, SecurityNotices};
@@ -29,7 +29,7 @@ pub enum AssemblyError {
     #[error("audit sink is required (pass NoopAuditSink explicitly to discard events)")]
     MissingAuditSink,
     #[error(
-        "rate limiter is required (pass InMemoryRateLimiter, a shared backend, or NoopRateLimiter explicitly)"
+        "a rate limiter is required while any rate limit is on (pass InMemoryRateLimiter or a shared backend, or turn every limit off with RateLimits::disabled())"
     )]
     MissingRateLimiter,
     #[error("passkey config is required")]
@@ -122,7 +122,7 @@ pub struct AuthCoreBuilder {
     email: Option<Arc<dyn EmailSender>>,
     emails: Option<Arc<dyn EmailTemplates>>,
     rate_limiter: Option<Arc<dyn RateLimiter>>,
-    recovery_rate_limiter: Option<Arc<dyn RateLimiter>>,
+    rate_limits: Option<RateLimits>,
     metrics: Option<Arc<dyn MetricSink>>,
     session_config: Option<SessionConfig>,
     passkey: Option<PasskeyConfig>,
@@ -142,7 +142,7 @@ impl AuthCoreBuilder {
             email: None,
             emails: None,
             rate_limiter: None,
-            recovery_rate_limiter: None,
+            rate_limits: None,
             metrics: None,
             session_config: None,
             passkey: None,
@@ -179,8 +179,8 @@ impl AuthCoreBuilder {
         self
     }
 
-    pub fn recovery_limiter(mut self, limiter: Arc<dyn RateLimiter>) -> Self {
-        self.recovery_rate_limiter = Some(limiter);
+    pub fn rate_limits(mut self, limits: RateLimits) -> Self {
+        self.rate_limits = Some(limits);
         self
     }
 
@@ -230,8 +230,11 @@ impl AuthCoreBuilder {
         let passkey_config = self.passkey.ok_or(AssemblyError::MissingPasskeyConfig)?;
         let audit: Arc<dyn AuditSink> = self.audit.ok_or(AssemblyError::MissingAuditSink)?;
         let audit = AuditDispatch::new(audit, clock.clone());
-        let limiter: Arc<dyn RateLimiter> =
-            self.rate_limiter.ok_or(AssemblyError::MissingRateLimiter)?;
+        let rate_limits = RateLimitEnforcer::new(
+            self.rate_limiter,
+            self.rate_limits.unwrap_or_default(),
+            audit.clone(),
+        )?;
         let metrics: Arc<dyn MetricSink> = self
             .metrics
             .unwrap_or_else(|| Arc::new(NoopMetricSink) as Arc<dyn MetricSink>);
@@ -280,7 +283,7 @@ impl AuthCoreBuilder {
             audit,
             mailer,
             notices,
-            limiter,
+            rate_limits,
             session_records,
             self.storage,
         )
@@ -299,14 +302,7 @@ impl AuthCoreBuilder {
 
         let signup = SignupManager::new(&deps, registrations.clone(), signup_config)?;
 
-        let recovery_deps = match self.recovery_rate_limiter {
-            Some(rate_limiter) => CoreDeps {
-                rate_limiter,
-                ..deps.clone()
-            },
-            None => deps.clone(),
-        };
-        let recovery = RecoveryManager::new(&recovery_deps, registrations, recovery_config)?;
+        let recovery = RecoveryManager::new(&deps, registrations, &recovery_config)?;
 
         let user = UserManager::new(&deps, user_config)?;
 

@@ -7,7 +7,7 @@ use doorman_core::clock::SystemClock;
 use doorman_core::email::EmailSender;
 use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
 use doorman_core::passkey::PasskeyConfig;
-use doorman_core::rate_limit::{NoopRateLimiter, RateLimiter};
+use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter, RateLimits};
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::{RecoveryConfig, RecoveryConfigError};
 use doorman_core::session::SessionConfig;
@@ -121,33 +121,40 @@ fn missing_audit_sink_returns_build_error() {
 }
 
 #[test]
-fn missing_rate_limiter_returns_build_error() {
-    let err = AuthCore::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .audit(noop_audit())
-        .signup(real_signup())
-        .recovery(real_recovery())
-        .user(real_user())
-        .build()
-        .err();
-    assert!(
-        matches!(err, Some(AssemblyError::MissingRateLimiter)),
-        "expected MissingRateLimiter when no limiter is wired, got: {err:?}"
-    );
-}
+fn a_rate_limiter_is_required_unless_every_rate_limit_is_off() {
+    let one_on = RateLimits {
+        recovery_request_global: Some(RateLimitPolicy::new(1, Duration::from_secs(60))),
+        ..RateLimits::disabled()
+    };
+    for (limits, needs_limiter) in [
+        (None, true),
+        (Some(RateLimits::default()), true),
+        (Some(one_on), true),
+        (Some(RateLimits::disabled()), false),
+    ] {
+        let mut builder = AuthCore::builder(fresh_storage())
+            .email(capturing_email())
+            .passkey(passkey_config())
+            .audit(noop_audit())
+            .signup(real_signup())
+            .recovery(real_recovery())
+            .user(real_user())
+            .reauthentication(ReauthPolicy::disabled());
+        if let Some(limits) = limits {
+            builder = builder.rate_limits(limits);
+        }
 
-#[test]
-fn explicit_noop_collaborators_are_accepted() {
-    let err = valid_builder()
-        .audit(noop_audit())
-        .limiter(Arc::new(NoopRateLimiter))
-        .build()
-        .err();
-    assert!(
-        err.is_none(),
-        "explicitly chosen noop collaborators should build, got: {err:?}"
-    );
+        let err = builder.build().err();
+
+        if needs_limiter {
+            assert!(
+                matches!(err, Some(AssemblyError::MissingRateLimiter)),
+                "{limits:?}: {err:?}"
+            );
+        } else {
+            assert!(err.is_none(), "{limits:?}: {err:?}");
+        }
+    }
 }
 
 #[test]

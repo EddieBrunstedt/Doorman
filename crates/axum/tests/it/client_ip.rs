@@ -11,7 +11,7 @@ use chrono::{Duration, TimeZone, Utc};
 use doorman_axum::prelude::*;
 use doorman_core::audit::{Actor, AuditEventKind};
 use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
-use doorman_core::passkey::PasskeyRateLimits;
+use doorman_core::rate_limit::RateLimits;
 use doorman_core::storage::SessionTransport;
 use doorman_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
 use serde_json::{Value, json};
@@ -28,11 +28,10 @@ fn clock() -> Arc<MockClock> {
     ))
 }
 
-fn router(limits: PasskeyRateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAuditSink>) {
+fn router(limits: RateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAuditSink>) {
     let clock = clock();
     let audit = Arc::new(InMemoryAuditSink::new());
-    let mut passkey = PasskeyConfig::new("localhost", ORIGIN.parse().expect("origin"), "tests");
-    passkey.rate_limits = limits;
+    let passkey = PasskeyConfig::new("localhost", ORIGIN.parse().expect("origin"), "tests");
     let core = AuthCore::builder(InMemoryStorage::new().all_stores())
         .email(Arc::new(CapturingEmailSender::new()))
         .passkey(passkey)
@@ -52,6 +51,7 @@ fn router(limits: PasskeyRateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAud
         .audit(audit.clone())
         .clock(clock.clone())
         .limiter(Arc::new(InMemoryRateLimiter::new(clock.clone())))
+        .rate_limits(limits)
         .build()
         .expect("auth core built");
     let auth = AuthService::builder(core).build().expect("build");
@@ -150,7 +150,7 @@ async fn real_socket_enforces_default_limit_and_ignores_spoofed_headers() {
 
 #[tokio::test]
 async fn socket_buckets_ignore_ports_and_normalize_mapped_ipv4() {
-    let (app, clock, _) = router(PasskeyRateLimits::default());
+    let (app, clock, _) = router(RateLimits::default());
     for port in 1000..1060 {
         assert_eq!(
             send(
@@ -185,7 +185,7 @@ async fn socket_buckets_ignore_ports_and_normalize_mapped_ipv4() {
 
 #[tokio::test]
 async fn trusted_extension_overrides_socket_and_canonicalizes_ipv6_buckets() {
-    let (app, _, _) = router(PasskeyRateLimits::default());
+    let (app, _, _) = router(RateLimits::default());
     for n in 0..60 {
         let ip = if n % 2 == 0 {
             "2001:db8::1"
@@ -224,7 +224,7 @@ async fn trusted_extension_overrides_socket_and_canonicalizes_ipv6_buckets() {
 
 #[tokio::test]
 async fn forwarding_headers_never_supply_or_override_identity() {
-    let (app, _, _) = router(PasskeyRateLimits::default());
+    let (app, _, _) = router(RateLimits::default());
     for (peer, trusted, expected) in [
         (Some("192.0.2.1:1234"), None, Some("192.0.2.1")),
         (
@@ -269,7 +269,7 @@ async fn forwarding_headers_never_supply_or_override_identity() {
 
 #[tokio::test]
 async fn missing_identity_fails_closed_and_policy_disabling_is_explicit() {
-    for limits in [PasskeyRateLimits::default(), PasskeyRateLimits::disabled()] {
+    for limits in [RateLimits::default(), RateLimits::disabled()] {
         let (app, _, audit) = router(limits);
         for path in [START, "/auth/signup/request", "/auth/recovery/request"] {
             let response = send(&app, request(path, None, None)).await;
@@ -277,7 +277,7 @@ async fn missing_identity_fails_closed_and_policy_disabling_is_explicit() {
             assert_eq!(body(response).await["error"]["code"], "internal_error");
         }
         assert!(audit.events().is_empty(), "no flow runs without identity");
-        if limits.authenticate_start_per_ip.is_none() {
+        if limits.login_start_per_ip.is_none() {
             for _ in 0..61 {
                 assert_eq!(
                     send(&app, request(START, Some("192.0.2.1:1234"), None))
@@ -293,7 +293,7 @@ async fn missing_identity_fails_closed_and_policy_disabling_is_explicit() {
 #[tokio::test]
 async fn signup_and_recovery_charge_socket_ip_and_audit_it() {
     for (path, limit) in [("/auth/signup/request", 5), ("/auth/recovery/request", 20)] {
-        let (app, _, audit) = router(PasskeyRateLimits::default());
+        let (app, _, audit) = router(RateLimits::default());
         for n in 0..=limit {
             let mut req = request(path, Some("192.0.2.1:1234"), None);
             req.headers_mut()

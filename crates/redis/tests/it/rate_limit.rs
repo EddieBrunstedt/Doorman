@@ -22,7 +22,7 @@ async fn limiter(backend: Backend) -> (ContainerGuard, Arc<dyn RateLimiter>, Arc
 }
 
 fn fresh_key(op: &'static str) -> RateLimitKey {
-    RateLimitKey::new(op).with("id", Uuid::new_v4().to_string())
+    RateLimitKey::new(format!("{op}:{}", Uuid::new_v4()))
 }
 
 async fn charge(

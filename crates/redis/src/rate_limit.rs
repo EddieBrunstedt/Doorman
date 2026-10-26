@@ -37,10 +37,7 @@ impl RateLimiter for RedisRateLimiter {
         let window_ms_u128 = policy.window.as_millis();
         let window_ms = i64::try_from(window_ms_u128)
             .map_err(|_| StorageError::msg("rate limit window overflows i64 milliseconds"))?;
-        let bucket = self
-            .client
-            .keys()
-            .rate_limit(&key.canonical(), window_ms_u128);
+        let bucket = self.client.keys().rate_limit(key.as_str(), window_ms_u128);
         let member = Uuid::new_v4().to_string();
 
         let mut conn = self.client.conn();

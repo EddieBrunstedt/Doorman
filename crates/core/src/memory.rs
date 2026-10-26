@@ -599,7 +599,7 @@ impl RateLimiter for InMemoryRateLimiter {
         let window = chrono::Duration::from_std(policy.window).map_err(|_| out_of_range())?;
         let cutoff = now.checked_sub_signed(window).ok_or_else(out_of_range)?;
         let bucket = BucketKey {
-            key: key.canonical(),
+            key: key.as_str().to_owned(),
             window_ms: policy.window.as_millis(),
         };
 

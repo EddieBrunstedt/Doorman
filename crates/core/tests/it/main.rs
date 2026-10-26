@@ -3,6 +3,7 @@ mod common;
 mod email_link_flow;
 mod operator_flow;
 mod passkey_flow;
+mod rate_limit_flow;
 mod reauth_flow;
 mod recovery_flow;
 mod registration_flow;

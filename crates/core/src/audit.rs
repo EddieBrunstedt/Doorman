@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::client_ip::ClientIp;
 use crate::clock::Clock;
 use crate::error::{Error, Result};
+use crate::rate_limit::RateLimit;
 use crate::session::SessionContext;
 use crate::storage::{SessionId, SessionTransport, UserId};
 
@@ -213,6 +214,9 @@ pub enum AuditEventKind {
         secret: SecretKind,
         reason: RedemptionFailureReason,
     },
+    RateLimited {
+        limit: RateLimit,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,7 +253,7 @@ impl AuditEventKind {
             | Self::RecoveryRequested { user_id }
             | Self::RecoveryFailed { user_id, .. }
             | Self::RedemptionFailed { user_id, .. } => *user_id,
-            Self::SignupDenied => None,
+            Self::SignupDenied | Self::RateLimited { .. } => None,
         }
     }
 
@@ -260,7 +264,8 @@ impl AuditEventKind {
             | Self::RecoveryFailed { .. }
             | Self::ReauthFailed { .. }
             | Self::RedemptionFailed { .. }
-            | Self::SignupDenied => AuditSeverity::Warn,
+            | Self::SignupDenied
+            | Self::RateLimited { .. } => AuditSeverity::Warn,
             _ => AuditSeverity::Info,
         }
     }
@@ -292,7 +297,6 @@ pub enum SignupFailureReason {
 #[non_exhaustive]
 pub enum RecoveryFailureReason {
     UnknownEmail,
-    RateLimited,
     UserDisabled,
     SignupUnfinished,
 }

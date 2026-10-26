@@ -1,71 +1,117 @@
-use std::borrow::Cow;
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde::{Deserialize, Serialize};
 
-use crate::client_ip::ClientIp;
+use crate::assembly::AssemblyError;
+use crate::audit::{AuditDispatch, AuditEventKind};
+use crate::email::EmailAddress;
 use crate::error::{Error, Result, StorageResult};
+use crate::session::SessionContext;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RateLimitKey {
-    operation: Cow<'static, str>,
-    dimensions: Vec<(Cow<'static, str>, String)>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RateLimit {
+    LoginStartPerIp,
+    LoginFinishPerIp,
+    LoginFinishPerPasskey,
+    SignupRequestPerIp,
+    SignupRequestPerEmail,
+    RecoveryRequestPerIp,
+    RecoveryRequestPerEmail,
+    RecoveryRequestPerEmailDaily,
+    RecoveryRequestGlobal,
 }
 
-impl RateLimitKey {
-    pub fn new(operation: impl Into<Cow<'static, str>>) -> Self {
-        Self {
-            operation: operation.into(),
-            dimensions: Vec::new(),
+impl RateLimit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LoginStartPerIp => "login_start_per_ip",
+            Self::LoginFinishPerIp => "login_finish_per_ip",
+            Self::LoginFinishPerPasskey => "login_finish_per_passkey",
+            Self::SignupRequestPerIp => "signup_request_per_ip",
+            Self::SignupRequestPerEmail => "signup_request_per_email",
+            Self::RecoveryRequestPerIp => "recovery_request_per_ip",
+            Self::RecoveryRequestPerEmail => "recovery_request_per_email",
+            Self::RecoveryRequestPerEmailDaily => "recovery_request_per_email_daily",
+            Self::RecoveryRequestGlobal => "recovery_request_global",
         }
     }
 
-    pub(crate) fn per_client_ip(operation: &'static str, ip: ClientIp) -> Self {
-        Self::new(operation).with("ip", ip.to_string())
+    // No limit's name contains `:`, so a key can't belong to two limits.
+    fn charging(self, value: &str) -> (Self, RateLimitKey) {
+        (self, RateLimitKey(format!("{}:{value}", self.as_str())))
     }
 
-    pub fn with(mut self, name: impl Into<Cow<'static, str>>, value: impl Into<String>) -> Self {
-        self.dimensions.push((name.into(), value.into()));
-        self
-    }
-
-    pub fn operation(&self) -> &str {
-        &self.operation
-    }
-
-    pub fn dimensions(&self) -> &[(Cow<'static, str>, String)] {
-        &self.dimensions
-    }
-
-    pub fn canonical(&self) -> String {
-        let mut out = String::with_capacity(self.operation.len() + self.dimensions.len() * 16);
-        out.push_str(&self.operation);
-        for (name, value) in &self.dimensions {
-            out.push('|');
-            out.push_str(name);
-            out.push('=');
-            out.push_str(value);
-        }
-        out
-    }
-}
-
-impl fmt::Display for RateLimitKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.canonical())
+    fn charging_everyone(self) -> (Self, RateLimitKey) {
+        (self, RateLimitKey(self.as_str().to_owned()))
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RateLimitDecision {
-    Allowed,
-    Limited { retry_after: Duration },
+pub struct RateLimits {
+    pub login_start_per_ip: Option<RateLimitPolicy>,
+    pub login_finish_per_ip: Option<RateLimitPolicy>,
+    pub login_finish_per_passkey: Option<RateLimitPolicy>,
+    pub signup_request_per_ip: Option<RateLimitPolicy>,
+    pub signup_request_per_email: Option<RateLimitPolicy>,
+    pub recovery_request_per_ip: Option<RateLimitPolicy>,
+    pub recovery_request_per_email: Option<RateLimitPolicy>,
+    pub recovery_request_per_email_daily: Option<RateLimitPolicy>,
+    pub recovery_request_global: Option<RateLimitPolicy>,
 }
 
-impl RateLimitDecision {
-    pub fn is_allowed(&self) -> bool {
-        matches!(self, Self::Allowed)
+impl RateLimits {
+    pub const fn disabled() -> Self {
+        Self {
+            login_start_per_ip: None,
+            login_finish_per_ip: None,
+            login_finish_per_passkey: None,
+            signup_request_per_ip: None,
+            signup_request_per_email: None,
+            recovery_request_per_ip: None,
+            recovery_request_per_email: None,
+            recovery_request_per_email_daily: None,
+            recovery_request_global: None,
+        }
+    }
+
+    pub fn policy(&self, limit: RateLimit) -> Option<RateLimitPolicy> {
+        match limit {
+            RateLimit::LoginStartPerIp => self.login_start_per_ip,
+            RateLimit::LoginFinishPerIp => self.login_finish_per_ip,
+            RateLimit::LoginFinishPerPasskey => self.login_finish_per_passkey,
+            RateLimit::SignupRequestPerIp => self.signup_request_per_ip,
+            RateLimit::SignupRequestPerEmail => self.signup_request_per_email,
+            RateLimit::RecoveryRequestPerIp => self.recovery_request_per_ip,
+            RateLimit::RecoveryRequestPerEmail => self.recovery_request_per_email,
+            RateLimit::RecoveryRequestPerEmailDaily => self.recovery_request_per_email_daily,
+            RateLimit::RecoveryRequestGlobal => self.recovery_request_global,
+        }
+    }
+}
+
+impl Default for RateLimits {
+    fn default() -> Self {
+        const MINUTE: Duration = Duration::from_secs(60);
+        const HOUR: Duration = Duration::from_secs(60 * 60);
+        const DAY: Duration = Duration::from_secs(60 * 60 * 24);
+        Self {
+            login_start_per_ip: Some(RateLimitPolicy::new(60, MINUTE)),
+            login_finish_per_ip: Some(RateLimitPolicy::new(60, MINUTE)),
+            login_finish_per_passkey: Some(RateLimitPolicy::new(30, MINUTE)),
+            signup_request_per_ip: Some(RateLimitPolicy::new(5, HOUR)),
+            signup_request_per_email: Some(RateLimitPolicy::new(3, HOUR)),
+            recovery_request_per_ip: Some(RateLimitPolicy::new(20, HOUR)),
+            recovery_request_per_email: Some(RateLimitPolicy::new(5, HOUR)),
+            recovery_request_per_email_daily: Some(RateLimitPolicy::new(10, DAY)),
+            recovery_request_global: None,
+        }
     }
 }
 
@@ -84,6 +130,37 @@ impl RateLimitPolicy {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RateLimitKey(String);
+
+impl RateLimitKey {
+    pub fn new(key: impl Into<String>) -> Self {
+        Self(key.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RateLimitKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateLimitDecision {
+    Allowed,
+    Limited { retry_after: Duration },
+}
+
+impl RateLimitDecision {
+    pub fn is_allowed(&self) -> bool {
+        matches!(self, Self::Allowed)
+    }
+}
+
 #[async_trait]
 pub trait RateLimiter: Send + Sync {
     async fn check_and_charge(
@@ -93,115 +170,82 @@ pub trait RateLimiter: Send + Sync {
     ) -> StorageResult<RateLimitDecision>;
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoopRateLimiter;
-
-#[async_trait]
-impl RateLimiter for NoopRateLimiter {
-    async fn check_and_charge(
-        &self,
-        _key: &RateLimitKey,
-        _policy: RateLimitPolicy,
-    ) -> StorageResult<RateLimitDecision> {
-        Ok(RateLimitDecision::Allowed)
-    }
+pub(crate) enum Attempt<'a> {
+    LoginStart,
+    LoginFinish { passkey: &'a [u8] },
+    SignupRequest { email: &'a EmailAddress },
+    RecoveryRequest { email: &'a EmailAddress },
 }
 
-// A limit is skipped only when the host turned its policy off; every key names a value to charge.
-pub(crate) async fn enforce(
-    rate_limiter: &dyn RateLimiter,
-    limits: &[(Option<RateLimitPolicy>, RateLimitKey)],
-) -> Result<()> {
-    for (policy, key) in limits {
-        let Some(policy) = *policy else {
-            continue;
-        };
-        if let RateLimitDecision::Limited { retry_after } =
-            rate_limiter.check_and_charge(key, policy).await?
-        {
-            return Err(Error::RateLimited { retry_after });
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Mutex;
-
-    use super::*;
-
-    struct Recording {
-        charged: Mutex<Vec<String>>,
-        limited: &'static str,
-    }
-
-    #[async_trait]
-    impl RateLimiter for Recording {
-        async fn check_and_charge(
-            &self,
-            key: &RateLimitKey,
-            _policy: RateLimitPolicy,
-        ) -> StorageResult<RateLimitDecision> {
-            let key = key.canonical();
-            let decision = if key == self.limited {
-                RateLimitDecision::Limited {
-                    retry_after: Duration::from_secs(5),
-                }
-            } else {
-                RateLimitDecision::Allowed
-            };
-            self.charged.lock().expect("lock").push(key);
-            Ok(decision)
-        }
-    }
-
-    #[tokio::test]
-    async fn enforce_skips_only_a_turned_off_policy_and_stops_at_the_first_limit() {
-        let policy = Some(RateLimitPolicy::new(1, Duration::from_secs(60)));
-        let limiter = Recording {
-            charged: Mutex::new(Vec::new()),
-            limited: "op|email=a",
-        };
-        let ip: ClientIp = "192.0.2.1".parse().expect("ip");
-
-        let err = enforce(
-            &limiter,
-            &[
-                (None, RateLimitKey::new("op").with("off", "x")),
-                (policy, RateLimitKey::per_client_ip("op", ip)),
-                (policy, RateLimitKey::new("op").with("email", "a")),
-                (policy, RateLimitKey::new("op")),
+impl Attempt<'_> {
+    // In the order they're charged: an attempt refused by one limit isn't charged to the next.
+    fn charges(&self, context: &SessionContext) -> Vec<(RateLimit, RateLimitKey)> {
+        let ip = context.ip().to_string();
+        match self {
+            Self::LoginStart => vec![RateLimit::LoginStartPerIp.charging(&ip)],
+            Self::LoginFinish { passkey } => vec![
+                RateLimit::LoginFinishPerIp.charging(&ip),
+                RateLimit::LoginFinishPerPasskey.charging(&URL_SAFE_NO_PAD.encode(passkey)),
             ],
-        )
-        .await
-        .expect_err("limited");
+            Self::SignupRequest { email } => vec![
+                RateLimit::SignupRequestPerIp.charging(&ip),
+                RateLimit::SignupRequestPerEmail.charging(email.as_str()),
+            ],
+            Self::RecoveryRequest { email } => vec![
+                RateLimit::RecoveryRequestPerIp.charging(&ip),
+                RateLimit::RecoveryRequestPerEmail.charging(email.as_str()),
+                RateLimit::RecoveryRequestPerEmailDaily.charging(email.as_str()),
+                RateLimit::RecoveryRequestGlobal.charging_everyone(),
+            ],
+        }
+    }
+}
 
-        assert!(matches!(err, Error::RateLimited { retry_after } if retry_after.as_secs() == 5));
-        assert_eq!(
-            *limiter.charged.lock().expect("lock"),
-            ["op|ip=192.0.2.1", "op|email=a"]
-        );
+#[derive(Clone)]
+pub(crate) struct RateLimitEnforcer {
+    limiter: Option<Arc<dyn RateLimiter>>,
+    limits: RateLimits,
+    audit: AuditDispatch,
+}
+
+impl RateLimitEnforcer {
+    pub(crate) fn new(
+        limiter: Option<Arc<dyn RateLimiter>>,
+        limits: RateLimits,
+        audit: AuditDispatch,
+    ) -> std::result::Result<Self, AssemblyError> {
+        if limiter.is_none() && limits != RateLimits::disabled() {
+            return Err(AssemblyError::MissingRateLimiter);
+        }
+        Ok(Self {
+            limiter,
+            limits,
+            audit,
+        })
     }
 
-    #[test]
-    fn key_canonical_renders_operation_and_dimensions_in_order() {
-        let key = RateLimitKey::new("passkey/authenticate/finish")
-            .with("ip", "1.2.3.4")
-            .with("passkey", "abc");
-        assert_eq!(
-            key.canonical(),
-            "passkey/authenticate/finish|ip=1.2.3.4|passkey=abc"
-        );
-        assert_eq!(key.operation(), "passkey/authenticate/finish");
-        assert_eq!(key.dimensions().len(), 2);
-    }
-
-    #[test]
-    fn distinct_dimensions_do_not_collide() {
-        let ip = RateLimitKey::new("op").with("ip", "v");
-        let user = RateLimitKey::new("op").with("user", "v");
-        assert_ne!(ip.canonical(), user.canonical());
-        assert_ne!(ip, user);
+    pub(crate) async fn enforce(
+        &self,
+        context: &SessionContext,
+        attempt: Attempt<'_>,
+    ) -> Result<()> {
+        // Assembly leaves out the limiter only when every limit is off.
+        let Some(limiter) = &self.limiter else {
+            return Ok(());
+        };
+        for (limit, key) in attempt.charges(context) {
+            let Some(policy) = self.limits.policy(limit) else {
+                continue;
+            };
+            if let RateLimitDecision::Limited { retry_after } =
+                limiter.check_and_charge(&key, policy).await?
+            {
+                self.audit
+                    .emit(context, AuditEventKind::RateLimited { limit })
+                    .await;
+                return Err(Error::RateLimited { retry_after });
+            }
+        }
+        Ok(())
     }
 }

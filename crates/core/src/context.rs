@@ -4,7 +4,7 @@ use crate::audit::AuditDispatch;
 use crate::clock::Clock;
 use crate::email::Mailer;
 use crate::metrics::{MetricSink, NoopMetricSink};
-use crate::rate_limit::RateLimiter;
+use crate::rate_limit::RateLimitEnforcer;
 use crate::security_notice::SecurityNotices;
 use crate::session_records::SessionRecords;
 use crate::storage::{EmailLinkStore, PasskeyChallengeStore, PasskeyStore, Storage, UserStore};
@@ -15,7 +15,7 @@ pub(crate) struct CoreDeps {
     pub(crate) audit: AuditDispatch,
     pub(crate) mailer: Mailer,
     pub(crate) notices: SecurityNotices,
-    pub(crate) rate_limiter: Arc<dyn RateLimiter>,
+    pub(crate) rate_limits: RateLimitEnforcer,
     pub(crate) metrics: Arc<dyn MetricSink>,
     pub(crate) sessions: SessionRecords,
     pub(crate) users: Arc<dyn UserStore>,
@@ -34,7 +34,7 @@ impl CoreDeps {
         audit: AuditDispatch,
         mailer: Mailer,
         notices: SecurityNotices,
-        rate_limiter: Arc<dyn RateLimiter>,
+        rate_limits: RateLimitEnforcer,
         sessions: SessionRecords,
         storage: Storage,
     ) -> Self {
@@ -43,7 +43,7 @@ impl CoreDeps {
             audit,
             mailer,
             notices,
-            rate_limiter,
+            rate_limits,
             metrics: Arc::new(NoopMetricSink),
             sessions,
             users: storage.records.users,

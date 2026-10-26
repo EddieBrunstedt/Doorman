@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
@@ -9,10 +8,10 @@ use crate::context::CoreDeps;
 use crate::email::{EmailAddress, Mailer};
 use crate::email_link::{Issued, TOKEN_PLACEHOLDER};
 use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
-use crate::rate_limit::{self, RateLimitKey, RateLimitPolicy, RateLimiter};
+use crate::rate_limit::{Attempt, RateLimitEnforcer};
 use crate::redeem::OwnerRefusal;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
@@ -23,7 +22,6 @@ use crate::user_records::UserRecords;
 pub struct RecoveryConfig {
     pub token_lifetime: Duration,
     pub url_template: String,
-    pub rate_limits: RecoveryRateLimits,
     pub cool_down: Duration,
     pub danger_allow_cool_down_below_floor: bool,
 }
@@ -40,43 +38,6 @@ pub enum RecoveryConfigError {
         configured: Duration,
         maximum: Duration,
     },
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct RecoveryRateLimits {
-    pub request_per_ip: Option<RateLimitPolicy>,
-    pub request_per_identifier: Option<RateLimitPolicy>,
-    pub request_per_identifier_daily: Option<RateLimitPolicy>,
-    pub request_global: Option<RateLimitPolicy>,
-}
-
-impl RecoveryRateLimits {
-    pub const DEFAULT_PER_IP: RateLimitPolicy =
-        RateLimitPolicy::new(20, Duration::from_secs(60 * 60));
-    pub const DEFAULT_PER_IDENTIFIER: RateLimitPolicy =
-        RateLimitPolicy::new(5, Duration::from_secs(60 * 60));
-    pub const DEFAULT_PER_IDENTIFIER_DAILY: RateLimitPolicy =
-        RateLimitPolicy::new(10, Duration::from_secs(60 * 60 * 24));
-
-    pub const fn disabled() -> Self {
-        Self {
-            request_per_ip: None,
-            request_per_identifier: None,
-            request_per_identifier_daily: None,
-            request_global: None,
-        }
-    }
-}
-
-impl Default for RecoveryRateLimits {
-    fn default() -> Self {
-        Self {
-            request_per_ip: Some(Self::DEFAULT_PER_IP),
-            request_per_identifier: Some(Self::DEFAULT_PER_IDENTIFIER),
-            request_per_identifier_daily: Some(Self::DEFAULT_PER_IDENTIFIER_DAILY),
-            request_global: None,
-        }
-    }
 }
 
 impl RecoveryConfig {
@@ -110,7 +71,6 @@ impl Default for RecoveryConfig {
         Self {
             token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
             url_template: format!("https://example.invalid/recovery?token={TOKEN_PLACEHOLDER}"),
-            rate_limits: RecoveryRateLimits::default(),
             cool_down: Self::DEFAULT_COOL_DOWN,
             danger_allow_cool_down_below_floor: false,
         }
@@ -123,16 +83,15 @@ pub struct RecoveryManager {
     registration: EmailLinkRegistration,
     mailer: Mailer,
     notices: SecurityNotices,
-    rate_limiter: Arc<dyn RateLimiter>,
+    rate_limits: RateLimitEnforcer,
     audit: AuditDispatch,
-    config: RecoveryConfig,
 }
 
 impl RecoveryManager {
     pub(crate) fn new(
         deps: &CoreDeps,
         registrations: PasskeyRegistrations,
-        config: RecoveryConfig,
+        config: &RecoveryConfig,
     ) -> std::result::Result<Self, AssemblyError> {
         Ok(Self {
             records: UserRecords::new(deps),
@@ -145,9 +104,8 @@ impl RecoveryManager {
             )?,
             mailer: deps.mailer.clone(),
             notices: deps.notices.clone(),
-            rate_limiter: deps.rate_limiter.clone(),
+            rate_limits: deps.rate_limits.clone(),
             audit: deps.audit.clone(),
-            config,
         })
     }
 
@@ -158,39 +116,9 @@ impl RecoveryManager {
     pub async fn request_recovery(&self, email: &str, context: SessionContext) -> Result<()> {
         let address = EmailAddress::parse(email)?;
 
-        const OPERATION: &str = "recovery/request";
-        let limits = &self.config.rate_limits;
-        let limited = rate_limit::enforce(
-            self.rate_limiter.as_ref(),
-            &[
-                (
-                    limits.request_per_ip,
-                    RateLimitKey::per_client_ip(OPERATION, context.ip()),
-                ),
-                (
-                    limits.request_per_identifier,
-                    RateLimitKey::new(OPERATION).with("email", address.as_str()),
-                ),
-                (
-                    limits.request_per_identifier_daily,
-                    RateLimitKey::new(OPERATION).with("email_daily", address.as_str()),
-                ),
-                (limits.request_global, RateLimitKey::new(OPERATION)),
-            ],
-        )
-        .await;
-        if let Err(Error::RateLimited { .. }) = limited {
-            self.audit
-                .emit(
-                    &context,
-                    AuditEventKind::RecoveryFailed {
-                        user_id: None,
-                        reason: RecoveryFailureReason::RateLimited,
-                    },
-                )
-                .await;
-        }
-        limited?;
+        self.rate_limits
+            .enforce(&context, Attempt::RecoveryRequest { email: &address })
+            .await?;
 
         let Some(user) = self.records.find_by_email(&address).await? else {
             self.audit
