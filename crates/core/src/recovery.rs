@@ -9,10 +9,10 @@ use crate::context::CoreDeps;
 use crate::email::{EmailAddress, Mailer};
 use crate::email_link::{Issued, TOKEN_PLACEHOLDER};
 use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
-use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
+use crate::rate_limit::{self, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::redeem::OwnerRefusal;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
@@ -158,48 +158,39 @@ impl RecoveryManager {
     pub async fn request_recovery(&self, email: &str, context: SessionContext) -> Result<()> {
         let address = EmailAddress::parse(email)?;
 
-        let rate_limits = &self.config.rate_limits;
-        rate_limit::enforce_all(
+        const OPERATION: &str = "recovery/request";
+        let limits = &self.config.rate_limits;
+        let limited = rate_limit::enforce(
             self.rate_limiter.as_ref(),
             &[
                 (
-                    rate_limits.request_per_ip,
-                    "recovery/request",
-                    "ip",
-                    Some(context.ip().to_string().as_str()),
+                    limits.request_per_ip,
+                    RateLimitKey::per_client_ip(OPERATION, context.ip()),
                 ),
                 (
-                    rate_limits.request_per_identifier,
-                    "recovery/request",
-                    "email",
-                    Some(address.as_str()),
+                    limits.request_per_identifier,
+                    RateLimitKey::new(OPERATION).with("email", address.as_str()),
                 ),
                 (
-                    rate_limits.request_per_identifier_daily,
-                    "recovery/request",
-                    "email_daily",
-                    Some(address.as_str()),
+                    limits.request_per_identifier_daily,
+                    RateLimitKey::new(OPERATION).with("email_daily", address.as_str()),
                 ),
-                (
-                    rate_limits.request_global,
-                    "recovery/request",
-                    "global",
-                    Some("all"),
-                ),
+                (limits.request_global, RateLimitKey::new(OPERATION)),
             ],
-            || async {
-                self.audit
-                    .emit(
-                        &context,
-                        AuditEventKind::RecoveryFailed {
-                            user_id: None,
-                            reason: RecoveryFailureReason::RateLimited,
-                        },
-                    )
-                    .await;
-            },
         )
-        .await?;
+        .await;
+        if let Err(Error::RateLimited { .. }) = limited {
+            self.audit
+                .emit(
+                    &context,
+                    AuditEventKind::RecoveryFailed {
+                        user_id: None,
+                        reason: RecoveryFailureReason::RateLimited,
+                    },
+                )
+                .await;
+        }
+        limited?;
 
         let Some(user) = self.records.find_by_email(&address).await? else {
             self.audit

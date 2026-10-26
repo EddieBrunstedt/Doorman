@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::client_ip::ClientIp;
 use crate::error::{Error, Result, StorageResult};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -18,6 +19,10 @@ impl RateLimitKey {
             operation: operation.into(),
             dimensions: Vec::new(),
         }
+    }
+
+    pub(crate) fn per_client_ip(operation: &'static str, ip: ClientIp) -> Self {
+        Self::new(operation).with("ip", ip.to_string())
     }
 
     pub fn with(mut self, name: impl Into<Cow<'static, str>>, value: impl Into<String>) -> Self {
@@ -102,43 +107,19 @@ impl RateLimiter for NoopRateLimiter {
     }
 }
 
-pub(crate) async fn enforce_rate_limit(
+// A limit is skipped only when the host turned its policy off; every key names a value to charge.
+pub(crate) async fn enforce(
     rate_limiter: &dyn RateLimiter,
-    policy: Option<RateLimitPolicy>,
-    operation: &'static str,
-    dimension: &'static str,
-    value: Option<&str>,
+    limits: &[(Option<RateLimitPolicy>, RateLimitKey)],
 ) -> Result<()> {
-    let (Some(policy), Some(value)) = (policy, value) else {
-        return Ok(());
-    };
-    let key = RateLimitKey::new(operation).with(dimension, value);
-    match rate_limiter.check_and_charge(&key, policy).await? {
-        RateLimitDecision::Allowed => Ok(()),
-        RateLimitDecision::Limited { retry_after } => Err(Error::RateLimited { retry_after }),
-    }
-}
-
-pub(crate) async fn enforce_all<F, Fut>(
-    rate_limiter: &dyn RateLimiter,
-    policies: &[(
-        Option<RateLimitPolicy>,
-        &'static str,
-        &'static str,
-        Option<&str>,
-    )],
-    on_reject: F,
-) -> Result<()>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = ()>,
-{
-    for &(policy, operation, dimension, value) in policies {
-        if let Err(err) =
-            enforce_rate_limit(rate_limiter, policy, operation, dimension, value).await
+    for (policy, key) in limits {
+        let Some(policy) = *policy else {
+            continue;
+        };
+        if let RateLimitDecision::Limited { retry_after } =
+            rate_limiter.check_and_charge(key, policy).await?
         {
-            on_reject().await;
-            return Err(err);
+            return Err(Error::RateLimited { retry_after });
         }
     }
     Ok(())
@@ -146,7 +127,62 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    struct Recording {
+        charged: Mutex<Vec<String>>,
+        limited: &'static str,
+    }
+
+    #[async_trait]
+    impl RateLimiter for Recording {
+        async fn check_and_charge(
+            &self,
+            key: &RateLimitKey,
+            _policy: RateLimitPolicy,
+        ) -> StorageResult<RateLimitDecision> {
+            let key = key.canonical();
+            let decision = if key == self.limited {
+                RateLimitDecision::Limited {
+                    retry_after: Duration::from_secs(5),
+                }
+            } else {
+                RateLimitDecision::Allowed
+            };
+            self.charged.lock().expect("lock").push(key);
+            Ok(decision)
+        }
+    }
+
+    #[tokio::test]
+    async fn enforce_skips_only_a_turned_off_policy_and_stops_at_the_first_limit() {
+        let policy = Some(RateLimitPolicy::new(1, Duration::from_secs(60)));
+        let limiter = Recording {
+            charged: Mutex::new(Vec::new()),
+            limited: "op|email=a",
+        };
+        let ip: ClientIp = "192.0.2.1".parse().expect("ip");
+
+        let err = enforce(
+            &limiter,
+            &[
+                (None, RateLimitKey::new("op").with("off", "x")),
+                (policy, RateLimitKey::per_client_ip("op", ip)),
+                (policy, RateLimitKey::new("op").with("email", "a")),
+                (policy, RateLimitKey::new("op")),
+            ],
+        )
+        .await
+        .expect_err("limited");
+
+        assert!(matches!(err, Error::RateLimited { retry_after } if retry_after.as_secs() == 5));
+        assert_eq!(
+            *limiter.charged.lock().expect("lock"),
+            ["op|ip=192.0.2.1", "op|email=a"]
+        );
+    }
 
     #[test]
     fn key_canonical_renders_operation_and_dimensions_in_order() {

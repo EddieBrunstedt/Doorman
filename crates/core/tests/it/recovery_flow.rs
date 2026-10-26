@@ -4,6 +4,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::Duration as ChronoDuration;
 use doorman_core::audit::{
     AuditEventKind, RecoveryFailureReason, RedemptionFailureReason, SecretKind,
@@ -11,10 +12,10 @@ use doorman_core::audit::{
 use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::email::{EmailContent, EmailTemplates};
-use doorman_core::error::Error;
+use doorman_core::error::{Error, StorageError, StorageResult};
 use doorman_core::memory::InMemoryRateLimiter;
 use doorman_core::passkey::PasskeyConfig;
-use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter};
+use doorman_core::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use doorman_core::recovery::{RecoveryConfig, RecoveryRateLimits};
 use doorman_core::session::{SessionConfig, SessionContext};
 use doorman_core::storage::{PasskeyStore, SessionTransport, User, UserStore};
@@ -231,6 +232,48 @@ async fn rate_limit_per_email_blocks_after_budget() {
         .expect_err("limited");
     assert!(matches!(err, Error::RateLimited { .. }));
     assert!(kinds(&h.audit.events()).iter().any(|k| matches!(
+        k,
+        AuditEventKind::RecoveryFailed {
+            reason: RecoveryFailureReason::RateLimited,
+            ..
+        }
+    )));
+}
+
+struct FailingLimiter;
+
+#[async_trait]
+impl RateLimiter for FailingLimiter {
+    async fn check_and_charge(
+        &self,
+        _key: &RateLimitKey,
+        _policy: RateLimitPolicy,
+    ) -> StorageResult<RateLimitDecision> {
+        Err(StorageError::msg("limiter unavailable"))
+    }
+}
+
+#[tokio::test]
+async fn a_failing_limiter_refuses_the_request_without_auditing_a_rate_limit() {
+    let h = Harness::builder()
+        .recovery_limiter(Arc::new(FailingLimiter))
+        .recovery_config(RecoveryConfig {
+            rate_limits: RecoveryRateLimits::default(),
+            ..recovery_config()
+        })
+        .build();
+    provision_user(&h, "alice@example.com").await;
+    let mail_before = h.email.sent().len();
+
+    let err = h
+        .recovery
+        .request_recovery("alice@example.com", request_context())
+        .await
+        .expect_err("refused");
+
+    assert!(matches!(err, Error::Storage(_)));
+    assert_eq!(h.email.sent().len(), mail_before);
+    assert!(!kinds(&h.audit.events()).iter().any(|k| matches!(
         k,
         AuditEventKind::RecoveryFailed {
             reason: RecoveryFailureReason::RateLimited,

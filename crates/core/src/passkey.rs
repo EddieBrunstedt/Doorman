@@ -21,7 +21,7 @@ use crate::metrics::{MetricEvent, MetricSink};
 use crate::passkey_registration::{
     PasskeyRegistrations, RegisteredPasskey, RegistrationFinish, RegistrationSource,
 };
-use crate::rate_limit::{RateLimitPolicy, RateLimiter, enforce_rate_limit};
+use crate::rate_limit::{self, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::{IssuedSession, SessionContext};
 use crate::session_records::LiveSession;
@@ -240,12 +240,12 @@ impl PasskeyManager {
         &self,
         context: SessionContext,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
-        enforce_rate_limit(
+        rate_limit::enforce(
             self.rate_limiter.as_ref(),
-            self.config.rate_limits.authenticate_start_per_ip,
-            "passkey/authenticate/start",
-            "ip",
-            Some(context.ip().to_string().as_str()),
+            &[(
+                self.config.rate_limits.authenticate_start_per_ip,
+                RateLimitKey::per_client_ip("passkey/authenticate/start", context.ip()),
+            )],
         )
         .await?;
 
@@ -268,21 +268,20 @@ impl PasskeyManager {
         let _latency = AuthLatencyGuard::start(self.metrics.clone());
         self.records.check_session_allowed(transport)?;
 
-        let passkey_dim = URL_SAFE_NO_PAD.encode(response.raw_id.as_ref());
-        enforce_rate_limit(
+        let limits = &self.config.rate_limits;
+        rate_limit::enforce(
             self.rate_limiter.as_ref(),
-            self.config.rate_limits.authenticate_finish_per_ip,
-            "passkey/authenticate/finish",
-            "ip",
-            Some(context.ip().to_string().as_str()),
-        )
-        .await?;
-        enforce_rate_limit(
-            self.rate_limiter.as_ref(),
-            self.config.rate_limits.authenticate_finish_per_passkey,
-            "passkey/authenticate/finish",
-            "passkey",
-            Some(passkey_dim.as_str()),
+            &[
+                (
+                    limits.authenticate_finish_per_ip,
+                    RateLimitKey::per_client_ip("passkey/authenticate/finish", context.ip()),
+                ),
+                (
+                    limits.authenticate_finish_per_passkey,
+                    RateLimitKey::new("passkey/authenticate/finish")
+                        .with("passkey", URL_SAFE_NO_PAD.encode(response.raw_id.as_ref())),
+                ),
+            ],
         )
         .await?;
 

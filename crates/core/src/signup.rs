@@ -13,7 +13,7 @@ use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
 use crate::error::{Error, Result};
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
-use crate::rate_limit::{self, RateLimitPolicy, RateLimiter};
+use crate::rate_limit::{self, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::redeem::OwnerRefusal;
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, SessionTransport, User};
@@ -147,23 +147,20 @@ impl SignupManager {
     ) -> Result<()> {
         let address = EmailAddress::parse(email)?;
 
-        rate_limit::enforce_all(
+        const OPERATION: &str = "signup/request";
+        let limits = &self.config.rate_limits;
+        rate_limit::enforce(
             self.rate_limiter.as_ref(),
             &[
                 (
-                    self.config.rate_limits.request_per_ip,
-                    "signup/request",
-                    "ip",
-                    Some(context.ip().to_string().as_str()),
+                    limits.request_per_ip,
+                    RateLimitKey::per_client_ip(OPERATION, context.ip()),
                 ),
                 (
-                    self.config.rate_limits.request_per_identifier,
-                    "signup/request",
-                    "email",
-                    Some(address.as_str()),
+                    limits.request_per_identifier,
+                    RateLimitKey::new(OPERATION).with("email", address.as_str()),
                 ),
             ],
-            || async {},
         )
         .await?;
 
