@@ -166,7 +166,7 @@ impl PasskeyManager {
     }
 
     #[tracing::instrument(
-        skip(self, session, response, name, context),
+        skip(self, session, response, name),
         fields(method = "passkey", user_id = tracing::field::Empty),
     )]
     pub(crate) async fn finish_registration(
@@ -175,7 +175,6 @@ impl PasskeyManager {
         challenge_id: PasskeyChallengeId,
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
-        context: SessionContext,
     ) -> Result<PasskeySummary> {
         let RegisteredPasskey { user, passkey, .. } = self
             .registrations
@@ -183,7 +182,6 @@ impl PasskeyManager {
                 challenge_id,
                 response,
                 name,
-                &context,
                 RegistrationFinish::Session(session),
             )
             .await?;
@@ -290,13 +288,12 @@ impl PasskeyManager {
             .await
     }
 
-    #[tracing::instrument(skip(self, session, credential_id, name, context), fields(user_id = %session.user_id))]
+    #[tracing::instrument(skip(self, session, credential_id, name), fields(user_id = %session.user_id))]
     pub(crate) async fn rename_passkey(
         &self,
         session: &LiveSession,
         credential_id: &[u8],
         name: Option<String>,
-        context: SessionContext,
     ) -> Result<PasskeySummary> {
         let name = PasskeyName::parse(name.as_deref())?;
         let user_id = session.user_id;
@@ -307,7 +304,7 @@ impl PasskeyManager {
             .await?;
         passkey.name = name.map(PasskeyName::into_string);
         self.audit
-            .emit(&context, AuditEventKind::PasskeyRenamed { user_id })
+            .emit(session.actor(), AuditEventKind::PasskeyRenamed { user_id })
             .await;
         Ok(PasskeySummary::from(passkey))
     }
@@ -322,7 +319,9 @@ impl PasskeyManager {
         self.passkeys.delete_passkey(credential_id).await?;
         let passkey_name = passkey.name.as_deref();
         let notice = match actor {
-            Actor::Subject { .. } => SecurityNotice::PasskeyRemoved { passkey_name },
+            Actor::Session { .. } | Actor::Subject { .. } => {
+                SecurityNotice::PasskeyRemoved { passkey_name }
+            }
             Actor::Operator(_) => SecurityNotice::OperatorRemovedPasskey { passkey_name },
         };
         self.audit

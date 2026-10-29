@@ -183,12 +183,12 @@ async fn redeeming_an_email_link_replaces_unfinished_registrations_rather_than_h
         let session = session_for(&h, &user).await;
         let (stale_id, stale_options) = h
             .session_manager
-            .start_passkey_registration(&session)
+            .start_passkey_registration(&session, request_context())
             .await
             .expect("fill the cap");
         let err = h
             .session_manager
-            .start_passkey_registration(&session)
+            .start_passkey_registration(&session, request_context())
             .await
             .expect_err("the cap is full");
         assert!(
@@ -231,7 +231,7 @@ async fn finishing_an_email_link_registration_drops_registrations_started_since_
         let session = session_for(&h, &user).await;
         let (meanwhile_id, meanwhile_options) = h
             .session_manager
-            .start_passkey_registration(&session)
+            .start_passkey_registration(&session, request_context())
             .await
             .expect("start a registration after the redeem");
 
@@ -353,7 +353,7 @@ async fn start(
             let session = session_for(h, &user).await;
             let (challenge_id, options) = h
                 .session_manager
-                .start_passkey_registration(&session)
+                .start_passkey_registration(&session, request_context())
                 .await
                 .expect("start_registration");
             return (user, session, challenge_id, options);
@@ -431,7 +431,7 @@ impl Starter {
             Starter::Link(link, token) => link.redeem(h, token).await.map(drop),
             Starter::Session(session) => h
                 .session_manager
-                .start_passkey_registration(session)
+                .start_passkey_registration(session, request_context())
                 .await
                 .map(drop),
         }

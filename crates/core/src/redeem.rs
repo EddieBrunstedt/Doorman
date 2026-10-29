@@ -6,11 +6,10 @@ use crate::audit::RedemptionFailureReason::{
     EmailChanged, Expired, Malformed, SignupFinished, SignupUnfinished, Unknown, UserDisabled,
     UserNotFound, WrongPurpose,
 };
-use crate::audit::{AuditDispatch, AuditEventKind, RedemptionFailureReason, SecretKind};
+use crate::audit::{Actor, AuditDispatch, AuditEventKind, RedemptionFailureReason, SecretKind};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result};
-use crate::session::SessionContext;
 use crate::storage::{
     AuthenticationPurpose, EmailLink, EmailLinkPurpose, RegistrationPurpose,
     StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
@@ -144,11 +143,11 @@ impl Redeemer {
         expected: S::Purpose,
         owner: Option<UserId>,
         decode: impl FnOnce(S) -> Result<T>,
-        context: &SessionContext,
+        actor: &Actor,
     ) -> Result<T> {
         let secret = S::secret(expected);
         let Some(taken) = taken else {
-            return Err(self.refuse(secret, owner, Unknown, context).await);
+            return Err(self.refuse(secret, owner, Unknown, actor).await);
         };
         let reason = if taken.purpose() != expected {
             WrongPurpose
@@ -163,7 +162,7 @@ impl Redeemer {
                 }
             }
         };
-        Err(self.refuse(secret, owner, reason, context).await)
+        Err(self.refuse(secret, owner, reason, actor).await)
     }
 
     // A secret issued against an email address is good only while that address is still its
@@ -173,17 +172,17 @@ impl Redeemer {
         taken: Option<S>,
         expected: S::Purpose,
         decode: impl FnOnce(S) -> Result<T>,
-        context: &SessionContext,
+        actor: &Actor,
     ) -> Result<(User, T)> {
         let secret = S::secret(expected);
         let Some((owner, owner_email)) = taken
             .as_ref()
             .map(|taken| (taken.owner(), taken.owner_email().map(str::to_owned)))
         else {
-            return Err(self.refuse(secret, None, Unknown, context).await);
+            return Err(self.refuse(secret, None, Unknown, actor).await);
         };
         let value = self
-            .check(taken, expected, Some(owner), decode, context)
+            .check(taken, expected, Some(owner), decode, actor)
             .await?;
         let refusal = match self
             .records
@@ -194,14 +193,12 @@ impl Redeemer {
                 return Ok((user, value));
             }
             Ok(_) => {
-                return Err(self
-                    .refuse(secret, Some(owner), EmailChanged, context)
-                    .await);
+                return Err(self.refuse(secret, Some(owner), EmailChanged, actor).await);
             }
             Err(refusal) => refusal,
         };
         Err(self
-            .refuse_owner::<S>(expected, owner, refusal, context)
+            .refuse_owner::<S>(expected, owner, refusal, actor)
             .await)
     }
 
@@ -210,7 +207,7 @@ impl Redeemer {
         expected: S::Purpose,
         owner: UserId,
         refusal: OwnerRefusal,
-        context: &SessionContext,
+        actor: &Actor,
     ) -> Error {
         let reason = match refusal {
             OwnerRefusal::UserNotFound => UserNotFound,
@@ -220,7 +217,7 @@ impl Redeemer {
                 SignupStage::Finished => SignupUnfinished,
             },
         };
-        self.refuse(S::secret(expected), Some(owner), reason, context)
+        self.refuse(S::secret(expected), Some(owner), reason, actor)
             .await
     }
 
@@ -229,11 +226,11 @@ impl Redeemer {
         secret: SecretKind,
         user_id: Option<UserId>,
         reason: RedemptionFailureReason,
-        context: &SessionContext,
+        actor: &Actor,
     ) -> Error {
         self.audit
             .emit(
-                context,
+                actor.clone(),
                 AuditEventKind::RedemptionFailed {
                     user_id,
                     secret,

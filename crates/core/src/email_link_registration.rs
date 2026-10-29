@@ -32,10 +32,10 @@ impl RegistrationLink {
         }
     }
 
-    const fn finish(self) -> RegistrationFinish<'static> {
+    const fn finish(self, context: &SessionContext) -> RegistrationFinish<'_> {
         match self {
-            Self::Signup => RegistrationFinish::SignupLink,
-            Self::Recovery => RegistrationFinish::RecoveryLink,
+            Self::Signup => RegistrationFinish::SignupLink(context),
+            Self::Recovery => RegistrationFinish::RecoveryLink(context),
         }
     }
 
@@ -120,7 +120,7 @@ impl EmailLinkRegistration {
             passkey_count,
         } = self
             .registrations
-            .finish(challenge_id, response, name, &context, self.link.finish())
+            .finish(challenge_id, response, name, self.link.finish(&context))
             .await?;
         // A registration started since the link was redeemed may belong to whoever holds a lost
         // passkey or a stolen session, so it must not outlive the one the link started.

@@ -23,11 +23,26 @@ pub struct AuditEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "actor_type", rename_all = "snake_case")]
 pub enum Actor {
+    Session {
+        session_id: SessionId,
+        ip: ClientIp,
+        user_agent: Option<String>,
+    },
     Subject {
         ip: ClientIp,
         user_agent: Option<String>,
     },
     Operator(OperatorActor),
+}
+
+impl Actor {
+    pub(crate) fn session(session_id: SessionId, context: &SessionContext) -> Self {
+        Self::Session {
+            session_id,
+            ip: context.ip(),
+            user_agent: context.user_agent().map(str::to_owned),
+        }
+    }
 }
 
 impl From<&SessionContext> for Actor {
@@ -389,6 +404,17 @@ struct ActorDisplay<'a>(&'a Actor);
 impl fmt::Display for ActorDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
+            Actor::Session {
+                session_id,
+                ip,
+                user_agent,
+            } => {
+                write!(f, "session id={session_id} ip={ip}")?;
+                if let Some(user_agent) = user_agent {
+                    write!(f, " ua={}", Escaped(user_agent))?;
+                }
+                Ok(())
+            }
             Actor::Subject { ip, user_agent } => {
                 write!(f, "subject ip={ip}")?;
                 if let Some(user_agent) = user_agent {

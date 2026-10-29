@@ -140,7 +140,7 @@ async fn operator_delete_cascades_all_stores() {
     let email_change_token = last_email_change_token(&h);
     let (challenge_id, _) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start a pending registration");
 

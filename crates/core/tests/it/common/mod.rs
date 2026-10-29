@@ -710,7 +710,7 @@ pub async fn register_passkey(
     let session = stored_session(h, user, None).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);

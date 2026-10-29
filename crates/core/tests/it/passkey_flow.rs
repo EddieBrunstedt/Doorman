@@ -33,7 +33,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
     let session = session_for(&h, &user).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);
@@ -144,7 +144,7 @@ async fn registration_stores_each_reported_transport_once() {
     let session = session_for(&h, &user).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start_registration");
     let mut response = wa.do_registration(ccr);
@@ -279,7 +279,7 @@ async fn second_registration_excludes_existing_passkeys() {
 
     let (_id2, ccr2) = h
         .session_manager
-        .start_passkey_registration(&session_for(&h, &user).await)
+        .start_passkey_registration(&session_for(&h, &user).await, request_context())
         .await
         .expect("start second registration");
     assert_resident_registration_options(&ccr2);
@@ -298,7 +298,7 @@ async fn finish_registration_rejects_unknown_challenge() {
     let session = session_for(&h, &user).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start");
     let response = wa.do_registration(ccr);
@@ -324,7 +324,7 @@ async fn an_added_passkey_finishes_only_in_the_session_that_started_it() {
     let other = session_for(&h, &user).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&started_in)
+        .start_passkey_registration(&started_in, request_context())
         .await
         .expect("start");
     let response = wa.do_registration(ccr);
@@ -357,7 +357,7 @@ async fn finish_registration_rejects_expired_challenge() {
     let session = session_for(&h, &user).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start");
     let response = wa.do_registration(ccr);
@@ -387,7 +387,7 @@ async fn finish_registration_rejects_malformed_challenge() {
     let session = session_for(&h, &user).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start");
     let response = wa.do_registration(ccr);
@@ -429,7 +429,7 @@ async fn finish_registration_against_deleted_user_writes_no_orphan_passkey() {
     let session = session_for(&h, &user).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start");
     let response = wa.do_registration(ccr);
@@ -603,7 +603,7 @@ async fn finish_registration_rejects_tampered_attestation() {
     let session = session_for(&h, &user).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start");
     let mut response = wa.do_registration(ccr);
@@ -920,7 +920,7 @@ async fn finish_authentication_rejects_a_reauth_challenge() {
 
     let (reauth_id, options) = h
         .session_manager
-        .start_reauth(&session)
+        .start_reauth(&session, request_context())
         .await
         .expect("reauth start");
     let assertion = wa.do_scoped_authentication(options);
@@ -1242,7 +1242,7 @@ async fn a_refused_passkey_name_leaves_the_registration_challenge_usable() {
     let session = session_for(&h, &user).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);
@@ -1398,7 +1398,7 @@ async fn start_registration_from_ordinary_session_carries_no_cool_down() {
 
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);
@@ -1418,7 +1418,7 @@ async fn start_registration_for_deleted_user_errors() {
     h.users.delete_user(user.id).await.expect("delete user");
     let err = h
         .session_manager
-        .start_passkey_registration(&session_for(&h, &user).await)
+        .start_passkey_registration(&session_for(&h, &user).await, request_context())
         .await
         .expect_err("unknown user");
     assert!(matches!(err, Error::UserNotFound));
@@ -1441,7 +1441,7 @@ async fn start_registration_refuses_disabled_user() {
 
     let err = h
         .session_manager
-        .start_passkey_registration(&session_for(&h, &user).await)
+        .start_passkey_registration(&session_for(&h, &user).await, request_context())
         .await
         .expect_err("disabled user must be refused");
     assert!(matches!(err, Error::UserDisabled));
@@ -1452,7 +1452,7 @@ async fn start_registration_refuses_disabled_user() {
         .await
         .expect("re-enable user");
     h.session_manager
-        .start_passkey_registration(&session_for(&h, &user).await)
+        .start_passkey_registration(&session_for(&h, &user).await, request_context())
         .await
         .expect("no ceremony started: the pending budget is untouched");
 }
@@ -1474,7 +1474,7 @@ async fn registration_is_rejected_once_passkey_cap_is_reached() {
     let session = session_for(&h, &user).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("second start allowed");
     let response = wa.do_registration(ccr);
@@ -1512,16 +1512,16 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
 
     let (first_id, first_options) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("first pending allowed");
     h.session_manager
-        .start_passkey_registration(&session_for(&h, &user).await)
+        .start_passkey_registration(&session_for(&h, &user).await, request_context())
         .await
         .expect("second pending allowed");
     let err = h
         .session_manager
-        .start_passkey_registration(&session_for(&h, &user).await)
+        .start_passkey_registration(&session_for(&h, &user).await, request_context())
         .await
         .expect_err("third start rejected at the cap");
     assert!(matches!(
@@ -1538,13 +1538,13 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
         .await
         .expect("finish the first ceremony");
     h.session_manager
-        .start_passkey_registration(&session_for(&h, &user).await)
+        .start_passkey_registration(&session_for(&h, &user).await, request_context())
         .await
         .expect("no extra challenge was minted");
 
     let other = make_user(&h, "pending-other@example.com").await;
     h.session_manager
-        .start_passkey_registration(&session_for(&h, &other).await)
+        .start_passkey_registration(&session_for(&h, &other).await, request_context())
         .await
         .expect("a different user has its own budget");
 }
@@ -1560,13 +1560,13 @@ async fn expired_registrations_do_not_count_toward_the_pending_cap() {
     let user = make_user(&h, "abandoned@example.com").await;
 
     h.session_manager
-        .start_passkey_registration(&session_for(&h, &user).await)
+        .start_passkey_registration(&session_for(&h, &user).await, request_context())
         .await
         .expect("first pending allowed");
     h.clock.advance(ChronoDuration::seconds(301));
 
     h.session_manager
-        .start_passkey_registration(&session_for(&h, &user).await)
+        .start_passkey_registration(&session_for(&h, &user).await, request_context())
         .await
         .expect("the expired registration no longer holds the only slot");
 }

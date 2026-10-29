@@ -31,11 +31,12 @@ pub(crate) fn routes() -> Router<AuthState> {
 async fn register_start(
     State(state): State<AuthState>,
     auth: AuthSession,
+    RequestContext(context): RequestContext,
 ) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ErrorResponse> {
     let (id, options) = state
         .core
         .sessions
-        .start_passkey_registration(&auth.session)
+        .start_passkey_registration(&auth.session, context)
         .await?;
     Ok(Json(PasskeyChallenge {
         challenge_id: id.0.to_string(),

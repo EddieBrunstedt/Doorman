@@ -70,7 +70,7 @@ async fn fresh_proof(
 ) -> ReauthProof {
     let (challenge_id, options) = h
         .session_manager
-        .start_reauth(session)
+        .start_reauth(session, request_context())
         .await
         .expect("reauth start");
     let assertion = wa.do_scoped_authentication(options);
@@ -389,7 +389,7 @@ async fn expired_challenge_is_rejected() {
 
     let (challenge_id, options) = h
         .session_manager
-        .start_reauth(&session)
+        .start_reauth(&session, request_context())
         .await
         .expect("reauth start");
     let assertion = wa.do_scoped_authentication(options);
@@ -442,7 +442,7 @@ async fn assertion_from_another_users_passkey_is_rejected() {
         .clone();
     let (challenge_id, options) = h
         .session_manager
-        .start_reauth(&owner_session)
+        .start_reauth(&owner_session, request_context())
         .await
         .expect("reauth start");
     let assertion = attacker_wa.do_scoped_authentication(scoped_to(options, &attacker_passkey));
@@ -588,7 +588,7 @@ async fn register_passkey_in_cool_down(
     let session = session_in_cool_down_for(h, user, cool_down_until).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start registration");
     let response = wa.do_registration(ccr);
@@ -626,7 +626,7 @@ async fn a_passkey_in_recovery_cool_down_cannot_reauthenticate() {
 
     let (challenge_id, options) = h
         .session_manager
-        .start_reauth(&current)
+        .start_reauth(&current, request_context())
         .await
         .expect("reauth start");
     assert!(
@@ -677,7 +677,10 @@ async fn reauth_start_is_refused_when_every_passkey_is_in_recovery_cool_down() {
     register_passkey_in_cool_down(&h, &user, &mut wa, until).await;
     let current = session_for(&h, &user).await;
 
-    let refused = h.session_manager.start_reauth(&current).await;
+    let refused = h
+        .session_manager
+        .start_reauth(&current, request_context())
+        .await;
     assert!(
         matches!(refused, Err(Error::RecoveryCoolDownActive)),
         "got: {refused:?}"

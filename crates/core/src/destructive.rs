@@ -39,11 +39,9 @@ pub enum CurrentSession {
 }
 
 // Only the gate builds one, and every destructive action's implementation takes one, so none of
-// them can run without passing it. It names the request that passed the gate as the actor, so no
-// action can audit the session's login in its place.
+// them can run without passing it.
 pub(crate) struct Cleared {
     session: LiveSession,
-    actor: Actor,
 }
 
 impl Cleared {
@@ -52,7 +50,7 @@ impl Cleared {
     }
 
     pub(crate) fn actor(&self) -> Actor {
-        self.actor.clone()
+        self.session.actor()
     }
 }
 
@@ -102,7 +100,7 @@ impl DestructiveActions {
             return Err(Error::ActingSessionNotRevocable);
         }
         let cleared = self
-            .clear(action.reauth_action(), session, proof.as_ref(), &context)
+            .clear(action.reauth_action(), session, proof.as_ref(), context)
             .await?;
         match action {
             DestructiveAction::DeleteUser => {
@@ -137,21 +135,18 @@ impl DestructiveActions {
         action: ReauthAction,
         session: &ResolvedSession,
         proof: Option<&ReauthProof>,
-        context: &SessionContext,
+        context: SessionContext,
     ) -> Result<Cleared> {
-        let session = self.records.reread(session).await?;
+        let session = self.records.reread(session, context).await?;
         RecoveryCoolDown::refuse_destructive_action(&session)?;
         if self.policy.requires(action) {
             let Some(proof) = proof else {
                 tracing::info!(outcome = "proof_required", "reauth required");
                 return Err(Error::ReauthRequired);
             };
-            self.reauth.verify(&session, proof, context).await?;
+            self.reauth.verify(&session, proof).await?;
         }
-        Ok(Cleared {
-            session,
-            actor: Actor::from(context),
-        })
+        Ok(Cleared { session })
     }
 
     async fn log_out_everywhere(&self, cleared: Cleared) -> Result<()> {

@@ -469,7 +469,7 @@ async fn delete_user_cascades_all_stores() {
     let email_change_token = last_email_change_token(&h);
     let (challenge_id, _) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start a pending registration");
 
@@ -534,7 +534,7 @@ async fn registration_challenge_outliving_its_user_is_refused() {
     let session = session_for(&h, &user).await;
     let (challenge_id, options) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start a pending registration");
     // Leaves the challenge behind, as a registration started while the delete runs can.

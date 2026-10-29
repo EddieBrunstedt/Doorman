@@ -16,15 +16,26 @@ use crate::storage::{
 use crate::token::generate_token;
 
 // Only `SessionRecords::reread` builds one, so whatever takes it acts for a session that was still
-// live when the call reached core, not one revoked or expired since it was resolved.
+// live when the call reached core, not one revoked or expired since it was resolved. It holds the
+// request the session is making, so whatever it does is audited as that session acting from that
+// request, never from its login.
 #[derive(Debug)]
-pub(crate) struct LiveSession(ResolvedSession);
+pub(crate) struct LiveSession {
+    session: ResolvedSession,
+    context: SessionContext,
+}
+
+impl LiveSession {
+    pub(crate) fn actor(&self) -> Actor {
+        Actor::session(self.session.id, &self.context)
+    }
+}
 
 impl Deref for LiveSession {
     type Target = ResolvedSession;
 
     fn deref(&self) -> &ResolvedSession {
-        &self.0
+        &self.session
     }
 }
 
@@ -117,18 +128,21 @@ impl SessionRecords {
     ) -> Result<IssuedSession> {
         self.check_allowed(transport)?;
         let user_id = passkey.user_id;
+        let id = SessionId::new();
         let now = self.clock.now();
         let cool_down = RecoveryCoolDown::of_passkey(passkey, now);
         if let Some(max) = self.config.max_sessions_per_user {
-            // The login that pushes a session out is the one that revokes it.
-            self.enforce_session_cap(user_id, max.get(), cool_down, Actor::from(context), now)
+            // The session that pushes another out is the one that revokes it, though it isn't
+            // written yet.
+            let actor = Actor::session(id, context);
+            self.enforce_session_cap(user_id, max.get(), cool_down, actor, now)
                 .await?;
         }
 
         let (token, token_hash) = generate_token()?;
 
         let session = Session {
-            id: SessionId::new(),
+            id,
             user_id,
             token_hash,
             transport,
@@ -198,7 +212,11 @@ impl SessionRecords {
 
     // Every write made for a session reads it again, so one revoked or expired since it was
     // resolved writes nothing. Logging out needs no re-read: it only deletes the session.
-    pub(crate) async fn reread(&self, session: &ResolvedSession) -> Result<LiveSession> {
+    pub(crate) async fn reread(
+        &self,
+        session: &ResolvedSession,
+        context: SessionContext,
+    ) -> Result<LiveSession> {
         let stored = self
             .sessions
             .find_session_by_id(session.id)
@@ -206,7 +224,10 @@ impl SessionRecords {
             .filter(|stored| stored.token_hash == *session.token_hash());
         let now = self.clock.now();
         let stored = live(stored, now).ok_or(Error::SessionNotFound)?;
-        Ok(LiveSession(ResolvedSession::new(stored, now)))
+        Ok(LiveSession {
+            session: ResolvedSession::new(stored, now),
+            context,
+        })
     }
 
     fn slide_due(&self, session: &Session, now: DateTime<Utc>) -> bool {

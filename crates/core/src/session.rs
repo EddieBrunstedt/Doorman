@@ -189,14 +189,17 @@ impl SessionManager {
 
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id, session_id = %session.id))]
     pub async fn log_out(&self, session: &ResolvedSession, context: SessionContext) -> Result<()> {
-        self.records.log_out(session, Actor::from(&context)).await
+        self.records
+            .log_out(session, Actor::session(session.id, &context))
+            .await
     }
 
     pub async fn start_passkey_registration(
         &self,
         session: &ResolvedSession,
+        context: SessionContext,
     ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
-        let session = self.records.reread(session).await?;
+        let session = self.records.reread(session, context).await?;
         self.passkey.start_registration(&session).await
     }
 
@@ -208,9 +211,9 @@ impl SessionManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<PasskeySummary> {
-        let session = self.records.reread(session).await?;
+        let session = self.records.reread(session, context).await?;
         self.passkey
-            .finish_registration(&session, challenge_id, response, name, context)
+            .finish_registration(&session, challenge_id, response, name)
             .await
     }
 
@@ -225,17 +228,18 @@ impl SessionManager {
         name: Option<String>,
         context: SessionContext,
     ) -> Result<PasskeySummary> {
-        let session = self.records.reread(session).await?;
+        let session = self.records.reread(session, context).await?;
         self.passkey
-            .rename_passkey(&session, credential_id, name, context)
+            .rename_passkey(&session, credential_id, name)
             .await
     }
 
     pub async fn start_reauth(
         &self,
         session: &ResolvedSession,
+        context: SessionContext,
     ) -> Result<(PasskeyChallengeId, RequestChallengeResponse)> {
-        let session = self.records.reread(session).await?;
+        let session = self.records.reread(session, context).await?;
         self.reauth.start(&session).await
     }
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use webauthn_rs::prelude::{RegisterPublicKeyCredential, Webauthn};
 
-use crate::audit::{AuditDispatch, AuditEventKind};
+use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::challenge::{PasskeyChallenges, RedeemedRegistration};
 use crate::clock::Clock;
 use crate::context::CoreDeps;
@@ -53,28 +53,35 @@ impl RegistrationSource<'_> {
     }
 }
 
-// Who finishes a registration must be who started it: the same kind of email link, or the same
-// session.
+// Who finishes a registration must be who started it: a request following the same kind of email
+// link, or the same session.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RegistrationFinish<'a> {
-    SignupLink,
-    RecoveryLink,
+    SignupLink(&'a SessionContext),
+    RecoveryLink(&'a SessionContext),
     Session(&'a LiveSession),
 }
 
 impl RegistrationFinish<'_> {
     const fn purpose(self) -> RegistrationPurpose {
         match self {
-            Self::SignupLink => RegistrationPurpose::Signup,
-            Self::RecoveryLink => RegistrationPurpose::Recovery,
+            Self::SignupLink(_) => RegistrationPurpose::Signup,
+            Self::RecoveryLink(_) => RegistrationPurpose::Recovery,
             Self::Session(_) => RegistrationPurpose::AddPasskey,
         }
     }
 
     fn session_id(self) -> Option<SessionId> {
         match self {
-            Self::SignupLink | Self::RecoveryLink => None,
+            Self::SignupLink(_) | Self::RecoveryLink(_) => None,
             Self::Session(session) => Some(session.id),
+        }
+    }
+
+    fn actor(self) -> Actor {
+        match self {
+            Self::SignupLink(context) | Self::RecoveryLink(context) => Actor::from(context),
+            Self::Session(session) => session.actor(),
         }
     }
 }
@@ -157,15 +164,15 @@ impl PasskeyRegistrations {
         challenge_id: PasskeyChallengeId,
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
-        context: &SessionContext,
         finish: RegistrationFinish<'_>,
     ) -> Result<RegisteredPasskey> {
         // Parsed before the challenge is redeemed, so a refused name costs no ceremony.
         let name = PasskeyName::parse(name.as_deref())?;
         let purpose = finish.purpose();
+        let actor = finish.actor();
         let redeemed = self
             .challenges
-            .redeem_registration(challenge_id, purpose, finish.session_id(), context)
+            .redeem_registration(challenge_id, purpose, finish.session_id(), &actor)
             .await?;
         let user_id = redeemed.user.id;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
@@ -194,7 +201,7 @@ impl PasskeyRegistrations {
 
         self.passkeys.add_passkey(passkey.clone()).await?;
         self.audit
-            .emit(context, AuditEventKind::PasskeyAdded { user_id })
+            .emit(actor, AuditEventKind::PasskeyAdded { user_id })
             .await;
         Ok(RegisteredPasskey {
             user,

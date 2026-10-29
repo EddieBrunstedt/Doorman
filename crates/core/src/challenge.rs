@@ -12,7 +12,7 @@ use webauthn_rs_proto::ResidentKeyRequirement;
 
 use crate::assertion::PendingAssertion;
 use crate::audit::RedemptionFailureReason::WrongSession;
-use crate::audit::SecretKind;
+use crate::audit::{Actor, SecretKind};
 use crate::clock::{Clock, expiry};
 use crate::context::CoreDeps;
 use crate::error::{Error, Result};
@@ -20,6 +20,7 @@ use crate::passkey::{PasskeyConfig, decode_passkey};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::redeem::Redeemer;
 use crate::session::{ResolvedSession, SessionContext};
+use crate::session_records::LiveSession;
 use crate::storage::{
     AuthenticationPurpose, PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore,
     RegistrationPurpose, SessionId, StoredPasskeyAuthentication, StoredPasskeyRegistration, User,
@@ -95,7 +96,7 @@ impl PasskeyChallenges {
         id: PasskeyChallengeId,
         purpose: AuthenticationPurpose,
         owner: Option<UserId>,
-        context: &SessionContext,
+        actor: &Actor,
     ) -> Result<S> {
         let taken = self.challenges.take_authentication(id).await?;
         self.redeemer
@@ -104,7 +105,7 @@ impl PasskeyChallenges {
                 purpose,
                 owner,
                 |stored| decode_state(&stored.state),
-                context,
+                actor,
             )
             .await
     }
@@ -193,7 +194,7 @@ impl PasskeyChallenges {
         id: PasskeyChallengeId,
         purpose: RegistrationPurpose,
         session_id: Option<SessionId>,
-        context: &SessionContext,
+        actor: &Actor,
     ) -> Result<RedeemedRegistration> {
         let taken = self.challenges.take_registration(id).await?;
         let (user, (started_by, state, cool_down)) = self
@@ -210,7 +211,7 @@ impl PasskeyChallenges {
                         RecoveryCoolDown::of_registration(&stored),
                     ))
                 },
-                context,
+                actor,
             )
             .await?;
         if started_by != session_id {
@@ -220,7 +221,7 @@ impl PasskeyChallenges {
                     SecretKind::RegistrationChallenge,
                     Some(user.id),
                     WrongSession,
-                    context,
+                    actor,
                 )
                 .await);
         }
@@ -260,8 +261,9 @@ impl PasskeyChallenges {
         id: PasskeyChallengeId,
         context: &SessionContext,
     ) -> Result<PendingAssertion> {
+        let actor = Actor::from(context);
         let state = self
-            .take_authentication(id, AuthenticationPurpose::Login, None, context)
+            .take_authentication(id, AuthenticationPurpose::Login, None, &actor)
             .await?;
         Ok(PendingAssertion::Login(state))
     }
@@ -317,12 +319,12 @@ impl PasskeyChallenges {
     pub(crate) async fn redeem_reauth(
         &self,
         id: PasskeyChallengeId,
-        session: &ResolvedSession,
-        context: &SessionContext,
+        session: &LiveSession,
     ) -> Result<PendingAssertion> {
         let user_id = session.user_id;
+        let actor = session.actor();
         let ReauthChallengeState { session_id, state } = self
-            .take_authentication(id, AuthenticationPurpose::Reauth, Some(user_id), context)
+            .take_authentication(id, AuthenticationPurpose::Reauth, Some(user_id), &actor)
             .await?;
         if session_id != session.id {
             return Err(self
@@ -331,7 +333,7 @@ impl PasskeyChallenges {
                     SecretKind::ReauthChallenge,
                     Some(user_id),
                     WrongSession,
-                    context,
+                    &actor,
                 )
                 .await);
         }

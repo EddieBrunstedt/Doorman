@@ -367,7 +367,7 @@ async fn signup_session_and_audit_record_the_peer_despite_spoofing() {
 }
 
 #[tokio::test]
-async fn log_out_audits_the_request_not_the_login() {
+async fn log_out_audits_the_session_and_its_request_not_the_login() {
     let audit = Arc::new(InMemoryAuditSink::new());
     let app = TestApp::with(
         |r| {
@@ -395,7 +395,8 @@ async fn log_out_audits_the_request_not_the_login() {
         .expect("log out audited");
     assert_eq!(
         logged_out.actor,
-        Actor::Subject {
+        Actor::Session {
+            session_id: alice.session.id,
             ip: PEER.parse().expect("peer"),
             user_agent: Some("logout agent".to_owned()),
         },

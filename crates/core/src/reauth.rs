@@ -9,7 +9,6 @@ use crate::challenge::PasskeyChallenges;
 use crate::context::CoreDeps;
 use crate::error::Result;
 use crate::passkey::PasskeyConfig;
-use crate::session::SessionContext;
 use crate::session_records::LiveSession;
 use crate::storage::PasskeyChallengeId;
 
@@ -75,21 +74,16 @@ impl ReauthManager {
         Ok((id, rcr))
     }
 
-    pub(crate) async fn verify(
-        &self,
-        session: &LiveSession,
-        proof: &ReauthProof,
-        context: &SessionContext,
-    ) -> Result<()> {
+    pub(crate) async fn verify(&self, session: &LiveSession, proof: &ReauthProof) -> Result<()> {
         let user_id = session.user_id;
         let pending = self
             .challenges
-            .redeem_reauth(proof.challenge_id, session, context)
+            .redeem_reauth(proof.challenge_id, session)
             .await?;
         if let Err(refusal) = self.assertions.verify(pending, &proof.assertion).await? {
             self.audit
                 .emit(
-                    context,
+                    session.actor(),
                     AuditEventKind::ReauthFailed {
                         user_id,
                         reason: refusal.reason,
@@ -100,7 +94,7 @@ impl ReauthManager {
         }
 
         self.audit
-            .emit(context, AuditEventKind::ReauthSucceeded { user_id })
+            .emit(session.actor(), AuditEventKind::ReauthSucceeded { user_id })
             .await;
         Ok(())
     }

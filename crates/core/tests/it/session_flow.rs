@@ -6,6 +6,7 @@ use doorman_core::audit::{Actor, AuditEventKind};
 use doorman_core::clock::Clock;
 use doorman_core::destructive::{CurrentSession, DestructiveAction};
 use doorman_core::error::Error;
+use doorman_core::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
 use doorman_core::session::{
     IssuedSession, ResolvedSession, SessionConfig, SessionContext, hash_token,
 };
@@ -17,8 +18,8 @@ use doorman_test_support::request_context;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
 use crate::common::{
-    Harness, LoggedInUser, RECOVERY_URL, authenticator, kinds, log_in, logged_in_user,
-    logged_in_user_from, register_passkey, session_count, session_in_cool_down_for,
+    Harness, LoggedInUser, RECOVERY_URL, ResidentAuthenticator, authenticator, kinds, log_in,
+    logged_in_user, logged_in_user_from, register_passkey, session_count, session_in_cool_down_for,
     token_from_email,
 };
 
@@ -183,9 +184,10 @@ impl SessionWrite {
     ) -> Result<(), Error> {
         let sessions = &h.session_manager;
         match self {
-            Self::StartPasskeyRegistration => {
-                sessions.start_passkey_registration(session).await.map(drop)
-            }
+            Self::StartPasskeyRegistration => sessions
+                .start_passkey_registration(session, request_context())
+                .await
+                .map(drop),
             Self::FinishPasskeyRegistration => {
                 let (challenge_id, options) = pending;
                 let response = logged_in.authenticator.do_registration(options);
@@ -209,7 +211,10 @@ impl SessionWrite {
                 )
                 .await
                 .map(drop),
-            Self::StartReauth => sessions.start_reauth(session).await.map(drop),
+            Self::StartReauth => sessions
+                .start_reauth(session, request_context())
+                .await
+                .map(drop),
             Self::Perform => sessions
                 .perform(
                     session,
@@ -248,7 +253,7 @@ async fn a_session_that_ended_after_it_was_resolved_writes_nothing() {
             let session = alice.session.session.clone();
             let pending = h
                 .session_manager
-                .start_passkey_registration(&session)
+                .start_passkey_registration(&session, request_context())
                 .await
                 .expect("start while live");
             end.apply(&h, &session).await;
@@ -489,45 +494,64 @@ async fn revoke_others_keeps_only_the_acting_session_audits_and_notifies() {
     assert_eq!(sent[0].to, "alice@example.com");
 }
 
+async fn reauth_proof(
+    h: &Harness,
+    session: &ResolvedSession,
+    wa: &mut ResidentAuthenticator,
+) -> ReauthProof {
+    let (challenge_id, options) = h
+        .session_manager
+        .start_reauth(session, request_context())
+        .await
+        .expect("reauth start");
+    ReauthProof {
+        challenge_id,
+        assertion: wa.do_scoped_authentication(options),
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ActingRequest {
     LogOut,
     RevokeAnotherSession,
     RevokeOtherSessions,
     LogOutEverywhere,
-    LogInPastSessionCap,
     DeleteUser,
-    RemovePasskey,
+    RemovePasskeyWithProof,
+    SpendAnotherSessionsProof,
     RequestEmailChange,
+    AddPasskey,
+    RenamePasskey,
 }
 
 impl ActingRequest {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 10] = [
         Self::LogOut,
         Self::RevokeAnotherSession,
         Self::RevokeOtherSessions,
         Self::LogOutEverywhere,
-        Self::LogInPastSessionCap,
         Self::DeleteUser,
-        Self::RemovePasskey,
+        Self::RemovePasskeyWithProof,
+        Self::SpendAnotherSessionsProof,
         Self::RequestEmailChange,
+        Self::AddPasskey,
+        Self::RenamePasskey,
     ];
+
+    const fn is_refused(self) -> bool {
+        matches!(self, Self::SpendAnotherSessionsProof)
+    }
 }
 
 #[tokio::test]
-async fn revocations_and_destructive_actions_audit_the_request_not_the_login() {
+async fn every_event_a_session_causes_names_it_and_the_request_not_the_login() {
     let login = SessionContext::new("198.51.100.1".parse().expect("ip"), Some("login"));
     let request = SessionContext::new("203.0.113.9".parse().expect("ip"), Some("request"));
     for acting in ActingRequest::ALL {
         let h = Harness::builder()
-            .session_config(SessionConfig {
-                absolute_lifetime: Duration::from_secs(60 * 60),
-                max_sessions_per_user: NonZeroU32::new(2),
-                ..SessionConfig::default()
-            })
+            .reauth_policy(ReauthPolicy::required_for([ReauthAction::RemovePasskey]))
             .build();
         let mut alice = logged_in_user_from(&h, "alice@example.com", login.clone()).await;
-        h.clock.advance(ChronoDuration::seconds(1));
         let other = log_in(
             &h,
             &mut alice.authenticator,
@@ -536,67 +560,158 @@ async fn revocations_and_destructive_actions_audit_the_request_not_the_login() {
         )
         .await;
         let spare = register_passkey(&h, alice.user.id, &mut authenticator(), None).await;
-        h.clock.advance(ChronoDuration::seconds(1));
         let current = &alice.session.session;
         let audited_before = h.audit.len();
 
-        let perform = |action| {
+        let perform = |action, proof| {
             h.session_manager
-                .perform(current, action, None, request.clone())
+                .perform(current, action, proof, request.clone())
         };
-        match acting {
-            ActingRequest::LogOut => h
-                .session_manager
-                .log_out(current, request.clone())
-                .await
-                .map(|()| CurrentSession::Ended),
-            ActingRequest::RevokeAnotherSession => {
-                perform(DestructiveAction::RevokeAnotherSession {
+        let remove_spare = || DestructiveAction::RemovePasskey {
+            credential_id: spare.credential_id.clone(),
+        };
+        let outcome = match acting {
+            ActingRequest::LogOut => h.session_manager.log_out(current, request.clone()).await,
+            ActingRequest::RevokeAnotherSession => perform(
+                DestructiveAction::RevokeAnotherSession {
                     id: other.session.id,
-                })
-                .await
-            }
+                },
+                None,
+            )
+            .await
+            .map(drop),
             ActingRequest::RevokeOtherSessions => {
-                perform(DestructiveAction::RevokeOtherSessions).await
+                perform(DestructiveAction::RevokeOtherSessions, None)
+                    .await
+                    .map(drop)
             }
-            ActingRequest::LogOutEverywhere => perform(DestructiveAction::LogOutEverywhere).await,
-            ActingRequest::LogInPastSessionCap => {
-                log_in(
-                    &h,
-                    &mut alice.authenticator,
-                    &alice.credential_id,
+            ActingRequest::LogOutEverywhere => perform(DestructiveAction::LogOutEverywhere, None)
+                .await
+                .map(drop),
+            ActingRequest::DeleteUser => {
+                perform(DestructiveAction::DeleteUser, None).await.map(drop)
+            }
+            ActingRequest::RemovePasskeyWithProof => {
+                let proof = reauth_proof(&h, current, &mut alice.authenticator).await;
+                perform(remove_spare(), Some(proof)).await.map(drop)
+            }
+            ActingRequest::SpendAnotherSessionsProof => {
+                let proof = reauth_proof(&h, &other.session, &mut alice.authenticator).await;
+                perform(remove_spare(), Some(proof)).await.map(drop)
+            }
+            ActingRequest::RequestEmailChange => perform(
+                DestructiveAction::RequestEmailChange {
+                    new_email: "alice@example.org".into(),
+                },
+                None,
+            )
+            .await
+            .map(drop),
+            ActingRequest::AddPasskey => {
+                let (challenge_id, ccr) = h
+                    .session_manager
+                    .start_passkey_registration(current, request.clone())
+                    .await
+                    .expect("start passkey registration");
+                let response = authenticator().do_registration(ccr);
+                h.session_manager
+                    .finish_passkey_registration(
+                        current,
+                        challenge_id,
+                        &response,
+                        None,
+                        request.clone(),
+                    )
+                    .await
+                    .map(drop)
+            }
+            ActingRequest::RenamePasskey => h
+                .session_manager
+                .rename_passkey(
+                    current,
+                    &spare.credential_id,
+                    Some("renamed".into()),
                     request.clone(),
                 )
-                .await;
-                Ok(CurrentSession::Kept)
-            }
-            ActingRequest::DeleteUser => perform(DestructiveAction::DeleteUser).await,
-            ActingRequest::RemovePasskey => {
-                perform(DestructiveAction::RemovePasskey {
-                    credential_id: spare.credential_id.clone(),
-                })
                 .await
-            }
-            ActingRequest::RequestEmailChange => {
-                perform(DestructiveAction::RequestEmailChange {
-                    new_email: "alice@example.org".into(),
-                })
-                .await
-            }
-        }
-        .unwrap_or_else(|error| panic!("{acting:?} failed: {error:?}"));
+                .map(drop),
+        };
+        assert_eq!(
+            outcome.is_err(),
+            acting.is_refused(),
+            "{acting:?} gave {outcome:?}",
+        );
 
         let audited = &h.audit.events()[audited_before..];
         assert!(!audited.is_empty(), "{acting:?} audits nothing");
         for event in audited {
             assert_eq!(
                 event.actor,
-                Actor::from(&request),
+                Actor::Session {
+                    session_id: current.id,
+                    ip: request.ip(),
+                    user_agent: Some("request".into()),
+                },
                 "{acting:?} audits {:?} as the wrong actor",
                 event.kind,
             );
         }
     }
+}
+
+#[tokio::test]
+async fn a_login_past_the_session_cap_revokes_as_the_session_it_starts() {
+    let request = SessionContext::new("203.0.113.9".parse().expect("ip"), Some("request"));
+    let h = Harness::builder()
+        .session_config(SessionConfig {
+            max_sessions_per_user: NonZeroU32::new(1),
+            ..SessionConfig::default()
+        })
+        .build();
+    let mut alice = logged_in_user(&h, "alice@example.com").await;
+    let audited_before = h.audit.len();
+
+    let started = log_in(
+        &h,
+        &mut alice.authenticator,
+        &alice.credential_id,
+        request.clone(),
+    )
+    .await;
+
+    let user_id = alice.user.id;
+    let audited: Vec<_> = h.audit.events()[audited_before..]
+        .iter()
+        .map(|event| (event.actor.clone(), event.kind.clone()))
+        .collect();
+    assert_eq!(
+        audited,
+        vec![
+            (
+                Actor::Session {
+                    session_id: started.session.id,
+                    ip: request.ip(),
+                    user_agent: Some("request".into()),
+                },
+                AuditEventKind::SessionRevoked {
+                    user_id,
+                    session_id: alice.session.session.id,
+                },
+            ),
+            (
+                Actor::from(&request),
+                AuditEventKind::SessionCreated {
+                    user_id,
+                    session_id: started.session.id,
+                    transport: SessionTransport::Cookie,
+                },
+            ),
+            (
+                Actor::from(&request),
+                AuditEventKind::LoginSucceeded { user_id },
+            ),
+        ],
+    );
 }
 
 #[tokio::test]

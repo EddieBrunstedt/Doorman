@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::assembly::{AssemblyError, validate_lifetime};
+use crate::audit::Actor;
 use crate::clock::{Clock, expiry};
 use crate::context::CoreDeps;
 use crate::email::EmailAddress;
@@ -145,7 +146,7 @@ impl EmailLinks {
         let taken = self.links.redeem_link(&hash_token(token)).await?;
         let (user, new_email) = self
             .redeemer
-            .check_owned(taken, self.purpose, carried_email, context)
+            .check_owned(taken, self.purpose, carried_email, &Actor::from(context))
             .await?;
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
         Ok((user, new_email))
@@ -159,7 +160,7 @@ impl EmailLinks {
         context: &SessionContext,
     ) -> Error {
         self.redeemer
-            .refuse_owner::<EmailLink>(self.purpose, owner, refusal, context)
+            .refuse_owner::<EmailLink>(self.purpose, owner, refusal, &Actor::from(context))
             .await
     }
 }

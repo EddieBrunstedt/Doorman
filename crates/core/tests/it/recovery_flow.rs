@@ -683,7 +683,7 @@ async fn passkey_registered_during_cool_down_inherits_its_deadline() {
     let mut wa = authenticator();
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&resolved)
+        .start_passkey_registration(&resolved, request_context())
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);
@@ -743,7 +743,7 @@ async fn passkey_registered_after_cool_down_carries_no_cool_down() {
     let mut wa = authenticator();
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&resolved)
+        .start_passkey_registration(&resolved, request_context())
         .await
         .expect("start_registration");
     let response = wa.do_registration(ccr);
@@ -977,7 +977,7 @@ async fn ordinary_registration_still_rejected_at_cap() {
     let session = session_for(&h, &user).await;
     let (challenge_id, ccr) = h
         .session_manager
-        .start_passkey_registration(&session)
+        .start_passkey_registration(&session, request_context())
         .await
         .expect("start allowed at the cap");
     let response = filler.do_registration(ccr);
