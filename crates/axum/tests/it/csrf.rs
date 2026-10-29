@@ -9,7 +9,7 @@ use doorman_core::assembly::AuthCoreRequired;
 
 const EVIL_ORIGIN: &str = "https://evil.test";
 const RELATED_ORIGIN: &str = "https://related.test";
-const HOST_TRUSTED_ORIGIN: &str = "https://admin.app.test";
+const HOST_TRUSTED_ORIGIN: &str = "https://api.app.test";
 
 fn from_another_site(call: Call<'_>) -> Call<'_> {
     call.header("sec-fetch-site", "cross-site")

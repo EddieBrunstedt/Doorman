@@ -628,14 +628,14 @@ pub async fn provision_user(h: &Harness, email: &str) -> User {
     outcome.user
 }
 
-pub struct SignedIn {
+pub struct LoggedInUser {
     pub user: User,
     pub authenticator: ResidentAuthenticator,
     pub credential_id: Vec<u8>,
     pub session: IssuedSession,
 }
 
-impl SignedIn {
+impl LoggedInUser {
     pub async fn log_in_again(&mut self, h: &Harness) -> IssuedSession {
         log_in(
             h,
@@ -647,16 +647,20 @@ impl SignedIn {
     }
 }
 
-pub async fn sign_in(h: &Harness, email: &str) -> SignedIn {
-    sign_in_from(h, email, request_context()).await
+pub async fn logged_in_user(h: &Harness, email: &str) -> LoggedInUser {
+    logged_in_user_from(h, email, request_context()).await
 }
 
-pub async fn sign_in_from(h: &Harness, email: &str, context: SessionContext) -> SignedIn {
+pub async fn logged_in_user_from(
+    h: &Harness,
+    email: &str,
+    context: SessionContext,
+) -> LoggedInUser {
     let user = make_user(h, email).await;
     let mut authenticator = authenticator();
     let passkey = register_passkey(h, user.id, &mut authenticator, None).await;
     let session = log_in(h, &mut authenticator, &passkey.credential_id, context).await;
-    SignedIn {
+    LoggedInUser {
         user,
         authenticator,
         credential_id: passkey.credential_id,

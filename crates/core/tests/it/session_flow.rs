@@ -17,8 +17,9 @@ use doorman_test_support::request_context;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
 use crate::common::{
-    Harness, RECOVERY_URL, SignedIn, authenticator, kinds, log_in, register_passkey, session_count,
-    session_in_cool_down_for, sign_in, sign_in_from, token_from_email,
+    Harness, LoggedInUser, RECOVERY_URL, authenticator, kinds, log_in, logged_in_user,
+    logged_in_user_from, register_passkey, session_count, session_in_cool_down_for,
+    token_from_email,
 };
 
 fn harness_with_lifetime(absolute_lifetime: Duration) -> Harness {
@@ -66,7 +67,7 @@ impl BulkRevocation {
 async fn a_login_issues_a_session_bound_to_its_token() {
     let h = Harness::fresh();
     let context = SessionContext::new("1.2.3.4".parse().expect("ip"), Some("test-agent"));
-    let alice = sign_in_from(&h, "alice@example.com", context).await;
+    let alice = logged_in_user_from(&h, "alice@example.com", context).await;
     let issued = &alice.session;
 
     assert_eq!(h.sessions.len(), 1);
@@ -100,7 +101,7 @@ async fn a_login_issues_a_session_bound_to_its_token() {
 #[tokio::test]
 async fn log_out_deletes_the_session_and_audits_it() {
     let h = Harness::fresh();
-    let alice = sign_in(&h, "alice@example.com").await;
+    let alice = logged_in_user(&h, "alice@example.com").await;
     let session = &alice.session.session;
 
     h.session_manager
@@ -176,7 +177,7 @@ impl SessionWrite {
     async fn run(
         self,
         h: &Harness,
-        signed_in: &mut SignedIn,
+        logged_in: &mut LoggedInUser,
         session: &ResolvedSession,
         pending: (PasskeyChallengeId, CreationChallengeResponse),
     ) -> Result<(), Error> {
@@ -187,7 +188,7 @@ impl SessionWrite {
             }
             Self::FinishPasskeyRegistration => {
                 let (challenge_id, options) = pending;
-                let response = signed_in.authenticator.do_registration(options);
+                let response = logged_in.authenticator.do_registration(options);
                 sessions
                     .finish_passkey_registration(
                         session,
@@ -202,7 +203,7 @@ impl SessionWrite {
             Self::RenamePasskey => sessions
                 .rename_passkey(
                     session,
-                    &signed_in.credential_id,
+                    &logged_in.credential_id,
                     Some("renamed".into()),
                     request_context(),
                 )
@@ -243,7 +244,7 @@ async fn a_session_that_ended_after_it_was_resolved_writes_nothing() {
     for end in SessionEnd::ALL {
         for write in SessionWrite::ALL {
             let h = Harness::fresh();
-            let mut alice = sign_in(&h, "alice@example.com").await;
+            let mut alice = logged_in_user(&h, "alice@example.com").await;
             let session = alice.session.session.clone();
             let pending = h
                 .session_manager
@@ -278,10 +279,10 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
         })
         .build();
 
-    let mut alice = sign_in(&h, "alice@example.com").await;
+    let mut alice = logged_in_user(&h, "alice@example.com").await;
     let first = alice.session.clone();
     h.clock.advance(ChronoDuration::seconds(1));
-    let bob = sign_in(&h, "bob@example.com").await;
+    let bob = logged_in_user(&h, "bob@example.com").await;
     h.clock.advance(ChronoDuration::seconds(1));
     let second = alice.log_in_again(&h).await;
     h.clock.advance(ChronoDuration::seconds(1));
@@ -330,7 +331,7 @@ async fn session_cap_in_recovery_cool_down_evicts_only_sessions_in_it() {
             ..SessionConfig::default()
         })
         .build();
-    let mut alice = sign_in(&h, "alice@example.com").await;
+    let mut alice = logged_in_user(&h, "alice@example.com").await;
     h.clock.advance(ChronoDuration::seconds(1));
     let second = alice.log_in_again(&h).await;
     h.clock.advance(ChronoDuration::seconds(1));
@@ -399,9 +400,9 @@ async fn session_cap_in_recovery_cool_down_evicts_only_sessions_in_it() {
 async fn list_returns_only_the_users_live_sessions() {
     let h = harness_with_lifetime(Duration::from_secs(60));
 
-    let mut alice = sign_in(&h, "alice@example.com").await;
+    let mut alice = logged_in_user(&h, "alice@example.com").await;
     let alice_second = alice.log_in_again(&h).await;
-    sign_in(&h, "bob@example.com").await;
+    logged_in_user(&h, "bob@example.com").await;
 
     let listed = h
         .session_manager
@@ -434,9 +435,9 @@ async fn list_returns_only_the_users_live_sessions() {
 async fn the_core_purges_only_rows_expired_at_its_own_clock() {
     let h = harness_with_lifetime(Duration::from_secs(60));
 
-    let short = sign_in(&h, "short@example.com").await.session;
+    let short = logged_in_user(&h, "short@example.com").await.session;
     h.clock.advance(ChronoDuration::seconds(30));
-    let long = sign_in(&h, "long@example.com").await.session;
+    let long = logged_in_user(&h, "long@example.com").await.session;
 
     h.clock.advance(ChronoDuration::seconds(45));
     let summary = h.another_process().purge_expired().await;
@@ -448,10 +449,10 @@ async fn the_core_purges_only_rows_expired_at_its_own_clock() {
 #[tokio::test]
 async fn revoke_others_keeps_only_the_acting_session_audits_and_notifies() {
     let h = Harness::fresh();
-    let mut alice = sign_in(&h, "alice@example.com").await;
+    let mut alice = logged_in_user(&h, "alice@example.com").await;
     let other_1 = alice.log_in_again(&h).await;
     let other_2 = alice.log_in_again(&h).await;
-    let bob = sign_in(&h, "bob@example.com").await;
+    let bob = logged_in_user(&h, "bob@example.com").await;
     let current = &alice.session.session;
     let mail_before = h.email.sent().len();
 
@@ -525,7 +526,7 @@ async fn revocations_and_destructive_actions_audit_the_request_not_the_login() {
                 ..SessionConfig::default()
             })
             .build();
-        let mut alice = sign_in_from(&h, "alice@example.com", login.clone()).await;
+        let mut alice = logged_in_user_from(&h, "alice@example.com", login.clone()).await;
         h.clock.advance(ChronoDuration::seconds(1));
         let other = log_in(
             &h,
@@ -601,9 +602,9 @@ async fn revocations_and_destructive_actions_audit_the_request_not_the_login() {
 #[tokio::test]
 async fn log_out_everywhere_ends_every_session_of_the_user_only() {
     let h = Harness::fresh();
-    let mut alice = sign_in(&h, "alice@example.com").await;
+    let mut alice = logged_in_user(&h, "alice@example.com").await;
     let other = alice.log_in_again(&h).await;
-    let bob = sign_in(&h, "bob@example.com").await;
+    let bob = logged_in_user(&h, "bob@example.com").await;
     let current = &alice.session.session;
     let mail_before = h.email.sent().len();
     let audited_before = h.audit.len();
@@ -646,7 +647,7 @@ async fn log_out_everywhere_ends_every_session_of_the_user_only() {
 async fn bulk_revocations_are_refused_during_recovery_cool_down() {
     for action in BulkRevocation::ALL {
         let h = Harness::fresh();
-        let mut alice = sign_in(&h, "alice@example.com").await;
+        let mut alice = logged_in_user(&h, "alice@example.com").await;
         let other = alice.log_in_again(&h).await;
         let current = in_cool_down(&h, &alice.user).await;
         let mail_before = h.email.sent().len();
@@ -675,7 +676,7 @@ async fn bulk_revocations_are_refused_during_recovery_cool_down() {
     }
 }
 
-type ActionFor = fn(&SignedIn, &IssuedSession) -> DestructiveAction;
+type ActionFor = fn(&LoggedInUser, &IssuedSession) -> DestructiveAction;
 
 #[tokio::test]
 async fn a_destructive_action_reports_whether_it_ended_the_acting_session() {
@@ -719,7 +720,7 @@ async fn a_destructive_action_reports_whether_it_ended_the_acting_session() {
     ];
     for (name, action, expected) in cases {
         let h = Harness::fresh();
-        let mut alice = sign_in(&h, "alice@example.com").await;
+        let mut alice = logged_in_user(&h, "alice@example.com").await;
         let other = alice.log_in_again(&h).await;
         let current = &alice.session.session;
 
@@ -741,7 +742,7 @@ async fn a_destructive_action_reports_whether_it_ended_the_acting_session() {
 #[tokio::test]
 async fn revoking_another_session_audits_and_sends_a_notice() {
     let h = Harness::fresh();
-    let mut alice = sign_in(&h, "alice@example.com").await;
+    let mut alice = logged_in_user(&h, "alice@example.com").await;
     let other = alice.log_in_again(&h).await;
     let current = &alice.session.session;
     let mail_before = h.email.sent().len();
@@ -773,8 +774,8 @@ async fn revoking_another_session_audits_and_sends_a_notice() {
 #[tokio::test]
 async fn revoke_hides_another_users_session() {
     let h = Harness::fresh();
-    let alice = sign_in(&h, "alice@example.com").await;
-    let bob = sign_in(&h, "bob@example.com").await;
+    let alice = logged_in_user(&h, "alice@example.com").await;
+    let bob = logged_in_user(&h, "bob@example.com").await;
 
     let err = h
         .session_manager
@@ -795,7 +796,7 @@ async fn revoke_hides_another_users_session() {
 #[tokio::test]
 async fn a_session_is_in_recovery_cool_down_only_before_its_deadline() {
     let h = Harness::fresh();
-    let alice = sign_in(&h, "alice@example.com").await;
+    let alice = logged_in_user(&h, "alice@example.com").await;
     let now = h.clock.now();
     for (until, in_cool_down) in [
         (now + ChronoDuration::minutes(10), true),

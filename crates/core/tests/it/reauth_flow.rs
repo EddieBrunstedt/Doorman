@@ -12,8 +12,8 @@ use doorman_core::storage::{
 use doorman_test_support::request_context;
 
 use crate::common::{
-    Harness, authenticator, kinds, make_user, register_passkey, session_for,
-    session_in_cool_down_for, sign_in,
+    Harness, authenticator, kinds, logged_in_user, make_user, register_passkey, session_for,
+    session_in_cool_down_for,
 };
 
 fn every_action(other_session: SessionId, spare_passkey: &[u8]) -> [DestructiveAction; 6] {
@@ -89,7 +89,7 @@ async fn every_destructive_action_refuses_cool_down_before_the_policy_asks_for_a
             } else {
                 Harness::fresh()
             };
-            let mut alice = sign_in(&h, "owner@example.com").await;
+            let mut alice = logged_in_user(&h, "owner@example.com").await;
             let other = alice.log_in_again(&h).await;
             let spare =
                 register_passkey(&h, alice.user.id, &mut alice.authenticator, Some("spare")).await;
@@ -336,7 +336,7 @@ async fn login_challenge_is_not_a_reauth_proof() {
 #[tokio::test]
 async fn a_proof_started_in_another_session_is_refused() {
     let h = gated_harness();
-    let mut alice = sign_in(&h, "owner@example.com").await;
+    let mut alice = logged_in_user(&h, "owner@example.com").await;
     let other = alice.log_in_again(&h).await;
     let current = alice.session.session.clone();
 
@@ -497,7 +497,7 @@ fn scoped_to(
 async fn logging_out_passes_no_gate() {
     for in_cool_down in [false, true] {
         let h = gated_harness();
-        let alice = sign_in(&h, "owner@example.com").await;
+        let alice = logged_in_user(&h, "owner@example.com").await;
         let current = if in_cool_down {
             let until = h.clock.now() + chrono::Duration::hours(1);
             session_in_cool_down_for(&h, &alice.user, until).await
@@ -532,7 +532,7 @@ async fn revoking_the_acting_session_as_another_is_refused_before_the_gate() {
     for in_cool_down in [false, true] {
         for with_proof in [false, true] {
             let h = gated_harness();
-            let mut alice = sign_in(&h, "owner@example.com").await;
+            let mut alice = logged_in_user(&h, "owner@example.com").await;
             let current = if in_cool_down {
                 let until = h.clock.now() + chrono::Duration::hours(1);
                 session_in_cool_down_for(&h, &alice.user, until).await
@@ -617,7 +617,7 @@ async fn register_passkey_in_cool_down(
 #[tokio::test]
 async fn a_passkey_in_recovery_cool_down_cannot_reauthenticate() {
     let h = gated_harness();
-    let alice = sign_in(&h, "alice@example.com").await;
+    let alice = logged_in_user(&h, "alice@example.com").await;
     let current = alice.session.session.clone();
     assert!(!current.is_in_recovery_cool_down());
     let mut recovered_wa = authenticator();

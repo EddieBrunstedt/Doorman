@@ -84,7 +84,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
         .expect("finish_authentication");
     assert_eq!(
         issued.user.id, user.id,
-        "the outcome carries the signed-in user"
+        "the outcome carries the logged-in user"
     );
     let issued = issued.session;
     assert_eq!(issued.session.user_id, user.id);

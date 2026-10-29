@@ -7,7 +7,7 @@ use webauthn_rs_proto::{
 };
 
 #[derive(Clone)]
-struct ResidentCredential {
+struct DiscoverableCredential {
     credential_id: Vec<u8>,
     user_handle: Vec<u8>,
 }
@@ -18,7 +18,7 @@ struct ResidentCredential {
 pub struct ResidentAuthenticator {
     inner: WebauthnAuthenticator<SoftPasskey>,
     origin: Url,
-    resident_credentials: Vec<ResidentCredential>,
+    discoverable_credentials: Vec<DiscoverableCredential>,
 }
 
 impl ResidentAuthenticator {
@@ -26,12 +26,12 @@ impl ResidentAuthenticator {
         Self {
             inner: WebauthnAuthenticator::new(SoftPasskey::new(true)),
             origin: origin.clone(),
-            resident_credentials: Vec::new(),
+            discoverable_credentials: Vec::new(),
         }
     }
 
     pub fn credential_ids(&self) -> Vec<Vec<u8>> {
-        self.resident_credentials
+        self.discoverable_credentials
             .iter()
             .map(|c| c.credential_id.clone())
             .collect()
@@ -57,7 +57,7 @@ impl ResidentAuthenticator {
             .inner
             .do_registration(self.origin.clone(), compatible)
             .expect("authenticator register");
-        self.resident_credentials.push(ResidentCredential {
+        self.discoverable_credentials.push(DiscoverableCredential {
             credential_id: response.raw_id.as_ref().to_vec(),
             user_handle,
         });
@@ -101,11 +101,11 @@ impl ResidentAuthenticator {
     ) -> PublicKeyCredential {
         assert_discoverable_request_options(&challenge);
         let resident = self
-            .resident_credentials
+            .discoverable_credentials
             .iter()
             .find(|c| c.credential_id == credential_id)
             .cloned()
-            .expect("credential is resident on test authenticator");
+            .expect("the test authenticator holds the discoverable credential");
 
         let mut compatible = challenge;
         compatible.public_key.allow_credentials = vec![AllowCredentials {
