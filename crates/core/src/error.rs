@@ -71,6 +71,9 @@ pub enum Error {
     #[error("the action requires a fresh passkey re-authentication")]
     ReauthRequired,
 
+    #[error("the acting session can't be revoked as another session; log out instead")]
+    ActingSessionNotRevocable,
+
     #[error("user is disabled")]
     UserDisabled,
 

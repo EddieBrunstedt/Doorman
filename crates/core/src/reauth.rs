@@ -19,7 +19,7 @@ pub enum ReauthAction {
     RequestEmailChange,
     RemovePasskey,
     RevokeOtherSessions,
-    RevokeSession,
+    RevokeAnotherSession,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

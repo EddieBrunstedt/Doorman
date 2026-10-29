@@ -21,7 +21,7 @@ fn every_action(other_session: SessionId, spare_passkey: &[u8]) -> [DestructiveA
         DestructiveAction::DeleteUser
         | DestructiveAction::RequestEmailChange { .. }
         | DestructiveAction::RemovePasskey { .. }
-        | DestructiveAction::RevokeSession { .. }
+        | DestructiveAction::RevokeAnotherSession { .. }
         | DestructiveAction::RevokeOtherSessions
         | DestructiveAction::LogOutEverywhere => action,
     };
@@ -33,7 +33,7 @@ fn every_action(other_session: SessionId, spare_passkey: &[u8]) -> [DestructiveA
         DestructiveAction::RemovePasskey {
             credential_id: spare_passkey.to_vec(),
         },
-        DestructiveAction::RevokeSession { id: other_session },
+        DestructiveAction::RevokeAnotherSession { id: other_session },
         DestructiveAction::RevokeOtherSessions,
         DestructiveAction::LogOutEverywhere,
     ]
@@ -47,7 +47,7 @@ fn gated_harness() -> Harness {
             ReauthAction::RequestEmailChange,
             ReauthAction::RemovePasskey,
             ReauthAction::RevokeOtherSessions,
-            ReauthAction::RevokeSession,
+            ReauthAction::RevokeAnotherSession,
         ]))
         .build()
 }
@@ -493,56 +493,88 @@ fn scoped_to(
     options
 }
 
-#[derive(Debug, Clone, Copy)]
-enum EndActingSession {
-    LogOut,
-    RevokeIt,
+#[tokio::test]
+async fn logging_out_passes_no_gate() {
+    for in_cool_down in [false, true] {
+        let h = gated_harness();
+        let alice = sign_in(&h, "owner@example.com").await;
+        let current = if in_cool_down {
+            let until = h.clock.now() + chrono::Duration::hours(1);
+            session_in_cool_down_for(&h, &alice.user, until).await
+        } else {
+            alice.session.session.clone()
+        };
+        let mail_before = h.email.sent().len();
+
+        h.session_manager
+            .log_out(&current, request_context())
+            .await
+            .unwrap_or_else(|err| panic!("in cool-down: {in_cool_down}: {err:?}"));
+
+        assert!(
+            h.sessions
+                .find_session_by_id(current.id)
+                .await
+                .expect("find session")
+                .is_none(),
+            "in cool-down: {in_cool_down}: the acting session is gone"
+        );
+        assert_eq!(
+            h.email.sent().len(),
+            mail_before,
+            "in cool-down: {in_cool_down}: no other-session notice"
+        );
+    }
 }
 
 #[tokio::test]
-async fn ending_the_acting_session_passes_no_gate() {
-    for way in [EndActingSession::LogOut, EndActingSession::RevokeIt] {
-        for in_cool_down in [false, true] {
+async fn revoking_the_acting_session_as_another_is_refused_before_the_gate() {
+    for in_cool_down in [false, true] {
+        for with_proof in [false, true] {
             let h = gated_harness();
-            let alice = sign_in(&h, "owner@example.com").await;
+            let mut alice = sign_in(&h, "owner@example.com").await;
             let current = if in_cool_down {
                 let until = h.clock.now() + chrono::Duration::hours(1);
                 session_in_cool_down_for(&h, &alice.user, until).await
             } else {
                 alice.session.session.clone()
             };
-            let mail_before = h.email.sent().len();
-
-            let ended = match way {
-                EndActingSession::LogOut => h
-                    .session_manager
-                    .log_out(&current, request_context())
-                    .await
-                    .map(|()| CurrentSession::Ended),
-                EndActingSession::RevokeIt => {
-                    let action = DestructiveAction::RevokeSession { id: current.id };
-                    perform(&h, &current, action, None).await
-                }
+            let proof = if with_proof {
+                Some(fresh_proof(&h, &current, &mut alice.authenticator).await)
+            } else {
+                None
             };
+            let audited_before = h.audit.len();
+            let case = format!("in cool-down: {in_cool_down}, with a proof: {with_proof}");
 
-            let case = format!("{way:?}, in cool-down: {in_cool_down}");
+            let action = DestructiveAction::RevokeAnotherSession { id: current.id };
+            let refused = perform(&h, &current, action, proof.clone()).await;
+
             assert!(
-                matches!(ended, Ok(CurrentSession::Ended)),
-                "{case}: {ended:?}"
+                matches!(refused, Err(Error::ActingSessionNotRevocable)),
+                "{case}: {refused:?}"
             );
             assert!(
                 h.sessions
                     .find_session_by_id(current.id)
                     .await
                     .expect("find session")
-                    .is_none(),
-                "{case}: the acting session is gone"
+                    .is_some(),
+                "{case}: the acting session stays"
             );
-            assert_eq!(
-                h.email.sent().len(),
-                mail_before,
-                "{case}: no other-session notice"
-            );
+            assert_eq!(h.audit.len(), audited_before, "{case}: nothing is audited");
+            if let Some(proof) = proof
+                && !in_cool_down
+            {
+                perform(
+                    &h,
+                    &current,
+                    DestructiveAction::RevokeOtherSessions,
+                    Some(proof),
+                )
+                .await
+                .unwrap_or_else(|err| panic!("{case}: the proof is still unused: {err:?}"));
+            }
         }
     }
 }

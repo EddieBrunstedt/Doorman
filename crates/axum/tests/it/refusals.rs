@@ -105,11 +105,48 @@ async fn destructive_routes_refuse_a_session_in_recovery_cool_down() {
     assert!(app.is_authenticated(&signed_up).await);
 }
 
+#[tokio::test]
+async fn deleting_the_acting_session_logs_out_without_a_gate() {
+    for in_cool_down in [false, true] {
+        let app = TestApp::with(
+            |b| {
+                b.reauthentication(ReauthPolicy::required_for([
+                    ReauthAction::RevokeAnotherSession,
+                ]))
+            },
+            |b| b,
+        );
+        let (signed_up, _) = app.signup("alice@example.com").await;
+        let acting = if in_cool_down {
+            let mut authenticator = ResidentAuthenticator::new(&rp_origin());
+            app.recover("alice@example.com", &mut authenticator).await
+        } else {
+            signed_up.clone()
+        };
+
+        let reply = app
+            .delete(&format!("/auth/sessions/{}", acting.session.id))
+            .bearer(&acting.token)
+            .send()
+            .await;
+
+        assert_eq!(
+            reply.status,
+            StatusCode::NO_CONTENT,
+            "in cool-down: {in_cool_down}"
+        );
+        assert!(
+            !app.is_authenticated(&acting).await,
+            "in cool-down: {in_cool_down}"
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Gated {
     DeleteUser,
     RemovePasskey,
-    RevokeSession,
+    RevokeAnotherSession,
     RevokeOtherSessions,
     LogOutEverywhere,
     RequestEmailChange,
@@ -120,7 +157,7 @@ async fn gated_routes_require_and_accept_a_reauthentication() {
     for gated in [
         Gated::DeleteUser,
         Gated::RemovePasskey,
-        Gated::RevokeSession,
+        Gated::RevokeAnotherSession,
         Gated::RevokeOtherSessions,
         Gated::LogOutEverywhere,
         Gated::RequestEmailChange,
@@ -130,7 +167,7 @@ async fn gated_routes_require_and_accept_a_reauthentication() {
                 b.reauthentication(ReauthPolicy::required_for([
                     ReauthAction::DeleteUser,
                     ReauthAction::RemovePasskey,
-                    ReauthAction::RevokeSession,
+                    ReauthAction::RevokeAnotherSession,
                     ReauthAction::RevokeOtherSessions,
                     ReauthAction::RequestEmailChange,
                 ]))
@@ -149,7 +186,7 @@ async fn gated_routes_require_and_accept_a_reauthentication() {
                     format!("/auth/passkey/{}", extra.credential_id),
                 )
             }
-            Gated::RevokeSession => (
+            Gated::RevokeAnotherSession => (
                 Method::DELETE,
                 format!("/auth/sessions/{}", other.session.id),
             ),

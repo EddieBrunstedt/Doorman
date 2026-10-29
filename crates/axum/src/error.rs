@@ -105,6 +105,9 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         Error::RecoveryCoolDownActive => (StatusCode::CONFLICT, "recovery_cool_down_active"),
         Error::ReauthRequired => (StatusCode::UNAUTHORIZED, "reauth_required"),
+        Error::ActingSessionNotRevocable => {
+            (StatusCode::BAD_REQUEST, "acting_session_not_revocable")
+        }
         Error::UserDisabled => (StatusCode::FORBIDDEN, "user_disabled"),
         Error::SignupNotAllowed => (StatusCode::FORBIDDEN, "signup_not_allowed"),
         Error::ResourceLimitExceeded { .. } => (StatusCode::CONFLICT, "resource_limit_exceeded"),
@@ -224,6 +227,11 @@ mod tests {
                 "recovery_cool_down_active",
             ),
             (Error::ReauthRequired, S::UNAUTHORIZED, "reauth_required"),
+            (
+                Error::ActingSessionNotRevocable,
+                S::BAD_REQUEST,
+                "acting_session_not_revocable",
+            ),
             (Error::UserDisabled, S::FORBIDDEN, "user_disabled"),
             (Error::SignupNotAllowed, S::FORBIDDEN, "signup_not_allowed"),
             (

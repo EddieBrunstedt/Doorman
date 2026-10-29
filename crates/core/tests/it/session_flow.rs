@@ -491,8 +491,7 @@ async fn revoke_others_keeps_only_the_acting_session_audits_and_notifies() {
 #[derive(Debug, Clone, Copy)]
 enum ActingRequest {
     LogOut,
-    RevokeOwnSession,
-    RevokeOtherSession,
+    RevokeAnotherSession,
     RevokeOtherSessions,
     LogOutEverywhere,
     LogInPastSessionCap,
@@ -502,10 +501,9 @@ enum ActingRequest {
 }
 
 impl ActingRequest {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 8] = [
         Self::LogOut,
-        Self::RevokeOwnSession,
-        Self::RevokeOtherSession,
+        Self::RevokeAnotherSession,
         Self::RevokeOtherSessions,
         Self::LogOutEverywhere,
         Self::LogInPastSessionCap,
@@ -551,11 +549,8 @@ async fn revocations_and_destructive_actions_audit_the_request_not_the_login() {
                 .log_out(current, request.clone())
                 .await
                 .map(|()| CurrentSession::Ended),
-            ActingRequest::RevokeOwnSession => {
-                perform(DestructiveAction::RevokeSession { id: current.id }).await
-            }
-            ActingRequest::RevokeOtherSession => {
-                perform(DestructiveAction::RevokeSession {
+            ActingRequest::RevokeAnotherSession => {
+                perform(DestructiveAction::RevokeAnotherSession {
                     id: other.session.id,
                 })
                 .await
@@ -684,7 +679,7 @@ type ActionFor = fn(&SignedIn, &IssuedSession) -> DestructiveAction;
 
 #[tokio::test]
 async fn a_destructive_action_reports_whether_it_ended_the_acting_session() {
-    let cases: [(&str, ActionFor, CurrentSession); 7] = [
+    let cases: [(&str, ActionFor, CurrentSession); 6] = [
         (
             "delete user",
             |_, _| DestructiveAction::DeleteUser,
@@ -705,15 +700,8 @@ async fn a_destructive_action_reports_whether_it_ended_the_acting_session() {
             CurrentSession::Kept,
         ),
         (
-            "revoke the acting session",
-            |alice, _| DestructiveAction::RevokeSession {
-                id: alice.session.session.id,
-            },
-            CurrentSession::Ended,
-        ),
-        (
             "revoke another session",
-            |_, other| DestructiveAction::RevokeSession {
+            |_, other| DestructiveAction::RevokeAnotherSession {
                 id: other.session.id,
             },
             CurrentSession::Kept,
@@ -751,7 +739,7 @@ async fn a_destructive_action_reports_whether_it_ended_the_acting_session() {
 }
 
 #[tokio::test]
-async fn revoke_notifies_only_for_another_session() {
+async fn revoking_another_session_sends_a_notice() {
     let h = Harness::fresh();
     let mut alice = sign_in(&h, "alice@example.com").await;
     let other = alice.log_in_again(&h).await;
@@ -761,36 +749,18 @@ async fn revoke_notifies_only_for_another_session() {
     h.session_manager
         .perform(
             current,
-            DestructiveAction::RevokeSession {
+            DestructiveAction::RevokeAnotherSession {
                 id: other.session.id,
             },
             None,
             request_context(),
         )
         .await
-        .expect("revoke other");
+        .expect("revoke another session");
     assert!(!session_exists(&h, other.session.id).await);
-    assert_eq!(
-        h.email.sent().len(),
-        mail_before + 1,
-        "revoking another session notifies"
-    );
-
-    h.session_manager
-        .perform(
-            current,
-            DestructiveAction::RevokeSession { id: current.id },
-            None,
-            request_context(),
-        )
-        .await
-        .expect("revoke self");
-    assert!(!session_exists(&h, current.id).await);
-    assert_eq!(
-        h.email.sent().len(),
-        mail_before + 1,
-        "self-revocation sends no notice"
-    );
+    assert!(session_exists(&h, current.id).await);
+    let sent = &h.email.sent()[mail_before..];
+    assert_eq!(sent.len(), 1, "one notice");
 }
 
 #[tokio::test]
@@ -803,7 +773,7 @@ async fn revoke_hides_another_users_session() {
         .session_manager
         .perform(
             &alice.session.session,
-            DestructiveAction::RevokeSession {
+            DestructiveAction::RevokeAnotherSession {
                 id: bob.session.session.id,
             },
             None,

@@ -66,8 +66,13 @@ async fn remove(
         .map(SessionId)
         .map_err(|_| ErrorResponse(doorman_core::Error::SessionNotFound))?;
 
+    // The acting session is listed among the user's sessions, so deleting it there logs out.
+    if id == auth.session.id {
+        state.core.sessions.log_out(&auth.session, context).await?;
+        return no_content(&state, &auth, CurrentSession::Ended);
+    }
     let reauth = body.and_then(|Json(b)| b.reauthentication);
-    let action = DestructiveAction::RevokeSession { id };
+    let action = DestructiveAction::RevokeAnotherSession { id };
     let current = perform(&state, &auth, action, reauth, context).await?;
     no_content(&state, &auth, current)
 }

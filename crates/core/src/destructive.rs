@@ -15,7 +15,7 @@ pub enum DestructiveAction {
     DeleteUser,
     RequestEmailChange { new_email: String },
     RemovePasskey { credential_id: Vec<u8> },
-    RevokeSession { id: SessionId },
+    RevokeAnotherSession { id: SessionId },
     RevokeOtherSessions,
     LogOutEverywhere,
 }
@@ -26,7 +26,7 @@ impl DestructiveAction {
             Self::DeleteUser => ReauthAction::DeleteUser,
             Self::RequestEmailChange { .. } => ReauthAction::RequestEmailChange,
             Self::RemovePasskey { .. } => ReauthAction::RemovePasskey,
-            Self::RevokeSession { .. } => ReauthAction::RevokeSession,
+            Self::RevokeAnotherSession { .. } => ReauthAction::RevokeAnotherSession,
             Self::RevokeOtherSessions | Self::LogOutEverywhere => ReauthAction::RevokeOtherSessions,
         }
     }
@@ -95,11 +95,11 @@ impl DestructiveActions {
         proof: Option<ReauthProof>,
         context: SessionContext,
     ) -> Result<CurrentSession> {
-        // Revoking the acting session is logging out, which can't lock anyone out, so it passes
-        // no gate.
-        if action == (DestructiveAction::RevokeSession { id: session.id }) {
-            self.records.log_out(session, Actor::from(&context)).await?;
-            return Ok(CurrentSession::Ended);
+        // Ending the acting session is logging out, which passes no gate, so it can't be asked for
+        // as a destructive action. Refused before the gate, so no proof is used up.
+        if action == (DestructiveAction::RevokeAnotherSession { id: session.id }) {
+            tracing::info!(outcome = "acting_session", "session revoke refused");
+            return Err(Error::ActingSessionNotRevocable);
         }
         let cleared = self
             .clear(action.reauth_action(), session, proof.as_ref(), &context)
@@ -117,8 +117,8 @@ impl DestructiveActions {
                 self.passkey.remove_passkey(cleared, &credential_id).await?;
                 Ok(CurrentSession::Kept)
             }
-            DestructiveAction::RevokeSession { id } => {
-                self.revoke_other(cleared, id).await?;
+            DestructiveAction::RevokeAnotherSession { id } => {
+                self.revoke_another(cleared, id).await?;
                 Ok(CurrentSession::Kept)
             }
             DestructiveAction::RevokeOtherSessions => {
@@ -161,7 +161,7 @@ impl DestructiveActions {
             .await
     }
 
-    async fn revoke_other(&self, cleared: Cleared, target: SessionId) -> Result<()> {
+    async fn revoke_another(&self, cleared: Cleared, target: SessionId) -> Result<()> {
         let session = cleared.session();
         self.records
             .revoke_owned(session.user_id, target, cleared.actor())
