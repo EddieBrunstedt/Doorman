@@ -13,7 +13,7 @@ use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId,
 use doorman_test_support::MockClock;
 
 use crate::common::{
-    Client, ResidentAuthenticator, TestApp, TestSession, rp_origin, session_config,
+    Client, ResidentAuthenticator, TestApp, TestSession, harness_core, rp_origin, session_config,
 };
 
 #[tokio::test]
@@ -42,8 +42,8 @@ async fn a_login_sets_a_session_cookie_that_authenticates() {
 // each route below.
 fn always_sliding_app() -> TestApp {
     TestApp::with(
-        |b| {
-            b.session(SessionConfig {
+        |r| {
+            harness_core(r).session(SessionConfig {
                 idle_timeout: Some(IDLE),
                 slide_interval: Duration::ZERO,
                 ..session_config()
@@ -148,12 +148,14 @@ const ABSOLUTE: Duration = Duration::from_secs(60 * 60 * 24);
 
 fn sliding_app(clock: Arc<MockClock>) -> TestApp {
     TestApp::with(
-        move |b| {
-            b.clock(clock as Arc<dyn Clock>).session(SessionConfig {
-                absolute_lifetime: ABSOLUTE,
-                idle_timeout: Some(IDLE),
-                ..session_config()
-            })
+        move |r| {
+            harness_core(r)
+                .clock(clock as Arc<dyn Clock>)
+                .session(SessionConfig {
+                    absolute_lifetime: ABSOLUTE,
+                    idle_timeout: Some(IDLE),
+                    ..session_config()
+                })
         },
         |b| {
             b.cookie(CookieConfig {
@@ -228,7 +230,7 @@ async fn a_session_store_failure_refuses_the_request() {
     let memory = InMemoryStorage::new();
     let mut storage = memory.all_stores();
     storage.expiring.sessions = Arc::new(UnavailableSessionStore);
-    let app = TestApp::with_storage(storage, |b| b, |b| b);
+    let app = TestApp::with_storage(storage, harness_core, |b| b);
 
     let reply = app.get("/me").cookie("a-session-token").send().await;
 

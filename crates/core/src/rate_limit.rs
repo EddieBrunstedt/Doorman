@@ -7,7 +7,6 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 
-use crate::assembly::AssemblyError;
 use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::email::EmailAddress;
 use crate::error::{Error, Result, StorageResult};
@@ -115,6 +114,26 @@ impl Default for RateLimits {
     }
 }
 
+// Built once per core, so its size costs nothing.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone)]
+pub enum RateLimiting {
+    Enforced {
+        limiter: Arc<dyn RateLimiter>,
+        limits: RateLimits,
+    },
+    Disabled,
+}
+
+impl RateLimiting {
+    pub fn enforced(limiter: Arc<dyn RateLimiter>) -> Self {
+        Self::Enforced {
+            limiter,
+            limits: RateLimits::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateLimitPolicy {
     pub max_attempts: u32,
@@ -203,25 +222,16 @@ impl Attempt<'_> {
 
 #[derive(Clone)]
 pub(crate) struct RateLimitEnforcer {
-    limiter: Option<Arc<dyn RateLimiter>>,
-    limits: RateLimits,
+    rate_limiting: RateLimiting,
     audit: AuditDispatch,
 }
 
 impl RateLimitEnforcer {
-    pub(crate) fn new(
-        limiter: Option<Arc<dyn RateLimiter>>,
-        limits: RateLimits,
-        audit: AuditDispatch,
-    ) -> std::result::Result<Self, AssemblyError> {
-        if limiter.is_none() && limits != RateLimits::disabled() {
-            return Err(AssemblyError::MissingRateLimiter);
-        }
-        Ok(Self {
-            limiter,
-            limits,
+    pub(crate) fn new(rate_limiting: RateLimiting, audit: AuditDispatch) -> Self {
+        Self {
+            rate_limiting,
             audit,
-        })
+        }
     }
 
     pub(crate) async fn enforce(
@@ -229,12 +239,11 @@ impl RateLimitEnforcer {
         context: &SessionContext,
         attempt: Attempt<'_>,
     ) -> Result<()> {
-        // Assembly leaves out the limiter only when every limit is off.
-        let Some(limiter) = &self.limiter else {
+        let RateLimiting::Enforced { limiter, limits } = &self.rate_limiting else {
             return Ok(());
         };
         for (limit, key) in attempt.charges(context) {
-            let Some(policy) = self.limits.policy(limit) else {
+            let Some(policy) = limits.policy(limit) else {
                 continue;
             };
             if let RateLimitDecision::Limited { retry_after } =

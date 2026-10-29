@@ -9,14 +9,14 @@ use doorman_core::clock::Clock;
 use doorman_core::email::{EmailContent, EmailTemplates};
 use doorman_core::error::{Error, Result, StorageError};
 use doorman_core::memory::InMemoryRateLimiter;
-use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter, RateLimits};
+use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter, RateLimiting, RateLimits};
 use doorman_core::session::SessionContext;
 use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy};
 use doorman_core::storage::{PasskeyStore, SessionTransport, User, UserStore};
 use doorman_test_support::{MockClock, request_context};
 
 use crate::common::{
-    Harness, SIGNUP_URL, authenticator, kinds, provision_user, signup_config, token_from_email, ts,
+    Harness, SIGNUP_URL, authenticator, kinds, provision_user, token_from_email, ts,
     within_deadline,
 };
 
@@ -416,7 +416,9 @@ impl EmailTemplates for BrandedEmails {
 
 #[tokio::test]
 async fn custom_emails_override_signup_subject_and_html() {
-    let h = Harness::builder().emails(Arc::new(BrandedEmails)).build();
+    let h = Harness::builder()
+        .email_templates(Arc::new(BrandedEmails))
+        .build();
 
     h.signup
         .request_signup("user@example.com", None, request_context())
@@ -491,7 +493,7 @@ fn harness_with_policy(policy: Arc<dyn SignupPolicy>) -> Harness {
     Harness::builder()
         .signup_config(SignupConfig {
             policy,
-            ..signup_config()
+            ..SignupConfig::default()
         })
         .build()
 }
@@ -634,14 +636,16 @@ async fn denied_attempt_still_spends_rate_limit_budget() {
     )) as Arc<dyn RateLimiter>;
     let policy = StubPolicy::new(StubOutcome::Deny(None));
     let h = Harness::builder()
-        .limiter(limiter)
-        .rate_limits(RateLimits {
-            signup_request_per_ip: Some(RateLimitPolicy::new(1, Duration::from_secs(60 * 60))),
-            ..RateLimits::disabled()
+        .rate_limiting(RateLimiting::Enforced {
+            limiter,
+            limits: RateLimits {
+                signup_request_per_ip: Some(RateLimitPolicy::new(1, Duration::from_secs(60 * 60))),
+                ..RateLimits::disabled()
+            },
         })
         .signup_config(SignupConfig {
             policy: policy.clone(),
-            ..signup_config()
+            ..SignupConfig::default()
         })
         .build();
 

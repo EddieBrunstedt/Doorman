@@ -1,4 +1,4 @@
-pub use crate::assembly::{AssemblyError, AuthCore, AuthCoreBuilder};
+pub use crate::assembly::{AssemblyError, AuthCore, AuthCoreBuilder, AuthCoreRequired};
 pub use crate::audit::{
     Actor, AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, OperatorActor,
     RecoveryFailureReason, RedemptionFailureReason, SecretKind, SignupFailureReason,
@@ -11,7 +11,7 @@ pub use crate::email::FileEmailSender;
 pub use crate::email::{
     DefaultEmailTemplates, Email, EmailContent, EmailSender, EmailTemplates, TerminalEmailSender,
 };
-pub use crate::email_link::TOKEN_PLACEHOLDER;
+pub use crate::email_link::{LinkTemplate, LinkTemplateError, LinkTemplates, TOKEN_PLACEHOLDER};
 pub use crate::error::{Error, Result, StorageError, StorageErrorKind, StorageResult};
 pub use crate::metrics::{MetricEvent, MetricSink, NoopMetricSink};
 pub use crate::operator::OperatorManager;
@@ -20,7 +20,8 @@ pub use crate::passkey::{
 };
 pub use crate::purge::PurgeSummary;
 pub use crate::rate_limit::{
-    RateLimit, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter, RateLimits,
+    RateLimit, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter, RateLimiting,
+    RateLimits,
 };
 pub use crate::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
 pub use crate::recovery::{RecoveryConfig, RecoveryManager};

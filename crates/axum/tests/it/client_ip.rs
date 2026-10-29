@@ -32,28 +32,21 @@ fn router(limits: RateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAuditSink>
     let clock = clock();
     let audit = Arc::new(InMemoryAuditSink::new());
     let passkey = PasskeyConfig::new("localhost", ORIGIN.parse().expect("origin"), "tests");
-    let core = AuthCore::builder(InMemoryStorage::new().all_stores())
-        .email(Arc::new(CapturingEmailSender::new()))
-        .passkey(passkey)
-        .signup(SignupConfig {
-            url_template: common::SIGNUP_URL.to_owned(),
-            ..Default::default()
-        })
-        .recovery(RecoveryConfig {
-            url_template: common::RECOVERY_URL.to_owned(),
-            ..Default::default()
-        })
-        .user(UserConfig {
-            url_template: common::USER_URL.to_owned(),
-            ..Default::default()
-        })
-        .reauthentication(ReauthPolicy::disabled())
-        .audit(audit.clone())
-        .clock(clock.clone())
-        .limiter(Arc::new(InMemoryRateLimiter::new(clock.clone())))
-        .rate_limits(limits)
-        .build()
-        .expect("auth core built");
+    let core = AuthCore::builder(AuthCoreRequired {
+        storage: InMemoryStorage::new().all_stores(),
+        email_sender: Arc::new(CapturingEmailSender::new()),
+        audit_sink: audit.clone(),
+        passkey,
+        reauthentication: ReauthPolicy::disabled(),
+        rate_limiting: RateLimiting::Enforced {
+            limiter: Arc::new(InMemoryRateLimiter::new(clock.clone())),
+            limits,
+        },
+        links: common::link_templates(),
+    })
+    .clock(clock.clone())
+    .build()
+    .expect("auth core built");
     let auth = AuthService::builder(core)
         .purge(PurgeSchedule::External)
         .build()
@@ -107,9 +100,12 @@ async fn body(response: Response) -> Value {
 async fn real_socket_enforces_default_limit_and_ignores_spoofed_headers() {
     let clock = clock();
     let app = TestApp::with(
-        |b| {
-            b.clock(clock.clone())
-                .limiter(Arc::new(InMemoryRateLimiter::new(clock)))
+        |r| {
+            common::harness_core(AuthCoreRequired {
+                rate_limiting: common::harness_rate_limiting(clock.clone()),
+                ..r
+            })
+            .clock(clock)
         },
         |b| b,
     );
@@ -330,10 +326,18 @@ async fn signup_and_recovery_charge_socket_ip_and_audit_it() {
 #[tokio::test]
 async fn signup_session_and_audit_record_the_peer_despite_spoofing() {
     let audit = Arc::new(InMemoryAuditSink::new());
-    let app = TestApp::with(|b| b.audit(audit.clone()), |b| b)
-        .default_header("x-forwarded-for", "203.0.113.1")
-        .default_header("x-real-ip", "203.0.113.2")
-        .default_header("user-agent", "signup agent");
+    let app = TestApp::with(
+        |r| {
+            common::harness_core(AuthCoreRequired {
+                audit_sink: audit.clone(),
+                ..r
+            })
+        },
+        |b| b,
+    )
+    .default_header("x-forwarded-for", "203.0.113.1")
+    .default_header("x-real-ip", "203.0.113.2")
+    .default_header("user-agent", "signup agent");
 
     let (auth, _) = app.signup("identity@example.com").await;
 
@@ -366,7 +370,15 @@ async fn signup_session_and_audit_record_the_peer_despite_spoofing() {
 #[tokio::test]
 async fn log_out_audits_the_request_not_the_login() {
     let audit = Arc::new(InMemoryAuditSink::new());
-    let app = TestApp::with(|b| b.audit(audit.clone()), |b| b);
+    let app = TestApp::with(
+        |r| {
+            common::harness_core(AuthCoreRequired {
+                audit_sink: audit.clone(),
+                ..r
+            })
+        },
+        |b| b,
+    );
     let alice = app.session_for("alice@example.com").await;
 
     let reply = app

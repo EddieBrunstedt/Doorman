@@ -8,7 +8,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use doorman_core::audit::AuditEventKind;
 use doorman_core::error::{Error, StorageError, StorageResult};
 use doorman_core::rate_limit::{
-    RateLimit, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter, RateLimits,
+    RateLimit, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter, RateLimiting,
+    RateLimits,
 };
 use doorman_core::storage::{PasskeyChallengeId, SessionTransport};
 use doorman_test_support::{CLIENT_IP, request_context};
@@ -221,8 +222,10 @@ struct Outcome {
 async fn take(step: Step, limiter: Recording, limits: RateLimits) -> Outcome {
     let limiter = Arc::new(limiter);
     let h = Harness::builder()
-        .limiter(limiter.clone())
-        .rate_limits(limits)
+        .rate_limiting(RateLimiting::Enforced {
+            limiter: limiter.clone(),
+            limits,
+        })
         .build();
     let prepared = step.prepare(&h).await;
     let passkey = match &prepared {

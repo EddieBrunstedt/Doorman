@@ -17,19 +17,17 @@ use doorman_axum::dto::{
 };
 use doorman_axum::extractors::AuthUser;
 use doorman_axum::{AuthService, AuthServiceBuilder, PurgeSchedule};
-use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
+use doorman_core::assembly::{AuthCore, AuthCoreBuilder, AuthCoreRequired};
 use doorman_core::audit::NoopAuditSink;
-use doorman_core::clock::SystemClock;
+use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::email::EmailSender;
+use doorman_core::email_link::{LinkTemplate, LinkTemplates};
 use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
 use doorman_core::passkey::PasskeyConfig;
-use doorman_core::rate_limit::RateLimits;
+use doorman_core::rate_limit::{RateLimiting, RateLimits};
 use doorman_core::reauth::ReauthPolicy;
-use doorman_core::recovery::RecoveryConfig;
 use doorman_core::session::{SessionConfig, SessionManager};
-use doorman_core::signup::SignupConfig;
 use doorman_core::storage::{SessionTransport, Storage, UserId, UserStatus, UserStore};
-use doorman_core::user::UserConfig;
 pub use doorman_test_support::ResidentAuthenticator;
 use doorman_test_support::{CapturingEmailSender, token_from_email};
 use serde::Serialize;
@@ -78,30 +76,47 @@ pub struct TestSession {
     pub client: Client,
 }
 
-// Lets the harness's bearer clients start sessions; a test that sets its own config starts from it.
+pub fn link_templates() -> LinkTemplates {
+    LinkTemplates {
+        signup: LinkTemplate::parse(SIGNUP_URL).expect("signup link template"),
+        recovery: LinkTemplate::parse(RECOVERY_URL).expect("recovery link template"),
+        email_change: LinkTemplate::parse(USER_URL).expect("email change link template"),
+    }
+}
+
+pub fn core_required(storage: Storage, email: Arc<dyn EmailSender>) -> AuthCoreRequired {
+    AuthCoreRequired {
+        storage,
+        email_sender: email,
+        audit_sink: Arc::new(NoopAuditSink),
+        passkey: PasskeyConfig::new("localhost", rp_origin(), "doorman tests"),
+        reauthentication: ReauthPolicy::disabled(),
+        rate_limiting: RateLimiting::Disabled,
+        links: link_templates(),
+    }
+}
+
 pub fn core_builder(storage: Storage, email: Arc<dyn EmailSender>) -> AuthCoreBuilder {
-    AuthCore::builder(storage)
-        .email(email)
-        .passkey(PasskeyConfig::new(
-            "localhost",
-            rp_origin(),
-            "doorman tests",
-        ))
-        .audit(Arc::new(NoopAuditSink))
-        .rate_limits(RateLimits::disabled())
-        .signup(SignupConfig {
-            url_template: SIGNUP_URL.to_string(),
-            ..SignupConfig::default()
-        })
-        .recovery(RecoveryConfig {
-            url_template: RECOVERY_URL.to_string(),
-            ..RecoveryConfig::default()
-        })
-        .user(UserConfig {
-            url_template: USER_URL.to_string(),
-            ..UserConfig::default()
-        })
-        .reauthentication(ReauthPolicy::disabled())
+    AuthCore::builder(core_required(storage, email))
+}
+
+// Lets the harness's bearer clients start sessions; a test that sets its own config starts from it.
+pub fn harness_core(required: AuthCoreRequired) -> AuthCoreBuilder {
+    AuthCore::builder(required).session(session_config())
+}
+
+pub fn harness_rate_limiting(clock: Arc<dyn Clock>) -> RateLimiting {
+    RateLimiting::Enforced {
+        limiter: Arc::new(InMemoryRateLimiter::new(clock)),
+        limits: RateLimits {
+            signup_request_per_ip: None,
+            signup_request_per_email: None,
+            recovery_request_per_ip: None,
+            recovery_request_per_email: None,
+            recovery_request_per_email_daily: None,
+            ..RateLimits::default()
+        },
+    }
 }
 
 pub fn session_config() -> SessionConfig {
@@ -122,11 +137,11 @@ pub struct TestApp {
 
 impl TestApp {
     pub fn new() -> Self {
-        Self::with(|b| b, |b| b)
+        Self::with(harness_core, |b| b)
     }
 
     pub fn with(
-        customise_core: impl FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
+        customise_core: impl FnOnce(AuthCoreRequired) -> AuthCoreBuilder,
         customise_http: impl FnOnce(AuthServiceBuilder) -> AuthServiceBuilder,
     ) -> Self {
         Self::with_storage(
@@ -138,7 +153,7 @@ impl TestApp {
 
     pub fn with_storage(
         storage: Storage,
-        customise_core: impl FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
+        customise_core: impl FnOnce(AuthCoreRequired) -> AuthCoreBuilder,
         customise_http: impl FnOnce(AuthServiceBuilder) -> AuthServiceBuilder,
     ) -> Self {
         Self::assemble(storage, customise_core, customise_http, |auth| {
@@ -147,29 +162,22 @@ impl TestApp {
     }
 
     pub fn without_host_layer(storage: Storage) -> Self {
-        Self::assemble(storage, |b| b, |b| b, host_routes)
+        Self::assemble(storage, harness_core, |b| b, host_routes)
     }
 
     fn assemble(
         storage: Storage,
-        customise_core: impl FnOnce(AuthCoreBuilder) -> AuthCoreBuilder,
+        customise_core: impl FnOnce(AuthCoreRequired) -> AuthCoreBuilder,
         customise_http: impl FnOnce(AuthServiceBuilder) -> AuthServiceBuilder,
         compose: impl FnOnce(&AuthService) -> Router,
     ) -> Self {
         let email = Arc::new(CapturingEmailSender::new());
         let users = storage.records.users.clone();
-        let core = core_builder(storage, email.clone() as Arc<dyn EmailSender>)
-            .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
-            .rate_limits(RateLimits {
-                signup_request_per_ip: None,
-                signup_request_per_email: None,
-                recovery_request_per_ip: None,
-                recovery_request_per_email: None,
-                recovery_request_per_email_daily: None,
-                ..RateLimits::default()
-            })
-            .session(session_config());
-        let core = customise_core(core).build().expect("auth core built");
+        let required = AuthCoreRequired {
+            rate_limiting: harness_rate_limiting(Arc::new(SystemClock)),
+            ..core_required(storage, email.clone() as Arc<dyn EmailSender>)
+        };
+        let core = customise_core(required).build().expect("auth core built");
 
         let http = AuthService::builder(core)
             .cookie(CookieConfig {

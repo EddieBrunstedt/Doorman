@@ -35,30 +35,32 @@ async fn signup_login_recovery_round_trip() {
     let email = Arc::new(CapturingEmailSender::new());
     let origin: Url = ORIGIN.parse().expect("origin");
     let base = origin.as_str().trim_end_matches('/');
-    let core = AuthCore::builder(storage.all_stores())
-        .email(email.clone() as Arc<dyn doorman_core::email::EmailSender>)
-        .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
-        .reauthentication(ReauthPolicy::disabled())
-        .audit(Arc::new(NoopAuditSink))
-        .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
-        .signup(SignupConfig {
-            url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"),
-            ..Default::default()
-        })
-        .recovery(RecoveryConfig {
-            url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"),
-            ..Default::default()
-        })
-        .user(UserConfig {
-            url_template: format!("{base}/user/email?token={TOKEN_PLACEHOLDER}"),
-            ..Default::default()
-        })
-        .session(SessionConfig {
-            allow_bearer_sessions: true,
-            ..Default::default()
-        })
-        .build()
-        .expect("auth core built");
+    let core = AuthCore::builder(AuthCoreRequired {
+        storage: storage.all_stores(),
+        email_sender: email.clone() as Arc<dyn doorman_core::email::EmailSender>,
+        audit_sink: Arc::new(NoopAuditSink),
+        passkey: PasskeyConfig::new("localhost", origin.clone(), "Example"),
+        reauthentication: ReauthPolicy::disabled(),
+        rate_limiting: RateLimiting::enforced(Arc::new(InMemoryRateLimiter::new(Arc::new(
+            SystemClock,
+        )))),
+        links: LinkTemplates {
+            signup: LinkTemplate::parse(format!("{base}/signup?token={TOKEN_PLACEHOLDER}"))
+                .expect("signup link template"),
+            recovery: LinkTemplate::parse(format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"))
+                .expect("recovery link template"),
+            email_change: LinkTemplate::parse(format!(
+                "{base}/user/email?token={TOKEN_PLACEHOLDER}"
+            ))
+            .expect("email change link template"),
+        },
+    })
+    .session(SessionConfig {
+        allow_bearer_sessions: true,
+        ..Default::default()
+    })
+    .build()
+    .expect("auth core built");
     let auth = AuthService::builder(core)
         .cookie(CookieConfig::default())
         .purge(PurgeSchedule::External)

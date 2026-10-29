@@ -8,7 +8,7 @@ use crate::assembly::AssemblyError;
 use crate::audit::{AuditDispatch, AuditEventKind, SignupFailureReason};
 use crate::context::CoreDeps;
 use crate::email::{EmailAddress, Mailer};
-use crate::email_link::{Issued, TOKEN_PLACEHOLDER};
+use crate::email_link::{Issued, LinkTemplate};
 use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
 use crate::error::{Error, Result};
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
@@ -54,7 +54,6 @@ impl SignupPolicy for OpenSignupPolicy {
 #[derive(Clone)]
 pub struct SignupConfig {
     pub token_lifetime: Duration,
-    pub url_template: String,
     pub policy: Arc<dyn SignupPolicy>,
 }
 
@@ -66,7 +65,6 @@ impl Default for SignupConfig {
     fn default() -> Self {
         Self {
             token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
-            url_template: format!("https://example.invalid/signup?token={TOKEN_PLACEHOLDER}"),
             policy: Arc::new(OpenSignupPolicy),
         }
     }
@@ -86,6 +84,7 @@ impl SignupManager {
     pub(crate) fn new(
         deps: &CoreDeps,
         registrations: PasskeyRegistrations,
+        template: LinkTemplate,
         config: SignupConfig,
     ) -> std::result::Result<Self, AssemblyError> {
         Ok(Self {
@@ -94,7 +93,7 @@ impl SignupManager {
                 deps,
                 registrations,
                 RegistrationLink::Signup,
-                &config.url_template,
+                template,
                 config.token_lifetime,
             )?,
             mailer: deps.mailer.clone(),

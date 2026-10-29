@@ -6,12 +6,13 @@ use crate::clock::{Clock, SystemClock};
 use crate::context::CoreDeps;
 use crate::destructive::DestructiveActions;
 use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, Mailer};
+use crate::email_link::LinkTemplates;
 use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::operator::OperatorManager;
 use crate::passkey::{PasskeyConfig, PasskeyManager, build_webauthn};
 use crate::passkey_registration::PasskeyRegistrations;
 use crate::purge::PurgeSummary;
-use crate::rate_limit::{RateLimitEnforcer, RateLimiter, RateLimits};
+use crate::rate_limit::{RateLimitEnforcer, RateLimiting};
 use crate::reauth::{ReauthManager, ReauthPolicy};
 use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
 use crate::security_notice::{NoticePolicy, SecurityNotices};
@@ -25,36 +26,8 @@ pub(crate) const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 365
 
 #[derive(Debug, thiserror::Error)]
 pub enum AssemblyError {
-    #[error("email_sender is required")]
-    MissingEmailSender,
-    #[error("audit sink is required (pass NoopAuditSink explicitly to discard events)")]
-    MissingAuditSink,
-    #[error(
-        "a rate limiter is required while any rate limit is on (pass InMemoryRateLimiter or a shared backend, or turn every limit off with RateLimits::disabled())"
-    )]
-    MissingRateLimiter,
-    #[error("passkey config is required")]
-    MissingPasskeyConfig,
-    #[error(
-        "a re-authentication decision is required: pass ReauthPolicy::required_for([..]) to gate destructive actions, or ReauthPolicy::disabled() to opt out"
-    )]
-    ReauthDecisionRequired,
     #[error("passkey manager construction failed: {0}")]
     Passkey(crate::error::Error),
-    #[error(
-        "{flow} url_template must contain the `{placeholder}` placeholder so the link carries the token"
-    )]
-    InvalidUrlTemplate {
-        flow: &'static str,
-        placeholder: &'static str,
-    },
-    #[error(
-        "{flow} url_template is still the stock `{placeholder_host}` placeholder; set a real template via the matching builder method"
-    )]
-    PlaceholderUrlTemplate {
-        flow: &'static str,
-        placeholder_host: &'static str,
-    },
     #[error("recovery cool-down is misconfigured: {0}")]
     RecoveryCoolDown(#[from] RecoveryConfigError),
     #[error("{field} ({value:?}) must be greater than zero and at most {max:?}")]
@@ -113,8 +86,8 @@ pub struct AuthCore {
 }
 
 impl AuthCore {
-    pub fn builder(storage: Storage) -> AuthCoreBuilder {
-        AuthCoreBuilder::new(storage)
+    pub fn builder(required: AuthCoreRequired) -> AuthCoreBuilder {
+        AuthCoreBuilder::new(required)
     }
 
     pub async fn purge_expired(&self) -> PurgeSummary {
@@ -122,41 +95,41 @@ impl AuthCore {
     }
 }
 
+// Everything a core can't be built without, as fields, so the compiler names whatever a host leaves
+// out.
+pub struct AuthCoreRequired {
+    pub storage: Storage,
+    pub email_sender: Arc<dyn EmailSender>,
+    pub audit_sink: Arc<dyn AuditSink>,
+    pub passkey: PasskeyConfig,
+    pub reauthentication: ReauthPolicy,
+    pub rate_limiting: RateLimiting,
+    pub links: LinkTemplates,
+}
+
 pub struct AuthCoreBuilder {
-    storage: Storage,
+    required: AuthCoreRequired,
     clock: Option<Arc<dyn Clock>>,
-    audit: Option<Arc<dyn AuditSink>>,
-    email: Option<Arc<dyn EmailSender>>,
-    emails: Option<Arc<dyn EmailTemplates>>,
-    rate_limiter: Option<Arc<dyn RateLimiter>>,
-    rate_limits: Option<RateLimits>,
+    email_templates: Option<Arc<dyn EmailTemplates>>,
     metrics: Option<Arc<dyn MetricSink>>,
     session_config: Option<SessionConfig>,
-    passkey: Option<PasskeyConfig>,
     signup: Option<SignupConfig>,
     recovery: Option<RecoveryConfig>,
     user: Option<UserConfig>,
-    reauth: Option<ReauthPolicy>,
     notice_policy: Option<NoticePolicy>,
 }
 
 impl AuthCoreBuilder {
-    fn new(storage: Storage) -> Self {
+    fn new(required: AuthCoreRequired) -> Self {
         Self {
-            storage,
+            required,
             clock: None,
-            audit: None,
-            email: None,
-            emails: None,
-            rate_limiter: None,
-            rate_limits: None,
+            email_templates: None,
             metrics: None,
             session_config: None,
-            passkey: None,
             signup: None,
             recovery: None,
             user: None,
-            reauth: None,
             notice_policy: None,
         }
     }
@@ -166,28 +139,8 @@ impl AuthCoreBuilder {
         self
     }
 
-    pub fn audit(mut self, audit: Arc<dyn AuditSink>) -> Self {
-        self.audit = Some(audit);
-        self
-    }
-
-    pub fn email(mut self, email: Arc<dyn EmailSender>) -> Self {
-        self.email = Some(email);
-        self
-    }
-
-    pub fn emails(mut self, emails: Arc<dyn EmailTemplates>) -> Self {
-        self.emails = Some(emails);
-        self
-    }
-
-    pub fn limiter(mut self, limiter: Arc<dyn RateLimiter>) -> Self {
-        self.rate_limiter = Some(limiter);
-        self
-    }
-
-    pub fn rate_limits(mut self, limits: RateLimits) -> Self {
-        self.rate_limits = Some(limits);
+    pub fn email_templates(mut self, templates: Arc<dyn EmailTemplates>) -> Self {
+        self.email_templates = Some(templates);
         self
     }
 
@@ -198,11 +151,6 @@ impl AuthCoreBuilder {
 
     pub fn session(mut self, config: SessionConfig) -> Self {
         self.session_config = Some(config);
-        self
-    }
-
-    pub fn passkey(mut self, config: PasskeyConfig) -> Self {
-        self.passkey = Some(config);
         self
     }
 
@@ -221,34 +169,31 @@ impl AuthCoreBuilder {
         self
     }
 
-    pub fn reauthentication(mut self, policy: ReauthPolicy) -> Self {
-        self.reauth = Some(policy);
-        self
-    }
-
     pub fn notice_policy(mut self, policy: NoticePolicy) -> Self {
         self.notice_policy = Some(policy);
         self
     }
 
     pub fn build(self) -> Result<AuthCore, AssemblyError> {
+        let AuthCoreRequired {
+            storage,
+            email_sender,
+            audit_sink,
+            passkey: passkey_config,
+            reauthentication: reauth_policy,
+            rate_limiting,
+            links,
+        } = self.required;
         let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock));
-        let email: Arc<dyn EmailSender> = self.email.ok_or(AssemblyError::MissingEmailSender)?;
-        let passkey_config = self.passkey.ok_or(AssemblyError::MissingPasskeyConfig)?;
-        let audit: Arc<dyn AuditSink> = self.audit.ok_or(AssemblyError::MissingAuditSink)?;
-        let audit = AuditDispatch::new(audit, clock.clone());
-        let rate_limits = RateLimitEnforcer::new(
-            self.rate_limiter,
-            self.rate_limits.unwrap_or_default(),
-            audit.clone(),
-        )?;
+        let audit = AuditDispatch::new(audit_sink, clock.clone());
+        let rate_limits = RateLimitEnforcer::new(rate_limiting, audit.clone());
         let metrics: Arc<dyn MetricSink> = self
             .metrics
             .unwrap_or_else(|| Arc::new(NoopMetricSink) as Arc<dyn MetricSink>);
         let session_config = self.session_config.unwrap_or_default();
 
-        let emails: Arc<dyn EmailTemplates> = self
-            .emails
+        let email_templates: Arc<dyn EmailTemplates> = self
+            .email_templates
             .unwrap_or_else(|| Arc::new(DefaultEmailTemplates));
         let signup_config = self.signup.unwrap_or_default();
         let recovery_config = self.recovery.unwrap_or_default();
@@ -267,25 +212,23 @@ impl AuthCoreBuilder {
             validate_idle_timeout(idle_timeout, session_config.absolute_lifetime)?;
         }
 
-        let mailer = Mailer::new(email, emails);
+        let mailer = Mailer::new(email_sender, email_templates);
         let notices = SecurityNotices::new(
             mailer.clone(),
-            self.storage.records.users.clone(),
+            storage.records.users.clone(),
             self.notice_policy.unwrap_or_default(),
         );
 
         let session_records = SessionRecords::new(
-            self.storage.expiring.sessions.clone(),
+            storage.expiring.sessions.clone(),
             clock.clone(),
             audit.clone(),
             session_config,
         )?;
 
-        let reauth_policy = self.reauth.ok_or(AssemblyError::ReauthDecisionRequired)?;
-
         let webauthn = Arc::new(build_webauthn(&passkey_config).map_err(AssemblyError::Passkey)?);
 
-        let expiring = self.storage.expiring.clone();
+        let expiring = storage.expiring.clone();
         let deps = CoreDeps::new(
             clock.clone(),
             audit,
@@ -293,7 +236,7 @@ impl AuthCoreBuilder {
             notices,
             rate_limits,
             session_records,
-            self.storage,
+            storage,
         )
         .with_metrics(metrics);
 
@@ -308,11 +251,12 @@ impl AuthCoreBuilder {
 
         let passkey = PasskeyManager::new(&deps, registrations.clone(), passkey_config, webauthn);
 
-        let signup = SignupManager::new(&deps, registrations.clone(), signup_config)?;
+        let signup = SignupManager::new(&deps, registrations.clone(), links.signup, signup_config)?;
 
-        let recovery = RecoveryManager::new(&deps, registrations, &recovery_config)?;
+        let recovery =
+            RecoveryManager::new(&deps, registrations, links.recovery, &recovery_config)?;
 
-        let user = UserManager::new(&deps, user_config)?;
+        let user = UserManager::new(&deps, links.email_change, user_config)?;
 
         let operator = OperatorManager::new(&deps, passkey.clone());
 

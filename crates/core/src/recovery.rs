@@ -6,7 +6,7 @@ use crate::assembly::{AssemblyError, MAX_LIFETIME};
 use crate::audit::{AuditDispatch, AuditEventKind, RecoveryFailureReason};
 use crate::context::CoreDeps;
 use crate::email::{EmailAddress, Mailer};
-use crate::email_link::{Issued, TOKEN_PLACEHOLDER};
+use crate::email_link::{Issued, LinkTemplate};
 use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
 use crate::error::Result;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
@@ -21,7 +21,6 @@ use crate::user_records::UserRecords;
 #[derive(Clone)]
 pub struct RecoveryConfig {
     pub token_lifetime: Duration,
-    pub url_template: String,
     pub cool_down: Duration,
     pub danger_allow_cool_down_below_floor: bool,
 }
@@ -70,7 +69,6 @@ impl Default for RecoveryConfig {
     fn default() -> Self {
         Self {
             token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
-            url_template: format!("https://example.invalid/recovery?token={TOKEN_PLACEHOLDER}"),
             cool_down: Self::DEFAULT_COOL_DOWN,
             danger_allow_cool_down_below_floor: false,
         }
@@ -91,6 +89,7 @@ impl RecoveryManager {
     pub(crate) fn new(
         deps: &CoreDeps,
         registrations: PasskeyRegistrations,
+        template: LinkTemplate,
         config: &RecoveryConfig,
     ) -> std::result::Result<Self, AssemblyError> {
         Ok(Self {
@@ -99,7 +98,7 @@ impl RecoveryManager {
                 deps,
                 registrations,
                 RegistrationLink::Recovery,
-                &config.url_template,
+                template,
                 config.token_lifetime,
             )?,
             mailer: deps.mailer.clone(),

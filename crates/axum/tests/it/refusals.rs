@@ -3,7 +3,8 @@ use doorman_axum::dto::{PasskeyDto, Reauthentication};
 use doorman_core::reauth::{ReauthAction, ReauthPolicy};
 use serde_json::{Value, json};
 
-use crate::common::{ResidentAuthenticator, TestApp, rp_origin};
+use crate::common::{ResidentAuthenticator, TestApp, harness_core, rp_origin};
+use doorman_core::assembly::AuthCoreRequired;
 
 #[tokio::test]
 async fn every_session_route_refuses_a_request_without_a_session() {
@@ -109,10 +110,13 @@ async fn destructive_routes_refuse_a_session_in_recovery_cool_down() {
 async fn deleting_the_acting_session_logs_out_without_a_gate() {
     for in_cool_down in [false, true] {
         let app = TestApp::with(
-            |b| {
-                b.reauthentication(ReauthPolicy::required_for([
-                    ReauthAction::RevokeAnotherSession,
-                ]))
+            |r| {
+                harness_core(AuthCoreRequired {
+                    reauthentication: ReauthPolicy::required_for([
+                        ReauthAction::RevokeAnotherSession,
+                    ]),
+                    ..r
+                })
             },
             |b| b,
         );
@@ -163,14 +167,17 @@ async fn gated_routes_require_and_accept_a_reauthentication() {
         Gated::RequestEmailChange,
     ] {
         let app = TestApp::with(
-            |b| {
-                b.reauthentication(ReauthPolicy::required_for([
-                    ReauthAction::DeleteUser,
-                    ReauthAction::RemovePasskey,
-                    ReauthAction::RevokeAnotherSession,
-                    ReauthAction::RevokeOtherSessions,
-                    ReauthAction::RequestEmailChange,
-                ]))
+            |r| {
+                harness_core(AuthCoreRequired {
+                    reauthentication: ReauthPolicy::required_for([
+                        ReauthAction::DeleteUser,
+                        ReauthAction::RemovePasskey,
+                        ReauthAction::RevokeAnotherSession,
+                        ReauthAction::RevokeOtherSessions,
+                        ReauthAction::RequestEmailChange,
+                    ]),
+                    ..r
+                })
             },
             |b| b,
         );

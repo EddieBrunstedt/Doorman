@@ -4,7 +4,7 @@ use doorman_core::session::SessionConfig;
 use doorman_core::storage::SessionTransport;
 use webauthn_rs::prelude::RequestChallengeResponse;
 
-use crate::common::{Client, Reply, ResidentAuthenticator, TestApp, rp_origin};
+use crate::common::{Client, Reply, ResidentAuthenticator, TestApp, harness_core, rp_origin};
 
 #[derive(Debug, Clone, Copy)]
 enum SessionStart {
@@ -166,7 +166,7 @@ async fn a_request_carrying_both_credentials_is_refused() {
 
 #[tokio::test]
 async fn without_bearer_sessions_the_authorization_header_is_left_to_the_host() {
-    let app = TestApp::with(|b| b.session(SessionConfig::default()), |b| b);
+    let app = TestApp::with(|r| harness_core(r).session(SessionConfig::default()), |b| b);
     let browser = app.session_as(Client::Browser, "alice@example.com").await;
 
     let mut authenticator = ResidentAuthenticator::new(&rp_origin());

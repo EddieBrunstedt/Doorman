@@ -13,7 +13,46 @@ use crate::token::{generate_token, hash_token};
 
 pub const TOKEN_PLACEHOLDER: &str = "{token}";
 
-const PLACEHOLDER_URL_HOST: &str = "example.invalid";
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum LinkTemplateError {
+    #[error(
+        "a link template must contain the `{{token}}` placeholder, so the link carries the token"
+    )]
+    MissingToken,
+    #[error("a link template must make an absolute URL: {0}")]
+    NotAUrl(url::ParseError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkTemplate(String);
+
+impl LinkTemplate {
+    pub fn parse(template: impl Into<String>) -> std::result::Result<Self, LinkTemplateError> {
+        let template = template.into();
+        if !template.contains(TOKEN_PLACEHOLDER) {
+            return Err(LinkTemplateError::MissingToken);
+        }
+        // A token is URL-safe base64, so a link is a URL whenever one made with a stand-in is.
+        url::Url::parse(&template.replace(TOKEN_PLACEHOLDER, "token"))
+            .map_err(LinkTemplateError::NotAUrl)?;
+        Ok(Self(template))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn link(&self, token: &str) -> String {
+        self.0.replace(TOKEN_PLACEHOLDER, token)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LinkTemplates {
+    pub signup: LinkTemplate,
+    pub recovery: LinkTemplate,
+    pub email_change: LinkTemplate,
+}
 
 #[must_use]
 #[derive(Debug)]
@@ -25,7 +64,7 @@ pub(crate) enum Issued {
 #[derive(Clone)]
 pub(crate) struct EmailLinks {
     purpose: EmailLinkPurpose,
-    template: String,
+    template: LinkTemplate,
     lifetime: Duration,
     links: Arc<dyn EmailLinkStore>,
     redeemer: Redeemer,
@@ -36,30 +75,18 @@ impl EmailLinks {
     pub(crate) fn new(
         deps: &CoreDeps,
         purpose: EmailLinkPurpose,
-        template: &str,
+        template: LinkTemplate,
         lifetime: Duration,
     ) -> std::result::Result<Self, AssemblyError> {
-        let (flow, lifetime_field) = match purpose {
-            EmailLinkPurpose::Signup => ("signup", "signup token_lifetime"),
-            EmailLinkPurpose::Recovery => ("recovery", "recovery token_lifetime"),
-            EmailLinkPurpose::EmailChange => ("email change", "user token_lifetime"),
+        let lifetime_field = match purpose {
+            EmailLinkPurpose::Signup => "signup token_lifetime",
+            EmailLinkPurpose::Recovery => "recovery token_lifetime",
+            EmailLinkPurpose::EmailChange => "user token_lifetime",
         };
-        if !template.contains(TOKEN_PLACEHOLDER) {
-            return Err(AssemblyError::InvalidUrlTemplate {
-                flow,
-                placeholder: TOKEN_PLACEHOLDER,
-            });
-        }
-        if template.contains(PLACEHOLDER_URL_HOST) {
-            return Err(AssemblyError::PlaceholderUrlTemplate {
-                flow,
-                placeholder_host: PLACEHOLDER_URL_HOST,
-            });
-        }
         validate_lifetime(lifetime_field, lifetime)?;
         Ok(Self {
             purpose,
-            template: template.to_owned(),
+            template,
             lifetime,
             links: deps.email_links.clone(),
             redeemer: Redeemer::from_deps(deps),
@@ -92,9 +119,7 @@ impl EmailLinks {
             })
             .await?;
 
-        Ok(Issued::Link(
-            self.template.replace(TOKEN_PLACEHOLDER, &token),
-        ))
+        Ok(Issued::Link(self.template.link(&token)))
     }
 
     pub(crate) async fn redeem(

@@ -19,28 +19,24 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     let base = external_origin.as_str().trim_end_matches('/');
 
-    let core = AuthCore::builder(storage)
-        .email(Arc::new(TerminalEmailSender))
-        .passkey(PasskeyConfig::from_origin(
-            external_origin.clone(),
-            "doorman purge example",
-        )?)
-        .reauthentication(ReauthPolicy::disabled())
-        .audit(Arc::new(NoopAuditSink))
-        .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
-        .signup(SignupConfig {
-            url_template: format!("{base}/?signup_token={TOKEN_PLACEHOLDER}"),
-            ..SignupConfig::default()
-        })
-        .recovery(RecoveryConfig {
-            url_template: format!("{base}/?recovery_token={TOKEN_PLACEHOLDER}"),
-            ..RecoveryConfig::default()
-        })
-        .user(UserConfig {
-            url_template: format!("{base}/?email_change_token={TOKEN_PLACEHOLDER}"),
-            ..UserConfig::default()
-        })
-        .build()?;
+    let core = AuthCore::builder(AuthCoreRequired {
+        storage,
+        email_sender: Arc::new(TerminalEmailSender),
+        audit_sink: Arc::new(NoopAuditSink),
+        passkey: PasskeyConfig::from_origin(external_origin.clone(), "doorman purge example")?,
+        reauthentication: ReauthPolicy::disabled(),
+        rate_limiting: RateLimiting::enforced(Arc::new(InMemoryRateLimiter::new(Arc::new(
+            SystemClock,
+        )))),
+        links: LinkTemplates {
+            signup: LinkTemplate::parse(format!("{base}/?signup_token={TOKEN_PLACEHOLDER}"))?,
+            recovery: LinkTemplate::parse(format!("{base}/?recovery_token={TOKEN_PLACEHOLDER}"))?,
+            email_change: LinkTemplate::parse(format!(
+                "{base}/?email_change_token={TOKEN_PLACEHOLDER}"
+            ))?,
+        },
+    })
+    .build()?;
     let auth = AuthService::builder(core)
         .cookie(CookieConfig {
             secure: external_origin.scheme() == "https",

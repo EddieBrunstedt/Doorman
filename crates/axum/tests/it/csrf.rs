@@ -4,7 +4,8 @@ use doorman_core::passkey::PasskeyConfig;
 use url::Url;
 use webauthn_rs::prelude::RequestChallengeResponse;
 
-use crate::common::{Call, Client, RP_ORIGIN, TestApp, rp_origin};
+use crate::common::{Call, Client, RP_ORIGIN, TestApp, harness_core, rp_origin};
+use doorman_core::assembly::AuthCoreRequired;
 
 const EVIL_ORIGIN: &str = "https://evil.test";
 const RELATED_ORIGIN: &str = "https://related.test";
@@ -166,10 +167,13 @@ async fn the_relying_party_origins_and_the_hosts_trusted_origins_are_the_applica
         let related = related.clone();
         let host_trusted = host_trusted.clone();
         let app = TestApp::with(
-            |b| {
-                b.passkey(PasskeyConfig {
-                    additional_origins: vec![related],
-                    ..PasskeyConfig::new("localhost", rp_origin(), "doorman tests")
+            |r| {
+                harness_core(AuthCoreRequired {
+                    passkey: PasskeyConfig {
+                        additional_origins: vec![related],
+                        ..PasskeyConfig::new("localhost", rp_origin(), "doorman tests")
+                    },
+                    ..r
                 })
             },
             |b| b.trusted_origin(host_trusted),

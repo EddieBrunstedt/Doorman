@@ -8,7 +8,7 @@ use doorman_core::session::SessionContext;
 use doorman_core::signup::{SignupConfig, SignupDecision, SignupPolicy};
 use serde_json::{Value, json};
 
-use crate::common::{Client, ResidentAuthenticator, SIGNUP_URL, TestApp, USER_URL, rp_origin};
+use crate::common::{Client, ResidentAuthenticator, TestApp, USER_URL, harness_core, rp_origin};
 
 #[tokio::test]
 async fn signup_registers_a_passkey_and_starts_a_session() {
@@ -45,9 +45,8 @@ async fn signup_request_hands_the_invite_token_to_the_policy() {
     let app = TestApp::with(
         {
             let policy = policy.clone();
-            move |b| {
-                b.signup(SignupConfig {
-                    url_template: SIGNUP_URL.to_string(),
+            move |r| {
+                harness_core(r).signup(SignupConfig {
                     policy,
                     ..SignupConfig::default()
                 })

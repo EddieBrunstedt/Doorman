@@ -18,8 +18,8 @@ use doorman_test_support::request_context;
 
 use crate::common::{
     Harness, RECOVERY_URL, RP_ID, RP_NAME, authenticator, kinds, last_email_change_token,
-    make_user, passkey_count, provision_user, recovery_config, register_passkey, rp_origin,
-    session_count, session_for, token_from_email,
+    make_user, passkey_count, provision_user, register_passkey, rp_origin, session_count,
+    session_for, token_from_email,
 };
 
 #[tokio::test]
@@ -798,7 +798,7 @@ async fn recovery_config_with_subhour_cool_down_honors_configured_cool_down() {
         .recovery_config(RecoveryConfig {
             cool_down,
             danger_allow_cool_down_below_floor: true,
-            ..recovery_config()
+            ..RecoveryConfig::default()
         })
         .build();
     let _ = provision_user(&h, "alice@example.com").await;
@@ -833,7 +833,7 @@ async fn recovery_config_with_zero_cool_down_yields_inactive_deadline() {
         .recovery_config(RecoveryConfig {
             cool_down: Duration::ZERO,
             danger_allow_cool_down_below_floor: true,
-            ..recovery_config()
+            ..RecoveryConfig::default()
         })
         .build();
     let _ = provision_user(&h, "alice@example.com").await;
@@ -858,7 +858,9 @@ async fn recovery_config_with_zero_cool_down_yields_inactive_deadline() {
 
 #[tokio::test]
 async fn custom_emails_override_recovery_subjects_and_html() {
-    let h = Harness::builder().emails(Arc::new(BrandedEmails)).build();
+    let h = Harness::builder()
+        .email_templates(Arc::new(BrandedEmails))
+        .build();
     let _ = provision_user(&h, "user@example.com").await;
     let mail_before = h.email.sent().len();
 

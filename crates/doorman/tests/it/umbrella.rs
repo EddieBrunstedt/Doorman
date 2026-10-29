@@ -15,28 +15,27 @@ async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn 
 
     let origin: Url = "http://localhost:3000".parse()?;
     let base = origin.as_str().trim_end_matches('/');
-    let core = AuthCore::builder(storage.all_stores())
-        .email(Arc::new(TerminalEmailSender))
-        .passkey(PasskeyConfig::new("localhost", origin.clone(), "Example"))
-        .reauthentication(ReauthPolicy::required_for([
+    let core = AuthCore::builder(AuthCoreRequired {
+        storage: storage.all_stores(),
+        email_sender: Arc::new(TerminalEmailSender),
+        audit_sink: Arc::new(NoopAuditSink),
+        passkey: PasskeyConfig::new("localhost", origin.clone(), "Example"),
+        reauthentication: ReauthPolicy::required_for([
             ReauthAction::DeleteUser,
             ReauthAction::RemovePasskey,
-        ]))
-        .audit(Arc::new(NoopAuditSink))
-        .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
-        .signup(SignupConfig {
-            url_template: format!("{base}/signup?token={TOKEN_PLACEHOLDER}"),
-            ..Default::default()
-        })
-        .recovery(RecoveryConfig {
-            url_template: format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"),
-            ..Default::default()
-        })
-        .user(UserConfig {
-            url_template: format!("{base}/user/email?token={TOKEN_PLACEHOLDER}"),
-            ..Default::default()
-        })
-        .build()?;
+        ]),
+        rate_limiting: RateLimiting::enforced(Arc::new(InMemoryRateLimiter::new(Arc::new(
+            SystemClock,
+        )))),
+        links: LinkTemplates {
+            signup: LinkTemplate::parse(format!("{base}/signup?token={TOKEN_PLACEHOLDER}"))?,
+            recovery: LinkTemplate::parse(format!("{base}/recovery?token={TOKEN_PLACEHOLDER}"))?,
+            email_change: LinkTemplate::parse(format!(
+                "{base}/user/email?token={TOKEN_PLACEHOLDER}"
+            ))?,
+        },
+    })
+    .build()?;
     let auth = AuthService::builder(core)
         .cookie(CookieConfig::default())
         .purge(PurgeSchedule::External)

@@ -8,7 +8,7 @@ use doorman_core::error::StorageResult;
 use doorman_core::memory::InMemoryStorage;
 use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 
-use crate::common::{Client, TestApp};
+use crate::common::{Client, TestApp, harness_core};
 
 #[tokio::test]
 async fn doormans_routes_are_checked_and_authenticated_without_the_hosts_layer() {
@@ -48,7 +48,7 @@ async fn a_request_through_both_layers_looks_its_session_up_once() {
         lookups: AtomicUsize::new(0),
     });
     storage.expiring.sessions = sessions.clone();
-    let app = TestApp::with_storage(storage, |b| b, |b| b);
+    let app = TestApp::with_storage(storage, harness_core, |b| b);
     let session = app.session_for("alice@example.com").await;
     sessions.lookups.store(0, Ordering::SeqCst);
 

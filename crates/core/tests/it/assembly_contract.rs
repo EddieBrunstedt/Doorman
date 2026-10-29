@@ -1,36 +1,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use doorman_core::assembly::{AssemblyError, AuthCore, AuthCoreBuilder};
-use doorman_core::audit::{AuditSink, NoopAuditSink};
-use doorman_core::clock::SystemClock;
-use doorman_core::email::EmailSender;
-use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
+use doorman_core::assembly::{AssemblyError, AuthCore, AuthCoreBuilder, AuthCoreRequired};
+use doorman_core::audit::NoopAuditSink;
+use doorman_core::email_link::{LinkTemplate, LinkTemplateError, LinkTemplates};
+use doorman_core::memory::InMemoryStorage;
 use doorman_core::passkey::PasskeyConfig;
-use doorman_core::rate_limit::{RateLimitPolicy, RateLimiter, RateLimits};
+use doorman_core::rate_limit::RateLimiting;
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::{RecoveryConfig, RecoveryConfigError};
 use doorman_core::session::SessionConfig;
 use doorman_core::signup::SignupConfig;
-use doorman_core::storage::Storage;
-use doorman_core::user::UserConfig;
 use doorman_test_support::CapturingEmailSender;
-
-fn fresh_storage() -> Storage {
-    InMemoryStorage::new().all_stores()
-}
-
-fn capturing_email() -> Arc<dyn EmailSender> {
-    Arc::new(CapturingEmailSender::new())
-}
-
-fn noop_audit() -> Arc<dyn AuditSink> {
-    Arc::new(NoopAuditSink)
-}
-
-fn in_memory_limiter() -> Arc<dyn RateLimiter> {
-    Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock)))
-}
 
 fn passkey_config() -> PasskeyConfig {
     PasskeyConfig::new(
@@ -40,41 +21,28 @@ fn passkey_config() -> PasskeyConfig {
     )
 }
 
-const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
-const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
-const USER_URL: &str = "https://app.test/email-change?token={token}";
-
-fn real_signup() -> SignupConfig {
-    SignupConfig {
-        url_template: SIGNUP_URL.to_string(),
-        ..SignupConfig::default()
-    }
+fn link_template(template: &str) -> LinkTemplate {
+    LinkTemplate::parse(template).expect("link template")
 }
 
-fn real_recovery() -> RecoveryConfig {
-    RecoveryConfig {
-        url_template: RECOVERY_URL.to_string(),
-        ..RecoveryConfig::default()
-    }
-}
-
-fn real_user() -> UserConfig {
-    UserConfig {
-        url_template: USER_URL.to_string(),
-        ..UserConfig::default()
+fn required() -> AuthCoreRequired {
+    AuthCoreRequired {
+        storage: InMemoryStorage::new().all_stores(),
+        email_sender: Arc::new(CapturingEmailSender::new()),
+        audit_sink: Arc::new(NoopAuditSink),
+        passkey: passkey_config(),
+        reauthentication: ReauthPolicy::disabled(),
+        rate_limiting: RateLimiting::Disabled,
+        links: LinkTemplates {
+            signup: link_template("https://app.test/signup?token={token}"),
+            recovery: link_template("https://app.test/recovery?token={token}"),
+            email_change: link_template("https://app.test/email-change?token={token}"),
+        },
     }
 }
 
 fn valid_builder() -> AuthCoreBuilder {
-    AuthCore::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .audit(noop_audit())
-        .limiter(in_memory_limiter())
-        .signup(real_signup())
-        .recovery(real_recovery())
-        .user(real_user())
-        .reauthentication(ReauthPolicy::disabled())
+    AuthCore::builder(required())
 }
 
 #[test]
@@ -83,183 +51,34 @@ fn fully_wired_builder_builds() {
 }
 
 #[test]
-fn missing_email_sender_returns_build_error() {
-    let err = AuthCore::builder(fresh_storage()).build().err();
-    assert!(
-        matches!(err, Some(AssemblyError::MissingEmailSender)),
-        "expected MissingEmailSender, got: {err:?}"
-    );
-}
-
-#[test]
-fn missing_passkey_config_returns_build_error() {
-    let err = AuthCore::builder(fresh_storage())
-        .email(capturing_email())
-        .build()
-        .err();
-    assert!(
-        matches!(err, Some(AssemblyError::MissingPasskeyConfig)),
-        "expected MissingPasskeyConfig, got: {err:?}"
-    );
-}
-
-#[test]
-fn missing_audit_sink_returns_build_error() {
-    let err = AuthCore::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .limiter(in_memory_limiter())
-        .signup(real_signup())
-        .recovery(real_recovery())
-        .user(real_user())
-        .build()
-        .err();
-    assert!(
-        matches!(err, Some(AssemblyError::MissingAuditSink)),
-        "expected MissingAuditSink when no audit sink is wired, got: {err:?}"
-    );
-}
-
-#[test]
-fn a_rate_limiter_is_required_unless_every_rate_limit_is_off() {
-    let one_on = RateLimits {
-        recovery_request_global: Some(RateLimitPolicy::new(1, Duration::from_secs(60))),
-        ..RateLimits::disabled()
-    };
-    for (limits, needs_limiter) in [
-        (None, true),
-        (Some(RateLimits::default()), true),
-        (Some(one_on), true),
-        (Some(RateLimits::disabled()), false),
+fn a_link_template_needs_the_token_placeholder_and_an_absolute_url() {
+    for (template, expected) in [
+        ("https://app.test/signup?token={token}", Ok(())),
+        ("https://app.test/recover/{token}", Ok(())),
+        ("app.example://recover?token={token}", Ok(())),
+        (
+            "https://app.test/signup",
+            Err(LinkTemplateError::MissingToken),
+        ),
+        (
+            "https://app.test/signup?token={TOKEN}",
+            Err(LinkTemplateError::MissingToken),
+        ),
+        (
+            "/signup?token={token}",
+            Err(LinkTemplateError::NotAUrl(
+                url::ParseError::RelativeUrlWithoutBase,
+            )),
+        ),
+        (
+            "https://?token={token}",
+            Err(LinkTemplateError::NotAUrl(url::ParseError::EmptyHost)),
+        ),
     ] {
-        let mut builder = AuthCore::builder(fresh_storage())
-            .email(capturing_email())
-            .passkey(passkey_config())
-            .audit(noop_audit())
-            .signup(real_signup())
-            .recovery(real_recovery())
-            .user(real_user())
-            .reauthentication(ReauthPolicy::disabled());
-        if let Some(limits) = limits {
-            builder = builder.rate_limits(limits);
-        }
+        let parsed = LinkTemplate::parse(template).map(|parsed| parsed.as_str().to_owned());
 
-        let err = builder.build().err();
-
-        if needs_limiter {
-            assert!(
-                matches!(err, Some(AssemblyError::MissingRateLimiter)),
-                "{limits:?}: {err:?}"
-            );
-        } else {
-            assert!(err.is_none(), "{limits:?}: {err:?}");
-        }
+        assert_eq!(parsed, expected.map(|()| template.to_owned()), "{template}");
     }
-}
-
-#[test]
-fn reauth_decision_required_when_policy_not_set() {
-    let err = AuthCore::builder(fresh_storage())
-        .email(capturing_email())
-        .passkey(passkey_config())
-        .audit(noop_audit())
-        .limiter(in_memory_limiter())
-        .signup(real_signup())
-        .recovery(real_recovery())
-        .user(real_user())
-        .build()
-        .err();
-    assert!(
-        matches!(err, Some(AssemblyError::ReauthDecisionRequired)),
-        "expected ReauthDecisionRequired when no policy is wired, got: {err:?}"
-    );
-}
-
-#[test]
-fn default_signup_template_is_rejected_as_placeholder() {
-    let err = valid_builder()
-        .signup(SignupConfig::default())
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(AssemblyError::PlaceholderUrlTemplate { flow: "signup", .. })
-        ),
-        "expected PlaceholderUrlTemplate for signup, got: {err:?}"
-    );
-}
-
-#[test]
-fn default_recovery_template_is_rejected_as_placeholder() {
-    let err = valid_builder()
-        .recovery(RecoveryConfig::default())
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(AssemblyError::PlaceholderUrlTemplate {
-                flow: "recovery",
-                ..
-            })
-        ),
-        "expected PlaceholderUrlTemplate for recovery, got: {err:?}"
-    );
-}
-
-#[test]
-fn default_email_change_template_is_rejected_as_placeholder() {
-    let err = valid_builder().user(UserConfig::default()).build().err();
-    assert!(
-        matches!(
-            err,
-            Some(AssemblyError::PlaceholderUrlTemplate {
-                flow: "email change",
-                ..
-            })
-        ),
-        "expected PlaceholderUrlTemplate for email change, got: {err:?}"
-    );
-}
-
-#[test]
-fn signup_url_template_without_token_is_rejected() {
-    let err = valid_builder()
-        .signup(SignupConfig {
-            url_template: "https://app.test/signup".to_string(),
-            ..SignupConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(AssemblyError::InvalidUrlTemplate { flow: "signup", .. })
-        ),
-        "expected InvalidUrlTemplate for signup, got: {err:?}"
-    );
-}
-
-#[test]
-fn recovery_url_template_without_token_is_rejected() {
-    let err = valid_builder()
-        .recovery(RecoveryConfig {
-            url_template: "https://app.test/recovery".to_string(),
-            ..RecoveryConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(AssemblyError::InvalidUrlTemplate {
-                flow: "recovery",
-                ..
-            })
-        ),
-        "expected InvalidUrlTemplate for recovery, got: {err:?}"
-    );
 }
 
 #[test]
@@ -288,7 +107,7 @@ fn zero_signup_token_lifetime_is_rejected() {
     let err = valid_builder()
         .signup(SignupConfig {
             token_lifetime: Duration::ZERO,
-            ..real_signup()
+            ..SignupConfig::default()
         })
         .build()
         .err();
@@ -306,13 +125,15 @@ fn zero_signup_token_lifetime_is_rejected() {
 
 #[test]
 fn oversized_passkey_challenge_lifetime_is_rejected() {
-    let err = valid_builder()
-        .passkey(PasskeyConfig {
+    let err = AuthCore::builder(AuthCoreRequired {
+        passkey: PasskeyConfig {
             challenge_lifetime: Duration::MAX,
             ..passkey_config()
-        })
-        .build()
-        .err();
+        },
+        ..required()
+    })
+    .build()
+    .err();
     assert!(
         matches!(
             err,
@@ -329,7 +150,7 @@ fn with_recovery_cool_down(cool_down: Duration) -> Result<AuthCore, AssemblyErro
     valid_builder()
         .recovery(RecoveryConfig {
             cool_down,
-            ..real_recovery()
+            ..RecoveryConfig::default()
         })
         .build()
 }

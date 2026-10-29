@@ -5,7 +5,7 @@ use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
 use crate::email::{EmailAddress, Mailer};
-use crate::email_link::{EmailLinks, Issued, TOKEN_PLACEHOLDER};
+use crate::email_link::{EmailLinks, Issued, LinkTemplate};
 use crate::error::{Error, Result};
 use crate::redeem::OwnerRefusal;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
@@ -16,7 +16,6 @@ use crate::user_records::UserRecords;
 #[derive(Clone)]
 pub struct UserConfig {
     pub token_lifetime: Duration,
-    pub url_template: String,
 }
 
 impl UserConfig {
@@ -27,7 +26,6 @@ impl Default for UserConfig {
     fn default() -> Self {
         Self {
             token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
-            url_template: format!("https://example.invalid/email-change?token={TOKEN_PLACEHOLDER}"),
         }
     }
 }
@@ -50,12 +48,13 @@ pub struct UserManager {
 impl UserManager {
     pub(crate) fn new(
         deps: &CoreDeps,
+        template: LinkTemplate,
         config: UserConfig,
     ) -> std::result::Result<Self, AssemblyError> {
         let link = EmailLinks::new(
             deps,
             EmailLinkPurpose::EmailChange,
-            &config.url_template,
+            template,
             config.token_lifetime,
         )?;
         Ok(Self {

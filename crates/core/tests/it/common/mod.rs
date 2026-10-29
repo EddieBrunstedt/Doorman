@@ -6,12 +6,13 @@ use async_trait::async_trait;
 use tokio::sync::Barrier;
 
 use chrono::{DateTime, TimeZone, Utc};
-use doorman_core::assembly::{AssemblyError, AuthCore};
+use doorman_core::assembly::{AssemblyError, AuthCore, AuthCoreRequired};
 use doorman_core::audit::{
     AuditEvent, AuditEventKind, AuditSink, OperatorActor, RedemptionFailureReason, SecretKind,
 };
 use doorman_core::clock::Clock;
 use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
+use doorman_core::email_link::{LinkTemplate, LinkTemplates};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::memory::{
     InMemoryEmailLinkStore, InMemoryPasskeyChallengeStore, InMemoryPasskeyStore,
@@ -20,7 +21,7 @@ use doorman_core::memory::{
 use doorman_core::metrics::MetricSink;
 use doorman_core::operator::OperatorManager;
 use doorman_core::passkey::{PasskeyConfig, PasskeyManager};
-use doorman_core::rate_limit::{RateLimiter, RateLimits};
+use doorman_core::rate_limit::RateLimiting;
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::{RecoveryConfig, RecoveryManager};
 use doorman_core::security_notice::NoticePolicy;
@@ -33,7 +34,7 @@ use doorman_core::storage::{
     ExpiringStores, PasskeyStore, RecordStores, Session, SessionId, SessionStore, SessionTransport,
     Storage, StoredPasskey, TokenHash, User, UserId, UserStatus, UserStore,
 };
-use doorman_core::user::{UserConfig, UserManager};
+use doorman_core::user::UserManager;
 pub use doorman_test_support::token_from_email;
 use doorman_test_support::{
     CLIENT_IP, CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock,
@@ -69,17 +70,11 @@ pub fn operator() -> OperatorActor {
     OperatorActor::new("support-agent-7", None, None, None).expect("operator actor")
 }
 
-pub fn signup_config() -> SignupConfig {
-    SignupConfig {
-        url_template: SIGNUP_URL.to_string(),
-        ..SignupConfig::default()
-    }
-}
-
-pub fn recovery_config() -> RecoveryConfig {
-    RecoveryConfig {
-        url_template: RECOVERY_URL.to_string(),
-        ..RecoveryConfig::default()
+pub fn link_templates() -> LinkTemplates {
+    LinkTemplates {
+        signup: LinkTemplate::parse(SIGNUP_URL).expect("signup link template"),
+        recovery: LinkTemplate::parse(RECOVERY_URL).expect("recovery link template"),
+        email_change: LinkTemplate::parse(USER_URL).expect("email change link template"),
     }
 }
 
@@ -281,22 +276,19 @@ impl Harness {
     }
 
     pub fn another_process_with(&self, session_config: SessionConfig) -> AuthCore {
-        AuthCore::builder(self.storage.clone())
-            .clock(self.clock.clone() as Arc<dyn Clock>)
-            .audit(self.audit.clone() as Arc<dyn AuditSink>)
-            .email(self.email.clone() as Arc<dyn EmailSender>)
-            .rate_limits(RateLimits::disabled())
-            .session(session_config)
-            .passkey(PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME))
-            .signup(signup_config())
-            .recovery(recovery_config())
-            .user(UserConfig {
-                url_template: USER_URL.to_string(),
-                ..UserConfig::default()
-            })
-            .reauthentication(ReauthPolicy::disabled())
-            .build()
-            .expect("another process assembles")
+        AuthCore::builder(AuthCoreRequired {
+            storage: self.storage.clone(),
+            email_sender: self.email.clone() as Arc<dyn EmailSender>,
+            audit_sink: self.audit.clone() as Arc<dyn AuditSink>,
+            passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
+            reauthentication: ReauthPolicy::disabled(),
+            rate_limiting: RateLimiting::Disabled,
+            links: link_templates(),
+        })
+        .clock(self.clock.clone() as Arc<dyn Clock>)
+        .session(session_config)
+        .build()
+        .expect("another process assembles")
     }
 }
 
@@ -305,9 +297,8 @@ pub struct HarnessBuilder {
     recovery: RecoveryConfig,
     session_config: SessionConfig,
     passkey: PasskeyConfig,
-    limiter: Option<Arc<dyn RateLimiter>>,
-    rate_limits: RateLimits,
-    emails: Arc<dyn EmailTemplates>,
+    rate_limiting: RateLimiting,
+    email_templates: Arc<dyn EmailTemplates>,
     notice_policy: NoticePolicy,
     reauth_policy: ReauthPolicy,
 }
@@ -315,16 +306,15 @@ pub struct HarnessBuilder {
 impl HarnessBuilder {
     pub fn new() -> Self {
         Self {
-            signup: signup_config(),
-            recovery: recovery_config(),
+            signup: SignupConfig::default(),
+            recovery: RecoveryConfig::default(),
             session_config: SessionConfig {
                 absolute_lifetime: Duration::from_secs(60 * 60),
                 ..SessionConfig::default()
             },
             passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
-            limiter: None,
-            rate_limits: RateLimits::disabled(),
-            emails: Arc::new(DefaultEmailTemplates),
+            rate_limiting: RateLimiting::Disabled,
+            email_templates: Arc::new(DefaultEmailTemplates),
             notice_policy: NoticePolicy::default(),
             reauth_policy: ReauthPolicy::disabled(),
         }
@@ -340,8 +330,8 @@ impl HarnessBuilder {
         self
     }
 
-    pub fn emails(mut self, emails: Arc<dyn EmailTemplates>) -> Self {
-        self.emails = emails;
+    pub fn email_templates(mut self, templates: Arc<dyn EmailTemplates>) -> Self {
+        self.email_templates = templates;
         self
     }
 
@@ -355,13 +345,8 @@ impl HarnessBuilder {
         self
     }
 
-    pub fn limiter(mut self, limiter: Arc<dyn RateLimiter>) -> Self {
-        self.limiter = Some(limiter);
-        self
-    }
-
-    pub fn rate_limits(mut self, limits: RateLimits) -> Self {
-        self.rate_limits = limits;
+    pub fn rate_limiting(mut self, rate_limiting: RateLimiting) -> Self {
+        self.rate_limiting = rate_limiting;
         self
     }
 
@@ -415,28 +400,23 @@ impl HarnessBuilder {
             },
         };
 
-        let mut core = AuthCore::builder(storage.clone());
-        if let Some(limiter) = self.limiter {
-            core = core.limiter(limiter);
-        }
-        let core = core
-            .clock(clock.clone() as Arc<dyn Clock>)
-            .audit(audit.clone() as Arc<dyn AuditSink>)
-            .email(email.clone() as Arc<dyn EmailSender>)
-            .emails(self.emails)
-            .rate_limits(self.rate_limits)
-            .metrics(metrics.clone() as Arc<dyn MetricSink>)
-            .session(self.session_config.clone())
-            .passkey(self.passkey)
-            .signup(self.signup)
-            .recovery(self.recovery)
-            .user(UserConfig {
-                url_template: USER_URL.to_string(),
-                ..UserConfig::default()
-            })
-            .reauthentication(self.reauth_policy)
-            .notice_policy(self.notice_policy)
-            .build()?;
+        let core = AuthCore::builder(AuthCoreRequired {
+            storage: storage.clone(),
+            email_sender: email.clone() as Arc<dyn EmailSender>,
+            audit_sink: audit.clone() as Arc<dyn AuditSink>,
+            passkey: self.passkey,
+            reauthentication: self.reauth_policy,
+            rate_limiting: self.rate_limiting,
+            links: link_templates(),
+        })
+        .clock(clock.clone() as Arc<dyn Clock>)
+        .email_templates(self.email_templates)
+        .metrics(metrics.clone() as Arc<dyn MetricSink>)
+        .session(self.session_config.clone())
+        .signup(self.signup)
+        .recovery(self.recovery)
+        .notice_policy(self.notice_policy)
+        .build()?;
 
         Ok(Harness {
             passkey: core.passkey,
