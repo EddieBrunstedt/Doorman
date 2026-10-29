@@ -25,6 +25,7 @@ use crate::storage::{
     RegistrationPurpose, SessionId, StoredPasskeyAuthentication, StoredPasskeyRegistration, User,
     UserId,
 };
+use crate::user_records::{OwnerRefusal, UserRecords};
 
 pub(crate) struct RedeemedRegistration {
     pub user: User,
@@ -37,6 +38,7 @@ pub(crate) struct PasskeyChallenges {
     webauthn: Arc<Webauthn>,
     challenges: Arc<dyn PasskeyChallengeStore>,
     passkeys: Arc<dyn PasskeyStore>,
+    records: UserRecords,
     redeemer: Redeemer,
     clock: Arc<dyn Clock>,
     lifetime: Duration,
@@ -61,6 +63,7 @@ impl PasskeyChallenges {
             webauthn,
             challenges: deps.passkey_challenges.clone(),
             passkeys: deps.passkeys.clone(),
+            records: UserRecords::new(deps),
             redeemer: Redeemer::from_deps(deps),
             clock: deps.clock.clone(),
             lifetime: config.challenge_lifetime,
@@ -113,7 +116,8 @@ impl PasskeyChallenges {
         session_id: Option<SessionId>,
         owner_email: Option<String>,
         cool_down: RecoveryCoolDown,
-    ) -> Result<(PasskeyChallengeId, CreationChallengeResponse)> {
+    ) -> Result<std::result::Result<(PasskeyChallengeId, CreationChallengeResponse), OwnerRefusal>>
+    {
         let user_id = user.id;
         if let Some(max) = self.max_pending_registrations {
             let now = self.clock.now();
@@ -167,7 +171,21 @@ impl PasskeyChallenges {
                 recovery_cool_down_until: cool_down.until(),
             })
             .await?;
-        Ok((id, ccr))
+        let confirmed = self
+            .records
+            .confirm_written(user_id, self.discard_registration(id))
+            .await?;
+        Ok(confirmed.map(|_| (id, ccr)))
+    }
+
+    async fn discard_registration(&self, id: PasskeyChallengeId) {
+        if let Err(error) = self.challenges.take_registration(id).await {
+            tracing::warn!(
+                challenge_id = %id,
+                %error,
+                "refused passkey registration left behind; its challenge was never handed out",
+            );
+        }
     }
 
     pub(crate) async fn redeem_registration(

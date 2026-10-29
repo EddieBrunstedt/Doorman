@@ -12,11 +12,10 @@ use crate::error::Result;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::{Attempt, RateLimitEnforcer};
-use crate::redeem::OwnerRefusal;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, SessionTransport};
-use crate::user_records::UserRecords;
+use crate::user_records::{OwnerRefusal, UserRecords};
 
 #[derive(Clone)]
 pub struct RecoveryConfig {
@@ -143,7 +142,11 @@ impl RecoveryManager {
             Issued::Link(url) => url,
             Issued::Refused(refusal) => {
                 let reason = match refusal {
-                    OwnerRefusal::UserDisabled => RecoveryFailureReason::UserDisabled,
+                    // Delete disables a user before removing them, so one gone by now is
+                    // refused as disabled.
+                    OwnerRefusal::UserDisabled | OwnerRefusal::UserNotFound => {
+                        RecoveryFailureReason::UserDisabled
+                    }
                     // There is no access to regain until signup has finished; a signup link
                     // finishes it.
                     OwnerRefusal::WrongSignupStage => RecoveryFailureReason::SignupUnfinished,

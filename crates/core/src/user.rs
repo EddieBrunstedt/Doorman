@@ -7,11 +7,10 @@ use crate::destructive::Cleared;
 use crate::email::{EmailAddress, Mailer};
 use crate::email_link::{EmailLinks, Issued, LinkTemplate};
 use crate::error::{Error, Result};
-use crate::redeem::OwnerRefusal;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
 use crate::storage::{EmailLinkPurpose, User};
-use crate::user_records::UserRecords;
+use crate::user_records::{OwnerRefusal, UserRecords};
 
 #[derive(Clone)]
 pub struct UserConfig {
@@ -86,12 +85,7 @@ impl UserManager {
                 tracing::warn!(outcome = "user_disabled", "email change rejected");
                 return Err(Error::UserDisabled);
             }
-            // Only a user who has finished signup holds a session.
-            Issued::Refused(OwnerRefusal::WrongSignupStage) => {
-                return Err(Error::Internal(
-                    "a session is held by a user who has not finished signup".to_string(),
-                ));
-            }
+            Issued::Refused(refusal) => return Err(refusal.into_error()),
         };
 
         // Whoever holds the session may own the new address, and its mail server

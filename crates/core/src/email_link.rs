@@ -6,10 +6,11 @@ use crate::clock::{Clock, expiry};
 use crate::context::CoreDeps;
 use crate::email::EmailAddress;
 use crate::error::{Error, Result};
-use crate::redeem::{OwnedSecret, OwnerRefusal, Redeemer, owner_refusal};
+use crate::redeem::{OwnedSecret, Redeemer};
 use crate::session::SessionContext;
-use crate::storage::{EmailLink, EmailLinkPurpose, EmailLinkStore, User};
+use crate::storage::{EmailLink, EmailLinkPurpose, EmailLinkStore, TokenHash, User, UserId};
 use crate::token::{generate_token, hash_token};
+use crate::user_records::{OwnerRefusal, UserRecords, owner_refusal};
 
 pub const TOKEN_PLACEHOLDER: &str = "{token}";
 
@@ -67,6 +68,7 @@ pub(crate) struct EmailLinks {
     template: LinkTemplate,
     lifetime: Duration,
     links: Arc<dyn EmailLinkStore>,
+    records: UserRecords,
     redeemer: Redeemer,
     clock: Arc<dyn Clock>,
 }
@@ -89,6 +91,7 @@ impl EmailLinks {
             template,
             lifetime,
             links: deps.email_links.clone(),
+            records: UserRecords::new(deps),
             redeemer: Redeemer::from_deps(deps),
             clock: deps.clock.clone(),
         })
@@ -100,7 +103,7 @@ impl EmailLinks {
         new_email: Option<&EmailAddress>,
     ) -> Result<Issued> {
         // Redemption checks the owner again, since they can change once the link is out; this
-        // check only keeps a link that could never redeem from being sent.
+        // check only keeps a link that could never redeem from being written.
         if let Some(refusal) = owner_refusal(owner, EmailLink::signup_stage(self.purpose)) {
             return Ok(Issued::Refused(refusal));
         }
@@ -118,8 +121,20 @@ impl EmailLinks {
                 expires_at,
             })
             .await?;
+        match self
+            .records
+            .confirm_written(owner.id, self.discard(&token_hash))
+            .await?
+        {
+            Ok(_) => Ok(Issued::Link(self.template.link(&token))),
+            Err(refusal) => Ok(Issued::Refused(refusal)),
+        }
+    }
 
-        Ok(Issued::Link(self.template.link(&token)))
+    async fn discard(&self, token_hash: &TokenHash) {
+        if let Err(error) = self.links.redeem_link(token_hash).await {
+            tracing::warn!(%error, "refused email link left behind; it was never sent");
+        }
     }
 
     pub(crate) async fn redeem(
@@ -134,6 +149,18 @@ impl EmailLinks {
             .await?;
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
         Ok((user, new_email))
+    }
+
+    // For a refusal that comes once the link is redeemed, so it is audited as the redemption's.
+    pub(crate) async fn refuse_owner(
+        &self,
+        owner: UserId,
+        refusal: OwnerRefusal,
+        context: &SessionContext,
+    ) -> Error {
+        self.redeemer
+            .refuse_owner::<EmailLink>(self.purpose, owner, refusal, context)
+            .await
     }
 }
 

@@ -26,7 +26,7 @@ use crate::session_records::LiveSession;
 use crate::storage::{
     PasskeyChallengeId, PasskeyStore, PasskeySummary, SessionTransport, StoredPasskey, User, UserId,
 };
-use crate::user_records::UserRecords;
+use crate::user_records::{OwnerRefusal, UserRecords};
 
 pub const MAX_PASSKEY_NAME_LEN: usize = 255;
 
@@ -160,7 +160,8 @@ impl PasskeyManager {
         let started = self
             .registrations
             .start(RegistrationSource::Session(session))
-            .await?;
+            .await?
+            .map_err(OwnerRefusal::into_error)?;
         Ok((started.challenge_id, started.options))
     }
 

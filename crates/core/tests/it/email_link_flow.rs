@@ -9,8 +9,8 @@ use doorman_core::storage::{User, UserId, UserStatus, UserStore};
 use doorman_test_support::request_context;
 
 use crate::common::{
-    Harness, RECOVERY_URL, SIGNUP_URL, USER_URL, kinds, operator, provision_user, session_for,
-    token_from_email,
+    Harness, LOCK_OUTS, LockOut, RECOVERY_URL, SIGNUP_URL, USER_URL, kinds, locked_out_during,
+    operator, provision_user, session_for, token_from_email,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -303,6 +303,46 @@ async fn a_link_is_refused_while_its_owner_is_disabled() {
             audited_failure(&h, link, Some(owner), RedemptionFailureReason::UserDisabled),
             "{link:?}"
         );
+    }
+}
+
+#[tokio::test]
+async fn a_link_issued_while_its_owner_is_locked_out_does_not_survive() {
+    for link in LINKS {
+        for lock_out in LOCK_OUTS {
+            let h = Harness::fresh();
+            let owner = link.owner(&h).await;
+            let mail_before = h.email.sent().len();
+            let audited_before = h.audit.events().len();
+
+            // The lock-out lands while the new link is being written.
+            let held = h.email_link_store.hold_next_link_write();
+            let result =
+                locked_out_during(&h, held, lock_out, owner.id, link.request(&h, &owner)).await;
+
+            let case = format!("{link:?} racing {lock_out:?}");
+            match (refused_issue(link, owner.id), lock_out) {
+                // Delete disables the user first, so signup and recovery refuse a deleted user
+                // as a disabled one, as silently.
+                (Some(refusal), _) => {
+                    assert!(result.is_ok(), "{case}: got {result:?}");
+                    assert!(
+                        kinds(&h.audit.events()[audited_before..]).contains(&refusal),
+                        "{case}"
+                    );
+                }
+                (None, LockOut::Disable) => assert!(
+                    matches!(result, Err(Error::UserDisabled)),
+                    "{case}: got {result:?}"
+                ),
+                (None, LockOut::Delete) => assert!(
+                    matches!(result, Err(Error::UserNotFound)),
+                    "{case}: got {result:?}"
+                ),
+            }
+            assert_eq!(h.email.sent().len(), mail_before, "{case}: nothing is sent");
+            assert!(h.email_links.is_empty(), "{case}: the link is discarded");
+        }
     }
 }
 

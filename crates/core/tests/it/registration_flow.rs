@@ -5,13 +5,16 @@ use doorman_core::clock::Clock;
 use doorman_core::error::Error;
 use doorman_core::passkey::{PasskeyConfig, RegistrationOutcome, StartedRegistration};
 use doorman_core::session::ResolvedSession;
-use doorman_core::storage::{PasskeyChallengeId, SessionTransport, User, UserStatus, UserStore};
+use doorman_core::storage::{
+    PasskeyChallengeId, PasskeyChallengeStore, SessionTransport, User, UserStatus, UserStore,
+};
 use doorman_test_support::request_context;
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
 use crate::common::{
-    Harness, RECOVERY_URL, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds, operator,
-    passkey_count, provision_user, rp_origin, session_count, session_for, token_from_email,
+    Harness, LOCK_OUTS, LockOut, RECOVERY_URL, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds,
+    locked_out_during, operator, passkey_count, provision_user, rp_origin, session_count,
+    session_for, token_from_email,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -23,6 +26,13 @@ enum Link {
 const LINKS: [Link; 2] = [Link::Signup, Link::Recovery];
 
 impl Link {
+    fn secret(self) -> SecretKind {
+        match self {
+            Link::Signup => SecretKind::SignupLink,
+            Link::Recovery => SecretKind::RecoveryLink,
+        }
+    }
+
     async fn issue(self, h: &Harness) -> (User, String) {
         match self {
             Link::Signup => {
@@ -393,6 +403,97 @@ async fn finish(
             .map(drop),
     }
     .expect_err("a registration challenge started for another purpose is refused")
+}
+
+// Ready to make the call that starts a registration.
+enum Starter {
+    Link(Link, String),
+    Session(ResolvedSession),
+}
+
+impl Starter {
+    async fn ready(h: &Harness, started: Started) -> (User, Starter) {
+        let link = match started {
+            Started::Signup => Link::Signup,
+            Started::Recovery => Link::Recovery,
+            Started::AddPasskey => {
+                let user = provision_user(h, "alice@example.com").await;
+                let session = session_for(h, &user).await;
+                return (user, Starter::Session(session));
+            }
+        };
+        let (user, token) = link.issue(h).await;
+        (user, Starter::Link(link, token))
+    }
+
+    async fn start(&self, h: &Harness) -> Result<(), Error> {
+        match self {
+            Starter::Link(link, token) => link.redeem(h, token).await.map(drop),
+            Starter::Session(session) => h
+                .session_manager
+                .start_passkey_registration(session)
+                .await
+                .map(drop),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_registration_started_while_its_owner_is_locked_out_does_not_survive() {
+    for started in [Started::Signup, Started::Recovery, Started::AddPasskey] {
+        for lock_out in LOCK_OUTS {
+            let h = Harness::fresh();
+            let (user, starter) = Starter::ready(&h, started).await;
+            let audited_before = h.audit.events().len();
+
+            // The lock-out lands once the owner has been checked, while the registration is
+            // being written.
+            let held = h.challenge_store.hold_next_registration_write();
+            let result = locked_out_during(&h, held, lock_out, user.id, starter.start(&h)).await;
+
+            let case = format!("{started:?} racing {lock_out:?}");
+            let audited = kinds(&h.audit.events()[audited_before..]);
+            match (&starter, lock_out) {
+                // A link is refused as if the lock-out had come before it was redeemed.
+                (Starter::Link(link, _), _) => {
+                    let (refused, reason) = match lock_out {
+                        LockOut::Disable => (
+                            matches!(result, Err(Error::UserDisabled)),
+                            RedemptionFailureReason::UserDisabled,
+                        ),
+                        LockOut::Delete => (
+                            matches!(result, Err(Error::InvalidEmailLink)),
+                            RedemptionFailureReason::UserNotFound,
+                        ),
+                    };
+                    assert!(refused, "{case}: got {result:?}");
+                    assert!(
+                        audited.contains(&AuditEventKind::RedemptionFailed {
+                            user_id: Some(user.id),
+                            secret: link.secret(),
+                            reason,
+                        }),
+                        "{case}: {audited:?}"
+                    );
+                    assert!(!audited.contains(&link.redeemed(&user)), "{case}");
+                }
+                (Starter::Session(_), LockOut::Disable) => assert!(
+                    matches!(result, Err(Error::UserDisabled)),
+                    "{case}: got {result:?}"
+                ),
+                (Starter::Session(_), LockOut::Delete) => assert!(
+                    matches!(result, Err(Error::UserNotFound)),
+                    "{case}: got {result:?}"
+                ),
+            }
+            let left = h
+                .challenges
+                .list_registrations_for_user(user.id)
+                .await
+                .expect("list registrations");
+            assert!(left.is_empty(), "{case}: the registration is discarded");
+        }
+    }
 }
 
 async fn assert_refused_as_wrong_purpose(started: Started, finished_as: Finish) {

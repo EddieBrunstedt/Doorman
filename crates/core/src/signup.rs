@@ -14,10 +14,9 @@ use crate::error::{Error, Result};
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::{Attempt, RateLimitEnforcer};
-use crate::redeem::OwnerRefusal;
 use crate::session::SessionContext;
 use crate::storage::{PasskeyChallengeId, SessionTransport, User};
-use crate::user_records::UserRecords;
+use crate::user_records::{OwnerRefusal, UserRecords};
 
 #[derive(Debug, Clone)]
 pub enum SignupDecision {
@@ -151,7 +150,11 @@ impl SignupManager {
             Issued::Link(url) => url,
             Issued::Refused(refusal) => {
                 let reason = match refusal {
-                    OwnerRefusal::UserDisabled => SignupFailureReason::UserDisabled,
+                    // Delete disables a user before removing them, so one gone by now is
+                    // refused as disabled.
+                    OwnerRefusal::UserDisabled | OwnerRefusal::UserNotFound => {
+                        SignupFailureReason::UserDisabled
+                    }
                     OwnerRefusal::WrongSignupStage => SignupFailureReason::SignupFinished,
                 };
                 self.audit

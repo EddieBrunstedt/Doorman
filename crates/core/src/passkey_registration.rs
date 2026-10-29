@@ -18,7 +18,7 @@ use crate::session_records::LiveSession;
 use crate::storage::{
     PasskeyChallengeId, PasskeyStore, RegistrationPurpose, SessionId, StoredPasskey, User, UserId,
 };
-use crate::user_records::UserRecords;
+use crate::user_records::{OwnerRefusal, UserRecords};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RegistrationSource<'a> {
@@ -120,7 +120,7 @@ impl PasskeyRegistrations {
     pub(crate) async fn start(
         &self,
         source: RegistrationSource<'_>,
-    ) -> Result<StartedRegistration> {
+    ) -> Result<std::result::Result<StartedRegistration, OwnerRefusal>> {
         let now = self.clock.now();
         let (user, cool_down) = match source {
             RegistrationSource::SignupLink(user) => (user.clone(), RecoveryCoolDown::NONE),
@@ -133,7 +133,7 @@ impl PasskeyRegistrations {
                 RecoveryCoolDown::of_session(session, now),
             ),
         };
-        let (challenge_id, options) = self
+        let issued = self
             .challenges
             .issue_registration(
                 &user,
@@ -143,11 +143,13 @@ impl PasskeyRegistrations {
                 cool_down,
             )
             .await?;
-        tracing::info!(outcome = "started", "passkey registration started");
-        Ok(StartedRegistration {
-            challenge_id,
-            options,
-        })
+        Ok(issued.map(|(challenge_id, options)| {
+            tracing::info!(outcome = "started", "passkey registration started");
+            StartedRegistration {
+                challenge_id,
+                options,
+            }
+        }))
     }
 
     pub(crate) async fn finish(

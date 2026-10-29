@@ -93,7 +93,12 @@ impl EmailLinkRegistration {
     ) -> Result<StartedRegistration> {
         let (user, _) = self.links.redeem(token, &context).await?;
         self.registrations.invalidate_pending(user.id).await?;
-        let started = self.registrations.start(self.link.source(&user)).await?;
+        let started = match self.registrations.start(self.link.source(&user)).await? {
+            Ok(started) => started,
+            // The owner changed after the link was checked, so the link is refused as if the
+            // change had come first.
+            Err(refusal) => return Err(self.links.refuse_owner(user.id, refusal, &context).await),
+        };
 
         self.audit.emit(&context, self.link.redeemed(user.id)).await;
         tracing::info!(outcome = "redeemed", "email link redeemed");

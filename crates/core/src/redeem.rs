@@ -15,7 +15,7 @@ use crate::storage::{
     AuthenticationPurpose, EmailLink, EmailLinkPurpose, RegistrationPurpose,
     StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
 };
-use crate::user_records::UserRecords;
+use crate::user_records::{OwnerRefusal, SignupStage, UserRecords};
 
 pub(crate) trait SingleUseSecret {
     type Purpose: PartialEq + Copy;
@@ -28,31 +28,6 @@ pub(crate) trait OwnedSecret: SingleUseSecret {
     fn owner(&self) -> UserId;
     fn owner_email(&self) -> Option<&str>;
     fn signup_stage(purpose: Self::Purpose) -> SignupStage;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SignupStage {
-    Unfinished,
-    Finished,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OwnerRefusal {
-    UserDisabled,
-    WrongSignupStage,
-}
-
-// A secret belongs to its owner only while they are active and at the point in signup its purpose
-// needs: a signup secret only until signup has finished, since from then on only recovery brings
-// the user back, with its cool-down; every other secret only once it has.
-pub(crate) fn owner_refusal(owner: &User, stage: SignupStage) -> Option<OwnerRefusal> {
-    if !owner.status.is_active() {
-        Some(OwnerRefusal::UserDisabled)
-    } else if owner.has_finished_signup() != (stage == SignupStage::Finished) {
-        Some(OwnerRefusal::WrongSignupStage)
-    } else {
-        None
-    }
 }
 
 impl SingleUseSecret for EmailLink {
@@ -210,21 +185,43 @@ impl Redeemer {
         let value = self
             .check(taken, expected, Some(owner), decode, context)
             .await?;
-        let stage = S::signup_stage(expected);
-        let reason = match self.records.find(owner).await {
-            Ok(user) => match owner_refusal(&user, stage) {
-                Some(OwnerRefusal::UserDisabled) => UserDisabled,
-                Some(OwnerRefusal::WrongSignupStage) => match stage {
-                    SignupStage::Unfinished => SignupFinished,
-                    SignupStage::Finished => SignupUnfinished,
-                },
-                None if owner_email.is_some() && user.email != owner_email => EmailChanged,
-                None => return Ok((user, value)),
-            },
-            Err(Error::UserNotFound) => UserNotFound,
-            Err(error) => return Err(error),
+        let refusal = match self
+            .records
+            .check_owner(owner, S::signup_stage(expected))
+            .await?
+        {
+            Ok(user) if owner_email.is_none() || user.email == owner_email => {
+                return Ok((user, value));
+            }
+            Ok(_) => {
+                return Err(self
+                    .refuse(secret, Some(owner), EmailChanged, context)
+                    .await);
+            }
+            Err(refusal) => refusal,
         };
-        Err(self.refuse(secret, Some(owner), reason, context).await)
+        Err(self
+            .refuse_owner::<S>(expected, owner, refusal, context)
+            .await)
+    }
+
+    pub(crate) async fn refuse_owner<S: OwnedSecret>(
+        &self,
+        expected: S::Purpose,
+        owner: UserId,
+        refusal: OwnerRefusal,
+        context: &SessionContext,
+    ) -> Error {
+        let reason = match refusal {
+            OwnerRefusal::UserNotFound => UserNotFound,
+            OwnerRefusal::UserDisabled => UserDisabled,
+            OwnerRefusal::WrongSignupStage => match S::signup_stage(expected) {
+                SignupStage::Unfinished => SignupFinished,
+                SignupStage::Finished => SignupUnfinished,
+            },
+        };
+        self.refuse(S::secret(expected), Some(owner), reason, context)
+            .await
     }
 
     pub(crate) async fn refuse(

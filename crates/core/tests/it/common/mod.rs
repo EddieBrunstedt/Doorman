@@ -31,8 +31,10 @@ use doorman_core::session::{
 };
 use doorman_core::signup::{SignupConfig, SignupManager};
 use doorman_core::storage::{
-    ExpiringStores, PasskeyStore, RecordStores, Session, SessionId, SessionStore, SessionTransport,
-    Storage, StoredPasskey, TokenHash, User, UserId, UserStatus, UserStore,
+    EmailLink, EmailLinkStore, ExpiringStores, PasskeyChallengeId, PasskeyChallengeStore,
+    PasskeyStore, RecordStores, Session, SessionId, SessionStore, SessionTransport, Storage,
+    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
+    UserStatus, UserStore,
 };
 use doorman_core::user::UserManager;
 pub use doorman_test_support::token_from_email;
@@ -153,11 +155,64 @@ impl UserStore for CountingUserStore {
     }
 }
 
+// Holds the next write until the test has done something meanwhile.
+#[derive(Default)]
+pub struct WriteHold(Mutex<Option<Arc<Barrier>>>);
+
+impl WriteHold {
+    fn hold_next(&self) -> Arc<Barrier> {
+        let barrier = Arc::new(Barrier::new(2));
+        *self.0.lock().expect("write hold lock") = Some(barrier.clone());
+        barrier
+    }
+
+    async fn pass(&self) {
+        let barrier = self.0.lock().expect("write hold lock").take();
+        if let Some(barrier) = barrier {
+            // The first wait tells the test the write is due; the second lets it through.
+            barrier.wait().await;
+            barrier.wait().await;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum LockOut {
+    Disable,
+    Delete,
+}
+
+pub const LOCK_OUTS: [LockOut; 2] = [LockOut::Disable, LockOut::Delete];
+
+// Runs `flow` with the lock-out landing, from another process, while the held write waits.
+pub async fn locked_out_during<T>(
+    h: &Harness,
+    held: Arc<Barrier>,
+    lock_out: LockOut,
+    user_id: UserId,
+    flow: impl Future<Output = T>,
+) -> T {
+    let other = h.another_process();
+    let (out, ()) = within_deadline(async {
+        tokio::join!(flow, async {
+            held.wait().await;
+            match lock_out {
+                LockOut::Disable => other.operator.disable(user_id, operator()).await,
+                LockOut::Delete => other.operator.delete_user(user_id, operator()).await,
+            }
+            .expect("lock out");
+            held.wait().await;
+        })
+    })
+    .await;
+    out
+}
+
 pub struct CountingSessionStore {
     inner: Arc<InMemorySessionStore>,
     reads: AtomicUsize,
     failing_reads: AtomicBool,
-    write_hold: Mutex<Option<Arc<Barrier>>>,
+    write_hold: WriteHold,
 }
 
 impl CountingSessionStore {
@@ -170,9 +225,7 @@ impl CountingSessionStore {
     }
 
     pub fn hold_next_session_write(&self) -> Arc<Barrier> {
-        let barrier = Arc::new(Barrier::new(2));
-        *self.write_hold.lock().expect("write hold lock") = Some(barrier.clone());
-        barrier
+        self.write_hold.hold_next()
     }
 
     pub fn fail_reads(&self) {
@@ -191,12 +244,7 @@ impl CountingSessionStore {
 #[async_trait]
 impl SessionStore for CountingSessionStore {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
-        let barrier = self.write_hold.lock().expect("write hold lock").take();
-        if let Some(barrier) = barrier {
-            // The first wait tells the test the write is due; the second lets it through.
-            barrier.wait().await;
-            barrier.wait().await;
-        }
+        self.write_hold.pass().await;
         self.inner.create_session(session).await
     }
 
@@ -241,6 +289,89 @@ impl SessionStore for CountingSessionStore {
     }
 }
 
+pub struct HeldEmailLinkStore {
+    inner: Arc<InMemoryEmailLinkStore>,
+    write_hold: WriteHold,
+}
+
+impl HeldEmailLinkStore {
+    pub fn hold_next_link_write(&self) -> Arc<Barrier> {
+        self.write_hold.hold_next()
+    }
+}
+
+#[async_trait]
+impl EmailLinkStore for HeldEmailLinkStore {
+    async fn replace_link(&self, link: EmailLink) -> StorageResult<()> {
+        self.write_hold.pass().await;
+        self.inner.replace_link(link).await
+    }
+
+    async fn redeem_link(&self, hash: &TokenHash) -> StorageResult<Option<EmailLink>> {
+        self.inner.redeem_link(hash).await
+    }
+
+    async fn delete_links_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        self.inner.delete_links_for_user(user_id).await
+    }
+
+    async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
+        self.inner.purge_expired(now).await
+    }
+}
+
+pub struct HeldPasskeyChallengeStore {
+    inner: Arc<InMemoryPasskeyChallengeStore>,
+    write_hold: WriteHold,
+}
+
+impl HeldPasskeyChallengeStore {
+    pub fn hold_next_registration_write(&self) -> Arc<Barrier> {
+        self.write_hold.hold_next()
+    }
+}
+
+#[async_trait]
+impl PasskeyChallengeStore for HeldPasskeyChallengeStore {
+    async fn put_registration(&self, value: StoredPasskeyRegistration) -> StorageResult<()> {
+        self.write_hold.pass().await;
+        self.inner.put_registration(value).await
+    }
+
+    async fn take_registration(
+        &self,
+        id: PasskeyChallengeId,
+    ) -> StorageResult<Option<StoredPasskeyRegistration>> {
+        self.inner.take_registration(id).await
+    }
+
+    async fn delete_registrations_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        self.inner.delete_registrations_for_user(user_id).await
+    }
+
+    async fn list_registrations_for_user(
+        &self,
+        user_id: UserId,
+    ) -> StorageResult<Vec<StoredPasskeyRegistration>> {
+        self.inner.list_registrations_for_user(user_id).await
+    }
+
+    async fn put_authentication(&self, value: StoredPasskeyAuthentication) -> StorageResult<()> {
+        self.inner.put_authentication(value).await
+    }
+
+    async fn take_authentication(
+        &self,
+        id: PasskeyChallengeId,
+    ) -> StorageResult<Option<StoredPasskeyAuthentication>> {
+        self.inner.take_authentication(id).await
+    }
+
+    async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
+        self.inner.purge_expired(now).await
+    }
+}
+
 pub struct Harness {
     pub passkey: PasskeyManager,
     pub signup: SignupManager,
@@ -252,8 +383,11 @@ pub struct Harness {
     pub user_store: Arc<CountingUserStore>,
     pub sessions: Arc<InMemorySessionStore>,
     pub session_store: Arc<CountingSessionStore>,
+    pub email_links: Arc<InMemoryEmailLinkStore>,
+    pub email_link_store: Arc<HeldEmailLinkStore>,
     pub passkeys: Arc<InMemoryPasskeyStore>,
     pub challenges: Arc<InMemoryPasskeyChallengeStore>,
+    pub challenge_store: Arc<HeldPasskeyChallengeStore>,
     pub storage: Storage,
     pub audit: Arc<InMemoryAuditSink>,
     pub email: Arc<CapturingEmailSender>,
@@ -385,7 +519,15 @@ impl HarnessBuilder {
             inner: sessions.clone(),
             reads: AtomicUsize::new(0),
             failing_reads: AtomicBool::new(false),
-            write_hold: Mutex::new(None),
+            write_hold: WriteHold::default(),
+        });
+        let email_link_store = Arc::new(HeldEmailLinkStore {
+            inner: email_links.clone(),
+            write_hold: WriteHold::default(),
+        });
+        let challenge_store = Arc::new(HeldPasskeyChallengeStore {
+            inner: challenges.clone(),
+            write_hold: WriteHold::default(),
         });
 
         let storage = Storage {
@@ -395,8 +537,8 @@ impl HarnessBuilder {
             },
             expiring: ExpiringStores {
                 sessions: session_store.clone(),
-                email_links,
-                passkey_challenges: challenges.clone(),
+                email_links: email_link_store.clone(),
+                passkey_challenges: challenge_store.clone(),
             },
         };
 
@@ -429,8 +571,11 @@ impl HarnessBuilder {
             user_store,
             sessions,
             session_store,
+            email_links,
+            email_link_store,
             passkeys,
             challenges,
+            challenge_store,
             storage,
             audit,
             email,

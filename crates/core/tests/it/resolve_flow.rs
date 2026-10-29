@@ -15,9 +15,9 @@ use doorman_test_support::request_context;
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::common::{
-    Harness, RECOVERY_URL, SIGNUP_URL, authenticator, kinds, last_email_change_token,
-    logged_in_user, make_user, operator, provision_user, register_passkey, session_count,
-    token_from_email, within_deadline,
+    Harness, LOCK_OUTS, LockOut, RECOVERY_URL, SIGNUP_URL, authenticator, kinds,
+    last_email_change_token, locked_out_during, logged_in_user, make_user, operator,
+    provision_user, register_passkey, session_count, token_from_email,
 };
 
 fn sliding_config() -> SessionConfig {
@@ -405,12 +405,6 @@ enum Finish {
     Registration(Issuer, PasskeyChallengeId, RegisterPublicKeyCredential),
 }
 
-#[derive(Debug, Clone, Copy)]
-enum LockOut {
-    Disable,
-    Delete,
-}
-
 async fn redeem_emailed_link(h: &Harness, issuer: Issuer, token: &str) -> StartedRegistration {
     let context = request_context();
     match issuer {
@@ -501,25 +495,20 @@ async fn finish(
 #[tokio::test]
 async fn a_session_issued_while_the_user_is_locked_out_does_not_survive() {
     for issuer in [Issuer::Login, Issuer::Signup, Issuer::Recovery] {
-        for lock_out in [LockOut::Disable, LockOut::Delete] {
+        for lock_out in LOCK_OUTS {
             let h = Harness::fresh();
-            let other = h.another_process();
             let (user_id, ready) = ready_to_finish(&h, issuer, "racer@example.com").await;
             let audited_before = h.audit.events().len();
 
             // The lock-out lands while the new session is being written.
             let held = h.session_store.hold_next_session_write();
-            let (issued, ()) = within_deadline(async {
-                tokio::join!(finish(&h, ready, SessionTransport::Cookie), async {
-                    held.wait().await;
-                    match lock_out {
-                        LockOut::Disable => other.operator.disable(user_id, operator()).await,
-                        LockOut::Delete => other.operator.delete_user(user_id, operator()).await,
-                    }
-                    .expect("lock out");
-                    held.wait().await;
-                })
-            })
+            let issued = locked_out_during(
+                &h,
+                held,
+                lock_out,
+                user_id,
+                finish(&h, ready, SessionTransport::Cookie),
+            )
             .await;
 
             let case = format!("{issuer:?} racing {lock_out:?}");
