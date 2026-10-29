@@ -8,9 +8,11 @@ use chrono::{DateTime, Duration, Utc};
 
 use doorman_core::audit::{AuditEvent, AuditSink};
 use doorman_core::clock::Clock;
+use doorman_core::dpop::DpopOrigin;
 use doorman_core::email::{Email, EmailSender};
 use doorman_core::email_link::TOKEN_PLACEHOLDER;
 use doorman_core::error::{EmailError, EmailResult};
+use doorman_core::lifetime::Lifetime;
 use doorman_core::metrics::{MetricEvent, MetricSink};
 use doorman_core::session::SessionContext;
 
@@ -25,6 +27,14 @@ pub const CLIENT_IP: &str = "192.0.2.1";
 
 pub fn request_context() -> SessionContext {
     SessionContext::new(CLIENT_IP.parse().expect("client IP"), None)
+}
+
+pub fn lifetime(lifetime: std::time::Duration) -> Lifetime {
+    Lifetime::new(lifetime).expect("a lifetime in bounds")
+}
+
+pub fn dpop_origin(origin: &str) -> DpopOrigin {
+    DpopOrigin::new(url::Url::parse(origin).expect("a URL").origin()).expect("a tuple origin")
 }
 
 pub fn token_from_email(body: &str, template: &str) -> String {

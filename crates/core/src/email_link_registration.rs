@@ -1,12 +1,10 @@
-use std::time::Duration;
-
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
-use crate::assembly::AssemblyError;
 use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
 use crate::email_link::{EmailLinks, Issued, LinkTemplate};
 use crate::error::Result;
+use crate::lifetime::Lifetime;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::{
     PasskeyRegistrations, RegisteredPasskey, RegistrationFinish, RegistrationSource,
@@ -68,16 +66,16 @@ impl EmailLinkRegistration {
         registrations: PasskeyRegistrations,
         link: RegistrationLink,
         template: LinkTemplate,
-        link_lifetime: Duration,
-    ) -> std::result::Result<Self, AssemblyError> {
-        Ok(Self {
+        link_lifetime: Lifetime,
+    ) -> Self {
+        Self {
             link,
-            links: EmailLinks::new(deps, link.link_purpose(), template, link_lifetime)?,
+            links: EmailLinks::new(deps, link.link_purpose(), template, link_lifetime),
             registrations,
             records: UserRecords::new(deps),
             notices: deps.notices.clone(),
             audit: deps.audit.clone(),
-        })
+        }
     }
 
     pub(crate) async fn issue_link(&self, owner: &User) -> Result<Issued> {

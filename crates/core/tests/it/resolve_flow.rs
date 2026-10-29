@@ -2,17 +2,17 @@ use std::time::Duration;
 
 use chrono::Duration as ChronoDuration;
 use doorman_core::Error;
-use doorman_core::assembly::AssemblyError;
 use doorman_core::audit::AuditEventKind;
 use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::passkey::StartedRegistration;
-use doorman_core::session::{IssuedSession, RequestTransport, SessionConfig, hash_token};
+use doorman_core::session::{
+    IdleTimeout, IssuedSession, RequestTransport, SessionConfig, SessionExpiry, hash_token,
+};
 use doorman_core::storage::{
     PasskeyChallengeId, SessionStore, SessionTransport, User, UserId, UserStatus, UserStore,
 };
-use doorman_test_support::{DpopClient, request_context};
-use url::Url;
+use doorman_test_support::{DpopClient, dpop_origin, lifetime, request_context};
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::common::{
@@ -22,9 +22,14 @@ use crate::common::{
 };
 
 fn sliding_config() -> SessionConfig {
+    let idle_timeout = IdleTimeout::new(
+        lifetime(Duration::from_secs(60 * 10)),
+        IdleTimeout::DEFAULT_SLIDE_INTERVAL,
+    )
+    .expect("idle timeout");
     SessionConfig {
-        absolute_lifetime: Duration::from_secs(60 * 60),
-        idle_timeout: Some(Duration::from_secs(60 * 10)),
+        expiry: SessionExpiry::sliding(lifetime(Duration::from_secs(60 * 60)), idle_timeout)
+            .expect("session expiry"),
         ..SessionConfig::default()
     }
 }
@@ -74,7 +79,7 @@ async fn an_unknown_token_is_no_session() {
 async fn a_session_past_its_deadline_is_no_session_and_is_not_audited() {
     let h = Harness::builder()
         .session_config(SessionConfig {
-            absolute_lifetime: Duration::from_secs(30),
+            expiry: SessionExpiry::absolute(lifetime(Duration::from_secs(30))),
             ..SessionConfig::default()
         })
         .build();
@@ -372,26 +377,6 @@ async fn without_an_idle_timeout_nothing_slides() {
     assert_eq!(resolved.last_used_at, issued.last_used_at);
 }
 
-#[test]
-fn slide_interval_must_be_strictly_below_the_idle_timeout() {
-    let idle = Duration::from_secs(60 * 10);
-    let build = |slide_interval| {
-        Harness::builder()
-            .session_config(SessionConfig {
-                slide_interval,
-                ..sliding_config()
-            })
-            .try_build()
-    };
-
-    let err = build(idle).err();
-    assert!(
-        matches!(err, Some(AssemblyError::IdleTimeoutInvalid { idle_timeout, .. }) if idle_timeout == idle),
-        "a slide interval equal to the idle timeout is rejected, got {err:?}",
-    );
-    assert!(build(idle - Duration::from_secs(1)).is_ok());
-}
-
 // Every flow that starts a session, driven up to its last call.
 #[derive(Debug, Clone, Copy)]
 enum Issuer {
@@ -539,7 +524,7 @@ const DPOP_ORIGIN: &str = "https://api.app.test";
 
 fn allowing_dpop_sessions() -> SessionConfig {
     SessionConfig {
-        dpop_origin: Some(Url::parse(DPOP_ORIGIN).expect("origin").origin()),
+        dpop_origin: Some(dpop_origin(DPOP_ORIGIN)),
         ..SessionConfig::default()
     }
 }
@@ -750,20 +735,4 @@ async fn a_host_that_stops_allowing_dpop_sessions_stops_honouring_them() {
         .expect("resolve");
 
     assert!(resolved.is_none(), "got {resolved:?}");
-}
-
-#[test]
-fn an_opaque_dpop_origin_is_refused_at_assembly() {
-    let opaque = Url::parse("data:text/plain,api").expect("url").origin();
-    let built = Harness::builder()
-        .session_config(SessionConfig {
-            dpop_origin: Some(opaque),
-            ..SessionConfig::default()
-        })
-        .try_build();
-    assert!(
-        matches!(built, Err(AssemblyError::OpaqueDpopOrigin)),
-        "got {:?}",
-        built.err()
-    );
 }

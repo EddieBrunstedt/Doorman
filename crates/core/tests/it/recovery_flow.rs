@@ -11,10 +11,10 @@ use doorman_core::destructive::DestructiveAction;
 use doorman_core::email::{EmailContent, EmailTemplates};
 use doorman_core::error::Error;
 use doorman_core::passkey::PasskeyConfig;
-use doorman_core::recovery::RecoveryConfig;
+use doorman_core::recovery::{CoolDownLength, RecoveryConfig};
 use doorman_core::session::{RequestTransport, SessionConfig};
 use doorman_core::storage::{PasskeyStore, User, UserStore};
-use doorman_test_support::request_context;
+use doorman_test_support::{lifetime, request_context};
 
 use crate::common::{
     Harness, RECOVERY_URL, RP_ID, RP_NAME, authenticator, kinds, last_email_change_token,
@@ -793,11 +793,9 @@ async fn drive_recovery_finish(
 
 #[tokio::test]
 async fn recovery_config_with_subhour_cool_down_honors_configured_cool_down() {
-    let cool_down = Duration::from_secs(60);
     let h = Harness::builder()
         .recovery_config(RecoveryConfig {
-            cool_down,
-            danger_allow_cool_down_below_floor: true,
+            cool_down: CoolDownLength::danger_below_floor(lifetime(Duration::from_secs(60))),
             ..RecoveryConfig::default()
         })
         .build();
@@ -825,35 +823,6 @@ async fn recovery_config_with_subhour_cool_down_honors_configured_cool_down() {
         .expect("resolve")
         .expect("the recovery session outlives its cool-down");
     assert!(!resolved.is_in_recovery_cool_down());
-}
-
-#[tokio::test]
-async fn recovery_config_with_zero_cool_down_yields_inactive_deadline() {
-    let h = Harness::builder()
-        .recovery_config(RecoveryConfig {
-            cool_down: Duration::ZERO,
-            danger_allow_cool_down_below_floor: true,
-            ..RecoveryConfig::default()
-        })
-        .build();
-    let _ = provision_user(&h, "alice@example.com").await;
-
-    let now_at_finish = h.clock.now();
-    let outcome = drive_recovery_finish(&h, "alice@example.com").await;
-
-    assert_eq!(
-        outcome.passkey.recovery_cool_down_until,
-        Some(now_at_finish),
-        "a zero cool-down stamps the deadline at the finish instant",
-    );
-    assert_eq!(
-        outcome.session.session.recovery_cool_down_until, None,
-        "the session inherits no cool-down that is already over",
-    );
-    assert!(
-        !outcome.session.session.is_in_recovery_cool_down(),
-        "a zero cool-down is already inactive",
-    );
 }
 
 #[tokio::test]

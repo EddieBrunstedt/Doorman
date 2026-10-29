@@ -27,7 +27,7 @@ use doorman_core::rate_limit::{RateLimiting, RateLimits};
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::session::{SessionConfig, SessionManager};
 use doorman_core::storage::{Storage, UserId, UserStatus, UserStore};
-use doorman_test_support::{CapturingEmailSender, token_from_email};
+use doorman_test_support::{CapturingEmailSender, dpop_origin, token_from_email};
 pub use doorman_test_support::{DpopClient, ResidentAuthenticator};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -113,7 +113,7 @@ pub fn harness_rate_limiting(clock: Arc<dyn Clock>) -> RateLimiting {
 
 pub fn session_config() -> SessionConfig {
     SessionConfig {
-        dpop_origin: Some(Url::parse(DPOP_ORIGIN).expect("DPoP origin").origin()),
+        dpop_origin: Some(dpop_origin(DPOP_ORIGIN)),
         ..SessionConfig::default()
     }
 }
@@ -186,7 +186,7 @@ impl TestApp {
         };
         let core = customise_core(required).build().expect("auth core built");
 
-        let http = AuthService::builder(core, PurgeSchedule::External).cookie(CookieConfig {
+        let http = AuthService::builder(core, PurgeSchedule::external()).cookie(CookieConfig {
             secure: false,
             ..CookieConfig::default()
         });

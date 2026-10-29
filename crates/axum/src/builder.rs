@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use doorman_core::assembly::AuthCore;
 
@@ -24,11 +23,7 @@ pub enum BuilderError {
     #[error("the session cookie name, path or domain contains a control character")]
     InvalidCookieAttributes,
     #[error(
-        "the purge interval ({every:?}) must be greater than zero and a reachable instant away"
-    )]
-    InvalidPurgeInterval { every: Duration },
-    #[error(
-        "PurgeSchedule::InProcess sweeps on a tokio task, so the service must be built inside a tokio runtime"
+        "PurgeSchedule::in_process sweeps on a tokio task, so the service must be built inside a tokio runtime"
     )]
     PurgeNeedsRuntime,
 }

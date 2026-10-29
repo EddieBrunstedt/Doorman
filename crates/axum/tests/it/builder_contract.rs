@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use doorman_axum::config::CookieConfig;
-use doorman_axum::{AuthService, AuthServiceBuilder, BuilderError, PurgeSchedule};
+use doorman_axum::{
+    AuthService, AuthServiceBuilder, BuilderError, PurgeIntervalError, PurgeSchedule,
+};
 use doorman_core::assembly::AuthCore;
 use doorman_core::email::EmailSender;
 use doorman_core::memory::InMemoryStorage;
@@ -21,7 +23,7 @@ fn core() -> AuthCore {
 }
 
 fn valid_builder() -> AuthServiceBuilder {
-    AuthService::builder(core(), PurgeSchedule::External)
+    AuthService::builder(core(), PurgeSchedule::external())
 }
 
 #[test]
@@ -29,32 +31,31 @@ fn fully_wired_builder_builds() {
     valid_builder().build().expect("build");
 }
 
-#[tokio::test]
-async fn an_in_process_purge_schedule_with_no_interval_is_refused() {
-    let err = AuthService::builder(
-        core(),
-        PurgeSchedule::InProcess {
-            every: Duration::ZERO,
-        },
-    )
-    .build()
-    .err();
-    assert!(
-        matches!(err, Some(BuilderError::InvalidPurgeInterval { every }) if every.is_zero()),
-        "expected InvalidPurgeInterval, got: {err:?}"
-    );
+#[test]
+fn an_in_process_purge_interval_is_greater_than_zero_and_a_reachable_instant_away() {
+    for (every, accepted) in [
+        (Duration::ZERO, false),
+        (Duration::from_nanos(1), true),
+        (Duration::from_secs(3600), true),
+        (Duration::MAX, false),
+    ] {
+        let expected = if accepted {
+            Ok(())
+        } else {
+            Err(PurgeIntervalError(every))
+        };
+        assert_eq!(
+            PurgeSchedule::in_process(every).map(|_| ()),
+            expected,
+            "{every:?}"
+        );
+    }
 }
 
 #[test]
 fn an_in_process_purge_schedule_outside_a_runtime_is_refused() {
-    let err = AuthService::builder(
-        core(),
-        PurgeSchedule::InProcess {
-            every: Duration::from_secs(3600),
-        },
-    )
-    .build()
-    .err();
+    let purge = PurgeSchedule::in_process(Duration::from_secs(3600)).expect("purge schedule");
+    let err = AuthService::builder(core(), purge).build().err();
     assert!(
         matches!(err, Some(BuilderError::PurgeNeedsRuntime)),
         "expected PurgeNeedsRuntime, got: {err:?}"
@@ -72,7 +73,7 @@ async fn service_drives_the_managers_the_core_assembled() {
     .notice_policy(policy.clone())
     .build()
     .expect("core");
-    let auth = AuthService::builder(core, PurgeSchedule::External)
+    let auth = AuthService::builder(core, PurgeSchedule::external())
         .build()
         .expect("build");
 

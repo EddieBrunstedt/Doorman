@@ -46,7 +46,7 @@ fn router(limits: RateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAuditSink>
     .clock(clock.clone())
     .build()
     .expect("auth core built");
-    let auth = AuthService::builder(core, PurgeSchedule::External)
+    let auth = AuthService::builder(core, PurgeSchedule::external())
         .build()
         .expect("build");
     let app = Router::new()

@@ -143,16 +143,36 @@ enum ProofRefusal {
     WrongToken,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the DPoP origin is opaque, so no request URL could ever match it")]
+pub struct OpaqueDpopOrigin;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DpopOrigin(Origin);
+
+impl DpopOrigin {
+    pub fn new(origin: Origin) -> std::result::Result<Self, OpaqueDpopOrigin> {
+        if !origin.is_tuple() {
+            return Err(OpaqueDpopOrigin);
+        }
+        Ok(Self(origin))
+    }
+
+    pub fn as_origin(&self) -> &Origin {
+        &self.0
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct DpopProofs {
-    origin: Origin,
+    origin: DpopOrigin,
     store: Arc<dyn DpopProofStore>,
     clock: Arc<dyn Clock>,
 }
 
 impl DpopProofs {
     pub(crate) fn new(
-        origin: Origin,
+        origin: DpopOrigin,
         store: Arc<dyn DpopProofStore>,
         clock: Arc<dyn Clock>,
     ) -> Self {
@@ -170,10 +190,11 @@ impl DpopProofs {
         proof: &DpopProof,
         token: Option<&str>,
     ) -> Result<ProvenDpopKey> {
-        let checked = check(proof, token, &self.origin, self.clock.now()).map_err(|refusal| {
-            tracing::info!(?refusal, "refused a DPoP proof");
-            Error::InvalidDpopProof
-        })?;
+        let checked =
+            check(proof, token, self.origin.as_origin(), self.clock.now()).map_err(|refusal| {
+                tracing::info!(?refusal, "refused a DPoP proof");
+                Error::InvalidDpopProof
+            })?;
         if !self.store.use_proof(checked.used).await? {
             tracing::warn!(outcome = "replayed", "refused a DPoP proof used before");
             return Err(Error::InvalidDpopProof);

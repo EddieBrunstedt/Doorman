@@ -38,7 +38,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     })
     .build()?;
     // The `purge` binary sweeps expired rows when the host's scheduler runs it.
-    let auth = AuthService::builder(core, PurgeSchedule::External)
+    let auth = AuthService::builder(core, PurgeSchedule::external())
         .cookie(CookieConfig {
             secure: external_origin.scheme() == "https",
             ..CookieConfig::default()

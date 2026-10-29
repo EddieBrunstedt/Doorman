@@ -1,12 +1,11 @@
 use std::sync::Arc;
-use std::time::Duration;
 
-use crate::assembly::{AssemblyError, validate_lifetime};
 use crate::audit::Actor;
-use crate::clock::{Clock, expiry};
+use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::EmailAddress;
 use crate::error::{Error, Result};
+use crate::lifetime::Lifetime;
 use crate::redeem::{OwnedSecret, Redeemer};
 use crate::session::SessionContext;
 use crate::storage::{EmailLink, EmailLinkPurpose, EmailLinkStore, TokenHash, User, UserId};
@@ -67,7 +66,7 @@ pub(crate) enum Issued {
 pub(crate) struct EmailLinks {
     purpose: EmailLinkPurpose,
     template: LinkTemplate,
-    lifetime: Duration,
+    lifetime: Lifetime,
     links: Arc<dyn EmailLinkStore>,
     records: UserRecords,
     redeemer: Redeemer,
@@ -79,15 +78,9 @@ impl EmailLinks {
         deps: &CoreDeps,
         purpose: EmailLinkPurpose,
         template: LinkTemplate,
-        lifetime: Duration,
-    ) -> std::result::Result<Self, AssemblyError> {
-        let lifetime_field = match purpose {
-            EmailLinkPurpose::Signup => "signup token_lifetime",
-            EmailLinkPurpose::Recovery => "recovery token_lifetime",
-            EmailLinkPurpose::EmailChange => "user token_lifetime",
-        };
-        validate_lifetime(lifetime_field, lifetime)?;
-        Ok(Self {
+        lifetime: Lifetime,
+    ) -> Self {
+        Self {
             purpose,
             template,
             lifetime,
@@ -95,7 +88,7 @@ impl EmailLinks {
             records: UserRecords::new(deps),
             redeemer: Redeemer::from_deps(deps),
             clock: deps.clock.clone(),
-        })
+        }
     }
 
     pub(crate) async fn issue(
@@ -109,7 +102,7 @@ impl EmailLinks {
             return Ok(Issued::Refused(refusal));
         }
         let now = self.clock.now();
-        let expires_at = expiry(now, self.lifetime)?;
+        let expires_at = self.lifetime.ends(now);
         let (token, token_hash) = generate_token()?;
         self.links
             .replace_link(EmailLink {

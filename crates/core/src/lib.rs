@@ -21,6 +21,7 @@ pub mod email_link;
 mod email_link_registration;
 pub mod encoding;
 pub mod error;
+pub mod lifetime;
 pub mod memory;
 pub mod metrics;
 pub mod operator;

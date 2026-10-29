@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use url::Url;
 use uuid::Uuid;
@@ -15,6 +15,7 @@ use crate::challenge::PasskeyChallenges;
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
 use crate::error::{Error, Result};
+use crate::lifetime::Lifetime;
 use crate::metrics::{MetricEvent, MetricSink};
 use crate::passkey_registration::{
     PasskeyRegistrations, RegisteredPasskey, RegistrationFinish, RegistrationSource,
@@ -64,13 +65,13 @@ pub struct PasskeyConfig {
     pub rp_origin: Url,
     pub rp_name: String,
     pub additional_origins: Vec<Url>,
-    pub challenge_lifetime: Duration,
+    pub challenge_lifetime: Lifetime,
     pub max_passkeys_per_user: Option<NonZeroU32>,
     pub max_pending_registrations_per_user: Option<NonZeroU32>,
 }
 
 impl PasskeyConfig {
-    pub const DEFAULT_CHALLENGE_LIFETIME: Duration = Duration::from_secs(300);
+    pub const DEFAULT_CHALLENGE_LIFETIME: Lifetime = Lifetime::from_secs(300);
 
     pub fn new(rp_id: impl Into<String>, rp_origin: Url, rp_name: impl Into<String>) -> Self {
         Self {
@@ -444,6 +445,8 @@ pub(crate) fn decode_passkey(bytes: &[u8]) -> Result<Passkey> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use url::Url;
 
@@ -463,7 +466,7 @@ mod tests {
             Url::parse("https://example.com").expect("valid url"),
             "Example",
         );
-        assert_eq!(c.challenge_lifetime, Duration::from_secs(300));
+        assert_eq!(c.challenge_lifetime.get(), Duration::from_secs(300));
         assert_eq!(c.rp_id, "example.com");
         assert_eq!(c.rp_name, "Example");
     }
@@ -477,7 +480,7 @@ mod tests {
         .expect("origin has a host");
         assert_eq!(c.rp_id, "app.example.com");
         assert_eq!(c.rp_name, "Example");
-        assert_eq!(c.challenge_lifetime, Duration::from_secs(300));
+        assert_eq!(c.challenge_lifetime.get(), Duration::from_secs(300));
     }
 
     #[test]

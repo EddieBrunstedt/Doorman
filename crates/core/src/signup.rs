@@ -1,16 +1,15 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
-use crate::assembly::AssemblyError;
 use crate::audit::{AuditDispatch, AuditEventKind, SignupFailureReason};
 use crate::context::CoreDeps;
 use crate::email::{EmailAddress, Mailer};
 use crate::email_link::{Issued, LinkTemplate};
 use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
 use crate::error::{Error, Result};
+use crate::lifetime::Lifetime;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::{Attempt, RateLimitEnforcer};
@@ -52,12 +51,12 @@ impl SignupPolicy for OpenSignupPolicy {
 
 #[derive(Clone)]
 pub struct SignupConfig {
-    pub token_lifetime: Duration,
+    pub token_lifetime: Lifetime,
     pub policy: Arc<dyn SignupPolicy>,
 }
 
 impl SignupConfig {
-    pub const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(60 * 15);
+    pub const DEFAULT_TOKEN_LIFETIME: Lifetime = Lifetime::from_secs(60 * 15);
 }
 
 impl Default for SignupConfig {
@@ -85,8 +84,8 @@ impl SignupManager {
         registrations: PasskeyRegistrations,
         template: LinkTemplate,
         config: SignupConfig,
-    ) -> std::result::Result<Self, AssemblyError> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             records: UserRecords::new(deps),
             registration: EmailLinkRegistration::new(
                 deps,
@@ -94,12 +93,12 @@ impl SignupManager {
                 RegistrationLink::Signup,
                 template,
                 config.token_lifetime,
-            )?,
+            ),
             mailer: deps.mailer.clone(),
             rate_limits: deps.rate_limits.clone(),
             audit: deps.audit.clone(),
             config,
-        })
+        }
     }
 
     #[tracing::instrument(

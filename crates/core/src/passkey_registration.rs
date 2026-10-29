@@ -12,6 +12,7 @@ use crate::passkey::{
     PasskeyConfig, PasskeyMetadata, PasskeyName, StartedRegistration, check_credential_id,
     encode_passkey,
 };
+use crate::recovery::CoolDownLength;
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::SessionContext;
 use crate::session_records::LiveSession;
@@ -101,7 +102,7 @@ pub(crate) struct PasskeyRegistrations {
     audit: AuditDispatch,
     webauthn: Arc<Webauthn>,
     max_passkeys_per_user: Option<NonZeroU32>,
-    recovery_cool_down: chrono::Duration,
+    recovery_cool_down: CoolDownLength,
 }
 
 impl PasskeyRegistrations {
@@ -109,7 +110,7 @@ impl PasskeyRegistrations {
         deps: &CoreDeps,
         config: &PasskeyConfig,
         webauthn: Arc<Webauthn>,
-        recovery_cool_down: chrono::Duration,
+        recovery_cool_down: CoolDownLength,
     ) -> Self {
         Self {
             records: UserRecords::new(deps),

@@ -7,10 +7,30 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::builder::BuilderError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the purge interval ({0:?}) must be greater than zero and a reachable instant away")]
+pub struct PurgeIntervalError(pub Duration);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PurgeSchedule {
+pub struct PurgeSchedule(Schedule);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Schedule {
     InProcess { every: Duration },
     External,
+}
+
+impl PurgeSchedule {
+    pub fn in_process(every: Duration) -> Result<Self, PurgeIntervalError> {
+        if every.is_zero() || Instant::now().checked_add(every).is_none() {
+            return Err(PurgeIntervalError(every));
+        }
+        Ok(Self(Schedule::InProcess { every }))
+    }
+
+    pub const fn external() -> Self {
+        Self(Schedule::External)
+    }
 }
 
 pub(crate) struct Sweeper {
@@ -20,12 +40,9 @@ pub(crate) struct Sweeper {
 
 impl Sweeper {
     pub(crate) fn for_schedule(schedule: PurgeSchedule) -> Result<Option<Self>, BuilderError> {
-        let PurgeSchedule::InProcess { every } = schedule else {
+        let PurgeSchedule(Schedule::InProcess { every }) = schedule else {
             return Ok(None);
         };
-        if every.is_zero() || Instant::now().checked_add(every).is_none() {
-            return Err(BuilderError::InvalidPurgeInterval { every });
-        }
         let runtime = Handle::try_current().map_err(|_| BuilderError::PurgeNeedsRuntime)?;
         Ok(Some(Self { runtime, every }))
     }

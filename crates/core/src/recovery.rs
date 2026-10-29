@@ -2,13 +2,13 @@ use std::time::Duration;
 
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 
-use crate::assembly::{AssemblyError, MAX_LIFETIME};
 use crate::audit::{AuditDispatch, AuditEventKind, RecoveryFailureReason};
 use crate::context::CoreDeps;
 use crate::email::{EmailAddress, Mailer};
 use crate::email_link::{Issued, LinkTemplate};
 use crate::email_link_registration::{EmailLinkRegistration, RegistrationLink};
 use crate::error::Result;
+use crate::lifetime::Lifetime;
 use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::{Attempt, RateLimitEnforcer};
@@ -17,59 +17,50 @@ use crate::session::{RequestTransport, SessionContext};
 use crate::storage::PasskeyChallengeId;
 use crate::user_records::{OwnerRefusal, UserRecords};
 
-#[derive(Clone)]
-pub struct RecoveryConfig {
-    pub token_lifetime: Duration,
-    pub cool_down: Duration,
-    pub danger_allow_cool_down_below_floor: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a recovery cool-down ({0:?}) must last at least {min:?}", min = CoolDownLength::MIN)]
+pub struct CoolDownTooShort(pub Duration);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoolDownLength(Lifetime);
+
+impl CoolDownLength {
+    pub const DEFAULT: Self = Self(Lifetime::from_secs(60 * 60 * 24));
+    pub const MIN: Duration = Duration::from_secs(60 * 60);
+
+    pub fn new(length: Lifetime) -> std::result::Result<Self, CoolDownTooShort> {
+        if length.get() < Self::MIN {
+            return Err(CoolDownTooShort(length.get()));
+        }
+        Ok(Self(length))
+    }
+
+    // A cool-down this short barely slows down whoever took over a user through recovery, so a host
+    // has to name the danger to get one.
+    pub const fn danger_below_floor(length: Lifetime) -> Self {
+        Self(length)
+    }
+
+    pub fn get(self) -> Lifetime {
+        self.0
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum RecoveryConfigError {
-    #[error("recovery cool-down ({configured:?}) is below the floor of {minimum:?}")]
-    CoolDownTooShort {
-        configured: Duration,
-        minimum: Duration,
-    },
-    #[error("recovery cool-down ({configured:?}) is above the ceiling of {maximum:?}")]
-    CoolDownTooLong {
-        configured: Duration,
-        maximum: Duration,
-    },
+#[derive(Debug, Clone)]
+pub struct RecoveryConfig {
+    pub token_lifetime: Lifetime,
+    pub cool_down: CoolDownLength,
 }
 
 impl RecoveryConfig {
-    pub const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(60 * 15);
-    pub const DEFAULT_COOL_DOWN: Duration = Duration::from_secs(60 * 60 * 24);
-    pub const MIN_COOL_DOWN: Duration = Duration::from_secs(60 * 60);
-    pub const MAX_COOL_DOWN: Duration = MAX_LIFETIME;
-
-    pub(crate) fn validated_cool_down(
-        &self,
-    ) -> std::result::Result<chrono::Duration, RecoveryConfigError> {
-        let too_long = RecoveryConfigError::CoolDownTooLong {
-            configured: self.cool_down,
-            maximum: Self::MAX_COOL_DOWN,
-        };
-        if self.cool_down > Self::MAX_COOL_DOWN {
-            return Err(too_long);
-        }
-        if self.cool_down < Self::MIN_COOL_DOWN && !self.danger_allow_cool_down_below_floor {
-            return Err(RecoveryConfigError::CoolDownTooShort {
-                configured: self.cool_down,
-                minimum: Self::MIN_COOL_DOWN,
-            });
-        }
-        chrono::Duration::from_std(self.cool_down).map_err(|_| too_long)
-    }
+    pub const DEFAULT_TOKEN_LIFETIME: Lifetime = Lifetime::from_secs(60 * 15);
 }
 
 impl Default for RecoveryConfig {
     fn default() -> Self {
         Self {
             token_lifetime: Self::DEFAULT_TOKEN_LIFETIME,
-            cool_down: Self::DEFAULT_COOL_DOWN,
-            danger_allow_cool_down_below_floor: false,
+            cool_down: CoolDownLength::DEFAULT,
         }
     }
 }
@@ -90,8 +81,8 @@ impl RecoveryManager {
         registrations: PasskeyRegistrations,
         template: LinkTemplate,
         config: &RecoveryConfig,
-    ) -> std::result::Result<Self, AssemblyError> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             records: UserRecords::new(deps),
             registration: EmailLinkRegistration::new(
                 deps,
@@ -99,12 +90,12 @@ impl RecoveryManager {
                 RegistrationLink::Recovery,
                 template,
                 config.token_lifetime,
-            )?,
+            ),
             mailer: deps.mailer.clone(),
             notices: deps.notices.clone(),
             rate_limits: deps.rate_limits.clone(),
             audit: deps.audit.clone(),
-        })
+        }
     }
 
     #[tracing::instrument(

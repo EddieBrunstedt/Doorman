@@ -7,10 +7,11 @@ use chrono::{DateTime, Utc};
 use doorman_axum::config::CookieConfig;
 use doorman_core::clock::Clock;
 use doorman_core::error::{StorageError, StorageResult};
+use doorman_core::lifetime::Lifetime;
 use doorman_core::memory::InMemoryStorage;
-use doorman_core::session::{DEFAULT_SESSION_LIFETIME, SessionConfig};
+use doorman_core::session::{IdleTimeout, SessionConfig, SessionExpiry};
 use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId, UserStatus};
-use doorman_test_support::MockClock;
+use doorman_test_support::{MockClock, lifetime};
 
 use crate::common::{
     Client, ResidentAuthenticator, TestApp, TestSession, harness_core, rp_origin, session_config,
@@ -30,7 +31,10 @@ async fn a_login_sets_a_session_cookie_that_authenticates() {
     let set_cookie = login.set_cookie().expect("login sets the session cookie");
     assert!(set_cookie.contains("HttpOnly"));
     assert!(
-        set_cookie.contains(&format!("Max-Age={}", DEFAULT_SESSION_LIFETIME.as_secs())),
+        set_cookie.contains(&format!(
+            "Max-Age={}",
+            SessionExpiry::DEFAULT_LIFETIME.get().as_secs()
+        )),
         "the cookie lives as long as the session it carries: {set_cookie}",
     );
 
@@ -44,8 +48,7 @@ fn always_sliding_app() -> TestApp {
     TestApp::with(
         |r| {
             harness_core(r).session(SessionConfig {
-                idle_timeout: Some(IDLE),
-                slide_interval: Duration::ZERO,
+                expiry: sliding(SessionExpiry::DEFAULT_LIFETIME, Duration::ZERO),
                 ..session_config()
             })
         },
@@ -146,6 +149,11 @@ async fn a_refused_login_sets_no_cookie() {
 const IDLE: Duration = Duration::from_secs(60 * 60);
 const ABSOLUTE: Duration = Duration::from_secs(60 * 60 * 24);
 
+fn sliding(session_lifetime: Lifetime, slide_interval: Duration) -> SessionExpiry {
+    let idle_timeout = IdleTimeout::new(lifetime(IDLE), slide_interval).expect("idle timeout");
+    SessionExpiry::sliding(session_lifetime, idle_timeout).expect("session expiry")
+}
+
 fn sliding_app(clock: Arc<MockClock>) -> TestApp {
     let core_clock = clock.clone();
     TestApp::with(
@@ -153,8 +161,7 @@ fn sliding_app(clock: Arc<MockClock>) -> TestApp {
             harness_core(r)
                 .clock(core_clock as Arc<dyn Clock>)
                 .session(SessionConfig {
-                    absolute_lifetime: ABSOLUTE,
-                    idle_timeout: Some(IDLE),
+                    expiry: sliding(lifetime(ABSOLUTE), IdleTimeout::DEFAULT_SLIDE_INTERVAL),
                     ..session_config()
                 })
         },

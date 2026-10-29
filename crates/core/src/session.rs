@@ -4,7 +4,6 @@ use std::ops::Deref;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use url::Origin;
 
 use webauthn_rs::prelude::{
     CreationChallengeResponse, RegisterPublicKeyCredential, RequestChallengeResponse,
@@ -14,8 +13,9 @@ use crate::audit::Actor;
 use crate::client_ip::ClientIp;
 use crate::context::CoreDeps;
 use crate::destructive::{CurrentSession, DestructiveAction, DestructiveActions};
-use crate::dpop::{DpopProof, ProvenDpopKey};
+use crate::dpop::{DpopOrigin, DpopProof, ProvenDpopKey};
 use crate::error::Result;
+use crate::lifetime::Lifetime;
 use crate::passkey::PasskeyManager;
 use crate::reauth::{ReauthManager, ReauthProof};
 use crate::recovery_cool_down::RecoveryCoolDown;
@@ -45,31 +45,134 @@ impl fmt::Debug for IssuedSession {
     }
 }
 
-pub const DEFAULT_SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
-
-pub const DEFAULT_SLIDE_INTERVAL: Duration = Duration::from_secs(60);
-
-#[derive(Debug, Clone)]
-pub struct SessionConfig {
-    pub absolute_lifetime: Duration,
-    pub idle_timeout: Option<Duration>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the slide interval ({slide_interval:?}) must be shorter than the idle timeout ({timeout:?}), so an active session slides before it idles out"
+)]
+pub struct IdleTimeoutError {
+    pub timeout: Duration,
     pub slide_interval: Duration,
+}
+
+// The slide interval belongs to the idle timeout: only a session that can idle out has a deadline
+// to slide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdleTimeout {
+    timeout: Lifetime,
+    slide_interval: Duration,
+}
+
+impl IdleTimeout {
+    pub const DEFAULT_SLIDE_INTERVAL: Duration = Duration::from_secs(60);
+
+    pub fn new(
+        timeout: Lifetime,
+        slide_interval: Duration,
+    ) -> std::result::Result<Self, IdleTimeoutError> {
+        if slide_interval >= timeout.get() {
+            return Err(IdleTimeoutError {
+                timeout: timeout.get(),
+                slide_interval,
+            });
+        }
+        Ok(Self {
+            timeout,
+            slide_interval,
+        })
+    }
+
+    pub fn timeout(self) -> Lifetime {
+        self.timeout
+    }
+
+    pub fn slide_interval(self) -> Duration {
+        self.slide_interval
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the idle timeout ({idle_timeout:?}) must not be longer than the session lifetime ({lifetime:?})"
+)]
+pub struct SessionExpiryError {
+    pub lifetime: Duration,
+    pub idle_timeout: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionExpiry {
+    lifetime: Lifetime,
+    idle_timeout: Option<IdleTimeout>,
+}
+
+impl SessionExpiry {
+    pub const DEFAULT_LIFETIME: Lifetime = Lifetime::from_secs(60 * 60 * 24 * 30);
+
+    pub const fn absolute(lifetime: Lifetime) -> Self {
+        Self {
+            lifetime,
+            idle_timeout: None,
+        }
+    }
+
+    pub fn sliding(
+        lifetime: Lifetime,
+        idle_timeout: IdleTimeout,
+    ) -> std::result::Result<Self, SessionExpiryError> {
+        if idle_timeout.timeout > lifetime {
+            return Err(SessionExpiryError {
+                lifetime: lifetime.get(),
+                idle_timeout: idle_timeout.timeout.get(),
+            });
+        }
+        Ok(Self {
+            lifetime,
+            idle_timeout: Some(idle_timeout),
+        })
+    }
+
+    pub fn lifetime(self) -> Lifetime {
+        self.lifetime
+    }
+
+    pub fn idle_timeout(self) -> Option<IdleTimeout> {
+        self.idle_timeout
+    }
+
+    pub(crate) fn deadline(
+        self,
+        created_at: DateTime<Utc>,
+        last_used: DateTime<Utc>,
+    ) -> DateTime<Utc> {
+        let absolute = self.lifetime.ends(created_at);
+        match self.idle_timeout {
+            Some(idle) => absolute.min(idle.timeout.ends(last_used)),
+            None => absolute,
+        }
+    }
+
+    pub(crate) fn slide_due(self, last_used: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        self.idle_timeout.is_some_and(|idle| {
+            (now - last_used)
+                .to_std()
+                .is_ok_and(|since_used| since_used >= idle.slide_interval)
+        })
+    }
+}
+
+impl Default for SessionExpiry {
+    fn default() -> Self {
+        Self::absolute(Self::DEFAULT_LIFETIME)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SessionConfig {
+    pub expiry: SessionExpiry,
     pub max_sessions_per_user: Option<NonZeroU32>,
     // The origin DPoP clients send their requests to; without one, doorman starts no DPoP session
     // and honours none it started before.
-    pub dpop_origin: Option<Origin>,
-}
-
-impl Default for SessionConfig {
-    fn default() -> Self {
-        Self {
-            absolute_lifetime: DEFAULT_SESSION_LIFETIME,
-            idle_timeout: None,
-            slide_interval: DEFAULT_SLIDE_INTERVAL,
-            max_sessions_per_user: None,
-            dpop_origin: None,
-        }
-    }
+    pub dpop_origin: Option<DpopOrigin>,
 }
 
 // How a request carries its session token, or asks for the session it starts to carry one.
@@ -325,11 +428,6 @@ mod tests {
     }
 
     #[test]
-    fn default_config_builds() {
-        let _ = SessionConfig::default();
-    }
-
-    #[test]
     fn session_summary_preserves_fields_and_drops_token_hash() {
         use crate::token::TokenHash;
         use chrono::{TimeZone, Utc};
@@ -387,7 +485,7 @@ mod tests {
         let issued = IssuedSession {
             session: ResolvedSession::new(session, now),
             token: "super-secret-session-token".to_string(),
-            absolute_lifetime: DEFAULT_SESSION_LIFETIME,
+            absolute_lifetime: SessionExpiry::DEFAULT_LIFETIME.get(),
         };
 
         let rendered = format!("{issued:?}");

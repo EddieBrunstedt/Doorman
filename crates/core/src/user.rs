@@ -1,12 +1,10 @@
-use std::time::Duration;
-
-use crate::assembly::AssemblyError;
 use crate::audit::{AuditDispatch, AuditEventKind};
 use crate::context::CoreDeps;
 use crate::destructive::Cleared;
 use crate::email::{EmailAddress, Mailer};
 use crate::email_link::{EmailLinks, Issued, LinkTemplate};
 use crate::error::{Error, Result};
+use crate::lifetime::Lifetime;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::SessionContext;
 use crate::storage::{EmailLinkPurpose, User};
@@ -14,11 +12,11 @@ use crate::user_records::{OwnerRefusal, UserRecords};
 
 #[derive(Clone)]
 pub struct UserConfig {
-    pub token_lifetime: Duration,
+    pub token_lifetime: Lifetime,
 }
 
 impl UserConfig {
-    pub const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(60 * 15);
+    pub const DEFAULT_TOKEN_LIFETIME: Lifetime = Lifetime::from_secs(60 * 15);
 }
 
 impl Default for UserConfig {
@@ -45,24 +43,20 @@ pub struct UserManager {
 }
 
 impl UserManager {
-    pub(crate) fn new(
-        deps: &CoreDeps,
-        template: LinkTemplate,
-        config: UserConfig,
-    ) -> std::result::Result<Self, AssemblyError> {
+    pub(crate) fn new(deps: &CoreDeps, template: LinkTemplate, config: UserConfig) -> Self {
         let link = EmailLinks::new(
             deps,
             EmailLinkPurpose::EmailChange,
             template,
             config.token_lifetime,
-        )?;
-        Ok(Self {
+        );
+        Self {
             records: UserRecords::new(deps),
             link,
             audit: deps.audit.clone(),
             mailer: deps.mailer.clone(),
             notices: deps.notices.clone(),
-        })
+        }
     }
 
     pub(crate) async fn request_email_change(

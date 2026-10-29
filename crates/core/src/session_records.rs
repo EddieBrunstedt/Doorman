@@ -1,10 +1,8 @@
 use std::ops::Deref;
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::assembly::AssemblyError;
 use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::clock::Clock;
 use crate::dpop::{DpopProof, DpopProofs, ProvenDpopKey};
@@ -64,27 +62,18 @@ impl SessionRecords {
         clock: Arc<dyn Clock>,
         audit: AuditDispatch,
         config: SessionConfig,
-    ) -> std::result::Result<Self, AssemblyError> {
-        if let Some(idle_timeout) = config.idle_timeout
-            && config.slide_interval >= idle_timeout
-        {
-            return Err(AssemblyError::IdleTimeoutInvalid {
-                idle_timeout,
-                reason: "must be strictly greater than the slide interval so an active session slides before it idles out",
-            });
-        }
-        let dpop = match &config.dpop_origin {
-            Some(origin) if !origin.is_tuple() => return Err(AssemblyError::OpaqueDpopOrigin),
-            Some(origin) => Some(DpopProofs::new(origin.clone(), dpop_proofs, clock.clone())),
-            None => None,
-        };
-        Ok(Self {
+    ) -> Self {
+        let dpop = config
+            .dpop_origin
+            .clone()
+            .map(|origin| DpopProofs::new(origin, dpop_proofs, clock.clone()));
+        Self {
             sessions,
             dpop,
             clock,
             audit,
             config,
-        })
+        }
     }
 
     #[tracing::instrument(
@@ -178,7 +167,7 @@ impl SessionRecords {
             transport,
             created_at: now,
             last_used_at: now,
-            expires_at: self.deadline(now, now),
+            expires_at: self.config.expiry.deadline(now, now),
             ip: context.ip(),
             user_agent: context.user_agent().map(str::to_owned),
             recovery_cool_down_until: cool_down.until(),
@@ -188,7 +177,7 @@ impl SessionRecords {
         Ok(IssuedSession {
             session: ResolvedSession::new(session, now),
             token,
-            absolute_lifetime: self.config.absolute_lifetime,
+            absolute_lifetime: self.config.expiry.lifetime().get(),
         })
     }
 
@@ -226,20 +215,6 @@ impl SessionRecords {
         Ok(())
     }
 
-    fn deadline(&self, created_at: DateTime<Utc>, last_used: DateTime<Utc>) -> DateTime<Utc> {
-        let after = |start: DateTime<Utc>, span: Duration| {
-            chrono::Duration::from_std(span)
-                .ok()
-                .and_then(|span| start.checked_add_signed(span))
-                .unwrap_or(DateTime::<Utc>::MAX_UTC)
-        };
-        let absolute = after(created_at, self.config.absolute_lifetime);
-        match self.config.idle_timeout {
-            Some(idle) => absolute.min(after(last_used, idle)),
-            None => absolute,
-        }
-    }
-
     // Every write made for a session reads it again, so one revoked or expired since it was
     // resolved writes nothing. Logging out needs no re-read: it only deletes the session.
     pub(crate) async fn reread(
@@ -260,21 +235,14 @@ impl SessionRecords {
         })
     }
 
-    fn slide_due(&self, session: &Session, now: DateTime<Utc>) -> bool {
-        self.config.idle_timeout.is_some()
-            && (now - session.last_used_at)
-                .to_std()
-                .is_ok_and(|since_used| since_used >= self.config.slide_interval)
-    }
-
     async fn slide(&self, session: Session, now: DateTime<Utc>) -> Session {
-        if !self.slide_due(&session, now) {
+        if !self.config.expiry.slide_due(session.last_used_at, now) {
             return session;
         }
 
         let mut updated = session.clone();
         updated.last_used_at = now;
-        updated.expires_at = self.deadline(session.created_at, now);
+        updated.expires_at = self.config.expiry.deadline(session.created_at, now);
         match self
             .sessions
             .touch_session(updated.id, updated.last_used_at, updated.expires_at)

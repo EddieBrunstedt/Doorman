@@ -8,6 +8,7 @@ use doorman_axum::dto::{
     RecoveryRequest, RegistrationFinishRequest, SignupRedeemRequest, SignupRequest,
 };
 use doorman_axum::prelude::*;
+use doorman_core::dpop::DpopOrigin;
 use doorman_core::email_link::TOKEN_PLACEHOLDER;
 use doorman_core::memory::InMemoryRateLimiter;
 use doorman_sqlx::SqliteStorage;
@@ -63,12 +64,12 @@ async fn signup_login_recovery_round_trip() {
         },
     })
     .session(SessionConfig {
-        dpop_origin: Some(api.origin()),
+        dpop_origin: Some(DpopOrigin::new(api.origin()).expect("DPoP origin")),
         ..Default::default()
     })
     .build()
     .expect("auth core built");
-    let auth = AuthService::builder(core, PurgeSchedule::External)
+    let auth = AuthService::builder(core, PurgeSchedule::external())
         .cookie(CookieConfig::default())
         .build()
         .expect("auth built");

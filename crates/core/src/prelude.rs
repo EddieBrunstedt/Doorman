@@ -6,7 +6,9 @@ pub use crate::audit::{
 pub use crate::client_ip::ClientIp;
 pub use crate::clock::{Clock, SystemClock};
 pub use crate::destructive::{CurrentSession, DestructiveAction};
-pub use crate::dpop::{DPOP_ALGORITHM, DpopProof, JwkThumbprint, ProvenDpopKey};
+pub use crate::dpop::{
+    DPOP_ALGORITHM, DpopOrigin, DpopProof, JwkThumbprint, OpaqueDpopOrigin, ProvenDpopKey,
+};
 #[cfg(feature = "file-email")]
 pub use crate::email::FileEmailSender;
 pub use crate::email::{
@@ -14,6 +16,7 @@ pub use crate::email::{
 };
 pub use crate::email_link::{LinkTemplate, LinkTemplateError, LinkTemplates, TOKEN_PLACEHOLDER};
 pub use crate::error::{Error, Result, StorageError, StorageErrorKind, StorageResult};
+pub use crate::lifetime::{Lifetime, LifetimeError};
 pub use crate::metrics::{MetricEvent, MetricSink, NoopMetricSink};
 pub use crate::operator::OperatorManager;
 pub use crate::passkey::{
@@ -25,10 +28,11 @@ pub use crate::rate_limit::{
     RateLimits,
 };
 pub use crate::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
-pub use crate::recovery::{RecoveryConfig, RecoveryManager};
+pub use crate::recovery::{CoolDownLength, CoolDownTooShort, RecoveryConfig, RecoveryManager};
 pub use crate::security_notice::{NoticePolicy, OperatorNotice};
 pub use crate::session::{
-    IssuedSession, RequestTransport, ResolvedSession, SessionConfig, SessionContext, SessionManager,
+    IdleTimeout, IdleTimeoutError, IssuedSession, RequestTransport, ResolvedSession, SessionConfig,
+    SessionContext, SessionExpiry, SessionExpiryError, SessionManager,
 };
 pub use crate::signup::{
     OpenSignupPolicy, SignupConfig, SignupDecision, SignupManager, SignupPolicy,

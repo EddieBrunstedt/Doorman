@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::audit::{AuditDispatch, AuditSink};
 use crate::clock::{Clock, SystemClock};
@@ -14,7 +13,7 @@ use crate::passkey_registration::PasskeyRegistrations;
 use crate::purge::PurgeSummary;
 use crate::rate_limit::{RateLimitEnforcer, RateLimiting};
 use crate::reauth::{ReauthManager, ReauthPolicy};
-use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
+use crate::recovery::{RecoveryConfig, RecoveryManager};
 use crate::security_notice::{NoticePolicy, SecurityNotices};
 use crate::session::{SessionConfig, SessionManager};
 use crate::session_records::SessionRecords;
@@ -22,57 +21,10 @@ use crate::signup::{SignupConfig, SignupManager};
 use crate::storage::{ExpiringStores, Storage};
 use crate::user::{UserConfig, UserManager};
 
-pub(crate) const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 10);
-
 #[derive(Debug, thiserror::Error)]
 pub enum AssemblyError {
     #[error("passkey manager construction failed: {0}")]
     Passkey(crate::error::Error),
-    #[error("recovery cool-down is misconfigured: {0}")]
-    RecoveryCoolDown(#[from] RecoveryConfigError),
-    #[error("{field} ({value:?}) must be greater than zero and at most {max:?}")]
-    InvalidLifetime {
-        field: &'static str,
-        value: Duration,
-        max: Duration,
-    },
-    #[error("the session dpop_origin is opaque, so no request URL could ever match it")]
-    OpaqueDpopOrigin,
-    #[error("session idle_timeout ({idle_timeout:?}) is invalid: {reason}")]
-    IdleTimeoutInvalid {
-        idle_timeout: Duration,
-        reason: &'static str,
-    },
-}
-
-pub(crate) fn validate_lifetime(field: &'static str, value: Duration) -> Result<(), AssemblyError> {
-    if value.is_zero() || value > MAX_LIFETIME {
-        return Err(AssemblyError::InvalidLifetime {
-            field,
-            value,
-            max: MAX_LIFETIME,
-        });
-    }
-    Ok(())
-}
-
-fn validate_idle_timeout(
-    idle_timeout: Duration,
-    absolute_lifetime: Duration,
-) -> Result<(), AssemblyError> {
-    if idle_timeout.is_zero() || idle_timeout > MAX_LIFETIME {
-        return Err(AssemblyError::IdleTimeoutInvalid {
-            idle_timeout,
-            reason: "must be greater than zero and at most MAX_LIFETIME",
-        });
-    }
-    if idle_timeout > absolute_lifetime {
-        return Err(AssemblyError::IdleTimeoutInvalid {
-            idle_timeout,
-            reason: "must not exceed the session absolute_lifetime",
-        });
-    }
-    Ok(())
 }
 
 #[derive(Clone)]
@@ -201,19 +153,6 @@ impl AuthCoreBuilder {
         let recovery_config = self.recovery.unwrap_or_default();
         let user_config = self.user.unwrap_or_default();
 
-        validate_lifetime(
-            "session absolute_lifetime",
-            session_config.absolute_lifetime,
-        )?;
-        validate_lifetime(
-            "passkey challenge_lifetime",
-            passkey_config.challenge_lifetime,
-        )?;
-
-        if let Some(idle_timeout) = session_config.idle_timeout {
-            validate_idle_timeout(idle_timeout, session_config.absolute_lifetime)?;
-        }
-
         let mailer = Mailer::new(email_sender, email_templates);
         let notices = SecurityNotices::new(
             mailer.clone(),
@@ -227,7 +166,7 @@ impl AuthCoreBuilder {
             clock.clone(),
             audit.clone(),
             session_config,
-        )?;
+        );
 
         let webauthn = Arc::new(build_webauthn(&passkey_config).map_err(AssemblyError::Passkey)?);
 
@@ -249,17 +188,16 @@ impl AuthCoreBuilder {
             &deps,
             &passkey_config,
             webauthn.clone(),
-            recovery_config.validated_cool_down()?,
+            recovery_config.cool_down,
         );
 
         let passkey = PasskeyManager::new(&deps, registrations.clone(), passkey_config, webauthn);
 
-        let signup = SignupManager::new(&deps, registrations.clone(), links.signup, signup_config)?;
+        let signup = SignupManager::new(&deps, registrations.clone(), links.signup, signup_config);
 
-        let recovery =
-            RecoveryManager::new(&deps, registrations, links.recovery, &recovery_config)?;
+        let recovery = RecoveryManager::new(&deps, registrations, links.recovery, &recovery_config);
 
-        let user = UserManager::new(&deps, links.email_change, user_config)?;
+        let user = UserManager::new(&deps, links.email_change, user_config);
 
         let operator = OperatorManager::new(&deps, passkey.clone());
 

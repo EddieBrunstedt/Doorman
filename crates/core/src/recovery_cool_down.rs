@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::error::{Error, Result};
+use crate::recovery::CoolDownLength;
 use crate::session::ResolvedSession;
 use crate::storage::{SessionSummary, StoredPasskey, StoredPasskeyRegistration};
 
@@ -10,11 +11,8 @@ pub(crate) struct RecoveryCoolDown(Option<DateTime<Utc>>);
 impl RecoveryCoolDown {
     pub(crate) const NONE: Self = Self(None);
 
-    pub(crate) fn start(now: DateTime<Utc>, length: chrono::Duration) -> Self {
-        Self(Some(
-            now.checked_add_signed(length)
-                .unwrap_or(DateTime::<Utc>::MAX_UTC),
-        ))
+    pub(crate) fn start(now: DateTime<Utc>, length: CoolDownLength) -> Self {
+        Self(Some(length.get().ends(now)))
     }
 
     pub(crate) fn of_session(session: &SessionSummary, now: DateTime<Utc>) -> Self {
@@ -77,16 +75,5 @@ impl RecoveryCoolDown {
 
     fn in_force(self, now: DateTime<Utc>) -> Self {
         Self(self.0.filter(|&until| now < until))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn start_saturates_instead_of_overflowing() {
-        let started = RecoveryCoolDown::start(DateTime::<Utc>::MAX_UTC, chrono::Duration::hours(1));
-        assert_eq!(started.until(), Some(DateTime::<Utc>::MAX_UTC));
     }
 }

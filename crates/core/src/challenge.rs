@@ -1,6 +1,5 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -13,9 +12,10 @@ use webauthn_rs_proto::ResidentKeyRequirement;
 use crate::assertion::PendingAssertion;
 use crate::audit::RedemptionFailureReason::WrongSession;
 use crate::audit::{Actor, SecretKind};
-use crate::clock::{Clock, expiry};
+use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result};
+use crate::lifetime::Lifetime;
 use crate::passkey::{PasskeyConfig, decode_passkey};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::redeem::Redeemer;
@@ -42,7 +42,7 @@ pub(crate) struct PasskeyChallenges {
     records: UserRecords,
     redeemer: Redeemer,
     clock: Arc<dyn Clock>,
-    lifetime: Duration,
+    lifetime: Lifetime,
     max_pending_registrations: Option<NonZeroU32>,
 }
 
@@ -85,7 +85,7 @@ impl PasskeyChallenges {
                 purpose,
                 state: encode_state(state)?,
                 created_at: now,
-                expires_at: expiry(now, self.lifetime)?,
+                expires_at: self.lifetime.ends(now),
             })
             .await?;
         Ok(id)
@@ -168,7 +168,7 @@ impl PasskeyChallenges {
                 state: encode_state(&state)?,
                 owner_email,
                 created_at: now,
-                expires_at: expiry(now, self.lifetime)?,
+                expires_at: self.lifetime.ends(now),
                 recovery_cool_down_until: cool_down.until(),
             })
             .await?;

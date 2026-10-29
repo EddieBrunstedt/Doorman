@@ -8,13 +8,14 @@ use doorman_core::destructive::{CurrentSession, DestructiveAction};
 use doorman_core::error::Error;
 use doorman_core::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
 use doorman_core::session::{
-    IssuedSession, RequestTransport, ResolvedSession, SessionConfig, SessionContext, hash_token,
+    IssuedSession, RequestTransport, ResolvedSession, SessionConfig, SessionContext, SessionExpiry,
+    hash_token,
 };
 use doorman_core::storage::{
     PasskeyChallengeId, PasskeyStore, SessionId, SessionStore, SessionTransport, User, UserId,
     UserStore,
 };
-use doorman_test_support::request_context;
+use doorman_test_support::{lifetime, request_context};
 use webauthn_rs::prelude::CreationChallengeResponse;
 
 use crate::common::{
@@ -26,7 +27,7 @@ use crate::common::{
 fn harness_with_lifetime(absolute_lifetime: Duration) -> Harness {
     Harness::builder()
         .session_config(SessionConfig {
-            absolute_lifetime,
+            expiry: SessionExpiry::absolute(lifetime(absolute_lifetime)),
             ..SessionConfig::default()
         })
         .build()
@@ -277,8 +278,7 @@ async fn a_session_that_ended_after_it_was_resolved_writes_nothing() {
 async fn session_cap_evicts_oldest_active_session_for_that_user() {
     let h = Harness::builder()
         .session_config(SessionConfig {
-            absolute_lifetime: Duration::from_secs(60 * 60),
-            idle_timeout: None,
+            expiry: SessionExpiry::absolute(lifetime(Duration::from_secs(60 * 60))),
             max_sessions_per_user: NonZeroU32::new(2),
             ..SessionConfig::default()
         })
@@ -331,7 +331,7 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
 async fn session_cap_in_recovery_cool_down_evicts_only_sessions_in_it() {
     let h = Harness::builder()
         .session_config(SessionConfig {
-            absolute_lifetime: Duration::from_secs(60 * 60),
+            expiry: SessionExpiry::absolute(lifetime(Duration::from_secs(60 * 60))),
             max_sessions_per_user: NonZeroU32::new(2),
             ..SessionConfig::default()
         })

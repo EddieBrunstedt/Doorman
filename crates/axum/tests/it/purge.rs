@@ -21,9 +21,8 @@ fn in_process_service(storage: Storage, clock: Arc<MockClock>) -> AuthService {
         .clock(clock as Arc<dyn Clock>)
         .build()
         .expect("core");
-    AuthService::builder(core, PurgeSchedule::InProcess { every: EVERY })
-        .build()
-        .expect("build")
+    let purge = PurgeSchedule::in_process(EVERY).expect("purge schedule");
+    AuthService::builder(core, purge).build().expect("build")
 }
 
 async fn session_expiring_at(storage: &Storage, tag: u8, expires_at: DateTime<Utc>) -> SessionId {

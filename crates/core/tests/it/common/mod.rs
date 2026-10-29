@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use tokio::sync::Barrier;
 
 use chrono::{DateTime, TimeZone, Utc};
-use doorman_core::assembly::{AssemblyError, AuthCore, AuthCoreRequired};
+use doorman_core::assembly::{AuthCore, AuthCoreRequired};
 use doorman_core::audit::{
     AuditEvent, AuditEventKind, AuditSink, OperatorActor, RedemptionFailureReason, SecretKind,
 };
@@ -27,7 +27,8 @@ use doorman_core::recovery::{RecoveryConfig, RecoveryManager};
 use doorman_core::security_notice::NoticePolicy;
 use doorman_core::session::hash_token;
 use doorman_core::session::{
-    IssuedSession, RequestTransport, ResolvedSession, SessionConfig, SessionContext, SessionManager,
+    IssuedSession, RequestTransport, ResolvedSession, SessionConfig, SessionContext, SessionExpiry,
+    SessionManager,
 };
 use doorman_core::signup::{SignupConfig, SignupManager};
 use doorman_core::storage::{
@@ -39,7 +40,7 @@ use doorman_core::storage::{
 use doorman_core::user::UserManager;
 pub use doorman_test_support::token_from_email;
 use doorman_test_support::{
-    CLIENT_IP, CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock,
+    CLIENT_IP, CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock, lifetime,
     request_context,
 };
 pub use doorman_test_support::{
@@ -443,7 +444,7 @@ impl HarnessBuilder {
             signup: SignupConfig::default(),
             recovery: RecoveryConfig::default(),
             session_config: SessionConfig {
-                absolute_lifetime: Duration::from_secs(60 * 60),
+                expiry: SessionExpiry::absolute(lifetime(Duration::from_secs(60 * 60))),
                 ..SessionConfig::default()
             },
             passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
@@ -495,10 +496,6 @@ impl HarnessBuilder {
     }
 
     pub fn build(self) -> Harness {
-        self.try_build().expect("harness assembles")
-    }
-
-    pub fn try_build(self) -> Result<Harness, AssemblyError> {
         let users: Arc<InMemoryUserStore> = Arc::new(InMemoryUserStore::new());
         let sessions: Arc<InMemorySessionStore> = Arc::new(InMemorySessionStore::new());
         let email_links: Arc<InMemoryEmailLinkStore> = Arc::new(InMemoryEmailLinkStore::new());
@@ -560,9 +557,10 @@ impl HarnessBuilder {
         .signup(self.signup)
         .recovery(self.recovery)
         .notice_policy(self.notice_policy)
-        .build()?;
+        .build()
+        .expect("harness assembles");
 
-        Ok(Harness {
+        Harness {
             passkey: core.passkey,
             signup: core.signup,
             recovery: core.recovery,
@@ -584,7 +582,7 @@ impl HarnessBuilder {
             clock,
             metrics,
             session_config: self.session_config,
-        })
+        }
     }
 }
 
