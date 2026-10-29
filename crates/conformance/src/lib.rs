@@ -1,3 +1,5 @@
+mod runner;
+
 use std::future::Future;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -11,6 +13,8 @@ use doorman_core::storage::{
     StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, User, UserId,
     UserStatus,
 };
+
+use crate::runner::{Check, checks};
 
 // After any real date a run happens on: a backend that expires rows by its own
 // clock must not drop a fixture before the check reaches it.
@@ -49,133 +53,57 @@ fn user(id: UserId, email: &str) -> User {
 
 const RACERS: usize = 64;
 
-// One worker would run each racer to completion before the next, so a store
-// whose operations never await could never be raced.
-const MIN_WORKERS: usize = 2;
-
 pub async fn run(storage: &Storage) {
-    let mut checks = Checks::start();
-    record_checks(&mut checks, &storage.records).await;
-    expiring_checks(&mut checks, &storage.expiring).await;
-    checks.finish();
+    let records = runner::run(&storage.records, RECORD_CHECKS).await;
+    let expiring = runner::run(&storage.expiring, EXPIRING_CHECKS).await;
+    records.merge(expiring).assert_passed();
 }
 
 pub async fn run_records(stores: &RecordStores) {
-    let mut checks = Checks::start();
-    record_checks(&mut checks, stores).await;
-    checks.finish();
+    runner::run(stores, RECORD_CHECKS).await.assert_passed();
 }
 
 pub async fn run_expiring(stores: &ExpiringStores) {
-    let mut checks = Checks::start();
-    expiring_checks(&mut checks, stores).await;
-    checks.finish();
+    runner::run(stores, EXPIRING_CHECKS).await.assert_passed();
 }
 
-struct Checks {
-    run: usize,
-    failed: Vec<String>,
-}
+const RECORD_CHECKS: &[Check<RecordStores>] = checks![
+    users_round_trip,
+    users_email_change,
+    users_email_matches_exactly,
+    records_hold_values_at_core_limits,
+    users_field_changes_compose,
+    users_setters_refuse_missing_user,
+    passkeys_cool_down_round_trip,
+    passkey_field_changes_compose,
+    passkey_writes_refuse_missing_passkey,
+    passkeys_bulk_delete_for_user,
+];
 
-impl Checks {
-    fn start() -> Self {
-        let workers = tokio::runtime::Handle::current().metrics().num_workers();
-        assert!(
-            workers >= MIN_WORKERS,
-            "the conformance suite races concurrent callers and needs at least \
-             {MIN_WORKERS} runtime workers, got {workers}; run it under \
-             #[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
-        );
-        Self {
-            run: 0,
-            failed: Vec::new(),
-        }
-    }
-
-    async fn run(&mut self, name: &str, check: impl Future<Output = ()> + Send + 'static) {
-        self.run += 1;
-        if let Err(err) = tokio::spawn(check).await {
-            let message = if err.is_panic() {
-                let payload = err.into_panic();
-                payload
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "panicked".to_string())
-            } else {
-                err.to_string()
-            };
-            self.failed
-                .push(format!("- {name}: {}", message.replace('\n', "\n    ")));
-        }
-    }
-
-    fn finish(self) {
-        if !self.failed.is_empty() {
-            panic!(
-                "{} of {} conformance checks failed:\n{}",
-                self.failed.len(),
-                self.run,
-                self.failed.join("\n"),
-            );
-        }
-    }
-}
-
-// Runs each check in its own task, in order, so a failing check reports and
-// the next one still runs.
-macro_rules! checks {
-    ($checks:expr, $stores:expr; $($check:ident),* $(,)?) => {
-        $(
-            let stores = $stores.clone();
-            $checks
-                .run(stringify!($check), async move { $check(&stores).await })
-                .await;
-        )*
-    };
-}
-
-async fn record_checks(checks: &mut Checks, stores: &RecordStores) {
-    checks!(checks, stores;
-        users_round_trip,
-        users_email_change,
-        users_email_matches_exactly,
-        records_hold_values_at_core_limits,
-        users_field_changes_compose,
-        users_setters_refuse_missing_user,
-        passkeys_cool_down_round_trip,
-        passkey_field_changes_compose,
-        passkey_writes_refuse_missing_passkey,
-        passkeys_bulk_delete_for_user,
-    );
-}
-
-async fn expiring_checks(checks: &mut Checks, stores: &ExpiringStores) {
-    checks!(checks, stores;
-        email_link_single_use,
-        email_link_email_change_payload,
-        email_link_replaces_its_owners_link,
-        email_link_racing_replaces_leave_one_link,
-        email_link_replaces_racing_across_owners_keep_every_link,
-        email_link_purge_and_delete,
-        sessions_crud_and_queries,
-        sessions_purge_expired,
-        session_touch_slides_deadline,
-        session_touch_does_not_resurrect,
-        session_touch_races_revoke,
-        session_revoke_races_creation,
-        passkey_registration_round_trip,
-        passkey_registration_delete_for_user,
-        passkey_registration_delete_races_creation,
-        passkey_authentication_single_use,
-        single_use_under_concurrency,
-        passkey_challenge_purge_expired,
-        owner_indexes_track_removals,
-        absent_lookups_return_none,
-        inserts_refuse_duplicate_keys,
-        expiring_hold_values_at_core_limits,
-    );
-}
+const EXPIRING_CHECKS: &[Check<ExpiringStores>] = checks![
+    email_link_single_use,
+    email_link_email_change_payload,
+    email_link_replaces_its_owners_link,
+    email_link_racing_replaces_leave_one_link,
+    email_link_replaces_racing_across_owners_keep_every_link,
+    email_link_purge_and_delete,
+    sessions_crud_and_queries,
+    sessions_purge_expired,
+    session_touch_slides_deadline,
+    session_touch_does_not_resurrect,
+    session_touch_races_revoke,
+    session_revoke_races_creation,
+    passkey_registration_round_trip,
+    passkey_registration_delete_for_user,
+    passkey_registration_delete_races_creation,
+    passkey_authentication_single_use,
+    single_use_under_concurrency,
+    passkey_challenge_purge_expired,
+    owner_indexes_track_removals,
+    absent_lookups_return_none,
+    inserts_refuse_duplicate_keys,
+    expiring_hold_values_at_core_limits,
+];
 
 async fn users_round_trip(stores: &RecordStores) {
     let users = &stores.users;
