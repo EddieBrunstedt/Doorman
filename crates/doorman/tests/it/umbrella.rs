@@ -36,9 +36,8 @@ async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn 
         },
     })
     .build()?;
-    let auth = AuthService::builder(core)
+    let auth = AuthService::builder(core, PurgeSchedule::External)
         .cookie(CookieConfig::default())
-        .purge(PurgeSchedule::External)
         .build()?;
 
     let _ = auth.router();

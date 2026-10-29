@@ -37,13 +37,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         },
     })
     .build()?;
-    let auth = AuthService::builder(core)
+    // The `purge` binary sweeps expired rows when the host's scheduler runs it.
+    let auth = AuthService::builder(core, PurgeSchedule::External)
         .cookie(CookieConfig {
             secure: external_origin.scheme() == "https",
             ..CookieConfig::default()
         })
-        // The `purge` binary sweeps expired rows when the host's scheduler runs it.
-        .purge(PurgeSchedule::External)
         .build()?;
 
     let app = Router::new()

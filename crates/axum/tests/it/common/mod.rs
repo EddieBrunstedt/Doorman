@@ -179,12 +179,10 @@ impl TestApp {
         };
         let core = customise_core(required).build().expect("auth core built");
 
-        let http = AuthService::builder(core)
-            .cookie(CookieConfig {
-                secure: false,
-                ..CookieConfig::default()
-            })
-            .purge(PurgeSchedule::External);
+        let http = AuthService::builder(core, PurgeSchedule::External).cookie(CookieConfig {
+            secure: false,
+            ..CookieConfig::default()
+        });
         let auth = customise_http(http).build().expect("auth built");
         let sessions = auth.state().sessions().clone();
 

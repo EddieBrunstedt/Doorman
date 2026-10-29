@@ -61,9 +61,8 @@ async fn signup_login_recovery_round_trip() {
     })
     .build()
     .expect("auth core built");
-    let auth = AuthService::builder(core)
+    let auth = AuthService::builder(core, PurgeSchedule::External)
         .cookie(CookieConfig::default())
-        .purge(PurgeSchedule::External)
         .build()
         .expect("auth built");
 

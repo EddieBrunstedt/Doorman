@@ -21,7 +21,7 @@ fn core() -> AuthCore {
 }
 
 fn valid_builder() -> AuthServiceBuilder {
-    AuthService::builder(core()).purge(PurgeSchedule::External)
+    AuthService::builder(core(), PurgeSchedule::External)
 }
 
 #[test]
@@ -29,23 +29,16 @@ fn fully_wired_builder_builds() {
     valid_builder().build().expect("build");
 }
 
-#[test]
-fn a_service_without_a_purge_schedule_is_refused() {
-    let err = AuthService::builder(core()).build().err();
-    assert!(
-        matches!(err, Some(BuilderError::PurgeDecisionRequired)),
-        "expected PurgeDecisionRequired, got: {err:?}"
-    );
-}
-
 #[tokio::test]
 async fn an_in_process_purge_schedule_with_no_interval_is_refused() {
-    let err = valid_builder()
-        .purge(PurgeSchedule::InProcess {
+    let err = AuthService::builder(
+        core(),
+        PurgeSchedule::InProcess {
             every: Duration::ZERO,
-        })
-        .build()
-        .err();
+        },
+    )
+    .build()
+    .err();
     assert!(
         matches!(err, Some(BuilderError::InvalidPurgeInterval { every }) if every.is_zero()),
         "expected InvalidPurgeInterval, got: {err:?}"
@@ -54,12 +47,14 @@ async fn an_in_process_purge_schedule_with_no_interval_is_refused() {
 
 #[test]
 fn an_in_process_purge_schedule_outside_a_runtime_is_refused() {
-    let err = valid_builder()
-        .purge(PurgeSchedule::InProcess {
+    let err = AuthService::builder(
+        core(),
+        PurgeSchedule::InProcess {
             every: Duration::from_secs(3600),
-        })
-        .build()
-        .err();
+        },
+    )
+    .build()
+    .err();
     assert!(
         matches!(err, Some(BuilderError::PurgeNeedsRuntime)),
         "expected PurgeNeedsRuntime, got: {err:?}"
@@ -77,8 +72,7 @@ async fn service_drives_the_managers_the_core_assembled() {
     .notice_policy(policy.clone())
     .build()
     .expect("core");
-    let auth = AuthService::builder(core)
-        .purge(PurgeSchedule::External)
+    let auth = AuthService::builder(core, PurgeSchedule::External)
         .build()
         .expect("build");
 

@@ -44,8 +44,8 @@ pub struct AuthService {
 }
 
 impl AuthService {
-    pub fn builder(core: AuthCore) -> AuthServiceBuilder {
-        AuthServiceBuilder::new(core)
+    pub fn builder(core: AuthCore, purge: PurgeSchedule) -> AuthServiceBuilder {
+        AuthServiceBuilder::new(core, purge)
     }
 
     pub fn router(&self) -> Router {

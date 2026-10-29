@@ -21,8 +21,7 @@ fn in_process_service(storage: Storage, clock: Arc<MockClock>) -> AuthService {
         .clock(clock as Arc<dyn Clock>)
         .build()
         .expect("core");
-    AuthService::builder(core)
-        .purge(PurgeSchedule::InProcess { every: EVERY })
+    AuthService::builder(core, PurgeSchedule::InProcess { every: EVERY })
         .build()
         .expect("build")
 }
