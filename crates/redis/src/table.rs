@@ -16,7 +16,7 @@ static INSERT: LazyLock<Script> = LazyLock::new(|| scripts::script(scripts::INSE
 static REPLACE: LazyLock<Script> = LazyLock::new(|| scripts::script(scripts::REPLACE));
 static UPDATE: LazyLock<Script> = LazyLock::new(|| scripts::script(scripts::UPDATE));
 static TAKE: LazyLock<Script> = LazyLock::new(|| scripts::script(scripts::TAKE));
-static DELETE: LazyLock<Script> = LazyLock::new(|| scripts::script(scripts::DELETE));
+static DELETE: LazyLock<Script> = LazyLock::new(|| scripts::removing_script(scripts::DELETE));
 
 const PURGE_BATCH: usize = 256;
 

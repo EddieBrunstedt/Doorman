@@ -2,55 +2,11 @@ use crate::common;
 
 use std::time::Duration as StdDuration;
 
-use crate::common::Backend;
-use chrono::{DateTime, Duration, Utc};
+use crate::common::{Backend, link, registration, session};
+use chrono::{Duration, Utc};
 use doorman_core::encoding::hex;
-use doorman_core::session::hash_token;
-use doorman_core::storage::{
-    EmailLink, EmailLinkPurpose, PasskeyChallengeId, RegistrationPurpose, Session, SessionId,
-    SessionTransport, StoredPasskeyRegistration, UserId,
-};
+use doorman_core::storage::UserId;
 use redis::aio::MultiplexedConnection;
-
-fn session(user_id: UserId, token: &str, expires_at: DateTime<Utc>) -> Session {
-    Session {
-        id: SessionId::new(),
-        user_id,
-        token_hash: hash_token(token),
-        transport: SessionTransport::Cookie,
-        created_at: Utc::now(),
-        last_used_at: Utc::now(),
-        expires_at,
-        ip: "192.0.2.1".parse().expect("client IP"),
-        user_agent: None,
-        recovery_cool_down_until: None,
-    }
-}
-
-fn registration(user_id: UserId, expires_at: DateTime<Utc>) -> StoredPasskeyRegistration {
-    StoredPasskeyRegistration {
-        id: PasskeyChallengeId::new(),
-        purpose: RegistrationPurpose::Signup,
-        user_id,
-        state: b"registration-state".to_vec(),
-        owner_email: None,
-        created_at: Utc::now(),
-        expires_at,
-        recovery_cool_down_until: None,
-    }
-}
-
-fn link(user_id: UserId, token: &str) -> EmailLink {
-    EmailLink {
-        token_hash: hash_token(token),
-        user_id,
-        purpose: EmailLinkPurpose::Signup,
-        owner_email: None,
-        new_email: None,
-        created_at: Utc::now(),
-        expires_at: Utc::now() + Duration::hours(1),
-    }
-}
 
 async fn exists(raw: &mut MultiplexedConnection, key: String) -> bool {
     redis::cmd("EXISTS")

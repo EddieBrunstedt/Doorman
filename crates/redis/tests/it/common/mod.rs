@@ -1,5 +1,10 @@
-use doorman_core::storage::ExpiringStores;
-use doorman_redis::{Namespace, RedisStorage};
+use chrono::{DateTime, Duration, Utc};
+use doorman_core::session::hash_token;
+use doorman_core::storage::{
+    EmailLink, EmailLinkPurpose, ExpiringStores, PasskeyChallengeId, RegistrationPurpose, Session,
+    SessionId, SessionTransport, StoredPasskeyRegistration, UserId,
+};
+use doorman_redis::{ConnectError, Namespace, RedisStorage};
 use redis::aio::MultiplexedConnection;
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::core::{CmdWaitFor, ExecCommand, IntoContainerPort};
@@ -33,18 +38,35 @@ impl Server {
     // An ACL user that reaches only the namespace's keys and can't list the keyspace, so any
     // stray key or scan fails the test that made it.
     pub async fn confined_storage(&self, namespace: &str) -> RedisStorage {
+        self.connect_confined(namespace, &[])
+            .await
+            .expect("connect as the confined user")
+    }
+
+    // The confined user, also denied each of `denied`.
+    pub async fn connect_confined(
+        &self,
+        namespace: &str,
+        denied: &[&str],
+    ) -> Result<RedisStorage, ConnectError> {
         let user = format!("doorman-{}", Uuid::new_v4());
         let pattern = format!("~{}*", glob_escape(&format!("{{{namespace}}}:")));
+        let mut rules = vec![
+            "on".to_owned(),
+            ">secret".to_owned(),
+            pattern,
+            "+@all".to_owned(),
+        ];
+        rules.extend(
+            ["scan", "keys", "randomkey"]
+                .iter()
+                .chain(denied)
+                .map(|command| format!("-{command}")),
+        );
         let _: () = redis::cmd("ACL")
             .arg("SETUSER")
             .arg(&user)
-            .arg("on")
-            .arg(">secret")
-            .arg(pattern)
-            .arg("+@all")
-            .arg("-scan")
-            .arg("-keys")
-            .arg("-randomkey")
+            .arg(rules)
             .query_async(&mut self.raw().await)
             .await
             .expect("create a confined ACL user");
@@ -54,9 +76,18 @@ impl Server {
         } else {
             RedisStorage::connect(&url).await
         };
-        storage
-            .expect("connect as the confined user")
-            .with_namespace(Namespace::new(namespace).expect("test namespace"))
+        Ok(storage?.with_namespace(Namespace::new(namespace).expect("test namespace")))
+    }
+
+    // Sets a server config value as the default user, who isn't confined.
+    pub async fn config_set(&self, name: &str, value: &str) {
+        let _: () = redis::cmd("CONFIG")
+            .arg("SET")
+            .arg(name)
+            .arg(value)
+            .query_async(&mut self.raw().await)
+            .await
+            .expect("CONFIG SET");
     }
 
     pub async fn raw(&self) -> MultiplexedConnection {
@@ -77,6 +108,46 @@ fn glob_escape(text: &str) -> String {
         escaped.push(c);
     }
     escaped
+}
+
+pub fn session(user_id: UserId, token: &str, expires_at: DateTime<Utc>) -> Session {
+    Session {
+        id: SessionId::new(),
+        user_id,
+        token_hash: hash_token(token),
+        transport: SessionTransport::Cookie,
+        created_at: Utc::now(),
+        last_used_at: Utc::now(),
+        expires_at,
+        ip: "192.0.2.1".parse().expect("client IP"),
+        user_agent: None,
+        recovery_cool_down_until: None,
+    }
+}
+
+pub fn registration(user_id: UserId, expires_at: DateTime<Utc>) -> StoredPasskeyRegistration {
+    StoredPasskeyRegistration {
+        id: PasskeyChallengeId::new(),
+        purpose: RegistrationPurpose::Signup,
+        user_id,
+        state: b"registration-state".to_vec(),
+        owner_email: None,
+        created_at: Utc::now(),
+        expires_at,
+        recovery_cool_down_until: None,
+    }
+}
+
+pub fn link(user_id: UserId, token: &str) -> EmailLink {
+    EmailLink {
+        token_hash: hash_token(token),
+        user_id,
+        purpose: EmailLinkPurpose::Signup,
+        owner_email: None,
+        new_email: None,
+        created_at: Utc::now(),
+        expires_at: Utc::now() + Duration::hours(1),
+    }
 }
 
 // Full of glob characters, so a key pattern built from it would reach other namespaces' keys.

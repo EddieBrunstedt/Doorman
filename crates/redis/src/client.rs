@@ -1,7 +1,7 @@
 use doorman_core::error::{StorageError, StorageResult};
 use redis::aio::ConnectionManager;
 use redis::cluster_async::ClusterConnection;
-use redis::{Cmd, FromRedisValue, Script};
+use redis::{Cmd, FromRedisValue, RedisResult, Script, Value};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -37,11 +37,14 @@ impl RedisClient {
     }
 
     async fn query<T: FromRedisValue>(&self, cmd: &Cmd) -> StorageResult<T> {
-        let result = match &self.conn {
+        self.query_redis(cmd).await.map_err(StorageError::new)
+    }
+
+    async fn query_redis<T: FromRedisValue>(&self, cmd: &Cmd) -> RedisResult<T> {
+        match &self.conn {
             Connection::Standalone(conn) => cmd.query_async(&mut conn.clone()).await,
             Connection::Cluster(conn) => cmd.query_async(&mut conn.clone()).await,
-        };
-        result.map_err(StorageError::new)
+        }
     }
 
     pub(crate) async fn eval<T: FromRedisValue>(
@@ -64,8 +67,9 @@ impl RedisClient {
         result.map_err(StorageError::new)
     }
 
-    pub(crate) async fn ping(&self) -> StorageResult<()> {
-        self.query::<String>(&redis::cmd("PING")).await.map(|_| ())
+    // A cluster sends `INFO` to every primary and answers with a map of their replies.
+    pub(crate) async fn memory_info(&self) -> RedisResult<Value> {
+        self.query_redis(redis::cmd("INFO").arg("memory")).await
     }
 
     pub(crate) async fn get(&self, key: &Key) -> StorageResult<Option<String>> {

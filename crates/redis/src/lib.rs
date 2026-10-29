@@ -8,6 +8,7 @@
 )]
 
 mod client;
+mod eviction;
 mod keys;
 mod rate_limit;
 mod scripts;
@@ -17,7 +18,7 @@ mod table;
 use std::sync::Arc;
 
 use doorman_core::clock::{Clock, SystemClock};
-use doorman_core::error::StorageResult;
+use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::rate_limit::RateLimiter;
 use doorman_core::storage::ExpiringStores;
 use redis::IntoConnectionInfo;
@@ -26,7 +27,16 @@ use redis::cluster::ClusterClient;
 
 use crate::client::{Connection, RedisClient};
 
+pub use crate::eviction::EvictionPolicyError;
 pub use crate::keys::{InvalidNamespace, Namespace};
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConnectError {
+    #[error(transparent)]
+    Redis(#[from] redis::RedisError),
+    #[error(transparent)]
+    EvictionPolicy(#[from] EvictionPolicyError),
+}
 
 #[derive(Clone)]
 pub struct RedisStorage {
@@ -34,7 +44,7 @@ pub struct RedisStorage {
 }
 
 impl RedisStorage {
-    pub async fn connect(url: &str) -> Result<Self, redis::RedisError> {
+    pub async fn connect(url: &str) -> Result<Self, ConnectError> {
         let client = redis::Client::open(url)?;
         Self::from_client(client).await
     }
@@ -43,24 +53,24 @@ impl RedisStorage {
     // could miss a write that finished before the read.
     pub async fn connect_cluster<T: IntoConnectionInfo>(
         nodes: impl IntoIterator<Item = T>,
-    ) -> Result<Self, redis::RedisError> {
+    ) -> Result<Self, ConnectError> {
         let connection = ClusterClient::new(nodes)?.get_async_connection().await?;
-        Ok(Self::from_connection(Connection::Cluster(connection)))
+        Self::from_connection(Connection::Cluster(connection)).await
     }
 
-    pub async fn from_client(client: redis::Client) -> Result<Self, redis::RedisError> {
+    pub async fn from_client(client: redis::Client) -> Result<Self, ConnectError> {
         let manager = client.get_connection_manager().await?;
-        Ok(Self::from_connection_manager(manager))
+        Self::from_connection_manager(manager).await
     }
 
-    pub fn from_connection_manager(manager: ConnectionManager) -> Self {
-        Self::from_connection(Connection::Standalone(manager))
+    pub async fn from_connection_manager(manager: ConnectionManager) -> Result<Self, ConnectError> {
+        Self::from_connection(Connection::Standalone(manager)).await
     }
 
-    fn from_connection(connection: Connection) -> Self {
-        Self {
-            client: RedisClient::new(connection, &Namespace::default()),
-        }
+    async fn from_connection(connection: Connection) -> Result<Self, ConnectError> {
+        let client = RedisClient::new(connection, &Namespace::default());
+        eviction::check(&client).await?;
+        Ok(Self { client })
     }
 
     pub fn with_namespace(mut self, namespace: Namespace) -> Self {
@@ -68,8 +78,11 @@ impl RedisStorage {
         self
     }
 
+    // Checks the policy again, since it can be changed while the host runs.
     pub async fn ping(&self) -> StorageResult<()> {
-        self.client.ping().await
+        eviction::check(&self.client)
+            .await
+            .map_err(StorageError::new)
     }
 
     pub fn expiring(&self) -> ExpiringStores {

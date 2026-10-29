@@ -6,6 +6,12 @@ pub(crate) fn script(body: &str) -> Script {
     Script::new(&format!("#!lua\n{PRELUDE}\n{body}"))
 }
 
+// A server full under `noeviction` refuses a flagged script that doesn't allow OOM, even one that
+// only deletes. Revoking must still work then, so a script that only removes keys allows it.
+pub(crate) fn removing_script(body: &str) -> Script {
+    Script::new(&format!("#!lua flags=allow-oom\n{PRELUDE}\n{body}"))
+}
+
 const PRELUDE: &str = r#"
 local function server_now_ms()
     local time = redis.call('TIME')
@@ -125,6 +131,7 @@ return value
 "#;
 
 pub(crate) const DELETE: &str = r#"
+-- Runs even on a full server (see `removing_script`), so it only reads and removes.
 -- KEYS[1] is the deadline index; each row then declares the row, its lookups and, unless its
 -- ownership is 'none', its owner index.
 -- ARGV[1] is the cutoff: a row whose deadline index entry is gone or later than it is kept, so a
