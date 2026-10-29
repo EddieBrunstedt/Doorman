@@ -295,7 +295,18 @@ impl SessionRecords {
     }
 
     pub(crate) async fn log_out(&self, session: &ResolvedSession, actor: Actor) -> Result<()> {
-        self.revoke_owned(session.user_id, session.id, actor).await
+        let session = self.find_owned(session.user_id, session.id).await?;
+        self.sessions.delete_session(session.id).await?;
+        self.audit
+            .emit(
+                actor,
+                AuditEventKind::LoggedOut {
+                    user_id: session.user_id,
+                    session_id: session.id,
+                },
+            )
+            .await;
+        Ok(())
     }
 
     pub(crate) async fn revoke_owned(
@@ -304,16 +315,21 @@ impl SessionRecords {
         session_id: SessionId,
         actor: Actor,
     ) -> Result<()> {
+        let session = self.find_owned(target_user_id, session_id).await?;
+        self.revoke_session(&SessionSummary::from(session), actor)
+            .await
+    }
+
+    async fn find_owned(&self, user_id: UserId, session_id: SessionId) -> Result<Session> {
         let Some(session) = self.sessions.find_session_by_id(session_id).await? else {
             tracing::warn!(outcome = "not_found", "session revoke failed");
             return Err(Error::SessionNotFound);
         };
-        if session.user_id != target_user_id {
+        if session.user_id != user_id {
             tracing::warn!(outcome = "not_owned", "session revoke failed");
             return Err(Error::SessionNotFound);
         }
-        self.revoke_session(&SessionSummary::from(session), actor)
-            .await
+        Ok(session)
     }
 
     async fn revoke_session(&self, session: &SessionSummary, actor: Actor) -> Result<()> {

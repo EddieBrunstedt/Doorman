@@ -374,13 +374,13 @@ async fn log_out_audits_the_request_not_the_login() {
         .await;
 
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
-    let revoked = audit
+    let logged_out = audit
         .events()
         .into_iter()
-        .find(|event| matches!(event.kind, AuditEventKind::SessionRevoked { .. }))
+        .find(|event| matches!(event.kind, AuditEventKind::LoggedOut { .. }))
         .expect("log out audited");
     assert_eq!(
-        revoked.actor,
+        logged_out.actor,
         Actor::Subject {
             ip: PEER.parse().expect("peer"),
             user_agent: Some("logout agent".to_owned()),

@@ -117,7 +117,7 @@ async fn log_out_deletes_the_session_and_audits_it() {
     assert!(resolved.is_none(), "got {resolved:?}");
     assert_eq!(
         kinds(&h.audit.events()).last(),
-        Some(&AuditEventKind::SessionRevoked {
+        Some(&AuditEventKind::LoggedOut {
             user_id: alice.user.id,
             session_id: session.id,
         }),
@@ -631,7 +631,7 @@ async fn log_out_everywhere_ends_every_session_of_the_user_only() {
                 user_id: alice.user.id,
                 revoked_count: 1,
             },
-            AuditEventKind::SessionRevoked {
+            AuditEventKind::LoggedOut {
                 user_id: alice.user.id,
                 session_id: current.id,
             },
@@ -739,7 +739,7 @@ async fn a_destructive_action_reports_whether_it_ended_the_acting_session() {
 }
 
 #[tokio::test]
-async fn revoking_another_session_sends_a_notice() {
+async fn revoking_another_session_audits_and_sends_a_notice() {
     let h = Harness::fresh();
     let mut alice = sign_in(&h, "alice@example.com").await;
     let other = alice.log_in_again(&h).await;
@@ -759,6 +759,13 @@ async fn revoking_another_session_sends_a_notice() {
         .expect("revoke another session");
     assert!(!session_exists(&h, other.session.id).await);
     assert!(session_exists(&h, current.id).await);
+    assert_eq!(
+        kinds(&h.audit.events()).last(),
+        Some(&AuditEventKind::SessionRevoked {
+            user_id: alice.user.id,
+            session_id: other.session.id,
+        }),
+    );
     let sent = &h.email.sent()[mail_before..];
     assert_eq!(sent.len(), 1, "one notice");
 }
