@@ -878,9 +878,7 @@ dependencies = [
  "doorman-redb",
  "doorman-redis",
  "doorman-sqlx",
- "doorman-test-support",
  "tokio",
- "tracing",
  "url",
 ]
 

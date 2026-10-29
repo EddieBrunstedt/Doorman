@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use doorman_core::assembly::AuthCore;
 
@@ -8,6 +9,7 @@ use crate::AuthService;
 use crate::config::CookieConfig;
 use crate::cookies::clear_session_cookie;
 use crate::csrf::TrustedOrigins;
+use crate::purge::{PurgeSchedule, Sweeper};
 use crate::session::{SessionLayer, SessionLayerState};
 use crate::state::AuthState;
 
@@ -21,12 +23,25 @@ pub enum BuilderError {
     },
     #[error("the session cookie name, path or domain contains a control character")]
     InvalidCookieAttributes,
+    #[error(
+        "a purge schedule is required: pass PurgeSchedule::InProcess {{ every }} to sweep expired rows from this process, or PurgeSchedule::External when a scheduler runs doorman::ops::run_purge"
+    )]
+    PurgeDecisionRequired,
+    #[error(
+        "the purge interval ({every:?}) must be greater than zero and a reachable instant away"
+    )]
+    InvalidPurgeInterval { every: Duration },
+    #[error(
+        "PurgeSchedule::InProcess sweeps on a tokio task, so the service must be built inside a tokio runtime"
+    )]
+    PurgeNeedsRuntime,
 }
 
 pub struct AuthServiceBuilder {
     core: AuthCore,
     cookie_config: Option<CookieConfig>,
     trusted_origins: Vec<Url>,
+    purge: Option<PurgeSchedule>,
 }
 
 impl AuthServiceBuilder {
@@ -35,6 +50,7 @@ impl AuthServiceBuilder {
             core,
             cookie_config: None,
             trusted_origins: Vec::new(),
+            purge: None,
         }
     }
 
@@ -48,7 +64,14 @@ impl AuthServiceBuilder {
         self
     }
 
+    pub fn purge(mut self, schedule: PurgeSchedule) -> Self {
+        self.purge = Some(schedule);
+        self
+    }
+
     pub fn build(self) -> Result<AuthService, BuilderError> {
+        let schedule = self.purge.ok_or(BuilderError::PurgeDecisionRequired)?;
+        let sweeper = Sweeper::for_schedule(schedule)?;
         let core = self.core;
         let cookie_config = self.cookie_config.unwrap_or_default();
         validate_cookie_prefix(&cookie_config)?;
@@ -71,8 +94,14 @@ impl AuthServiceBuilder {
             trusted_origins,
         });
 
+        let core = Arc::new(core);
+        // Started last, so a build that fails leaves no task behind.
+        if let Some(sweeper) = sweeper {
+            sweeper.start(&core);
+        }
+
         let state = AuthState {
-            core: Arc::new(core),
+            core,
             cookie_config: Arc::new(cookie_config),
         };
 

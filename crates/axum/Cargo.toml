@@ -31,6 +31,7 @@ http = "1"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
 tower-layer = "0.3"
 tower-service = "0.3"
 tracing.workspace = true
@@ -44,5 +45,5 @@ doorman-sqlx = { path = "../sqlx", version = "0.1.0", features = ["sqlite"] }
 doorman-test-support = { path = "../test-support" }
 proptest.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "test-util"] }
 tower = { version = "0.5", features = ["util"] }

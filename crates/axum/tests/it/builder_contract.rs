@@ -1,53 +1,27 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use doorman_axum::config::CookieConfig;
-use doorman_axum::{AuthService, AuthServiceBuilder, BuilderError};
-use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
-use doorman_core::audit::NoopAuditSink;
+use doorman_axum::{AuthService, AuthServiceBuilder, BuilderError, PurgeSchedule};
+use doorman_core::assembly::AuthCore;
 use doorman_core::email::EmailSender;
 use doorman_core::memory::InMemoryStorage;
-use doorman_core::passkey::PasskeyConfig;
-use doorman_core::rate_limit::RateLimits;
-use doorman_core::reauth::ReauthPolicy;
-use doorman_core::recovery::RecoveryConfig;
 use doorman_core::security_notice::{NoticePolicy, OperatorNotice};
-use doorman_core::signup::SignupConfig;
-use doorman_core::user::UserConfig;
 use doorman_test_support::{CapturingEmailSender, request_context};
 
-fn core_builder(email: Arc<dyn EmailSender>) -> AuthCoreBuilder {
-    AuthCore::builder(InMemoryStorage::new().all_stores())
-        .email(email)
-        .passkey(PasskeyConfig::new(
-            "localhost",
-            "http://localhost:8080".parse().expect("rp origin"),
-            "doorman tests",
-        ))
-        .audit(Arc::new(NoopAuditSink))
-        .rate_limits(RateLimits::disabled())
-        .signup(SignupConfig {
-            url_template: "https://app.test/signup?token={token}".to_string(),
-            ..SignupConfig::default()
-        })
-        .recovery(RecoveryConfig {
-            url_template: "https://app.test/recovery?token={token}".to_string(),
-            ..RecoveryConfig::default()
-        })
-        .user(UserConfig {
-            url_template: "https://app.test/email-change?token={token}".to_string(),
-            ..UserConfig::default()
-        })
-        .reauthentication(ReauthPolicy::disabled())
-}
+use crate::common::core_builder;
 
 fn core() -> AuthCore {
-    core_builder(Arc::new(CapturingEmailSender::new()))
-        .build()
-        .expect("core")
+    core_builder(
+        InMemoryStorage::new().all_stores(),
+        Arc::new(CapturingEmailSender::new()),
+    )
+    .build()
+    .expect("core")
 }
 
 fn valid_builder() -> AuthServiceBuilder {
-    AuthService::builder(core())
+    AuthService::builder(core()).purge(PurgeSchedule::External)
 }
 
 #[test]
@@ -55,15 +29,58 @@ fn fully_wired_builder_builds() {
     valid_builder().build().expect("build");
 }
 
+#[test]
+fn a_service_without_a_purge_schedule_is_refused() {
+    let err = AuthService::builder(core()).build().err();
+    assert!(
+        matches!(err, Some(BuilderError::PurgeDecisionRequired)),
+        "expected PurgeDecisionRequired, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_in_process_purge_schedule_with_no_interval_is_refused() {
+    let err = valid_builder()
+        .purge(PurgeSchedule::InProcess {
+            every: Duration::ZERO,
+        })
+        .build()
+        .err();
+    assert!(
+        matches!(err, Some(BuilderError::InvalidPurgeInterval { every }) if every.is_zero()),
+        "expected InvalidPurgeInterval, got: {err:?}"
+    );
+}
+
+#[test]
+fn an_in_process_purge_schedule_outside_a_runtime_is_refused() {
+    let err = valid_builder()
+        .purge(PurgeSchedule::InProcess {
+            every: Duration::from_secs(3600),
+        })
+        .build()
+        .err();
+    assert!(
+        matches!(err, Some(BuilderError::PurgeNeedsRuntime)),
+        "expected PurgeNeedsRuntime, got: {err:?}"
+    );
+}
+
 #[tokio::test]
 async fn service_drives_the_managers_the_core_assembled() {
     let email = Arc::new(CapturingEmailSender::new());
     let policy = NoticePolicy::default().send(OperatorNotice::SessionsRevoked);
-    let core = core_builder(email.clone() as Arc<dyn EmailSender>)
-        .notice_policy(policy.clone())
+    let core = core_builder(
+        InMemoryStorage::new().all_stores(),
+        email.clone() as Arc<dyn EmailSender>,
+    )
+    .notice_policy(policy.clone())
+    .build()
+    .expect("core");
+    let auth = AuthService::builder(core)
+        .purge(PurgeSchedule::External)
         .build()
-        .expect("core");
-    let auth = AuthService::builder(core).build().expect("build");
+        .expect("build");
 
     assert_eq!(*auth.state().operator().notice_policy(), policy);
 

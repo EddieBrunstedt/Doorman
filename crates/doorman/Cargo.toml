@@ -34,13 +34,10 @@ doorman-mongodb = { path = "../mongodb", version = "0.1.0", optional = true }
 doorman-redb = { path = "../redb", version = "0.1.0", optional = true }
 doorman-redis = { path = "../redis", version = "0.1.0", optional = true }
 doorman-sqlx = { path = "../sqlx", version = "0.1.0", optional = true }
-tokio = { workspace = true, features = ["time"] }
-tracing.workspace = true
 
 [dev-dependencies]
 axum = "0.8"
-doorman-test-support = { path = "../test-support" }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 url.workspace = true
 
 [package.metadata.docs.rs]

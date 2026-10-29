@@ -1,10 +1,7 @@
 use std::process::ExitCode;
-use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::core::clock::Clock;
 use crate::core::error::StorageResult;
 use crate::core::purge::PurgeSummary;
 use crate::core::storage::ExpiringStores;
@@ -23,30 +20,6 @@ pub async fn run_purge(stores: ExpiringStores) -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-pub fn spawn_purge_task(
-    stores: ExpiringStores,
-    clock: Arc<dyn Clock>,
-    interval: Duration,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        loop {
-            ticker.tick().await;
-            let summary = stores.purge_all_expired(clock.now()).await;
-            for (store, error) in summary.failures() {
-                tracing::warn!(store, %error, "background purge sweep failed");
-            }
-            tracing::debug!(
-                sessions = summary.sessions.as_ref().ok(),
-                email_links = summary.email_links.as_ref().ok(),
-                passkey_challenges = summary.passkey_challenges.as_ref().ok(),
-                total = summary.total(),
-                "purged expired rows",
-            );
-        }
-    })
 }
 
 struct Options {
@@ -153,7 +126,6 @@ mod tests {
     use crate::core::error::StorageError;
     use crate::core::memory::InMemoryStorage;
     use crate::core::storage::{Session, SessionId, SessionTransport, TokenHash, UserId};
-    use doorman_test_support::MockClock;
 
     fn args(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
@@ -298,28 +270,5 @@ mod tests {
         assert!(text.contains("  email_links        = failed\n"), "{text}");
         assert!(text.contains("  total              = 0\n"), "{text}");
         assert!(!text.contains("nothing matched"), "{text}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn spawn_purge_task_sweeps_on_its_interval() {
-        let now = DateTime::<Utc>::from_timestamp(2_000_000, 0).expect("timestamp");
-        let user_id = UserId::new();
-        let stores = InMemoryStorage::new().expiring();
-        seed_sessions(&stores, user_id, now).await;
-
-        let handle = spawn_purge_task(
-            stores.clone(),
-            Arc::new(MockClock::new(now)),
-            Duration::from_secs(3600),
-        );
-
-        for _ in 0..8 {
-            tokio::task::yield_now().await;
-        }
-        handle.abort();
-
-        let remaining = stores.sessions.list_for_user(user_id).await.expect("list");
-        assert_eq!(remaining.len(), 1, "background task swept the expired row");
-        assert!(remaining[0].expires_at > now);
     }
 }

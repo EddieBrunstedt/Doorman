@@ -10,6 +10,7 @@ use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::operator::OperatorManager;
 use crate::passkey::{PasskeyConfig, PasskeyManager, build_webauthn};
 use crate::passkey_registration::PasskeyRegistrations;
+use crate::purge::PurgeSummary;
 use crate::rate_limit::{RateLimitEnforcer, RateLimiter, RateLimits};
 use crate::reauth::{ReauthManager, ReauthPolicy};
 use crate::recovery::{RecoveryConfig, RecoveryConfigError, RecoveryManager};
@@ -17,7 +18,7 @@ use crate::security_notice::{NoticePolicy, SecurityNotices};
 use crate::session::{SessionConfig, SessionManager};
 use crate::session_records::SessionRecords;
 use crate::signup::{SignupConfig, SignupManager};
-use crate::storage::Storage;
+use crate::storage::{ExpiringStores, Storage};
 use crate::user::{UserConfig, UserManager};
 
 pub(crate) const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 10);
@@ -107,11 +108,17 @@ pub struct AuthCore {
     pub recovery: RecoveryManager,
     pub user: UserManager,
     pub operator: OperatorManager,
+    expiring: ExpiringStores,
+    clock: Arc<dyn Clock>,
 }
 
 impl AuthCore {
     pub fn builder(storage: Storage) -> AuthCoreBuilder {
         AuthCoreBuilder::new(storage)
+    }
+
+    pub async fn purge_expired(&self) -> PurgeSummary {
+        self.expiring.purge_all_expired(self.clock.now()).await
     }
 }
 
@@ -278,6 +285,7 @@ impl AuthCoreBuilder {
 
         let webauthn = Arc::new(build_webauthn(&passkey_config).map_err(AssemblyError::Passkey)?);
 
+        let expiring = self.storage.expiring.clone();
         let deps = CoreDeps::new(
             clock.clone(),
             audit,
@@ -325,6 +333,8 @@ impl AuthCoreBuilder {
             recovery,
             user,
             operator,
+            expiring,
+            clock,
         })
     }
 }

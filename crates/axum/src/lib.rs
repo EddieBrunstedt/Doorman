@@ -16,6 +16,7 @@ pub mod dto;
 pub mod error;
 pub mod extractors;
 pub mod prelude;
+mod purge;
 mod routes;
 pub mod session;
 mod state;
@@ -29,6 +30,7 @@ pub use builder::{AuthServiceBuilder, BuilderError};
 pub use config::CookieConfig;
 pub use error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use extractors::{AuthSession, AuthUser, OptionalAuthUser, RequestContext};
+pub use purge::PurgeSchedule;
 pub use session::{AuthContext, SessionLayer};
 pub use state::AuthState;
 

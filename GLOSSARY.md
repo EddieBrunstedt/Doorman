@@ -50,6 +50,8 @@ Passkey-only authentication for a single application: passkeys are the only way 
 
 **Expiring stores**: The stores that hold sessions, email links and passkey challenges. Every row in them expires and is purged once it has. `expiring` is their spelling in identifiers. _Avoid_: ephemeral stores
 
+**Purge schedule**: How the expiring stores' expired rows get purged: on an interval, from the process that serves the application, or by a separate process that a scheduler outside doorman runs. The host must choose one. `PurgeSchedule` in identifiers.
+
 ## WebAuthn specifics
 
 Where doorman speaks the WebAuthn protocol itself, it keeps WebAuthn's own names: relying party (with its ID, name and origin), credential (only in the protocol's own messages and fields, such as the credential ID), user handle, user verification, discoverable credential, ceremony, challenge, assertion and attestation. Everywhere else, the terms above apply.

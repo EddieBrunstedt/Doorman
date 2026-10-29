@@ -4,6 +4,7 @@ mod common;
 mod cookies;
 mod csrf;
 mod full_round_trip;
+mod purge;
 mod refusals;
 mod routes;
 mod session_layer;

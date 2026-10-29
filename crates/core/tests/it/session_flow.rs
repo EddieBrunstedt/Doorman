@@ -431,7 +431,7 @@ async fn list_returns_only_the_users_live_sessions() {
 }
 
 #[tokio::test]
-async fn purge_expired_deletes_only_expired() {
+async fn the_core_purges_only_rows_expired_at_its_own_clock() {
     let h = harness_with_lifetime(Duration::from_secs(60));
 
     let short = sign_in(&h, "short@example.com").await.session;
@@ -439,7 +439,7 @@ async fn purge_expired_deletes_only_expired() {
     let long = sign_in(&h, "long@example.com").await.session;
 
     h.clock.advance(ChronoDuration::seconds(45));
-    let summary = h.storage.expiring.purge_all_expired(h.clock.now()).await;
+    let summary = h.another_process().purge_expired().await;
     assert_eq!(summary.sessions.expect("purge sessions"), 1);
     assert!(!session_exists(&h, short.session.id).await);
     assert!(session_exists(&h, long.session.id).await);

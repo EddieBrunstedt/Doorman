@@ -16,7 +16,7 @@ use doorman_axum::dto::{
     UserDto,
 };
 use doorman_axum::extractors::AuthUser;
-use doorman_axum::{AuthService, AuthServiceBuilder};
+use doorman_axum::{AuthService, AuthServiceBuilder, PurgeSchedule};
 use doorman_core::assembly::{AuthCore, AuthCoreBuilder};
 use doorman_core::audit::NoopAuditSink;
 use doorman_core::clock::SystemClock;
@@ -79,6 +79,31 @@ pub struct TestSession {
 }
 
 // Lets the harness's bearer clients start sessions; a test that sets its own config starts from it.
+pub fn core_builder(storage: Storage, email: Arc<dyn EmailSender>) -> AuthCoreBuilder {
+    AuthCore::builder(storage)
+        .email(email)
+        .passkey(PasskeyConfig::new(
+            "localhost",
+            rp_origin(),
+            "doorman tests",
+        ))
+        .audit(Arc::new(NoopAuditSink))
+        .rate_limits(RateLimits::disabled())
+        .signup(SignupConfig {
+            url_template: SIGNUP_URL.to_string(),
+            ..SignupConfig::default()
+        })
+        .recovery(RecoveryConfig {
+            url_template: RECOVERY_URL.to_string(),
+            ..RecoveryConfig::default()
+        })
+        .user(UserConfig {
+            url_template: USER_URL.to_string(),
+            ..UserConfig::default()
+        })
+        .reauthentication(ReauthPolicy::disabled())
+}
+
 pub fn session_config() -> SessionConfig {
     SessionConfig {
         allow_bearer_sessions: true,
@@ -133,14 +158,7 @@ impl TestApp {
     ) -> Self {
         let email = Arc::new(CapturingEmailSender::new());
         let users = storage.records.users.clone();
-        let core = AuthCore::builder(storage)
-            .email(email.clone() as Arc<dyn EmailSender>)
-            .passkey(PasskeyConfig::new(
-                "localhost",
-                rp_origin(),
-                "doorman tests",
-            ))
-            .audit(Arc::new(NoopAuditSink))
+        let core = core_builder(storage, email.clone() as Arc<dyn EmailSender>)
             .limiter(Arc::new(InMemoryRateLimiter::new(Arc::new(SystemClock))))
             .rate_limits(RateLimits {
                 signup_request_per_ip: None,
@@ -150,26 +168,15 @@ impl TestApp {
                 recovery_request_per_email_daily: None,
                 ..RateLimits::default()
             })
-            .signup(SignupConfig {
-                url_template: SIGNUP_URL.to_string(),
-                ..SignupConfig::default()
-            })
-            .recovery(RecoveryConfig {
-                url_template: RECOVERY_URL.to_string(),
-                ..RecoveryConfig::default()
-            })
-            .user(UserConfig {
-                url_template: USER_URL.to_string(),
-                ..UserConfig::default()
-            })
-            .reauthentication(ReauthPolicy::disabled())
             .session(session_config());
         let core = customise_core(core).build().expect("auth core built");
 
-        let http = AuthService::builder(core).cookie(CookieConfig {
-            secure: false,
-            ..CookieConfig::default()
-        });
+        let http = AuthService::builder(core)
+            .cookie(CookieConfig {
+                secure: false,
+                ..CookieConfig::default()
+            })
+            .purge(PurgeSchedule::External);
         let auth = customise_http(http).build().expect("auth built");
         let sessions = auth.state().sessions().clone();
 
