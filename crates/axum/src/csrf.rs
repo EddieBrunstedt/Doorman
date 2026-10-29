@@ -28,19 +28,19 @@ pub(crate) enum Refusal {
 pub(crate) fn check(
     method: &Method,
     headers: &HeaderMap,
-    credential: Option<SessionTransport>,
+    token: Option<SessionTransport>,
     trusted: &TrustedOrigins,
 ) -> Result<(), Refusal> {
     // A bearer session's token never reaches a browser page, so a page can attach it only by
-    // being handed it; it is no ambient credential.
-    if is_safe_method(method) || credential == Some(SessionTransport::Bearer) {
+    // being handed it; unlike a cookie, the browser never attaches it by itself.
+    if is_safe_method(method) || token == Some(SessionTransport::Bearer) {
         return Ok(());
     }
 
     if !sent_by_browser(headers) {
         // A session cookie belongs to a browser, so a request carrying it without naming its
         // origin can't be shown to come from the application.
-        return match credential {
+        return match token {
             Some(SessionTransport::Cookie) => Err(Refusal::UnknownOrigin),
             _ => Ok(()),
         };
@@ -82,7 +82,7 @@ mod tests {
     use axum::http::HeaderValue;
 
     const APP: &str = "https://app.test";
-    const API_CLIENT: &str = "https://admin.app.test";
+    const API_CLIENT: &str = "https://api.app.test";
     const EVIL: &str = "https://evil.test";
 
     fn trusted() -> TrustedOrigins {
@@ -93,18 +93,18 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Copy)]
-    enum Credential {
+    enum Token {
         Absent,
         Cookie,
         Bearer,
     }
 
-    impl Credential {
+    impl Token {
         fn transport(self) -> Option<SessionTransport> {
             match self {
-                Credential::Absent => None,
-                Credential::Cookie => Some(SessionTransport::Cookie),
-                Credential::Bearer => Some(SessionTransport::Bearer),
+                Token::Absent => None,
+                Token::Cookie => Some(SessionTransport::Cookie),
+                Token::Bearer => Some(SessionTransport::Bearer),
             }
         }
     }
@@ -112,7 +112,7 @@ mod tests {
     #[derive(Debug)]
     struct Case {
         method: Method,
-        credential: Credential,
+        token: Token,
         sec_fetch_site: Option<&'static str>,
         origin: Option<&'static str>,
         referer: Option<&'static str>,
@@ -120,14 +120,14 @@ mod tests {
     }
 
     fn case(
-        credential: Credential,
+        token: Token,
         sec_fetch_site: Option<&'static str>,
         origin: Option<&'static str>,
         expected: Result<(), Refusal>,
     ) -> Case {
         Case {
             method: Method::POST,
-            credential,
+            token,
             sec_fetch_site,
             origin,
             referer: None,
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn a_state_changing_request_must_come_from_the_application() {
-        use Credential::*;
+        use Token::*;
         let untrusted = Err(Refusal::UntrustedOrigin);
         let unknown = Err(Refusal::UnknownOrigin);
         let cases = [
@@ -193,7 +193,7 @@ mod tests {
             let result = check(
                 &case.method,
                 &headers(&case),
-                case.credential.transport(),
+                case.token.transport(),
                 &trusted(),
             );
             assert_eq!(result, case.expected, "{case:?}");

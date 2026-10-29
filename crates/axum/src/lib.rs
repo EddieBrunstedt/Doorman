@@ -10,7 +10,6 @@
 mod browser;
 pub mod config;
 mod cookies;
-mod credential;
 mod csrf;
 pub mod dto;
 pub mod error;
@@ -19,6 +18,7 @@ pub mod prelude;
 mod purge;
 mod routes;
 pub mod session;
+mod session_token;
 mod state;
 
 mod builder;

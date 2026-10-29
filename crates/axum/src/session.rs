@@ -11,9 +11,9 @@ use tower_service::Service;
 use tracing::Instrument;
 
 use crate::config::CookieConfig;
-use crate::credential::{self, Credential};
 use crate::csrf::{self, TrustedOrigins};
 use crate::error::LayerRefusal;
+use crate::session_token::{self, SessionToken};
 
 #[derive(Clone)]
 pub struct AuthContext {
@@ -93,28 +93,28 @@ where
         );
         Box::pin(
             async move {
-                let credential = match credential::read(
+                let token = match session_token::read(
                     req.headers(),
                     &state.cookie.session_cookie_name,
                     state.sessions.allows_bearer_sessions(),
                 ) {
-                    Ok(credential) => credential,
+                    Ok(token) => token,
                     Err(_) => {
-                        tracing::info!("refused a request carrying two credentials");
-                        return Ok(LayerRefusal::AmbiguousCredential.into_response());
+                        tracing::info!("refused a request carrying two session tokens");
+                        return Ok(LayerRefusal::AmbiguousSessionToken.into_response());
                     }
                 };
                 if let Err(refusal) = csrf::check(
                     req.method(),
                     req.headers(),
-                    credential.as_ref().map(|c| c.transport),
+                    token.as_ref().map(|t| t.transport),
                     &state.trusted_origins,
                 ) {
                     tracing::info!(?refusal, "refused a cross-origin request");
                     return Ok(LayerRefusal::CrossOrigin.into_response());
                 }
 
-                if let Some(Credential { token, transport }) = credential {
+                if let Some(SessionToken { token, transport }) = token {
                     match state.sessions.resolve(&token, transport).await {
                         Ok(Some(resolved)) => {
                             let span = tracing::Span::current();

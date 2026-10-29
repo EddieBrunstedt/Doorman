@@ -53,7 +53,7 @@ pub(crate) fn error_response(err: &Error) -> Response {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LayerRefusal {
     CrossOrigin,
-    AmbiguousCredential,
+    AmbiguousSessionToken,
 }
 
 impl IntoResponse for LayerRefusal {
@@ -64,9 +64,9 @@ impl IntoResponse for LayerRefusal {
                 "csrf_origin_mismatch",
                 "CSRF origin check failed",
             ),
-            LayerRefusal::AmbiguousCredential => (
+            LayerRefusal::AmbiguousSessionToken => (
                 StatusCode::BAD_REQUEST,
-                "ambiguous_credential",
+                "ambiguous_session_token",
                 "the request carries both a session cookie and a bearer token",
             ),
         };
@@ -267,9 +267,9 @@ mod tests {
                 "csrf_origin_mismatch",
             ),
             (
-                LayerRefusal::AmbiguousCredential,
+                LayerRefusal::AmbiguousSessionToken,
                 StatusCode::BAD_REQUEST,
-                "ambiguous_credential",
+                "ambiguous_session_token",
             ),
         ];
         for (refusal, status, code) in cases {

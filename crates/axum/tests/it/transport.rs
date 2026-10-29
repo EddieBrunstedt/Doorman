@@ -140,7 +140,7 @@ async fn a_refused_bearer_login_from_a_browser_leaves_its_challenge_for_a_cookie
 }
 
 #[tokio::test]
-async fn a_request_carrying_both_credentials_is_refused() {
+async fn a_request_carrying_both_session_tokens_is_refused() {
     let app = TestApp::new();
     let browser = app.session_as(Client::Browser, "alice@example.com").await;
     let bearer = app.session_as(Client::Bearer, "bob@example.com").await;
@@ -156,7 +156,7 @@ async fn a_request_carrying_both_credentials_is_refused() {
         assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{method} {path}");
         assert_eq!(
             reply.error_code(),
-            "ambiguous_credential",
+            "ambiguous_session_token",
             "{method} {path}"
         );
     }

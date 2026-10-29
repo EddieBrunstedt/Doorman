@@ -28,6 +28,8 @@ Passkey-only authentication for a single application: passkeys are the only way 
 
 **Bearer client**: A client other than a browser, such as a native app, that asks for a bearer session and keeps its token itself.
 
+**Session token**: The opaque secret a client presents to name its session. The client holds it; the server stores only its hash. `SessionToken` in identifiers. _Avoid_: credential
+
 **Email link**: A single-use link, bound to one purpose, that proves control of an email address. It never starts a session by itself. _Avoid_: magic link, verification link, verification token
 
 **Redeem**: To use up a single-use secret, such as an email link, so that it can never be used again. _Avoid_: consume

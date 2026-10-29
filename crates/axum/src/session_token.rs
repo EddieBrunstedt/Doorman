@@ -3,31 +3,31 @@ use doorman_core::storage::SessionTransport;
 
 use crate::cookies::{bearer_token, read_cookie};
 
-pub(crate) struct Credential {
+pub(crate) struct SessionToken {
     pub(crate) token: String,
     pub(crate) transport: SessionTransport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AmbiguousCredential;
+pub(crate) struct AmbiguousSessionToken;
 
 pub(crate) fn read(
     headers: &HeaderMap,
     cookie_name: &str,
     bearer_sessions: bool,
-) -> Result<Option<Credential>, AmbiguousCredential> {
+) -> Result<Option<SessionToken>, AmbiguousSessionToken> {
     let cookie = read_cookie(headers, cookie_name).filter(|value| !value.trim().is_empty());
     // Without bearer sessions doorman has no use for the header, so the host may use it freely.
     let bearer = bearer_token(headers)
         .filter(|_| bearer_sessions)
         .map(ToOwned::to_owned);
     match (cookie, bearer) {
-        (Some(_), Some(_)) => Err(AmbiguousCredential),
-        (Some(token), None) => Ok(Some(Credential {
+        (Some(_), Some(_)) => Err(AmbiguousSessionToken),
+        (Some(token), None) => Ok(Some(SessionToken {
             token,
             transport: SessionTransport::Cookie,
         })),
-        (None, Some(token)) => Ok(Some(Credential {
+        (None, Some(token)) => Ok(Some(SessionToken {
             token,
             transport: SessionTransport::Bearer,
         })),
@@ -52,9 +52,9 @@ mod tests {
     }
 
     #[test]
-    fn a_request_presents_at_most_one_credential() {
+    fn a_request_presents_at_most_one_session_token() {
         use SessionTransport::{Bearer, Cookie};
-        let ambiguous = Err(AmbiguousCredential);
+        let ambiguous = Err(AmbiguousSessionToken);
         let cases = [
             (None, None, true, Ok(None)),
             (
