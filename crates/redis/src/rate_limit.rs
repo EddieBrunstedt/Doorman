@@ -21,7 +21,7 @@ impl RedisRateLimiter {
         Self {
             client,
             clock,
-            script: redis::Script::new(scripts::SLIDING_WINDOW),
+            script: scripts::script(scripts::SLIDING_WINDOW),
         }
     }
 }
@@ -40,18 +40,14 @@ impl RateLimiter for RedisRateLimiter {
         let bucket = self.client.keys().rate_limit(key.as_str(), window_ms_u128);
         let member = Uuid::new_v4().to_string();
 
-        let mut conn = self.client.conn();
-        let mut invocation = self.script.prepare_invoke();
-        invocation
-            .key(&bucket)
-            .arg(now_ms)
-            .arg(window_ms)
-            .arg(policy.max_attempts)
-            .arg(member);
-        let (decision, retry_after_ms): (i64, i64) = invocation
-            .invoke_async(&mut conn)
-            .await
-            .map_err(StorageError::new)?;
+        let args = [
+            now_ms.to_string(),
+            window_ms.to_string(),
+            policy.max_attempts.to_string(),
+            member,
+        ];
+        let (decision, retry_after_ms): (i64, i64) =
+            self.client.eval(&self.script, &[&bucket], &args).await?;
 
         if decision == 1 {
             Ok(RateLimitDecision::Allowed)

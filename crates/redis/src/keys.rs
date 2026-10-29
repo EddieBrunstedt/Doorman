@@ -1,81 +1,114 @@
-use doorman_core::storage::{PasskeyChallengeId, SessionId, TokenHash, UserId};
+use std::fmt;
 
-#[derive(Clone, Debug)]
-pub(crate) struct KeySchema {
-    prefix: String,
+use doorman_core::storage::{TokenHash, UserId};
+use redis::{RedisWrite, ToRedisArgs};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Namespace(String);
+
+impl Namespace {
+    pub fn new(name: impl Into<String>) -> Result<Self, InvalidNamespace> {
+        let name = name.into();
+        if name.is_empty() {
+            return Err(InvalidNamespace::Empty);
+        }
+        // Every key starts with the namespace as its hash tag; a brace inside it would end the tag
+        // early or open another, and the keys would no longer share one hash slot.
+        if name.contains(['{', '}']) {
+            return Err(InvalidNamespace::Brace);
+        }
+        Ok(Self(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-impl KeySchema {
-    pub(crate) fn new(prefix: String) -> Self {
-        Self { prefix }
+impl Default for Namespace {
+    fn default() -> Self {
+        Self("doorman".to_owned())
+    }
+}
+
+impl fmt::Display for Namespace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidNamespace {
+    #[error("a Redis namespace must not be empty")]
+    Empty,
+    #[error("a Redis namespace must not contain `{{` or `}}`")]
+    Brace,
+}
+
+// Deliberately neither `Display` nor a string accessor: a key reaches Redis only as a command's
+// key or a script's declared key, never as text a script could take apart or rebuild.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Key(String);
+
+impl ToRedisArgs for Key {
+    fn write_redis_args<W>(&self, out: &mut W)
+    where
+        W: ?Sized + RedisWrite,
+    {
+        out.write_arg(self.0.as_bytes());
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Ownership {
+    None,
+    // A sorted set of the owner's row ids, scored by deadline.
+    Set,
+    // A hash naming at most one row per field.
+    Field,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Family {
+    pub(crate) row: &'static str,
+    pub(crate) rows: &'static str,
+    pub(crate) ownership: Ownership,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Keys {
+    tag: String,
+}
+
+impl Keys {
+    pub(crate) fn new(namespace: &Namespace) -> Self {
+        Self {
+            tag: format!("{{{namespace}}}"),
+        }
     }
 
-    pub(crate) fn prefix(&self) -> &str {
-        &self.prefix
+    pub(crate) fn row(&self, family: Family, id: &str) -> Key {
+        Key(format!("{}:{}:{id}", self.tag, family.row))
     }
 
-    pub(crate) fn session(&self, id: SessionId) -> String {
-        self.session_key_for(&id.0.to_string())
+    pub(crate) fn deadlines(&self, family: Family) -> Key {
+        Key(format!("{}:deadline:{}", self.tag, family.rows))
     }
 
-    pub(crate) fn session_key_for(&self, id: &str) -> String {
-        format!("{}session:{}", self.prefix, id)
+    pub(crate) fn owned(&self, family: Family, owner: UserId) -> Key {
+        Key(format!("{}:user:{}:{}", self.tag, owner.0, family.rows))
     }
 
-    pub(crate) fn session_hash_index(&self, hash: &TokenHash) -> String {
-        format!("{}session:hash:{}", self.prefix, token_hash_hex(hash))
+    pub(crate) fn session_by_token_hash(&self, hash: &TokenHash) -> Key {
+        Key(format!(
+            "{}:session:hash:{}",
+            self.tag,
+            token_hash_hex(hash)
+        ))
     }
 
-    pub(crate) fn user_sessions(&self, user_id: UserId) -> String {
-        format!("{}user:{}:sessions", self.prefix, user_id.0)
-    }
-
-    pub(crate) fn user_sessions_pattern(&self) -> String {
-        format!("{}user:*:sessions", self.prefix)
-    }
-
-    pub(crate) fn email_link(&self, hash: &TokenHash) -> String {
-        self.email_link_key_for(&token_hash_hex(hash))
-    }
-
-    pub(crate) fn email_link_key_for(&self, hex_hash: &str) -> String {
-        format!("{}email_link:{}", self.prefix, hex_hash)
-    }
-
-    pub(crate) fn user_email_links(&self, user_id: UserId) -> String {
-        format!("{}user:{}:email_links", self.prefix, user_id.0)
-    }
-
-    pub(crate) fn email_link_pattern(&self) -> String {
-        format!("{}email_link:*", self.prefix)
-    }
-
-    pub(crate) fn pkreg(&self, id: PasskeyChallengeId) -> String {
-        self.pkreg_key_for(&id.0.to_string())
-    }
-
-    pub(crate) fn pkreg_key_for(&self, id: &str) -> String {
-        format!("{}pkreg:{}", self.prefix, id)
-    }
-
-    pub(crate) fn user_pkregs(&self, user_id: UserId) -> String {
-        format!("{}user:{}:pkregs", self.prefix, user_id.0)
-    }
-
-    pub(crate) fn user_pkregs_pattern(&self) -> String {
-        format!("{}user:*:pkregs", self.prefix)
-    }
-
-    pub(crate) fn pkauth(&self, id: PasskeyChallengeId) -> String {
-        format!("{}pkauth:{}", self.prefix, id.0)
-    }
-
-    pub(crate) fn pkauth_pattern(&self) -> String {
-        format!("{}pkauth:*", self.prefix)
-    }
-
-    pub(crate) fn rate_limit(&self, canonical: &str, window_ms: u128) -> String {
-        format!("{}ratelimit:{}:{}", self.prefix, window_ms, canonical)
+    pub(crate) fn rate_limit(&self, canonical: &str, window_ms: u128) -> Key {
+        Key(format!("{}:ratelimit:{window_ms}:{canonical}", self.tag))
     }
 }
 
@@ -88,26 +121,54 @@ mod tests {
     use super::*;
     use doorman_core::session::hash_token;
 
+    const SESSIONS: Family = Family {
+        row: "session",
+        rows: "sessions",
+        ownership: Ownership::Set,
+    };
+
+    fn text(key: Key) -> String {
+        key.0
+    }
+
     #[test]
-    fn keys_are_prefixed() {
-        let keys = KeySchema::new("doorman:".to_string());
+    fn a_namespace_must_be_a_non_empty_hash_tag() {
+        assert_eq!(Namespace::new(""), Err(InvalidNamespace::Empty));
+        for braced in ["{app", "app}", "a{b}c", "{}"] {
+            assert_eq!(
+                Namespace::new(braced),
+                Err(InvalidNamespace::Brace),
+                "{braced}"
+            );
+        }
+        for plain in ["app", "app*:", "[x]", "a\\b", "doorman:v1"] {
+            assert_eq!(
+                Namespace::new(plain).map(|n| n.to_string()),
+                Ok(plain.to_owned())
+            );
+        }
+        assert_eq!(Namespace::default().as_str(), "doorman");
+    }
+
+    #[test]
+    fn every_key_starts_with_the_namespace_hash_tag() {
+        let keys = Keys::new(&Namespace::new("app").expect("namespace"));
         let hash = hash_token("a-token");
         let user = UserId::new();
 
-        assert!(
-            keys.session_hash_index(&hash)
-                .starts_with("doorman:session:hash:")
-        );
-        assert_eq!(keys.prefix(), "doorman:");
-
+        assert_eq!(text(keys.row(SESSIONS, "id")), "{app}:session:id");
+        assert_eq!(text(keys.deadlines(SESSIONS)), "{app}:deadline:sessions");
         assert_eq!(
-            keys.email_link(&hash),
-            format!("doorman:email_link:{}", token_hash_hex(&hash))
+            text(keys.owned(SESSIONS, user)),
+            format!("{{app}}:user:{}:sessions", user.0)
         );
-
         assert_eq!(
-            keys.user_email_links(user),
-            format!("doorman:user:{}:email_links", user.0)
+            text(keys.session_by_token_hash(&hash)),
+            format!("{{app}}:session:hash:{}", token_hash_hex(&hash))
+        );
+        assert_eq!(
+            text(keys.rate_limit("login:{x}", 60_000)),
+            "{app}:ratelimit:60000:login:{x}"
         );
     }
 

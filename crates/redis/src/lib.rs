@@ -12,6 +12,7 @@ mod keys;
 mod rate_limit;
 mod scripts;
 mod stores;
+mod table;
 
 use std::sync::Arc;
 
@@ -19,9 +20,13 @@ use doorman_core::clock::{Clock, SystemClock};
 use doorman_core::error::StorageResult;
 use doorman_core::rate_limit::RateLimiter;
 use doorman_core::storage::ExpiringStores;
+use redis::IntoConnectionInfo;
 use redis::aio::ConnectionManager;
+use redis::cluster::ClusterClient;
 
-use crate::client::RedisClient;
+use crate::client::{Connection, RedisClient};
+
+pub use crate::keys::{InvalidNamespace, Namespace};
 
 #[derive(Clone)]
 pub struct RedisStorage {
@@ -29,11 +34,18 @@ pub struct RedisStorage {
 }
 
 impl RedisStorage {
-    pub const DEFAULT_PREFIX: &'static str = "doorman:";
-
     pub async fn connect(url: &str) -> Result<Self, redis::RedisError> {
         let client = redis::Client::open(url)?;
         Self::from_client(client).await
+    }
+
+    // Takes node addresses rather than a host-built client: a client set to read from replicas
+    // could miss a write that finished before the read.
+    pub async fn connect_cluster<T: IntoConnectionInfo>(
+        nodes: impl IntoIterator<Item = T>,
+    ) -> Result<Self, redis::RedisError> {
+        let connection = ClusterClient::new(nodes)?.get_async_connection().await?;
+        Ok(Self::from_connection(Connection::Cluster(connection)))
     }
 
     pub async fn from_client(client: redis::Client) -> Result<Self, redis::RedisError> {
@@ -42,22 +54,18 @@ impl RedisStorage {
     }
 
     pub fn from_connection_manager(manager: ConnectionManager) -> Self {
+        Self::from_connection(Connection::Standalone(manager))
+    }
+
+    fn from_connection(connection: Connection) -> Self {
         Self {
-            client: RedisClient::new(manager, Self::DEFAULT_PREFIX.to_string()),
+            client: RedisClient::new(connection, &Namespace::default()),
         }
     }
 
-    pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.client = self.client.with_prefix(prefix.into());
+    pub fn with_namespace(mut self, namespace: Namespace) -> Self {
+        self.client = self.client.with_namespace(&namespace);
         self
-    }
-
-    pub fn key_prefix(&self) -> &str {
-        self.client.keys().prefix()
-    }
-
-    pub fn connection_manager(&self) -> ConnectionManager {
-        self.client.conn()
     }
 
     pub async fn ping(&self) -> StorageResult<()> {

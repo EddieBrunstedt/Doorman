@@ -6,18 +6,16 @@ use std::time::Duration;
 use crate::common::{Backend, ContainerGuard};
 use chrono::{Duration as ChronoDuration, Utc};
 use doorman_core::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
-use doorman_redis::RedisStorage;
 use doorman_test_support::MockClock;
 use uuid::Uuid;
 
 async fn limiter(backend: Backend) -> (ContainerGuard, Arc<dyn RateLimiter>, Arc<MockClock>) {
-    let (guard, url) = common::start(backend).await;
+    let (guard, server) = common::start(backend).await;
     let clock = Arc::new(MockClock::new(Utc::now()));
-    let redis = RedisStorage::connect(&url)
+    let limiter = server
+        .confined_storage(&common::namespace())
         .await
-        .expect("connect to redis/valkey")
-        .with_prefix(format!("doorman-test:{}:", Uuid::new_v4()));
-    let limiter = redis.rate_limiter_with_clock(clock.clone());
+        .rate_limiter_with_clock(clock.clone());
     (guard, limiter, clock)
 }
 
@@ -146,6 +144,16 @@ async fn rate_limit_redis() {
 #[tokio::test]
 async fn rate_limit_valkey() {
     run_suite(Backend::Valkey).await;
+}
+
+#[tokio::test]
+async fn rate_limit_redis_cluster() {
+    run_suite(Backend::RedisCluster).await;
+}
+
+#[tokio::test]
+async fn rate_limit_valkey_cluster() {
+    run_suite(Backend::ValkeyCluster).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

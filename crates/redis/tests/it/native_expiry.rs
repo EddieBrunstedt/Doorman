@@ -35,12 +35,15 @@ async fn expire_time(conn: &mut MultiplexedConnection, key: String) -> i64 {
 }
 
 async fn run_every_row_expires_at_its_deadline(backend: Backend) {
-    let (_node, stores, mut raw, prefix) = common::stores_with_raw(backend).await;
+    let (_node, stores, mut raw, namespace) = common::stores_with_raw(backend).await;
     let now = Utc::now();
 
     let created = session("native-expiry-session", now, now + Duration::hours(1));
-    let session_key = format!("{prefix}session:{}", created.id.0);
-    let hash_key = format!("{prefix}session:hash:{}", hex(&created.token_hash.0));
+    let session_key = common::key(&namespace, &format!("session:{}", created.id.0));
+    let hash_key = common::key(
+        &namespace,
+        &format!("session:hash:{}", hex(&created.token_hash.0)),
+    );
     stores
         .sessions
         .create_session(created.clone())
@@ -85,7 +88,10 @@ async fn run_every_row_expires_at_its_deadline(backend: Backend) {
     assert_eq!(
         expire_time(
             &mut raw,
-            format!("{prefix}email_link:{}", hex(&link.token_hash.0))
+            common::key(
+                &namespace,
+                &format!("email_link:{}", hex(&link.token_hash.0))
+            )
         )
         .await,
         link.expires_at.timestamp_millis(),
@@ -105,7 +111,7 @@ async fn run_every_row_expires_at_its_deadline(backend: Backend) {
     assert_eq!(
         expire_time(
             &mut raw,
-            format!("{prefix}user:{}:email_links", link.user_id.0)
+            common::key(&namespace, &format!("user:{}:email_links", link.user_id.0))
         )
         .await,
         link.expires_at.timestamp_millis(),
@@ -128,7 +134,11 @@ async fn run_every_row_expires_at_its_deadline(backend: Backend) {
         .await
         .expect("put registration");
     assert_eq!(
-        expire_time(&mut raw, format!("{prefix}pkreg:{}", registration.id.0)).await,
+        expire_time(
+            &mut raw,
+            common::key(&namespace, &format!("pkreg:{}", registration.id.0))
+        )
+        .await,
         registration.expires_at.timestamp_millis(),
         "the passkey registration expires at its deadline",
     );
@@ -146,14 +156,18 @@ async fn run_every_row_expires_at_its_deadline(backend: Backend) {
         .await
         .expect("put authentication");
     assert_eq!(
-        expire_time(&mut raw, format!("{prefix}pkauth:{}", authentication.id.0)).await,
+        expire_time(
+            &mut raw,
+            common::key(&namespace, &format!("pkauth:{}", authentication.id.0))
+        )
+        .await,
         authentication.expires_at.timestamp_millis(),
         "the passkey authentication expires at its deadline",
     );
 }
 
 async fn run_a_session_written_past_its_deadline_is_gone_at_once(backend: Backend) {
-    let (_node, stores, _raw, _prefix) = common::stores_with_raw(backend).await;
+    let (_node, stores, _raw, _namespace) = common::stores_with_raw(backend).await;
     let now = Utc::now();
 
     let expired = session(

@@ -3,41 +3,57 @@ use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
 
-use crate::client::{self, RedisClient};
-use crate::stores;
+use crate::client::RedisClient;
+use crate::keys::{Family, Key, Keys, Ownership};
+use crate::table::{Insert, Row, Table};
+
+impl Row for Session {
+    const FAMILY: Family = Family {
+        row: "session",
+        rows: "sessions",
+        ownership: Ownership::Set,
+    };
+
+    fn id(&self) -> String {
+        self.id.0.to_string()
+    }
+
+    fn deadline(&self) -> DateTime<Utc> {
+        self.expires_at
+    }
+
+    fn owner(&self) -> Option<UserId> {
+        Some(self.user_id)
+    }
+
+    fn lookups(&self, keys: &Keys) -> Vec<Key> {
+        vec![keys.session_by_token_hash(&self.token_hash)]
+    }
+}
 
 pub(crate) struct RedisSessionStore {
     client: RedisClient,
+    table: Table<Session>,
 }
 
 impl RedisSessionStore {
     pub(crate) fn new(client: RedisClient) -> Self {
-        Self { client }
+        Self {
+            table: Table::new(client.clone()),
+            client,
+        }
     }
 }
 
 #[async_trait]
 impl SessionStore for RedisSessionStore {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
-        let keys = self.client.keys();
-        let session_key = keys.session(session.id);
-        let hash_key = keys.session_hash_index(&session.token_hash);
-        let user_key = keys.user_sessions(session.user_id);
-        let id = session.id.0.to_string();
-        let json = client::to_json(&session)?;
-        let mut conn = self.client.conn();
-
-        stores::insert_absent(
-            &mut conn,
-            &[(&session_key, &json), (&hash_key, &id)],
-            session.expires_at,
-            Some(stores::OwnerIndex {
-                set: &user_key,
-                member: &id,
-            }),
-            "session id or token hash",
-        )
-        .await
+        match self.table.insert(&session).await? {
+            Insert::Done => Ok(()),
+            Insert::Conflict => Err(StorageError::conflict(
+                "session id or token hash already exists",
+            )),
+        }
     }
 
     async fn touch_session(
@@ -46,92 +62,30 @@ impl SessionStore for RedisSessionStore {
         last_used_at: DateTime<Utc>,
         expires_at: DateTime<Utc>,
     ) -> StorageResult<()> {
-        let keys = self.client.keys();
-        let session_key = keys.session(id);
-        let mut conn = self.client.conn();
-
-        let Some(mut current) = client::get_json::<Session>(&mut conn, &session_key).await? else {
+        let Some(mut session) = self.table.get(&id.0.to_string()).await? else {
             return Ok(());
         };
-        current.last_used_at = last_used_at;
-        current.expires_at = expires_at;
-        let hash_key = keys.session_hash_index(&current.token_hash);
-        let json = client::to_json(&current)?;
-
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        let pxat = current.expires_at.timestamp_millis();
-        // `XX` turns a delete that lands after the GET into a no-op instead of
-        // a resurrected session.
-        pipe.cmd("SET")
-            .arg(&session_key)
-            .arg(&json)
-            .arg("XX")
-            .arg("PXAT")
-            .arg(pxat)
-            .ignore();
-        pipe.cmd("PEXPIREAT").arg(&hash_key).arg(pxat).ignore();
-        let _: () = pipe
-            .query_async(&mut conn)
-            .await
-            .map_err(StorageError::new)?;
-        Ok(())
+        session.last_used_at = last_used_at;
+        session.expires_at = expires_at;
+        self.table.update(&session).await
     }
 
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
-        let keys = self.client.keys();
-        let hash_key = keys.session_hash_index(hash);
-        let mut conn = self.client.conn();
-
-        let Some(id) = client::get_string(&mut conn, &hash_key).await? else {
-            return Ok(None);
-        };
-        let session_key = keys.session_key_for(&id);
-        match client::get_json::<Session>(&mut conn, &session_key).await? {
-            Some(session) => Ok(Some(session)),
-            None => {
-                let _ = client::del(&mut conn, &[hash_key]).await;
-                Ok(None)
-            }
-        }
+        self.table
+            .get_by(&self.client.keys().session_by_token_hash(hash))
+            .await
     }
 
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>> {
-        let session_key = self.client.keys().session(id);
-        let mut conn = self.client.conn();
-        client::get_json(&mut conn, &session_key).await
+        self.table.get(&id.0.to_string()).await
     }
 
     async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
-        let keys = self.client.keys();
-        let mut conn = self.client.conn();
-        stores::list_indexed(&mut conn, &keys.user_sessions(user_id), |m| {
-            keys.session_key_for(m)
-        })
-        .await
+        self.table.list_owned(user_id).await
     }
 
     async fn delete_session(&self, id: SessionId) -> StorageResult<()> {
-        let keys = self.client.keys();
-        let session_key = keys.session(id);
-        let mut conn = self.client.conn();
-
-        let Some(session) = client::get_json::<Session>(&mut conn, &session_key).await? else {
-            return Ok(());
-        };
-        let hash_key = keys.session_hash_index(&session.token_hash);
-        let user_key = keys.user_sessions(session.user_id);
-        let id = id.0.to_string();
-
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        pipe.cmd("DEL").arg(&session_key).arg(&hash_key).ignore();
-        pipe.cmd("SREM").arg(&user_key).arg(&id).ignore();
-        let _: () = pipe
-            .query_async(&mut conn)
-            .await
-            .map_err(StorageError::new)?;
-        Ok(())
+        self.table.delete(&id.0.to_string()).await.map(|_| ())
     }
 
     async fn delete_sessions_for_user(
@@ -139,30 +93,11 @@ impl SessionStore for RedisSessionStore {
         user_id: UserId,
         except: Option<SessionId>,
     ) -> StorageResult<u64> {
-        let keys = self.client.keys();
         let except = except.map(|id| id.0.to_string());
-        let mut conn = self.client.conn();
-        stores::delete_indexed::<Session>(
-            &mut conn,
-            keys,
-            &keys.user_sessions(user_id),
-            |m| keys.session_key_for(m),
-            except.as_deref(),
-        )
-        .await
+        self.table.delete_owned(user_id, except.as_deref()).await
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
-        let keys = self.client.keys();
-        let mut conn = self.client.conn();
-
-        stores::purge_index_sets::<Session>(
-            &mut conn,
-            keys,
-            &keys.user_sessions_pattern(),
-            |id| keys.session_key_for(id),
-            now,
-        )
-        .await
+        self.table.purge(now).await
     }
 }
