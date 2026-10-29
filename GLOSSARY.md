@@ -46,9 +46,9 @@ Passkey-only authentication for a single application: passkeys are the only way 
 
 **Re-authentication**: Proving possession of a passkey again, within an existing session, right before a destructive action. `reauth` is the accepted abbreviation in identifiers. _Avoid_: step-up
 
-**Record stores**: The stores that hold users and their passkeys. Their rows never expire; they last until doorman deletes them. `records` is their spelling in identifiers. _Avoid_: system of record, durable stores
+**Record stores**: The stores that hold users and their passkeys. Their rows never expire; they last until doorman deletes them. `records` is their spelling in identifiers. _Avoid_: system of record, durable
 
-**Expiring stores**: The stores that hold sessions, email links and passkey challenges. Every row in them expires and is purged once it has. `expiring` is their spelling in identifiers. _Avoid_: ephemeral stores
+**Expiring stores**: The stores that hold sessions, email links and passkey challenges. Every row in them expires and is purged once it has. `expiring` is their spelling in identifiers. _Avoid_: ephemeral
 
 **Purge schedule**: How the expiring stores' expired rows get purged: on an interval, from the process that serves the application, or by a separate process that a scheduler outside doorman runs. The host must choose one. `PurgeSchedule` in identifiers.
 

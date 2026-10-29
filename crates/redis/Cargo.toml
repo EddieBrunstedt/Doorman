@@ -9,7 +9,7 @@ keywords = ["authentication", "passkey", "redis", "valkey", "session"]
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Redis/Valkey-backed ephemeral storage and rate limiter for the doorman authentication library."
+description = "Redis/Valkey adapter for the doorman authentication library's expiring stores and rate limiter."
 
 [lints]
 workspace = true
