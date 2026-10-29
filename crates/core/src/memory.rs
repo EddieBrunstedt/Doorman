@@ -8,10 +8,10 @@ use crate::clock::Clock;
 use crate::error::{StorageError, StorageResult};
 use crate::rate_limit::{RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
 use crate::storage::{
-    EmailLink, EmailLinkStore, ExpiringStores, PasskeyChallengeId, PasskeyChallengeStore,
-    PasskeyStore, PasskeyUse, RecordStores, Session, SessionId, SessionStore, Storage,
-    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
-    UserStatus, UserStore,
+    DpopProofId, DpopProofStore, EmailLink, EmailLinkStore, ExpiringStores, PasskeyChallengeId,
+    PasskeyChallengeStore, PasskeyStore, PasskeyUse, RecordStores, Session, SessionId,
+    SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration,
+    TokenHash, UsedDpopProof, User, UserId, UserStatus, UserStore,
 };
 use crate::sync;
 
@@ -22,6 +22,7 @@ pub struct InMemoryStorage {
     email_links: Arc<InMemoryEmailLinkStore>,
     passkeys: Arc<InMemoryPasskeyStore>,
     passkey_challenges: Arc<InMemoryPasskeyChallengeStore>,
+    dpop_proofs: Arc<InMemoryDpopProofStore>,
 }
 
 impl InMemoryStorage {
@@ -32,6 +33,7 @@ impl InMemoryStorage {
             email_links: Arc::new(InMemoryEmailLinkStore::new()),
             passkeys: Arc::new(InMemoryPasskeyStore::new()),
             passkey_challenges: Arc::new(InMemoryPasskeyChallengeStore::new()),
+            dpop_proofs: Arc::new(InMemoryDpopProofStore::new()),
         }
     }
 
@@ -54,6 +56,7 @@ impl InMemoryStorage {
             sessions: self.sessions.clone(),
             email_links: self.email_links.clone(),
             passkey_challenges: self.passkey_challenges.clone(),
+            dpop_proofs: self.dpop_proofs.clone(),
         }
     }
 }
@@ -560,6 +563,48 @@ impl PasskeyChallengeStore for InMemoryPasskeyChallengeStore {
         state.authentications.retain(|_, v| v.expires_at > now);
         let after = state.registrations.len() + state.authentications.len();
         Ok((before - after) as u64)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InMemoryDpopProofStore {
+    inner: Mutex<HashMap<DpopProofId, DateTime<Utc>>>,
+}
+
+impl InMemoryDpopProofStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<DpopProofId, DateTime<Utc>>> {
+        sync::lock(&self.inner)
+    }
+
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[async_trait]
+impl DpopProofStore for InMemoryDpopProofStore {
+    async fn use_proof(&self, proof: UsedDpopProof) -> StorageResult<bool> {
+        let mut state = self.lock();
+        if state.contains_key(&proof.id) {
+            return Ok(false);
+        }
+        state.insert(proof.id, proof.expires_at);
+        Ok(true)
+    }
+
+    async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
+        let mut state = self.lock();
+        let before = state.len();
+        state.retain(|_, expires_at| *expires_at > now);
+        Ok((before - state.len()) as u64)
     }
 }
 

@@ -123,7 +123,7 @@ async fn a_cookie_request_that_changes_state_must_come_from_the_application() {
         ),
         (Client::Browser, &[], StatusCode::FORBIDDEN),
         (
-            Client::Bearer,
+            Client::Dpop,
             &[("sec-fetch-site", "cross-site"), ("origin", EVIL_ORIGIN)],
             StatusCode::NO_CONTENT,
         ),
@@ -135,7 +135,7 @@ async fn a_cookie_request_that_changes_state_must_come_from_the_application() {
         let mut call = app.delete(&format!("/auth/sessions/{}", session.session.id));
         call = match client {
             Client::Browser => with_cookie(call, &session.token),
-            Client::Bearer => call.bearer(&session.token),
+            Client::Dpop => call.session(&session),
         };
         for (name, value) in headers {
             call = call.header(name, value);

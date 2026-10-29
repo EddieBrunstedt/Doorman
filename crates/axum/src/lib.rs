@@ -11,6 +11,7 @@ mod browser;
 pub mod config;
 mod cookies;
 mod csrf;
+mod dpop;
 pub mod dto;
 pub mod error;
 pub mod extractors;

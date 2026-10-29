@@ -18,8 +18,11 @@ pub enum Error {
     #[error("session not found")]
     SessionNotFound,
 
-    #[error("this request may not start a bearer session")]
-    BearerSessionNotAllowed,
+    #[error("this request may not start a DPoP session")]
+    DpopSessionNotAllowed,
+
+    #[error("the request's DPoP proof is missing, invalid or used before")]
+    InvalidDpopProof,
 
     #[error("user not found")]
     UserNotFound,

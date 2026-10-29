@@ -1,4 +1,5 @@
 mod authenticator;
+mod dpop;
 
 use std::sync::Mutex;
 
@@ -12,6 +13,8 @@ use doorman_core::email_link::TOKEN_PLACEHOLDER;
 use doorman_core::error::{EmailError, EmailResult};
 use doorman_core::metrics::{MetricEvent, MetricSink};
 use doorman_core::session::SessionContext;
+
+pub use dpop::DpopClient;
 
 pub use authenticator::{
     ResidentAuthenticator, assert_discoverable_request_options,

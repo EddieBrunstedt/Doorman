@@ -46,7 +46,7 @@ async fn a_session_id_that_is_malformed_or_another_users_is_not_found() {
     for id in ["not-a-uuid".to_owned(), bob.session.id.to_string()] {
         let reply = app
             .delete(&format!("/auth/sessions/{id}"))
-            .bearer(&alice.token)
+            .session(&alice)
             .send()
             .await;
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{id}");
@@ -63,7 +63,7 @@ async fn destructive_routes_refuse_a_session_in_recovery_cool_down() {
     let recovered = app.recover("alice@example.com", &mut authenticator).await;
     let passkeys: Vec<PasskeyDto> = app
         .get("/auth/passkey")
-        .bearer(&recovered.token)
+        .session(&recovered)
         .send()
         .await
         .json();
@@ -92,7 +92,7 @@ async fn destructive_routes_refuse_a_session_in_recovery_cool_down() {
     for (method, path, body) in routes {
         let reply = app
             .call(method.clone(), &path)
-            .bearer(&recovered.token)
+            .session(&recovered)
             .json(&body)
             .send()
             .await;
@@ -130,7 +130,7 @@ async fn deleting_the_acting_session_logs_out_without_a_gate() {
 
         let reply = app
             .delete(&format!("/auth/sessions/{}", acting.session.id))
-            .bearer(&acting.token)
+            .session(&acting)
             .send()
             .await;
 
@@ -211,7 +211,7 @@ async fn gated_routes_require_and_accept_a_reauthentication() {
 
         let refused = app
             .call(method.clone(), &path)
-            .bearer(&auth.token)
+            .session(&auth)
             .json(&body(None))
             .send()
             .await;
@@ -221,7 +221,7 @@ async fn gated_routes_require_and_accept_a_reauthentication() {
         let proof = app.reauth(&mut authenticator, &auth).await;
         let accepted = app
             .call(method, &path)
-            .bearer(&auth.token)
+            .session(&auth)
             .json(&body(Some(proof)))
             .send()
             .await;

@@ -38,6 +38,9 @@ macro_rules! sqlx_stores {
                     passkey_challenges: ::std::sync::Arc::new(PasskeyChallengeStoreImpl {
                         pool: self.pool.clone(),
                     }),
+                    dpop_proofs: ::std::sync::Arc::new(DpopProofStoreImpl {
+                        pool: self.pool.clone(),
+                    }),
                 }
             }
         }
@@ -217,14 +220,15 @@ macro_rules! sqlx_stores {
                 session: $crate::stores::__reexport::Session,
             ) -> $crate::stores::__reexport::StorageResult<()> {
                 let sql = $ph(
-                    "INSERT INTO sessions (id, user_id, token_hash, transport, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO sessions (id, user_id, token_hash, transport, dpop_jkt, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 );
                 ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                     .bind($crate::common::uuid_to_bytes(session.id.0))
                     .bind($crate::common::uuid_to_bytes(session.user_id.0))
                     .bind($crate::common::token_hash_bytes(&session.token_hash))
-                    .bind($crate::common::session_transport_to_str(session.transport))
+                    .bind($crate::common::session_transport_to_str(&session.transport))
+                    .bind(session.transport.dpop_jkt().map(|jkt| jkt.0.to_vec()))
                     .bind($ts(session.created_at))
                     .bind($ts(session.last_used_at))
                     .bind($ts(session.expires_at))
@@ -263,7 +267,7 @@ macro_rules! sqlx_stores {
                 Option<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
-                    "SELECT id, user_id, token_hash, transport, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
+                    "SELECT id, user_id, token_hash, transport, dpop_jkt, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
                      FROM sessions WHERE token_hash = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -281,7 +285,7 @@ macro_rules! sqlx_stores {
                 Option<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
-                    "SELECT id, user_id, token_hash, transport, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
+                    "SELECT id, user_id, token_hash, transport, dpop_jkt, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
                      FROM sessions WHERE id = ?",
                 );
                 let row = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -299,7 +303,7 @@ macro_rules! sqlx_stores {
                 Vec<$crate::stores::__reexport::Session>,
             > {
                 let sql = $ph(
-                    "SELECT id, user_id, token_hash, transport, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
+                    "SELECT id, user_id, token_hash, transport, dpop_jkt, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until
                      FROM sessions WHERE user_id = ?",
                 );
                 let rows = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
@@ -372,6 +376,8 @@ macro_rules! sqlx_stores {
             let user_id_bytes: Vec<u8> = row.try_get("user_id").map_err($crate::common::storage_err)?;
             let hash_bytes: Vec<u8> = row.try_get("token_hash").map_err($crate::common::storage_err)?;
             let transport: String = row.try_get("transport").map_err($crate::common::storage_err)?;
+            let dpop_jkt: Option<Vec<u8>> =
+                row.try_get("dpop_jkt").map_err($crate::common::storage_err)?;
             let ip: String = row.try_get("ip").map_err($crate::common::storage_err)?;
             Ok($crate::stores::__reexport::Session {
                 id: $crate::stores::__reexport::SessionId(
@@ -381,7 +387,10 @@ macro_rules! sqlx_stores {
                     $crate::common::uuid_from_row(user_id_bytes)?,
                 ),
                 token_hash: $crate::common::token_hash_from_bytes(&hash_bytes)?,
-                transport: $crate::common::session_transport_from_str(&transport)?,
+                transport: $crate::common::session_transport_from_parts(
+                    &transport,
+                    dpop_jkt.as_deref(),
+                )?,
                 created_at: row.try_get("created_at").map_err($crate::common::storage_err)?,
                 last_used_at: row.try_get("last_used_at").map_err($crate::common::storage_err)?,
                 expires_at: row.try_get("expires_at").map_err($crate::common::storage_err)?,
@@ -391,6 +400,51 @@ macro_rules! sqlx_stores {
                     .try_get("recovery_cool_down_until")
                     .map_err($crate::common::storage_err)?,
             })
+        }
+
+        struct DpopProofStoreImpl {
+            pool: $pool,
+        }
+
+        #[::async_trait::async_trait]
+        impl $crate::stores::__reexport::DpopProofStore for DpopProofStoreImpl {
+            async fn use_proof(
+                &self,
+                proof: $crate::stores::__reexport::UsedDpopProof,
+            ) -> $crate::stores::__reexport::StorageResult<bool> {
+                // The primary key makes the insert the check, so racing uses can't both succeed;
+                // a plain insert says so the same way in every dialect.
+                let sql = $ph("INSERT INTO dpop_proofs (id, expires_at) VALUES (?, ?)");
+                let inserted = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+                    .bind(proof.id.0.to_vec())
+                    .bind($ts(proof.expires_at))
+                    .execute(&self.pool)
+                    .await
+                    .map_err($crate::common::storage_err);
+                match inserted {
+                    Ok(_) => Ok(true),
+                    Err(error)
+                        if error.kind()
+                            == $crate::stores::__reexport::StorageErrorKind::Conflict =>
+                    {
+                        Ok(false)
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+
+            async fn purge_expired(
+                &self,
+                now: $crate::stores::__reexport::DateTime<$crate::stores::__reexport::Utc>,
+            ) -> $crate::stores::__reexport::StorageResult<u64> {
+                let sql = $ph("DELETE FROM dpop_proofs WHERE expires_at <= ?");
+                let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+                    .bind($ts(now))
+                    .execute(&self.pool)
+                    .await
+                    .map_err($crate::common::storage_err)?;
+                Ok(result.rows_affected())
+            }
         }
 
         struct EmailLinkStoreImpl {
@@ -1009,11 +1063,11 @@ pub(crate) use sqlx_replace_link;
 pub(crate) mod __reexport {
     pub use chrono::{DateTime, Utc};
     pub use doorman_core::encoding::{user_status_from_parts, user_status_to_str};
-    pub use doorman_core::error::{StorageError, StorageResult};
+    pub use doorman_core::error::{StorageError, StorageErrorKind, StorageResult};
     pub use doorman_core::storage::{
-        EmailLink, EmailLinkStore, ExpiringStores, PasskeyChallengeId, PasskeyChallengeStore,
-        PasskeyStore, PasskeyUse, RecordStores, Session, SessionId, SessionStore, Storage,
-        StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User,
-        UserId, UserStatus, UserStore,
+        DpopProofStore, EmailLink, EmailLinkStore, ExpiringStores, PasskeyChallengeId,
+        PasskeyChallengeStore, PasskeyStore, PasskeyUse, RecordStores, Session, SessionId,
+        SessionStore, Storage, StoredPasskey, StoredPasskeyAuthentication,
+        StoredPasskeyRegistration, TokenHash, UsedDpopProof, User, UserId, UserStatus, UserStore,
     };
 }

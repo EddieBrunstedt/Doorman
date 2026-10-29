@@ -36,6 +36,8 @@ pub enum AssemblyError {
         value: Duration,
         max: Duration,
     },
+    #[error("the session dpop_origin is opaque, so no request URL could ever match it")]
+    OpaqueDpopOrigin,
     #[error("session idle_timeout ({idle_timeout:?}) is invalid: {reason}")]
     IdleTimeoutInvalid {
         idle_timeout: Duration,
@@ -221,6 +223,7 @@ impl AuthCoreBuilder {
 
         let session_records = SessionRecords::new(
             storage.expiring.sessions.clone(),
+            storage.expiring.dpop_proofs.clone(),
             clock.clone(),
             audit.clone(),
             session_config,

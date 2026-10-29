@@ -8,11 +8,11 @@ use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::email::EmailAddress;
 use crate::error::{Error, Result, StorageErrorKind};
-use crate::session::{IssuedSession, SessionContext};
-use crate::session_records::SessionRecords;
+use crate::session::{IssuedSession, RequestTransport, SessionContext};
+use crate::session_records::{CheckedTransport, SessionRecords};
 use crate::storage::{
-    EmailLinkStore, PasskeyChallengeStore, PasskeyStore, SessionTransport, StoredPasskey, User,
-    UserId, UserStatus, UserStore,
+    EmailLinkStore, PasskeyChallengeStore, PasskeyStore, StoredPasskey, User, UserId, UserStatus,
+    UserStore,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,14 +203,14 @@ impl UserRecords {
         Ok(revoked_count)
     }
 
-    pub(crate) fn check_session_allowed(&self, transport: SessionTransport) -> Result<()> {
-        self.sessions.check_allowed(transport)
+    pub(crate) fn check_transport(&self, requested: &RequestTransport) -> Result<CheckedTransport> {
+        self.sessions.check_transport(requested)
     }
 
     pub(crate) async fn issue_session(
         &self,
         passkey: &StoredPasskey,
-        transport: SessionTransport,
+        transport: CheckedTransport,
         context: SessionContext,
     ) -> Result<IssuedSession> {
         let user_id = passkey.user_id;
@@ -228,7 +228,7 @@ impl UserRecords {
                 AuditEventKind::SessionCreated {
                     user_id,
                     session_id: issued.session.id,
-                    transport,
+                    transport: issued.session.transport,
                 },
             )
             .await;

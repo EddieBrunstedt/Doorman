@@ -12,7 +12,6 @@ use doorman_axum::prelude::*;
 use doorman_core::audit::{Actor, AuditEventKind};
 use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
 use doorman_core::rate_limit::RateLimits;
-use doorman_core::storage::SessionTransport;
 use doorman_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -340,9 +339,17 @@ async fn signup_session_and_audit_record_the_peer_despite_spoofing() {
 
     let (auth, _) = app.signup("identity@example.com").await;
 
+    let proof = auth
+        .key()
+        .presented("GET", "/me", Some(&auth.token), chrono::Utc::now());
+    let key = app
+        .sessions
+        .prove_dpop(&proof, Some(&auth.token))
+        .await
+        .expect("a valid proof");
     let session = app
         .sessions
-        .resolve(&auth.token, SessionTransport::Bearer)
+        .resolve(&auth.token, &RequestTransport::Dpop(key))
         .await
         .expect("resolve")
         .expect("a live session");
@@ -382,7 +389,7 @@ async fn log_out_audits_the_session_and_its_request_not_the_login() {
 
     let reply = app
         .post("/auth/logout")
-        .bearer(&alice.token)
+        .session(&alice)
         .header("user-agent", "logout agent")
         .send()
         .await;

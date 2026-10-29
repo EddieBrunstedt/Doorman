@@ -1,8 +1,8 @@
 use axum::http::{HeaderMap, Method, header};
-use doorman_core::storage::SessionTransport;
 use url::Url;
 
 use crate::browser::{SEC_FETCH_SITE, sent_by_browser};
+use crate::session_token::TokenTransport;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TrustedOrigins(Vec<Url>);
@@ -28,12 +28,12 @@ pub(crate) enum Refusal {
 pub(crate) fn check(
     method: &Method,
     headers: &HeaderMap,
-    token: Option<SessionTransport>,
+    token: Option<TokenTransport>,
     trusted: &TrustedOrigins,
 ) -> Result<(), Refusal> {
-    // A bearer session's token never reaches a browser page, so a page can attach it only by
-    // being handed it; unlike a cookie, the browser never attaches it by itself.
-    if is_safe_method(method) || token == Some(SessionTransport::Bearer) {
+    // A DPoP session's token never reaches a browser page, so a page can attach it only by being
+    // handed it; unlike a cookie, the browser never attaches it by itself.
+    if is_safe_method(method) || token == Some(TokenTransport::Dpop) {
         return Ok(());
     }
 
@@ -41,7 +41,7 @@ pub(crate) fn check(
         // A session cookie belongs to a browser, so a request carrying it without naming its
         // origin can't be shown to come from the application.
         return match token {
-            Some(SessionTransport::Cookie) => Err(Refusal::UnknownOrigin),
+            Some(TokenTransport::Cookie) => Err(Refusal::UnknownOrigin),
             _ => Ok(()),
         };
     }
@@ -96,15 +96,15 @@ mod tests {
     enum Token {
         Absent,
         Cookie,
-        Bearer,
+        Dpop,
     }
 
     impl Token {
-        fn transport(self) -> Option<SessionTransport> {
+        fn transport(self) -> Option<TokenTransport> {
             match self {
                 Token::Absent => None,
-                Token::Cookie => Some(SessionTransport::Cookie),
-                Token::Bearer => Some(SessionTransport::Bearer),
+                Token::Cookie => Some(TokenTransport::Cookie),
+                Token::Dpop => Some(TokenTransport::Dpop),
             }
         }
     }
@@ -173,8 +173,8 @@ mod tests {
             case(Absent, Some("cross-site"), None, unknown),
             case(Absent, None, Some(EVIL), untrusted),
             case(Absent, None, None, Ok(())),
-            case(Bearer, Some("cross-site"), Some(EVIL), Ok(())),
-            case(Bearer, None, None, Ok(())),
+            case(Dpop, Some("cross-site"), Some(EVIL), Ok(())),
+            case(Dpop, None, None, Ok(())),
             Case {
                 referer: Some("https://app.test/settings"),
                 ..case(Cookie, None, None, unknown)

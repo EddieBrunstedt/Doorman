@@ -1,9 +1,9 @@
 use chrono::{DateTime, Duration, Utc};
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
-    AuthenticationPurpose, EmailLink, EmailLinkPurpose, PasskeyChallengeId, RegistrationPurpose,
-    Session, SessionId, SessionTransport, StoredPasskeyAuthentication, StoredPasskeyRegistration,
-    UserId,
+    AuthenticationPurpose, DpopProofId, EmailLink, EmailLinkPurpose, PasskeyChallengeId,
+    RegistrationPurpose, Session, SessionId, SessionTransport, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, UsedDpopProof, UserId,
 };
 use doorman_mongodb::MongoDbStorage;
 use mongodb::Database;
@@ -69,6 +69,7 @@ async fn every_row_expires_at_its_deadline() {
         "email_links",
         "passkey_registrations",
         "passkey_authentications",
+        "dpop_proofs",
     ] {
         assert_eq!(
             expiry_index_seconds(&db, collection).await,
@@ -185,5 +186,30 @@ async fn every_row_expires_at_its_deadline() {
         .await,
         bson_date(authentication.expires_at),
         "the passkey authentication's deadline is a date the expiry index reads",
+    );
+
+    let proof = UsedDpopProof {
+        id: DpopProofId(hash_token("native-expiry-proof").0),
+        expires_at: now + Duration::minutes(1),
+    };
+    assert!(
+        stores
+            .dpop_proofs
+            .use_proof(proof.clone())
+            .await
+            .expect("use proof")
+    );
+    assert_eq!(
+        stored_expires_at(
+            &db,
+            "dpop_proofs",
+            doc! { "_id": Bson::Binary(mongodb::bson::Binary {
+                subtype: mongodb::bson::spec::BinarySubtype::Generic,
+                bytes: proof.id.0.to_vec(),
+            }) },
+        )
+        .await,
+        bson_date(proof.expires_at),
+        "the used DPoP proof's deadline is a date the expiry index reads",
     );
 }

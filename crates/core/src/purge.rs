@@ -8,6 +8,7 @@ pub struct PurgeSummary {
     pub sessions: StorageResult<u64>,
     pub email_links: StorageResult<u64>,
     pub passkey_challenges: StorageResult<u64>,
+    pub dpop_proofs: StorageResult<u64>,
 }
 
 impl PurgeSummary {
@@ -27,6 +28,7 @@ impl PurgeSummary {
             ("sessions", &self.sessions),
             ("email_links", &self.email_links),
             ("passkey_challenges", &self.passkey_challenges),
+            ("dpop_proofs", &self.dpop_proofs),
         ]
         .into_iter()
     }
@@ -39,6 +41,7 @@ impl ExpiringStores {
             sessions: self.sessions.purge_expired(now).await,
             email_links: self.email_links.purge_expired(now).await,
             passkey_challenges: self.passkey_challenges.purge_expired(now).await,
+            dpop_proofs: self.dpop_proofs.purge_expired(now).await,
         }
     }
 }
@@ -52,9 +55,9 @@ mod tests {
     use super::*;
     use crate::memory::InMemoryStorage;
     use crate::storage::{
-        AuthenticationPurpose, EmailLink, EmailLinkPurpose, PasskeyChallengeId,
+        AuthenticationPurpose, DpopProofId, EmailLink, EmailLinkPurpose, PasskeyChallengeId,
         RegistrationPurpose, Session, SessionId, SessionStore, SessionTransport,
-        StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, UserId,
+        StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, UsedDpopProof, UserId,
     };
 
     struct UnavailableSessionStore;
@@ -194,6 +197,17 @@ mod tests {
             .put_authentication(expired_auth)
             .await
             .expect("expired authentication");
+
+        for (tag, expires_at) in [(5, expired), (6, live)] {
+            stores
+                .dpop_proofs
+                .use_proof(UsedDpopProof {
+                    id: DpopProofId([tag; 32]),
+                    expires_at,
+                })
+                .await
+                .expect("used DPoP proof");
+        }
     }
 
     #[tokio::test]
@@ -207,6 +221,7 @@ mod tests {
         assert_eq!(summary.sessions.expect("sessions"), 1);
         assert_eq!(summary.email_links.expect("email links"), 1);
         assert_eq!(summary.passkey_challenges.expect("passkey challenges"), 2);
+        assert_eq!(summary.dpop_proofs.expect("DPoP proofs"), 1);
 
         let second = stores.purge_all_expired(now).await;
         assert_eq!(second.failures().count(), 0);
@@ -234,7 +249,8 @@ mod tests {
                 .expect("passkey challenges"),
             &2
         );
-        assert_eq!(summary.total(), 3);
+        assert_eq!(summary.dpop_proofs.as_ref().expect("DPoP proofs"), &1);
+        assert_eq!(summary.total(), 4);
         let failed: Vec<_> = summary.failures().map(|(store, _)| store).collect();
         assert_eq!(failed, ["sessions"]);
     }

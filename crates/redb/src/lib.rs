@@ -62,6 +62,9 @@ impl RedbStorage {
             passkey_challenges: Arc::new(stores::passkey_chal::RedbPasskeyChallengeStore::new(
                 self.handle.clone(),
             )),
+            dpop_proofs: Arc::new(stores::dpop_proof::RedbDpopProofStore::new(
+                self.handle.clone(),
+            )),
         }
     }
 

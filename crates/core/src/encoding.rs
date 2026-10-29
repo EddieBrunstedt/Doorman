@@ -6,7 +6,8 @@ use uuid::Uuid;
 use crate::client_ip::ClientIp;
 use crate::error::{StorageError, StorageResult};
 use crate::storage::{
-    AuthenticationPurpose, EmailLinkPurpose, RegistrationPurpose, SessionTransport, UserStatus,
+    AuthenticationPurpose, EmailLinkPurpose, JwkThumbprint, RegistrationPurpose, SessionTransport,
+    UserStatus,
 };
 
 pub fn purpose_to_str(purpose: EmailLinkPurpose) -> &'static str {
@@ -64,18 +65,34 @@ pub fn registration_purpose_from_str(raw: &str) -> StorageResult<RegistrationPur
     }
 }
 
-pub fn session_transport_to_str(transport: SessionTransport) -> &'static str {
+pub fn session_transport_to_str(transport: &SessionTransport) -> &'static str {
     match transport {
         SessionTransport::Cookie => "cookie",
-        SessionTransport::Bearer => "bearer",
+        SessionTransport::Dpop { .. } => "dpop",
     }
 }
 
-pub fn session_transport_from_str(raw: &str) -> StorageResult<SessionTransport> {
-    match raw {
-        "cookie" => Ok(SessionTransport::Cookie),
-        "bearer" => Ok(SessionTransport::Bearer),
-        other => Err(StorageError::msg(format!(
+pub fn session_transport_from_parts(
+    discriminant: &str,
+    dpop_jkt: Option<&[u8]>,
+) -> StorageResult<SessionTransport> {
+    match (discriminant, dpop_jkt) {
+        ("cookie", None) => Ok(SessionTransport::Cookie),
+        ("dpop", Some(jkt)) => {
+            let jkt = <[u8; 32]>::try_from(jkt).map_err(|_| {
+                StorageError::msg("DPoP session's JWK thumbprint is not 32 bytes in storage")
+            })?;
+            Ok(SessionTransport::Dpop {
+                jkt: JwkThumbprint(jkt),
+            })
+        }
+        ("cookie", Some(_)) => Err(StorageError::msg(
+            "cookie session carries a JWK thumbprint in storage",
+        )),
+        ("dpop", None) => Err(StorageError::msg(
+            "DPoP session missing its JWK thumbprint in storage",
+        )),
+        (other, _) => Err(StorageError::msg(format!(
             "unknown session transport `{other}` in storage"
         ))),
     }
@@ -216,16 +233,31 @@ mod tests {
     }
 
     #[test]
-    fn session_transport_round_trips_and_matches_serde() {
-        for t in [SessionTransport::Cookie, SessionTransport::Bearer] {
-            let raw = session_transport_to_str(t);
-            assert_eq!(session_transport_from_str(raw).unwrap(), t);
+    fn session_transport_round_trips() {
+        let dpop = SessionTransport::Dpop {
+            jkt: JwkThumbprint([7u8; 32]),
+        };
+        for t in [SessionTransport::Cookie, dpop] {
+            let jkt = t.dpop_jkt().map(|jkt| jkt.0);
+            let raw = session_transport_to_str(&t);
             assert_eq!(
-                serde_json::to_value(t).unwrap(),
-                serde_json::Value::String(raw.to_string())
+                session_transport_from_parts(raw, jkt.as_ref().map(|j| j.as_slice())).unwrap(),
+                t
             );
         }
-        assert!(session_transport_from_str("nope").is_err());
+        assert_eq!(
+            serde_json::to_value(SessionTransport::Cookie).unwrap(),
+            serde_json::Value::String("cookie".to_string())
+        );
+    }
+
+    #[test]
+    fn session_transport_from_parts_rejects_bad_input() {
+        let jkt = [7u8; 32];
+        assert!(session_transport_from_parts("nope", None).is_err());
+        assert!(session_transport_from_parts("cookie", Some(&jkt)).is_err());
+        assert!(session_transport_from_parts("dpop", None).is_err());
+        assert!(session_transport_from_parts("dpop", Some(&jkt[..31])).is_err());
     }
 
     #[test]

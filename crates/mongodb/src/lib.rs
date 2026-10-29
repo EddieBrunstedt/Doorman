@@ -60,6 +60,9 @@ impl MongoDbStorage {
                 self.db.passkey_registrations(),
                 self.db.passkey_authentications(),
             )),
+            dpop_proofs: Arc::new(stores::dpop_proof::MongoDpopProofStore::new(
+                self.db.dpop_proofs(),
+            )),
         }
     }
 

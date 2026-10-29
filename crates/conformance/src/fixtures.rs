@@ -1,7 +1,10 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use doorman_core::error::{StorageErrorKind, StorageResult};
 use doorman_core::session::hash_token;
-use doorman_core::storage::{EmailLink, EmailLinkPurpose, StoredPasskey, User, UserId, UserStatus};
+use doorman_core::storage::{
+    EmailLink, EmailLinkPurpose, JwkThumbprint, SessionTransport, StoredPasskey, User, UserId,
+    UserStatus,
+};
 
 // After any real date a run happens on: a backend that expires rows by its own
 // clock must not drop a fixture before the check reaches it.
@@ -24,6 +27,13 @@ pub(crate) fn assert_refused<T: std::fmt::Debug>(
     match result {
         Err(err) => assert_eq!(err.kind(), kind, "{what}: wrong error kind ({err})"),
         Ok(value) => panic!("{what}: expected {kind:?}, got Ok({value:?})"),
+    }
+}
+
+// A distinct key per tag, so a check can tell which session's thumbprint came back.
+pub(crate) fn dpop(tag: u8) -> SessionTransport {
+    SessionTransport::Dpop {
+        jkt: JwkThumbprint([tag; 32]),
     }
 }
 

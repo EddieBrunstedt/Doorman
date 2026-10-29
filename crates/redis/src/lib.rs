@@ -94,6 +94,9 @@ impl RedisStorage {
             passkey_challenges: Arc::new(stores::passkey_chal::RedisPasskeyChallengeStore::new(
                 self.client.clone(),
             )),
+            dpop_proofs: Arc::new(stores::dpop_proof::RedisDpopProofStore::new(
+                self.client.clone(),
+            )),
         }
     }
 

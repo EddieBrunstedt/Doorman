@@ -13,8 +13,8 @@ use crate::passkey::{RegistrationOutcome, StartedRegistration};
 use crate::passkey_registration::PasskeyRegistrations;
 use crate::rate_limit::{Attempt, RateLimitEnforcer};
 use crate::security_notice::{SecurityNotice, SecurityNotices};
-use crate::session::SessionContext;
-use crate::storage::{PasskeyChallengeId, SessionTransport};
+use crate::session::{RequestTransport, SessionContext};
+use crate::storage::PasskeyChallengeId;
 use crate::user_records::{OwnerRefusal, UserRecords};
 
 #[derive(Clone)]
@@ -204,7 +204,7 @@ impl RecoveryManager {
         challenge_id: PasskeyChallengeId,
         response: &RegisterPublicKeyCredential,
         name: Option<String>,
-        transport: SessionTransport,
+        transport: RequestTransport,
         context: SessionContext,
     ) -> Result<RegistrationOutcome> {
         self.registration

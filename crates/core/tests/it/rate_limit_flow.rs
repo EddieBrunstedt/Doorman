@@ -11,7 +11,8 @@ use doorman_core::rate_limit::{
     RateLimit, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter, RateLimiting,
     RateLimits,
 };
-use doorman_core::storage::{PasskeyChallengeId, SessionTransport};
+use doorman_core::session::RequestTransport;
+use doorman_core::storage::PasskeyChallengeId;
 use doorman_test_support::{CLIENT_IP, request_context};
 use webauthn_rs_proto::PublicKeyCredential;
 
@@ -110,7 +111,7 @@ impl Prepared {
                 .finish_authentication(
                     challenge_id,
                     &assertion,
-                    SessionTransport::Cookie,
+                    RequestTransport::Cookie,
                     request_context(),
                 )
                 .await

@@ -28,6 +28,7 @@ pub(crate) const PKREGS: TableDefinition<&str, &[u8]> = TableDefinition::new("pk
 pub(crate) const USER_PKREGS_IDX: TableDefinition<&str, ()> =
     TableDefinition::new("user_pkregs_idx");
 pub(crate) const PKAUTHS: TableDefinition<&str, &[u8]> = TableDefinition::new("pkauths");
+pub(crate) const DPOP_PROOFS: TableDefinition<&str, &[u8]> = TableDefinition::new("dpop_proofs");
 
 const SEP: char = '\x00';
 
@@ -239,6 +240,7 @@ pub(crate) fn ensure_tables(db: &Database) -> Result<(), redb::Error> {
     wtxn.open_table(PKREGS)?;
     wtxn.open_table(USER_PKREGS_IDX)?;
     wtxn.open_table(PKAUTHS)?;
+    wtxn.open_table(DPOP_PROOFS)?;
     wtxn.commit()?;
     Ok(())
 }

@@ -5,9 +5,9 @@ use chrono::{DateTime, Duration, Utc};
 use doorman_core::encoding::hex;
 use doorman_core::session::hash_token;
 use doorman_core::storage::{
-    AuthenticationPurpose, EmailLink, EmailLinkPurpose, PasskeyChallengeId, RegistrationPurpose,
-    Session, SessionId, SessionTransport, StoredPasskeyAuthentication, StoredPasskeyRegistration,
-    UserId,
+    AuthenticationPurpose, DpopProofId, EmailLink, EmailLinkPurpose, PasskeyChallengeId,
+    RegistrationPurpose, Session, SessionId, SessionTransport, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, UsedDpopProof, UserId,
 };
 use redis::aio::MultiplexedConnection;
 
@@ -163,6 +163,27 @@ async fn run_every_row_expires_at_its_deadline(backend: Backend) {
         .await,
         authentication.expires_at.timestamp_millis(),
         "the passkey authentication expires at its deadline",
+    );
+
+    let proof = UsedDpopProof {
+        id: DpopProofId(hash_token("native-expiry-proof").0),
+        expires_at: now + Duration::minutes(1),
+    };
+    assert!(
+        stores
+            .dpop_proofs
+            .use_proof(proof.clone())
+            .await
+            .expect("use proof")
+    );
+    assert_eq!(
+        expire_time(
+            &mut raw,
+            common::key(&namespace, &format!("dpop_proof:{}", hex(&proof.id.0)))
+        )
+        .await,
+        proof.expires_at.timestamp_millis(),
+        "the used DPoP proof expires at its deadline",
     );
 }
 

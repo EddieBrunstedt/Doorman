@@ -147,10 +147,11 @@ const IDLE: Duration = Duration::from_secs(60 * 60);
 const ABSOLUTE: Duration = Duration::from_secs(60 * 60 * 24);
 
 fn sliding_app(clock: Arc<MockClock>) -> TestApp {
+    let core_clock = clock.clone();
     TestApp::with(
         move |r| {
             harness_core(r)
-                .clock(clock as Arc<dyn Clock>)
+                .clock(core_clock as Arc<dyn Clock>)
                 .session(SessionConfig {
                     absolute_lifetime: ABSOLUTE,
                     idle_timeout: Some(IDLE),
@@ -164,6 +165,7 @@ fn sliding_app(clock: Arc<MockClock>) -> TestApp {
             })
         },
     )
+    .proofs_signed_by(clock)
 }
 
 #[tokio::test]
@@ -186,7 +188,7 @@ async fn a_session_cookie_lives_until_the_absolute_deadline_despite_an_idle_time
 
 #[tokio::test]
 async fn a_slid_session_sets_no_cookie() {
-    for client in [Client::Browser, Client::Bearer] {
+    for client in [Client::Browser, Client::Dpop] {
         let clock = Arc::new(MockClock::new(Utc::now()));
         let app = sliding_app(clock.clone());
         let session = app.session_as(client, "alice@example.com").await;
@@ -206,7 +208,7 @@ async fn log_out(app: &TestApp, session: &TestSession) {
 
 #[tokio::test]
 async fn a_token_without_a_live_session_is_refused_and_sets_no_cookie() {
-    for client in [Client::Browser, Client::Bearer] {
+    for client in [Client::Browser, Client::Dpop] {
         let clock = Arc::new(MockClock::new(Utc::now()));
         let app = sliding_app(clock.clone());
         let revoked = app.session_as(client, "alice@example.com").await;

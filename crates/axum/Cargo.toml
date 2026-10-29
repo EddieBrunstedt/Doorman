@@ -22,7 +22,7 @@ workspace = true
 all-features = true
 
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["json", "query", "tokio", "http1"] }
+axum = { version = "0.8", default-features = false, features = ["json", "original-uri", "query", "tokio", "http1"] }
 base64.workspace = true
 chrono.workspace = true
 cookie = "0.18"

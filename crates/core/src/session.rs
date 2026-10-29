@@ -4,6 +4,7 @@ use std::ops::Deref;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use url::Origin;
 
 use webauthn_rs::prelude::{
     CreationChallengeResponse, RegisterPublicKeyCredential, RequestChallengeResponse,
@@ -13,13 +14,14 @@ use crate::audit::Actor;
 use crate::client_ip::ClientIp;
 use crate::context::CoreDeps;
 use crate::destructive::{CurrentSession, DestructiveAction, DestructiveActions};
+use crate::dpop::{DpopProof, ProvenDpopKey};
 use crate::error::Result;
 use crate::passkey::PasskeyManager;
 use crate::reauth::{ReauthManager, ReauthProof};
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session_records::SessionRecords;
 use crate::storage::{
-    PasskeyChallengeId, PasskeySummary, Session, SessionSummary, SessionTransport, TokenHash, User,
+    PasskeyChallengeId, PasskeySummary, Session, SessionSummary, TokenHash, User,
 };
 pub use crate::token::hash_token;
 use crate::user_records::UserRecords;
@@ -53,7 +55,9 @@ pub struct SessionConfig {
     pub idle_timeout: Option<Duration>,
     pub slide_interval: Duration,
     pub max_sessions_per_user: Option<NonZeroU32>,
-    pub allow_bearer_sessions: bool,
+    // The origin DPoP clients send their requests to; without one, doorman starts no DPoP session
+    // and honours none it started before.
+    pub dpop_origin: Option<Origin>,
 }
 
 impl Default for SessionConfig {
@@ -63,9 +67,16 @@ impl Default for SessionConfig {
             idle_timeout: None,
             slide_interval: DEFAULT_SLIDE_INTERVAL,
             max_sessions_per_user: None,
-            allow_bearer_sessions: false,
+            dpop_origin: None,
         }
     }
+}
+
+// How a request carries its session token, or asks for the session it starts to carry one.
+#[derive(Debug, Clone)]
+pub enum RequestTransport {
+    Cookie,
+    Dpop(ProvenDpopKey),
 }
 
 #[derive(Debug, Clone)]
@@ -168,13 +179,22 @@ impl SessionManager {
     pub async fn resolve(
         &self,
         token: &str,
-        transport: SessionTransport,
+        transport: &RequestTransport,
     ) -> Result<Option<ResolvedSession>> {
         self.records.resolve(token, transport).await
     }
 
-    pub fn allows_bearer_sessions(&self) -> bool {
-        self.records.allows(SessionTransport::Bearer)
+    pub fn allows_dpop_sessions(&self) -> bool {
+        self.records.allows_dpop()
+    }
+
+    // Uses the proof up, so a request's proof is proven once, whoever needs what it showed.
+    pub async fn prove_dpop(
+        &self,
+        proof: &DpopProof,
+        token: Option<&str>,
+    ) -> Result<ProvenDpopKey> {
+        self.records.prove_dpop(proof, token).await
     }
 
     #[tracing::instrument(skip_all, fields(user_id = %session.user_id))]
@@ -291,7 +311,7 @@ impl From<&Session> for SessionSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{SessionId, UserId};
+    use crate::storage::{JwkThumbprint, SessionId, SessionTransport, UserId};
 
     #[test]
     fn session_context_bounds_the_user_agent() {
@@ -322,7 +342,9 @@ mod tests {
             id: SessionId::new(),
             user_id: UserId::new(),
             token_hash: TokenHash([7u8; 32]),
-            transport: SessionTransport::Bearer,
+            transport: SessionTransport::Dpop {
+                jkt: JwkThumbprint([9u8; 32]),
+            },
             created_at,
             last_used_at,
             expires_at,
@@ -334,7 +356,7 @@ mod tests {
         let summary = SessionSummary::from(&session);
         assert_eq!(summary.id, session.id);
         assert_eq!(summary.user_id, session.user_id);
-        assert_eq!(summary.transport, SessionTransport::Bearer);
+        assert_eq!(summary.transport, session.transport);
         assert_eq!(summary.created_at, created_at);
         assert_eq!(summary.last_used_at, last_used_at);
         assert_eq!(summary.expires_at, expires_at);
@@ -364,16 +386,16 @@ mod tests {
         };
         let issued = IssuedSession {
             session: ResolvedSession::new(session, now),
-            token: "super-secret-bearer-token".to_string(),
+            token: "super-secret-session-token".to_string(),
             absolute_lifetime: DEFAULT_SESSION_LIFETIME,
         };
 
         let rendered = format!("{issued:?}");
         assert!(
-            !rendered.contains("super-secret-bearer-token"),
+            !rendered.contains("super-secret-session-token"),
             "Debug output leaked the cleartext token: {rendered}"
         );
         assert!(rendered.contains("<redacted>"), "expected redaction marker");
-        assert_eq!(issued.token, "super-secret-bearer-token");
+        assert_eq!(issued.token, "super-secret-session-token");
     }
 }

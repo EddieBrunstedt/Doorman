@@ -94,7 +94,7 @@ async fn login_is_discoverable_and_starts_a_session() {
     let credential_id = authenticator.credential_ids()[0].clone();
     let login = app.log_in(&mut authenticator, &credential_id).await;
     assert_eq!(login.status, StatusCode::OK);
-    let logged_in = login.session(Client::Bearer);
+    let logged_in = login.session(Client::Dpop);
     assert_eq!(logged_in.user.id, signed_up.user.id);
     assert!(app.is_authenticated(&logged_in).await);
 }
@@ -107,14 +107,14 @@ async fn passkeys_are_added_listed_renamed_and_removed() {
     let added = app.register_passkey(&mut authenticator, &auth).await;
     assert_eq!(added.name.as_deref(), Some("backup device"));
 
-    let list = app.get("/auth/passkey").bearer(&auth.token).send().await;
+    let list = app.get("/auth/passkey").session(&auth).send().await;
     assert_eq!(list.status, StatusCode::OK);
     assert_eq!(list.json::<Vec<PasskeyDto>>().len(), 2);
 
     let path = format!("/auth/passkey/{}", added.credential_id);
     let renamed = app
         .patch(&path)
-        .bearer(&auth.token)
+        .session(&auth)
         .json(&json!({ "name": "My Laptop" }))
         .send()
         .await;
@@ -123,9 +123,9 @@ async fn passkeys_are_added_listed_renamed_and_removed() {
     assert_eq!(renamed.credential_id, added.credential_id);
     assert_eq!(renamed.name.as_deref(), Some("My Laptop"));
 
-    let removed = app.delete(&path).bearer(&auth.token).send().await;
+    let removed = app.delete(&path).session(&auth).send().await;
     assert_eq!(removed.status, StatusCode::NO_CONTENT);
-    let list = app.get("/auth/passkey").bearer(&auth.token).send().await;
+    let list = app.get("/auth/passkey").session(&auth).send().await;
     let remaining: Vec<PasskeyDto> = list.json();
     assert_eq!(remaining.len(), 1);
     assert_ne!(remaining[0].credential_id, added.credential_id);
@@ -138,7 +138,7 @@ async fn sessions_are_listed_and_revoked() {
     let other = app.session_for("alice@example.com").await;
     let third = app.session_for("alice@example.com").await;
 
-    let list = app.get("/auth/sessions").bearer(&caller.token).send().await;
+    let list = app.get("/auth/sessions").session(&caller).send().await;
     assert_eq!(list.status, StatusCode::OK);
     let sessions: Vec<SessionDto> = list.json();
     assert_eq!(sessions.len(), 3);
@@ -148,18 +148,14 @@ async fn sessions_are_listed_and_revoked() {
 
     let revoke_one = app
         .delete(&format!("/auth/sessions/{}", other.session.id))
-        .bearer(&caller.token)
+        .session(&caller)
         .send()
         .await;
     assert_eq!(revoke_one.status, StatusCode::NO_CONTENT);
     assert!(!app.is_authenticated(&other).await);
     assert!(app.is_authenticated(&third).await);
 
-    let revoke_others = app
-        .delete("/auth/sessions")
-        .bearer(&caller.token)
-        .send()
-        .await;
+    let revoke_others = app.delete("/auth/sessions").session(&caller).send().await;
     assert_eq!(revoke_others.status, StatusCode::NO_CONTENT);
     assert!(!app.is_authenticated(&third).await);
     assert!(app.is_authenticated(&caller).await);
@@ -172,7 +168,7 @@ async fn an_email_change_is_requested_and_confirmed() {
 
     let request = app
         .post("/auth/user/email")
-        .bearer(&session.token)
+        .session(&session)
         .json(&json!({ "new_email": "after@example.com" }))
         .send()
         .await;

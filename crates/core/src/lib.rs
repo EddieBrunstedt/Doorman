@@ -15,6 +15,7 @@ pub mod client_ip;
 pub mod clock;
 mod context;
 pub mod destructive;
+pub mod dpop;
 pub mod email;
 pub mod email_link;
 mod email_link_registration;

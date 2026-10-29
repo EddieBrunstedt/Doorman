@@ -108,15 +108,15 @@ impl AuthResponse {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct BearerAuthResponse {
+pub struct DpopAuthResponse {
     pub user: UserDto,
     pub session: SessionDto,
     pub token: String,
 }
 
-impl std::fmt::Debug for BearerAuthResponse {
+impl std::fmt::Debug for DpopAuthResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BearerAuthResponse")
+        f.debug_struct("DpopAuthResponse")
             .field("user", &self.user)
             .field("session", &self.session)
             .field("token", &"<redacted>")
@@ -124,7 +124,7 @@ impl std::fmt::Debug for BearerAuthResponse {
     }
 }
 
-impl BearerAuthResponse {
+impl DpopAuthResponse {
     pub fn from_issued(user: &User, passkey_count: u64, issued: IssuedSession) -> Self {
         Self {
             user: UserDto::from_user(user, passkey_count),
@@ -179,8 +179,6 @@ pub struct RegistrationFinishRequest {
     pub response: webauthn_rs::prelude::RegisterPublicKeyCredential,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub transport: Option<SessionTransport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,8 +239,6 @@ pub struct PasskeyChallenge<T> {
 pub struct PasskeyAuthenticateFinishRequest {
     pub challenge_id: String,
     pub response: webauthn_rs::prelude::PublicKeyCredential,
-    #[serde(default)]
-    pub transport: Option<SessionTransport>,
 }
 
 #[cfg(test)]
@@ -257,7 +253,9 @@ mod tests {
         SessionSummary {
             id: SessionId::new(),
             user_id: UserId::new(),
-            transport: SessionTransport::Bearer,
+            transport: SessionTransport::Dpop {
+                jkt: doorman_core::storage::JwkThumbprint([9u8; 32]),
+            },
             created_at: now,
             last_used_at: now,
             expires_at: now,
@@ -294,16 +292,16 @@ mod tests {
     }
 
     #[test]
-    fn bearer_auth_response_debug_redacts_token() {
-        let response = BearerAuthResponse {
+    fn dpop_auth_response_debug_redacts_token() {
+        let response = DpopAuthResponse {
             user: user_dto(),
             session: SessionDto::new(&session_with_ua(None), true),
-            token: "super-secret-bearer-token".to_string(),
+            token: "super-secret-dpop-token".to_string(),
         };
 
         let rendered = format!("{response:?}");
         assert!(
-            !rendered.contains("super-secret-bearer-token"),
+            !rendered.contains("super-secret-dpop-token"),
             "Debug output leaked the cleartext token: {rendered}"
         );
         assert!(rendered.contains("<redacted>"), "expected redaction marker");

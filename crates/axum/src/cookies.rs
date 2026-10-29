@@ -20,12 +20,6 @@ pub fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     None
 }
 
-pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let token = value.strip_prefix("Bearer ")?.trim();
-    if token.is_empty() { None } else { Some(token) }
-}
-
 pub fn session_cookie(
     config: &CookieConfig,
     token: &str,
@@ -111,26 +105,6 @@ mod tests {
             headers.insert(header::COOKIE, HeaderValue::from_str(&header).expect("ascii"));
             let read = read_cookie(&headers, &name);
             prop_assert_eq!(read.as_deref(), Some(value.as_str()));
-        }
-
-        #[test]
-        fn bearer_token_never_panics(header in ".*") {
-            let mut headers = HeaderMap::new();
-            if let Ok(value) = HeaderValue::from_str(&header) {
-                headers.insert(header::AUTHORIZATION, value);
-            }
-            let _ = bearer_token(&headers);
-        }
-
-        #[test]
-        fn bearer_token_round_trips_non_empty(token in "[A-Za-z0-9._~+/=-]{1,64}") {
-            let mut headers = HeaderMap::new();
-            let header = format!("Bearer {token}");
-            headers.insert(
-                header::AUTHORIZATION,
-                HeaderValue::from_str(&header).expect("ascii"),
-            );
-            prop_assert_eq!(bearer_token(&headers), Some(token.as_str()));
         }
     }
 

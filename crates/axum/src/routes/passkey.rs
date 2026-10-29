@@ -1,7 +1,6 @@
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::routing::{delete, get, post};
 use base64::Engine;
@@ -15,7 +14,7 @@ use crate::dto::{
 };
 use crate::error::ErrorResponse;
 use crate::extractors::{AuthSession, RequestContext};
-use crate::routes::{auth_success, no_content, parse_challenge_id, perform, session_transport};
+use crate::routes::{RequestedTransport, auth_success, no_content, parse_challenge_id, perform};
 use crate::state::AuthState;
 
 pub(crate) fn routes() -> Router<AuthState> {
@@ -79,10 +78,9 @@ async fn authenticate_start(
 async fn authenticate_finish(
     State(state): State<AuthState>,
     RequestContext(context): RequestContext,
-    headers: HeaderMap,
+    RequestedTransport(transport): RequestedTransport,
     Json(body): Json<PasskeyAuthenticateFinishRequest>,
 ) -> Result<Response, ErrorResponse> {
-    let transport = session_transport(&headers, body.transport)?;
     let challenge_id = parse_challenge_id(&body.challenge_id)?;
     let outcome = state
         .core

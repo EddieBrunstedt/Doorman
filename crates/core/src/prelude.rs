@@ -6,6 +6,7 @@ pub use crate::audit::{
 pub use crate::client_ip::ClientIp;
 pub use crate::clock::{Clock, SystemClock};
 pub use crate::destructive::{CurrentSession, DestructiveAction};
+pub use crate::dpop::{DPOP_ALGORITHM, DpopProof, JwkThumbprint, ProvenDpopKey};
 #[cfg(feature = "file-email")]
 pub use crate::email::FileEmailSender;
 pub use crate::email::{
@@ -27,16 +28,16 @@ pub use crate::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
 pub use crate::recovery::{RecoveryConfig, RecoveryManager};
 pub use crate::security_notice::{NoticePolicy, OperatorNotice};
 pub use crate::session::{
-    IssuedSession, ResolvedSession, SessionConfig, SessionContext, SessionManager,
+    IssuedSession, RequestTransport, ResolvedSession, SessionConfig, SessionContext, SessionManager,
 };
 pub use crate::signup::{
     OpenSignupPolicy, SignupConfig, SignupDecision, SignupManager, SignupPolicy,
 };
 pub use crate::storage::{
-    AuthenticationPurpose, EmailLink, EmailLinkPurpose, EmailLinkStore, ExpiringStores,
-    PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore, PasskeySummary, RecordStores,
-    RegistrationPurpose, Session, SessionId, SessionStore, SessionSummary, SessionTransport,
-    Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash,
-    User, UserId, UserStore,
+    AuthenticationPurpose, DpopProofId, DpopProofStore, EmailLink, EmailLinkPurpose,
+    EmailLinkStore, ExpiringStores, PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore,
+    PasskeySummary, RecordStores, RegistrationPurpose, Session, SessionId, SessionStore,
+    SessionSummary, SessionTransport, Storage, StoredPasskey, StoredPasskeyAuthentication,
+    StoredPasskeyRegistration, TokenHash, UsedDpopProof, User, UserId, UserStore,
 };
 pub use crate::user::{EmailChangeOutcome, UserConfig, UserManager};

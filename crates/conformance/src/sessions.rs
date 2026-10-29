@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use doorman_core::session::hash_token;
 use doorman_core::storage::{ExpiringStores, Session, SessionId, SessionTransport, UserId};
 
-use crate::fixtures::{RACERS, REVOKE_ROUNDS, days, present};
+use crate::fixtures::{RACERS, REVOKE_ROUNDS, days, dpop, present};
 
 pub(crate) async fn sessions_crud_and_queries(stores: &ExpiringStores) {
     let now = present();
@@ -31,12 +31,7 @@ pub(crate) async fn sessions_crud_and_queries(stores: &ExpiringStores) {
     let other_b = mk("other-b", user_id, SessionTransport::Cookie, None);
     let neighbour = mk("neighbour", other_user, SessionTransport::Cookie, None);
     let cool_down_until = now + Duration::hours(24);
-    let with_cool_down = mk(
-        "cool-down",
-        user_id,
-        SessionTransport::Bearer,
-        Some(cool_down_until),
-    );
+    let with_cool_down = mk("cool-down", user_id, dpop(1), Some(cool_down_until));
 
     for session in [&keep, &other_a, &other_b, &neighbour, &with_cool_down] {
         sessions
@@ -51,7 +46,7 @@ pub(crate) async fn sessions_crud_and_queries(stores: &ExpiringStores) {
         .expect("find by hash")
         .expect("session present");
     assert_eq!(by_hash.id, with_cool_down.id);
-    assert_eq!(by_hash.transport, SessionTransport::Bearer);
+    assert_eq!(by_hash.transport, dpop(1));
     assert_eq!(by_hash.recovery_cool_down_until, Some(cool_down_until));
     assert_eq!(by_hash.ip.to_string(), "203.0.113.1");
 
@@ -60,7 +55,7 @@ pub(crate) async fn sessions_crud_and_queries(stores: &ExpiringStores) {
         .await
         .expect("find by id")
         .expect("session present");
-    assert_eq!(by_id.transport, SessionTransport::Bearer);
+    assert_eq!(by_id.transport, dpop(1));
     assert_eq!(by_id.recovery_cool_down_until, Some(cool_down_until));
 
     let listed = sessions.list_for_user(user_id).await.expect("list");
@@ -73,7 +68,7 @@ pub(crate) async fn sessions_crud_and_queries(stores: &ExpiringStores) {
     );
     for session in &listed {
         let expected = if session.id == with_cool_down.id {
-            SessionTransport::Bearer
+            dpop(1)
         } else {
             SessionTransport::Cookie
         };
@@ -193,7 +188,7 @@ pub(crate) async fn session_touch_slides_deadline(stores: &ExpiringStores) {
         id: SessionId::new(),
         user_id,
         token_hash,
-        transport: SessionTransport::Bearer,
+        transport: dpop(2),
         created_at,
         last_used_at: created_at,
         expires_at: days(365),

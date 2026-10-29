@@ -8,7 +8,7 @@ use doorman_core::destructive::{CurrentSession, DestructiveAction};
 use doorman_core::error::Error;
 use doorman_core::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
 use doorman_core::session::{
-    IssuedSession, ResolvedSession, SessionConfig, SessionContext, hash_token,
+    IssuedSession, RequestTransport, ResolvedSession, SessionConfig, SessionContext, hash_token,
 };
 use doorman_core::storage::{
     PasskeyChallengeId, PasskeyStore, SessionId, SessionStore, SessionTransport, User, UserId,
@@ -84,7 +84,7 @@ async fn a_login_issues_a_session_bound_to_its_token() {
 
     let resolved = h
         .session_manager
-        .resolve(&issued.token, SessionTransport::Cookie)
+        .resolve(&issued.token, &RequestTransport::Cookie)
         .await
         .expect("resolve")
         .expect("a live session");
@@ -113,7 +113,7 @@ async fn log_out_deletes_the_session_and_audits_it() {
 
     let resolved = h
         .session_manager
-        .resolve(&alice.session.token, SessionTransport::Cookie)
+        .resolve(&alice.session.token, &RequestTransport::Cookie)
         .await
         .expect("resolve");
     assert!(resolved.is_none(), "got {resolved:?}");
@@ -308,7 +308,7 @@ async fn session_cap_evicts_oldest_active_session_for_that_user() {
 
     let resolved = h
         .session_manager
-        .resolve(&first.token, SessionTransport::Cookie)
+        .resolve(&first.token, &RequestTransport::Cookie)
         .await
         .expect("resolve");
     assert!(
@@ -368,7 +368,7 @@ async fn session_cap_in_recovery_cool_down_evicts_only_sessions_in_it() {
             started.challenge_id,
             &attestation,
             None,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await

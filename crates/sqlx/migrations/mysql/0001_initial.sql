@@ -14,6 +14,7 @@ CREATE TABLE sessions (
     user_id BINARY(16) NOT NULL,
     token_hash BINARY(32) NOT NULL UNIQUE,
     transport VARCHAR(32) NOT NULL,
+    dpop_jkt BINARY(32),
     created_at DATETIME(6) NOT NULL,
     last_used_at DATETIME(6) NOT NULL,
     expires_at DATETIME(6) NOT NULL,
@@ -73,3 +74,9 @@ CREATE TABLE passkey_authentications (
     expires_at DATETIME(6) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_passkey_authentications_expires_at ON passkey_authentications(expires_at);
+
+CREATE TABLE dpop_proofs (
+    id BINARY(32) PRIMARY KEY,
+    expires_at DATETIME(6) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_dpop_proofs_expires_at ON dpop_proofs(expires_at);

@@ -34,7 +34,7 @@ async fn a_host_route_without_the_layer_is_refused_as_a_mistake_not_as_no_sessio
     let app = TestApp::without_host_layer(InMemoryStorage::new().all_stores());
     let session = app.session_for("alice@example.com").await;
 
-    let me = app.get("/me").bearer(&session.token).send().await;
+    let me = app.get("/me").session(&session).send().await;
 
     assert_eq!(me.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(me.error_code(), "internal_error");
@@ -52,11 +52,7 @@ async fn a_request_through_both_layers_looks_its_session_up_once() {
     let session = app.session_for("alice@example.com").await;
     sessions.lookups.store(0, Ordering::SeqCst);
 
-    let reply = app
-        .get("/auth/sessions")
-        .bearer(&session.token)
-        .send()
-        .await;
+    let reply = app.get("/auth/sessions").session(&session).send().await;
 
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(sessions.lookups.load(Ordering::SeqCst), 1);

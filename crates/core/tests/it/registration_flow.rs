@@ -4,7 +4,7 @@ use doorman_core::audit::{AuditEventKind, RedemptionFailureReason, SecretKind};
 use doorman_core::clock::Clock;
 use doorman_core::error::Error;
 use doorman_core::passkey::{PasskeyConfig, RegistrationOutcome, StartedRegistration};
-use doorman_core::session::ResolvedSession;
+use doorman_core::session::{RequestTransport, ResolvedSession};
 use doorman_core::storage::{
     PasskeyChallengeId, PasskeyChallengeStore, SessionTransport, User, UserStatus, UserStore,
 };
@@ -90,7 +90,7 @@ impl Link {
                         started.challenge_id,
                         &response,
                         name,
-                        SessionTransport::Cookie,
+                        RequestTransport::Cookie,
                         context,
                     )
                     .await
@@ -101,7 +101,7 @@ impl Link {
                         started.challenge_id,
                         &response,
                         name,
-                        SessionTransport::Cookie,
+                        RequestTransport::Cookie,
                         context,
                     )
                     .await
@@ -380,7 +380,7 @@ async fn finish(
                 challenge_id,
                 response,
                 None,
-                SessionTransport::Cookie,
+                RequestTransport::Cookie,
                 context(),
             )
             .await
@@ -391,7 +391,7 @@ async fn finish(
                 challenge_id,
                 response,
                 None,
-                SessionTransport::Cookie,
+                RequestTransport::Cookie,
                 context(),
             )
             .await

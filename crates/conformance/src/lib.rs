@@ -1,4 +1,5 @@
 mod cross_store;
+mod dpop_proofs;
 mod email_links;
 mod fixtures;
 mod limits;
@@ -13,6 +14,9 @@ use doorman_core::storage::{ExpiringStores, RecordStores, Storage};
 use crate::cross_store::{
     absent_lookups_return_none, inserts_refuse_duplicate_keys, owner_indexes_track_removals,
     single_use_under_concurrency,
+};
+use crate::dpop_proofs::{
+    dpop_proof_purge_expired, dpop_proof_single_use, dpop_proof_single_use_under_concurrency,
 };
 use crate::email_links::{
     email_link_email_change_payload, email_link_purge_and_delete,
@@ -85,6 +89,9 @@ const EXPIRING_CHECKS: &[Check<ExpiringStores>] = checks![
     passkey_authentication_single_use,
     single_use_under_concurrency,
     passkey_challenge_purge_expired,
+    dpop_proof_single_use,
+    dpop_proof_single_use_under_concurrency,
+    dpop_proof_purge_expired,
     owner_indexes_track_removals,
     absent_lookups_return_none,
     inserts_refuse_duplicate_keys,

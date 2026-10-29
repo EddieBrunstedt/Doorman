@@ -13,6 +13,7 @@ CREATE TABLE sessions (
     user_id BLOB NOT NULL,
     token_hash BLOB NOT NULL UNIQUE,
     transport TEXT NOT NULL,
+    dpop_jkt BLOB,
     created_at TEXT NOT NULL,
     last_used_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
@@ -72,3 +73,9 @@ CREATE TABLE passkey_authentications (
     expires_at TEXT NOT NULL
 );
 CREATE INDEX idx_passkey_authentications_expires_at ON passkey_authentications(expires_at);
+
+CREATE TABLE dpop_proofs (
+    id BLOB PRIMARY KEY,
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX idx_dpop_proofs_expires_at ON dpop_proofs(expires_at);

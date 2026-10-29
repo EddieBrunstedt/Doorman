@@ -1,18 +1,23 @@
 use axum::Json;
 use axum::Router;
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use doorman_core::Error;
 use doorman_core::destructive::{CurrentSession, DestructiveAction};
+use doorman_core::dpop::ProvenDpopKey;
 use doorman_core::passkey::{RegistrationOutcome, StartedRegistration};
 use doorman_core::reauth::ReauthProof;
-use doorman_core::session::{IssuedSession, SessionContext};
+use doorman_core::session::{IssuedSession, RequestTransport, SessionContext};
 use doorman_core::storage::{PasskeyChallengeId, SessionTransport, User};
 use uuid::Uuid;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
 use crate::browser::sent_by_browser;
 use crate::cookies::{clear_session_cookie, session_cookie};
-use crate::dto::{AuthResponse, BearerAuthResponse, PasskeyChallenge, Reauthentication};
+use crate::dpop::DPOP;
+use crate::dto::{AuthResponse, DpopAuthResponse, PasskeyChallenge, Reauthentication};
 use crate::error::ErrorResponse;
 use crate::extractors::AuthSession;
 use crate::state::AuthState;
@@ -24,17 +29,28 @@ pub(crate) mod sessions;
 pub(crate) mod signup;
 pub(crate) mod user;
 
-// A page script can read any response body, so a request a browser sends never starts a session
-// whose token travels in one. The refusal comes before the ceremony uses anything up.
-pub(crate) fn session_transport(
-    headers: &HeaderMap,
-    requested: Option<SessionTransport>,
-) -> Result<SessionTransport, ErrorResponse> {
-    match requested.unwrap_or(SessionTransport::Cookie) {
-        SessionTransport::Bearer if sent_by_browser(headers) => {
-            Err(ErrorResponse(doorman_core::Error::BearerSessionNotAllowed))
+// What a request that starts a session asks for: a DPoP session if it carries a DPoP proof, and
+// a cookie session otherwise.
+pub(crate) struct RequestedTransport(pub(crate) RequestTransport);
+
+impl<S: Send + Sync> FromRequestParts<S> for RequestedTransport {
+    type Rejection = ErrorResponse;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        if !parts.headers.contains_key(DPOP) {
+            return Ok(Self(RequestTransport::Cookie));
         }
-        transport => Ok(transport),
+        // A page script can read any response body, so a request a browser sends never starts a
+        // session whose token travels in one. The refusal comes before the ceremony uses
+        // anything up.
+        if sent_by_browser(&parts.headers) {
+            return Err(ErrorResponse(Error::DpopSessionNotAllowed));
+        }
+        // The session layer proves the request's proof whenever the host allows DPoP sessions.
+        match parts.extensions.get::<ProvenDpopKey>() {
+            Some(key) => Ok(Self(RequestTransport::Dpop(key.clone()))),
+            None => Err(ErrorResponse(Error::DpopSessionNotAllowed)),
+        }
     }
 }
 
@@ -58,8 +74,8 @@ pub(crate) fn auth_success(
             response.headers_mut().insert(header::SET_COOKIE, cookie);
             Ok(response)
         }
-        SessionTransport::Bearer => {
-            let body = BearerAuthResponse::from_issued(user, passkey_count, issued);
+        SessionTransport::Dpop { .. } => {
+            let body = DpopAuthResponse::from_issued(user, passkey_count, issued);
             Ok(Json(body).into_response())
         }
     }

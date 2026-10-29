@@ -226,6 +226,7 @@ mod tests {
             sessions: Ok(2),
             email_links: Err(StorageError::msg("email link store unavailable")),
             passkey_challenges: Ok(0),
+            dpop_proofs: Ok(0),
         }
     }
 
@@ -243,6 +244,7 @@ mod tests {
             sessions: Ok(0),
             email_links: Ok(0),
             passkey_challenges: Ok(0),
+            dpop_proofs: Ok(0),
         };
         assert_eq!(exit_code(&complete), ExitCode::SUCCESS);
     }
@@ -253,7 +255,7 @@ mod tests {
         assert_eq!(
             line,
             format!(
-                "{{\"now\":\"{}\",\"sessions\":2,\"email_links\":null,\"passkey_challenges\":0,\"total\":2}}\n",
+                "{{\"now\":\"{}\",\"sessions\":2,\"email_links\":null,\"passkey_challenges\":0,\"dpop_proofs\":0,\"total\":2}}\n",
                 at().to_rfc3339()
             )
         );
@@ -265,6 +267,7 @@ mod tests {
             sessions: Ok(0),
             email_links: Err(StorageError::msg("email link store unavailable")),
             passkey_challenges: Ok(0),
+            dpop_proofs: Ok(0),
         };
         let text = render(at(), false, &summary);
         assert!(text.contains("  email_links        = failed\n"), "{text}");

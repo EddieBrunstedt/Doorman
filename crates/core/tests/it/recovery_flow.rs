@@ -12,8 +12,8 @@ use doorman_core::email::{EmailContent, EmailTemplates};
 use doorman_core::error::Error;
 use doorman_core::passkey::PasskeyConfig;
 use doorman_core::recovery::RecoveryConfig;
-use doorman_core::session::SessionConfig;
-use doorman_core::storage::{PasskeyStore, SessionTransport, User, UserStore};
+use doorman_core::session::{RequestTransport, SessionConfig};
+use doorman_core::storage::{PasskeyStore, User, UserStore};
 use doorman_test_support::request_context;
 
 use crate::common::{
@@ -178,7 +178,7 @@ async fn recovery_started_before_an_email_change_cannot_finish() {
             started.challenge_id,
             &attestation,
             None,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -223,7 +223,7 @@ async fn finish_sends_only_the_recovery_completed_notice() {
             started.challenge_id,
             &authenticator().do_registration(started.options),
             Some("backup device".into()),
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -272,7 +272,7 @@ async fn notice_send_failure_does_not_undo_successful_finish() {
             started.challenge_id,
             &authenticator().do_registration(started.options),
             Some("failing notices device".into()),
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -457,7 +457,7 @@ async fn recovery_cool_down_runs_from_the_later_of_redeem_and_finish() {
                 started.challenge_id,
                 &attestation,
                 Some("backup device".into()),
-                SessionTransport::Cookie,
+                RequestTransport::Cookie,
                 request_context(),
             )
             .await
@@ -514,7 +514,7 @@ async fn recovery_created_passkey_login_inherits_active_cool_down() {
             started.challenge_id,
             &attestation,
             Some("recovery device".into()),
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -531,7 +531,7 @@ async fn recovery_created_passkey_login_inherits_active_cool_down() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -577,7 +577,7 @@ async fn pre_existing_passkey_login_stays_outside_recovery_cool_down() {
             started.challenge_id,
             &attestation,
             Some("recovery device".into()),
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -595,7 +595,7 @@ async fn pre_existing_passkey_login_stays_outside_recovery_cool_down() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -635,7 +635,7 @@ async fn recovery_created_passkey_login_after_cool_down_carries_no_cool_down() {
             started.challenge_id,
             &attestation,
             Some("recovery device".into()),
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -657,7 +657,7 @@ async fn recovery_created_passkey_login_after_cool_down_carries_no_cool_down() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -675,7 +675,7 @@ async fn passkey_registered_during_cool_down_inherits_its_deadline() {
     h.clock.advance(ChronoDuration::minutes(10));
     let resolved = h
         .session_manager
-        .resolve(&outcome.session.token, SessionTransport::Cookie)
+        .resolve(&outcome.session.token, &RequestTransport::Cookie)
         .await
         .expect("resolve")
         .expect("the recovery session is live");
@@ -710,7 +710,7 @@ async fn passkey_registered_during_cool_down_inherits_its_deadline() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -733,7 +733,7 @@ async fn passkey_registered_after_cool_down_carries_no_cool_down() {
         .advance(ChronoDuration::hours(24) + ChronoDuration::seconds(1));
     let resolved = h
         .session_manager
-        .resolve(&outcome.session.token, SessionTransport::Cookie)
+        .resolve(&outcome.session.token, &RequestTransport::Cookie)
         .await
         .expect("resolve")
         .expect("the recovery session outlives its cool-down");
@@ -784,7 +784,7 @@ async fn drive_recovery_finish(
             started.challenge_id,
             &attestation,
             Some("recovery device".into()),
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -820,7 +820,7 @@ async fn recovery_config_with_subhour_cool_down_honors_configured_cool_down() {
     h.clock.advance(ChronoDuration::seconds(61));
     let resolved = h
         .session_manager
-        .resolve(&outcome.session.token, SessionTransport::Cookie)
+        .resolve(&outcome.session.token, &RequestTransport::Cookie)
         .await
         .expect("resolve")
         .expect("the recovery session outlives its cool-down");
@@ -928,7 +928,7 @@ async fn recovery_succeeds_when_at_passkey_cap() {
             started.challenge_id,
             &attestation,
             Some("recovery device".into()),
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await

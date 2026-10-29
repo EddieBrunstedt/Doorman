@@ -6,9 +6,9 @@ use doorman_core::clock::Clock;
 use doorman_core::destructive::DestructiveAction;
 use doorman_core::error::Error;
 use doorman_core::passkey::{MAX_PASSKEY_NAME_LEN, PasskeyConfig};
-use doorman_core::session::SessionContext;
+use doorman_core::session::{RequestTransport, SessionContext};
 use doorman_core::storage::{
-    PasskeyChallengeStore, PasskeyStore, PasskeyUse, SessionTransport, UserStatus, UserStore,
+    PasskeyChallengeStore, PasskeyStore, PasskeyUse, UserStatus, UserStore,
 };
 use doorman_test_support::request_context;
 use webauthn_rs_proto::AuthenticatorTransport;
@@ -77,7 +77,7 @@ async fn register_then_discoverable_authenticate_round_trip() {
         .finish_authentication(
             auth_challenge,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             SessionContext::new("1.2.3.4".parse().expect("ip"), Some("ua")),
         )
         .await
@@ -183,7 +183,7 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
         .finish_authentication(
             bob_challenge,
             &bob_assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -202,7 +202,7 @@ async fn discoverable_authentication_identifies_two_users_from_response() {
         .finish_authentication(
             alice_challenge,
             &alice_assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -230,7 +230,7 @@ async fn authentication_without_user_handle_is_rejected() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -484,7 +484,7 @@ async fn finish_authentication_rejects_unknown_passkey() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -513,7 +513,7 @@ async fn finish_authentication_rejects_mismatched_user_handle() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -563,7 +563,7 @@ async fn finish_authentication_rejects_tampered_signature() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -666,7 +666,7 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -722,7 +722,7 @@ async fn finish_authentication_refuses_disabled_user() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -765,7 +765,7 @@ async fn finish_authentication_refuses_disabled_user() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -796,7 +796,7 @@ async fn finish_authentication_audits_unknown_passkey_failure() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -833,7 +833,7 @@ async fn finish_authentication_audits_expired_challenge_failure() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -868,7 +868,7 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -892,7 +892,7 @@ async fn finish_authentication_audits_unknown_challenge_failure() {
         .finish_authentication(
             auth_id2,
             &assertion2,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -931,7 +931,7 @@ async fn finish_authentication_rejects_a_reauth_challenge() {
         .finish_authentication(
             reauth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -993,7 +993,7 @@ async fn finish_authentication_rejects_expired_challenge() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -1590,7 +1590,7 @@ async fn successful_login_records_login_and_latency_metrics() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -1638,7 +1638,7 @@ async fn failed_login_records_auth_failure_and_latency_metrics() {
         .finish_authentication(
             auth_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -1681,7 +1681,7 @@ async fn login_and_email_change_report_the_users_passkey_count() {
         .finish_authentication(
             challenge_id,
             &assertion,
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await

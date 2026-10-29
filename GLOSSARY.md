@@ -24,9 +24,9 @@ Passkey-only authentication for a single application: passkeys are the only way 
 
 **Cookie session**: A session whose token travels only in an HttpOnly cookie, so no page script can read it. Every session a browser starts is one. `SessionTransport::Cookie` in identifiers.
 
-**Bearer session**: A session whose token travels only in an `Authorization: Bearer` header. Only a bearer client can start one, and only when the host allows bearer sessions. `SessionTransport::Bearer` in identifiers.
+**DPoP session**: A session whose token travels only in an `Authorization: DPoP` header, beside a DPoP proof signed by the key the session started with, so the token is useless without that key. Only a DPoP client can start one, and only when the host allows DPoP sessions. `SessionTransport::Dpop` in identifiers. _Avoid_: bearer session
 
-**Bearer client**: A client other than a browser, such as a native app, that asks for a bearer session and keeps its token itself.
+**DPoP client**: A client other than a browser, such as a native app, that holds a private key of its own and asks for a DPoP session. _Avoid_: bearer client
 
 **Session token**: The opaque secret a client presents to name its session. The client holds it; the server stores only its hash. `SessionToken` in identifiers. _Avoid_: credential
 
@@ -50,10 +50,14 @@ Passkey-only authentication for a single application: passkeys are the only way 
 
 **Record stores**: The stores that hold users and their passkeys. Their rows never expire; they last until doorman deletes them. `records` is their spelling in identifiers. _Avoid_: system of record, durable
 
-**Expiring stores**: The stores that hold sessions, email links and passkey challenges. Every row in them expires and is purged once it has. `expiring` is their spelling in identifiers. _Avoid_: ephemeral
+**Expiring stores**: The stores that hold sessions, email links, passkey challenges and used DPoP proofs. Every row in them expires and is purged once it has. `expiring` is their spelling in identifiers. _Avoid_: ephemeral
 
 **Purge schedule**: How the expiring stores' expired rows get purged: on an interval, from the process that serves the application, or by a separate process that a scheduler outside doorman runs. The host must choose one. `PurgeSchedule` in identifiers.
 
 ## WebAuthn specifics
 
 Where doorman speaks the WebAuthn protocol itself, it keeps WebAuthn's own names: relying party (with its ID, name and origin), credential (only in the protocol's own messages and fields, such as the credential ID), user handle, user verification, discoverable credential, ceremony, challenge, assertion and attestation. Everywhere else, the terms above apply.
+
+## DPoP specifics
+
+Where doorman speaks DPoP (RFC 9449) itself, it keeps that protocol's own names: DPoP proof, JWK thumbprint (`jkt`), and the proof's claims (`jti`, `htm`, `htu`, `iat`, `ath`).

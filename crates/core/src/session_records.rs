@@ -7,11 +7,15 @@ use chrono::{DateTime, Utc};
 use crate::assembly::AssemblyError;
 use crate::audit::{Actor, AuditDispatch, AuditEventKind};
 use crate::clock::Clock;
+use crate::dpop::{DpopProof, DpopProofs, ProvenDpopKey};
 use crate::error::{Error, Result};
 use crate::recovery_cool_down::RecoveryCoolDown;
-use crate::session::{IssuedSession, ResolvedSession, SessionConfig, SessionContext, hash_token};
+use crate::session::{
+    IssuedSession, RequestTransport, ResolvedSession, SessionConfig, SessionContext, hash_token,
+};
 use crate::storage::{
-    Session, SessionId, SessionStore, SessionSummary, SessionTransport, StoredPasskey, UserId,
+    DpopProofStore, Session, SessionId, SessionStore, SessionSummary, SessionTransport,
+    StoredPasskey, UserId,
 };
 use crate::token::generate_token;
 
@@ -39,9 +43,15 @@ impl Deref for LiveSession {
     }
 }
 
+// Only `SessionRecords::check_transport` builds one, so a session is started only with a transport
+// the host allows, and as a DPoP session only with a key the request proved.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CheckedTransport(SessionTransport);
+
 #[derive(Clone)]
 pub(crate) struct SessionRecords {
     sessions: Arc<dyn SessionStore>,
+    dpop: Option<DpopProofs>,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
     config: SessionConfig,
@@ -50,6 +60,7 @@ pub(crate) struct SessionRecords {
 impl SessionRecords {
     pub(crate) fn new(
         sessions: Arc<dyn SessionStore>,
+        dpop_proofs: Arc<dyn DpopProofStore>,
         clock: Arc<dyn Clock>,
         audit: AuditDispatch,
         config: SessionConfig,
@@ -62,8 +73,14 @@ impl SessionRecords {
                 reason: "must be strictly greater than the slide interval so an active session slides before it idles out",
             });
         }
+        let dpop = match &config.dpop_origin {
+            Some(origin) if !origin.is_tuple() => return Err(AssemblyError::OpaqueDpopOrigin),
+            Some(origin) => Some(DpopProofs::new(origin.clone(), dpop_proofs, clock.clone())),
+            None => None,
+        };
         Ok(Self {
             sessions,
+            dpop,
             clock,
             audit,
             config,
@@ -77,12 +94,18 @@ impl SessionRecords {
     pub(crate) async fn resolve(
         &self,
         token: &str,
-        transport: SessionTransport,
+        transport: &RequestTransport,
     ) -> Result<Option<ResolvedSession>> {
-        // A host that stops allowing bearer sessions stops honouring those it already issued.
-        if !self.allows(transport) {
-            return Ok(None);
-        }
+        let key = match transport {
+            RequestTransport::Cookie => None,
+            // A host that stops allowing DPoP sessions stops honouring those it already issued.
+            RequestTransport::Dpop(_) if self.dpop.is_none() => return Ok(None),
+            RequestTransport::Dpop(key) if !key.signed_for(token) => {
+                tracing::info!("refused a DPoP proof signed for another token");
+                return Err(Error::InvalidDpopProof);
+            }
+            RequestTransport::Dpop(key) => Some(key.jkt()),
+        };
         let stored = self
             .sessions
             .find_session_by_token_hash(&hash_token(token))
@@ -91,9 +114,9 @@ impl SessionRecords {
         let Some(session) = live(stored, now) else {
             return Ok(None);
         };
-        // A token travels only the way its session started, so one that turns up any other way
-        // was taken from where it belongs.
-        if session.transport != transport {
+        // A token travels only the way its session started, so one that turns up any other way,
+        // or with another key's proof, was taken from where it belongs.
+        if session.transport.dpop_jkt() != key {
             tracing::warn!(outcome = "wrong_transport", "session validate failed");
             return Ok(None);
         }
@@ -101,20 +124,28 @@ impl SessionRecords {
         Ok(Some(ResolvedSession::new(session, now)))
     }
 
-    pub(crate) fn allows(&self, transport: SessionTransport) -> bool {
-        match transport {
-            SessionTransport::Cookie => true,
-            SessionTransport::Bearer => self.config.allow_bearer_sessions,
-        }
+    pub(crate) fn allows_dpop(&self) -> bool {
+        self.dpop.is_some()
+    }
+
+    pub(crate) async fn prove_dpop(
+        &self,
+        proof: &DpopProof,
+        token: Option<&str>,
+    ) -> Result<ProvenDpopKey> {
+        let dpop = self.dpop.as_ref().ok_or(Error::DpopSessionNotAllowed)?;
+        dpop.prove(proof, token).await
     }
 
     // A flow checks this before its ceremony uses anything up, so a refused request can be
     // retried with a transport the host allows.
-    pub(crate) fn check_allowed(&self, transport: SessionTransport) -> Result<()> {
-        if self.allows(transport) {
-            Ok(())
-        } else {
-            Err(Error::BearerSessionNotAllowed)
+    pub(crate) fn check_transport(&self, requested: &RequestTransport) -> Result<CheckedTransport> {
+        match requested {
+            RequestTransport::Cookie => Ok(CheckedTransport(SessionTransport::Cookie)),
+            RequestTransport::Dpop(_) if self.dpop.is_none() => Err(Error::DpopSessionNotAllowed),
+            RequestTransport::Dpop(key) => {
+                Ok(CheckedTransport(SessionTransport::Dpop { jkt: key.jkt() }))
+            }
         }
     }
 
@@ -123,10 +154,9 @@ impl SessionRecords {
     pub(crate) async fn create(
         &self,
         passkey: &StoredPasskey,
-        transport: SessionTransport,
+        CheckedTransport(transport): CheckedTransport,
         context: &SessionContext,
     ) -> Result<IssuedSession> {
-        self.check_allowed(transport)?;
         let user_id = passkey.user_id;
         let id = SessionId::new();
         let now = self.clock.now();

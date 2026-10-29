@@ -10,10 +10,9 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode
 use axum::routing::get;
 use doorman_axum::config::CookieConfig;
 use doorman_axum::dto::{
-    AuthResponse, BearerAuthResponse, PasskeyAuthenticateFinishRequest, PasskeyChallenge,
-    PasskeyDto, PasskeyRegisterFinishRequest, Reauthentication, RecoveryRedeemRequest,
-    RecoveryRequest, RegistrationFinishRequest, SessionDto, SignupRedeemRequest, SignupRequest,
-    UserDto,
+    AuthResponse, DpopAuthResponse, PasskeyAuthenticateFinishRequest, PasskeyChallenge, PasskeyDto,
+    PasskeyRegisterFinishRequest, Reauthentication, RecoveryRedeemRequest, RecoveryRequest,
+    RegistrationFinishRequest, SessionDto, SignupRedeemRequest, SignupRequest, UserDto,
 };
 use doorman_axum::extractors::AuthUser;
 use doorman_axum::{AuthService, AuthServiceBuilder, PurgeSchedule};
@@ -27,9 +26,9 @@ use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::{RateLimiting, RateLimits};
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::session::{SessionConfig, SessionManager};
-use doorman_core::storage::{SessionTransport, Storage, UserId, UserStatus, UserStore};
-pub use doorman_test_support::ResidentAuthenticator;
+use doorman_core::storage::{Storage, UserId, UserStatus, UserStore};
 use doorman_test_support::{CapturingEmailSender, token_from_email};
+pub use doorman_test_support::{DpopClient, ResidentAuthenticator};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::net::TcpListener;
@@ -43,37 +42,30 @@ pub const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
 pub const USER_URL: &str = "https://app.test/email-change?token={token}";
 pub const RP_ORIGIN: &str = "http://localhost:8080";
 pub const PEER: &str = "127.0.0.1";
+pub const DPOP_ORIGIN: &str = "https://api.app.test";
 
-// How a test client keeps its session: a browser page, or a bearer client such as a native app.
+// How a test client keeps its session: a browser page, or a DPoP client such as a native app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Client {
     Browser,
-    Bearer,
+    Dpop,
 }
 
-impl Client {
-    pub fn transport(self) -> SessionTransport {
-        match self {
-            Client::Browser => SessionTransport::Cookie,
-            Client::Bearer => SessionTransport::Bearer,
-        }
-    }
-
-    pub fn requested_transport(self) -> Option<SessionTransport> {
-        match self {
-            Client::Browser => None,
-            Client::Bearer => Some(SessionTransport::Bearer),
-        }
-    }
-}
-
-// A session as its client holds it: a browser's token comes from the cookie it was set.
+// A session as its client holds it: a browser's token comes from the cookie it was set, and a
+// DPoP client's comes with the key it is bound to.
 #[derive(Debug, Clone)]
 pub struct TestSession {
     pub user: UserDto,
     pub session: SessionDto,
     pub token: String,
     pub client: Client,
+    pub key: Option<Arc<DpopClient>>,
+}
+
+impl TestSession {
+    pub fn key(&self) -> &Arc<DpopClient> {
+        self.key.as_ref().expect("a DPoP session's key")
+    }
 }
 
 pub fn link_templates() -> LinkTemplates {
@@ -100,7 +92,7 @@ pub fn core_builder(storage: Storage, email: Arc<dyn EmailSender>) -> AuthCoreBu
     AuthCore::builder(core_required(storage, email))
 }
 
-// Lets the harness's bearer clients start sessions; a test that sets its own config starts from it.
+// Lets the harness's DPoP clients start sessions; a test that sets its own config starts from it.
 pub fn harness_core(required: AuthCoreRequired) -> AuthCoreBuilder {
     AuthCore::builder(required).session(session_config())
 }
@@ -121,13 +113,16 @@ pub fn harness_rate_limiting(clock: Arc<dyn Clock>) -> RateLimiting {
 
 pub fn session_config() -> SessionConfig {
     SessionConfig {
-        allow_bearer_sessions: true,
+        dpop_origin: Some(Url::parse(DPOP_ORIGIN).expect("DPoP origin").origin()),
         ..SessionConfig::default()
     }
 }
 
 pub struct TestApp {
     router: Router,
+    prefix: &'static str,
+    // DPoP clients sign their proofs by the time the core keeps.
+    clock: Arc<dyn Clock>,
     default_headers: HeaderMap,
     pub email: Arc<CapturingEmailSender>,
     pub sessions: SessionManager,
@@ -165,6 +160,18 @@ impl TestApp {
         Self::assemble(storage, harness_core, |b| b, host_routes)
     }
 
+    // Every call's path is prefixed, as a client of a host that nests doorman sees it.
+    pub fn nested_under(prefix: &'static str) -> Self {
+        let mut app = Self::assemble(
+            InMemoryStorage::new().all_stores(),
+            harness_core,
+            |b| b,
+            |auth| Router::new().nest(prefix, host_routes(auth).layer(auth.session_layer())),
+        );
+        app.prefix = prefix;
+        app
+    }
+
     fn assemble(
         storage: Storage,
         customise_core: impl FnOnce(AuthCoreRequired) -> AuthCoreBuilder,
@@ -190,12 +197,19 @@ impl TestApp {
 
         TestApp {
             router,
+            prefix: "",
+            clock: Arc::new(SystemClock),
             default_headers: HeaderMap::new(),
             email,
             sessions,
             users,
             authenticators: Mutex::default(),
         }
+    }
+
+    pub fn proofs_signed_by(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     pub fn default_header(mut self, name: &'static str, value: &str) -> Self {
@@ -246,7 +260,8 @@ impl TestApp {
     }
 
     pub fn call(&self, method: Method, path: &str) -> Call<'_> {
-        let mut request = Request::builder().method(method).uri(path);
+        let path = format!("{}{path}", self.prefix);
+        let mut request = Request::builder().method(method.clone()).uri(&path);
         for (name, value) in &self.default_headers {
             request = request.header(name, value);
         }
@@ -254,11 +269,14 @@ impl TestApp {
             app: self,
             request,
             body: Body::empty(),
+            method,
+            path: path.split('?').next().unwrap_or(&path).to_owned(),
+            signer: None,
         }
     }
 
     pub async fn session_for(&self, email: &str) -> TestSession {
-        self.session_as(Client::Bearer, email).await
+        self.session_as(Client::Dpop, email).await
     }
 
     pub async fn session_as(&self, client: Client, email: &str) -> TestSession {
@@ -282,7 +300,7 @@ impl TestApp {
     }
 
     pub async fn log_in_again(&self, authenticator: &mut ResidentAuthenticator) -> TestSession {
-        self.log_in_again_as(Client::Bearer, authenticator).await
+        self.log_in_again_as(Client::Dpop, authenticator).await
     }
 
     pub async fn log_in_again_as(
@@ -320,7 +338,7 @@ impl TestApp {
     }
 
     pub async fn signup(&self, email: &str) -> (TestSession, ResidentAuthenticator) {
-        self.signup_as(Client::Bearer, email).await
+        self.signup_as(Client::Dpop, email).await
     }
 
     pub async fn signup_as(
@@ -340,14 +358,14 @@ impl TestApp {
         email: &str,
         authenticator: &mut ResidentAuthenticator,
     ) -> Reply {
-        self.finish_signup_asking(client, client.requested_transport(), email, authenticator)
+        self.finish_signup_asking(client, client == Client::Dpop, email, authenticator)
             .await
     }
 
     pub async fn finish_signup_asking(
         &self,
         client: Client,
-        transport: Option<SessionTransport>,
+        asks_dpop: bool,
         email: &str,
         authenticator: &mut ResidentAuthenticator,
     ) -> Reply {
@@ -375,11 +393,11 @@ impl TestApp {
 
         self.post("/auth/signup/finish")
             .sent_by(client)
+            .asking_dpop(asks_dpop)
             .json(&RegistrationFinishRequest {
                 challenge_id: challenge.challenge_id,
                 response: authenticator.do_registration(challenge.options),
                 name: Some("first device".into()),
-                transport,
             })
             .send()
             .await
@@ -391,10 +409,10 @@ impl TestApp {
         authenticator: &mut ResidentAuthenticator,
     ) -> TestSession {
         let finish = self
-            .finish_recovery(Client::Bearer, email, authenticator)
+            .finish_recovery(Client::Dpop, email, authenticator)
             .await;
         assert_eq!(finish.status, StatusCode::OK);
-        finish.session(Client::Bearer)
+        finish.session(Client::Dpop)
     }
 
     pub async fn finish_recovery(
@@ -403,14 +421,14 @@ impl TestApp {
         email: &str,
         authenticator: &mut ResidentAuthenticator,
     ) -> Reply {
-        self.finish_recovery_asking(client, client.requested_transport(), email, authenticator)
+        self.finish_recovery_asking(client, client == Client::Dpop, email, authenticator)
             .await
     }
 
     pub async fn finish_recovery_asking(
         &self,
         client: Client,
-        transport: Option<SessionTransport>,
+        asks_dpop: bool,
         email: &str,
         authenticator: &mut ResidentAuthenticator,
     ) -> Reply {
@@ -437,11 +455,11 @@ impl TestApp {
 
         self.post("/auth/recovery/finish")
             .sent_by(client)
+            .asking_dpop(asks_dpop)
             .json(&RegistrationFinishRequest {
                 challenge_id: challenge.challenge_id,
                 response: authenticator.do_registration(challenge.options),
                 name: Some("recovery device".into()),
-                transport,
             })
             .send()
             .await
@@ -479,7 +497,7 @@ impl TestApp {
         authenticator: &mut ResidentAuthenticator,
         credential_id: &[u8],
     ) -> Reply {
-        self.log_in_as(Client::Bearer, authenticator, credential_id)
+        self.log_in_as(Client::Dpop, authenticator, credential_id)
             .await
     }
 
@@ -489,19 +507,14 @@ impl TestApp {
         authenticator: &mut ResidentAuthenticator,
         credential_id: &[u8],
     ) -> Reply {
-        self.log_in_asking(
-            client,
-            client.requested_transport(),
-            authenticator,
-            credential_id,
-        )
-        .await
+        self.log_in_asking(client, client == Client::Dpop, authenticator, credential_id)
+            .await
     }
 
     pub async fn log_in_asking(
         &self,
         client: Client,
-        transport: Option<SessionTransport>,
+        asks_dpop: bool,
         authenticator: &mut ResidentAuthenticator,
         credential_id: &[u8],
     ) -> Reply {
@@ -514,10 +527,10 @@ impl TestApp {
         let challenge: PasskeyChallenge<RequestChallengeResponse> = start.json();
         self.post("/auth/passkey/authenticate/finish")
             .sent_by(client)
+            .asking_dpop(asks_dpop)
             .json(&PasskeyAuthenticateFinishRequest {
                 challenge_id: challenge.challenge_id,
                 response: authenticator.do_authentication(challenge.options, credential_id),
-                transport,
             })
             .send()
             .await
@@ -559,11 +572,39 @@ pub struct Call<'a> {
     app: &'a TestApp,
     request: axum::http::request::Builder,
     body: Body,
+    method: Method,
+    path: String,
+    signer: Option<Signer>,
+}
+
+// Signs the call's proof when it is sent, for the call's own method and path.
+struct Signer {
+    key: Arc<DpopClient>,
+    token: Option<String>,
 }
 
 impl Call<'_> {
-    pub fn bearer(self, token: &str) -> Self {
-        self.header("authorization", &format!("Bearer {token}"))
+    // Presents the token the way a DPoP client does, with a fresh proof from the key.
+    pub fn dpop(self, key: &Arc<DpopClient>, token: &str) -> Self {
+        self.header("authorization", &format!("DPoP {token}"))
+            .signed_by(key, Some(token))
+    }
+
+    pub fn signed_by(mut self, key: &Arc<DpopClient>, token: Option<&str>) -> Self {
+        self.signer = Some(Signer {
+            key: key.clone(),
+            token: token.map(str::to_owned),
+        });
+        self
+    }
+
+    // A DPoP client asks for a DPoP session by proving a key of its own as it finishes.
+    pub fn asking_dpop(self, asks: bool) -> Self {
+        if asks {
+            self.signed_by(&Arc::new(DpopClient::new(DPOP_ORIGIN)), None)
+        } else {
+            self
+        }
     }
 
     // A browser sends the session cookie from the application's own page with this header.
@@ -579,14 +620,14 @@ impl Call<'_> {
     pub fn sent_by(self, client: Client) -> Self {
         match client {
             Client::Browser => self.sent_from_page(),
-            Client::Bearer => self,
+            Client::Dpop => self,
         }
     }
 
     pub fn session(self, session: &TestSession) -> Self {
         match session.client {
             Client::Browser => self.cookie(&session.token),
-            Client::Bearer => self.bearer(&session.token),
+            Client::Dpop => self.dpop(session.key(), &session.token),
         }
     }
 
@@ -605,7 +646,17 @@ impl Call<'_> {
     }
 
     pub async fn send(self) -> Reply {
-        let mut request = self.request.body(self.body).expect("request");
+        let mut builder = self.request;
+        if let Some(signer) = &self.signer {
+            let proof = signer.key.proof(
+                self.method.as_str(),
+                &self.path,
+                signer.token.as_deref(),
+                self.app.clock.now(),
+            );
+            builder = builder.header("dpop", proof);
+        }
+        let mut request = builder.body(self.body).expect("request");
         request
             .extensions_mut()
             .insert(ConnectInfo(SocketAddr::from((
@@ -628,6 +679,7 @@ impl Call<'_> {
             status,
             headers,
             body,
+            key: self.signer.map(|signer| signer.key),
         }
     }
 }
@@ -636,6 +688,7 @@ pub struct Reply {
     pub status: StatusCode,
     pub headers: HeaderMap,
     body: Bytes,
+    key: Option<Arc<DpopClient>>,
 }
 
 impl Reply {
@@ -664,20 +717,22 @@ impl Reply {
                     session: auth.session,
                     token: self.session_cookie().expect("the session cookie is set"),
                     client,
+                    key: None,
                 }
             }
-            Client::Bearer => {
+            Client::Dpop => {
                 assert!(
                     self.set_cookie().is_none(),
-                    "a bearer session set a cookie: {:?}",
+                    "a DPoP session set a cookie: {:?}",
                     self.headers
                 );
-                let auth: BearerAuthResponse = self.json();
+                let auth: DpopAuthResponse = self.json();
                 TestSession {
                     user: auth.user,
                     session: auth.session,
                     token: auth.token,
                     client,
+                    key: self.key.clone(),
                 }
             }
         }

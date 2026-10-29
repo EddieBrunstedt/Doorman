@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{
     EmailLink, PasskeyChallengeId, Session, SessionId, StoredPasskey, StoredPasskeyAuthentication,
-    StoredPasskeyRegistration, TokenHash, User, UserId,
+    StoredPasskeyRegistration, TokenHash, UsedDpopProof, User, UserId,
 };
 use mongodb::bson::spec::BinarySubtype;
 use mongodb::bson::{Binary, Bson, DateTime as BsonDateTime, Document, doc};
@@ -35,7 +35,7 @@ fn to_binary(bytes: Vec<u8>) -> Binary {
 pub(crate) use doorman_core::encoding::{
     authentication_purpose_from_str, authentication_purpose_to_str, client_ip_from_str, hex,
     purpose_from_str, purpose_to_str as purpose_str, registration_purpose_from_str,
-    registration_purpose_to_str, session_transport_from_str, session_transport_to_str,
+    registration_purpose_to_str, session_transport_from_parts, session_transport_to_str,
     user_status_from_parts, user_status_to_str,
 };
 
@@ -76,6 +76,14 @@ pub(crate) fn get_bytes(doc: &Document, key: &str) -> StorageResult<Vec<u8>> {
         Some(Bson::Binary(b)) => Ok(b.bytes.clone()),
         Some(_) => Err(wrong_type(key, "Binary")),
         None => Err(missing(key)),
+    }
+}
+
+pub(crate) fn get_opt_bytes(doc: &Document, key: &str) -> StorageResult<Option<Vec<u8>>> {
+    match doc.get(key) {
+        None | Some(Bson::Null) => Ok(None),
+        Some(Bson::Binary(b)) => Ok(Some(b.bytes.clone())),
+        Some(_) => Err(wrong_type(key, "Binary")),
     }
 }
 
@@ -185,12 +193,15 @@ pub(crate) fn session_to_doc(session: &Session) -> Document {
         "_id": session_id_str(session.id),
         "user_id": session.user_id.0.to_string(),
         "token_hash": token_hash_bin,
-        "transport": session_transport_to_str(session.transport),
+        "transport": session_transport_to_str(&session.transport),
         "created_at": to_bson_dt(session.created_at),
         "last_used_at": to_bson_dt(session.last_used_at),
         "expires_at": to_bson_dt(session.expires_at),
         "ip": session.ip.to_string(),
     };
+    if let Some(jkt) = session.transport.dpop_jkt() {
+        doc.insert("dpop_jkt", to_binary(jkt.0.to_vec()));
+    }
     if let Some(ua) = &session.user_agent {
         doc.insert("user_agent", ua.clone());
     }
@@ -200,12 +211,22 @@ pub(crate) fn session_to_doc(session: &Session) -> Document {
     doc
 }
 
+pub(crate) fn dpop_proof_to_doc(proof: &UsedDpopProof) -> Document {
+    doc! {
+        "_id": to_binary(proof.id.0.to_vec()),
+        "expires_at": to_bson_dt(proof.expires_at),
+    }
+}
+
 pub(crate) fn session_from_doc(doc: &Document) -> StorageResult<Session> {
     Ok(Session {
         id: SessionId(get_uuid(doc, "_id")?),
         user_id: UserId(get_uuid(doc, "user_id")?),
         token_hash: get_token_hash(doc, "token_hash")?,
-        transport: session_transport_from_str(&get_str(doc, "transport")?)?,
+        transport: session_transport_from_parts(
+            &get_str(doc, "transport")?,
+            get_opt_bytes(doc, "dpop_jkt")?.as_deref(),
+        )?,
         created_at: get_dt(doc, "created_at")?,
         last_used_at: get_dt(doc, "last_used_at")?,
         expires_at: get_dt(doc, "expires_at")?,

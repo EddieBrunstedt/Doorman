@@ -23,13 +23,14 @@ impl SessionStore for AuditedSessions {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, token_hash, transport, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, user_id, token_hash, transport, dpop_jkt, created_at, last_used_at, expires_at, ip, user_agent, recovery_cool_down_until)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.0.as_bytes().to_vec())
         .bind(session.user_id.0.as_bytes().to_vec())
         .bind(session.token_hash.0.to_vec())
-        .bind(session_transport_to_str(session.transport))
+        .bind(session_transport_to_str(&session.transport))
+        .bind(session.transport.dpop_jkt().map(|jkt| jkt.0.to_vec()))
         .bind(session.created_at)
         .bind(session.last_used_at)
         .bind(session.expires_at)

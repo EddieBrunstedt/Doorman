@@ -2,6 +2,7 @@ use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use doorman_core::Error;
+use doorman_core::dpop::DPOP_ALGORITHM;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,12 +40,24 @@ pub(crate) fn error_response(err: &Error) -> Response {
         err.to_string()
     };
     let mut response = json_error(status, code, message);
-    if let Error::RateLimited { retry_after } = err {
-        let round_up = u64::from(retry_after.subsec_nanos() > 0);
-        let secs = retry_after.as_secs().saturating_add(round_up).max(1);
-        if let Ok(value) = HeaderValue::from_str(&secs.to_string()) {
-            response.headers_mut().insert(header::RETRY_AFTER, value);
+    match err {
+        Error::RateLimited { retry_after } => {
+            let round_up = u64::from(retry_after.subsec_nanos() > 0);
+            let secs = retry_after.as_secs().saturating_add(round_up).max(1);
+            if let Ok(value) = HeaderValue::from_str(&secs.to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
         }
+        // RFC 9449 §7.1: the challenge names the error and the one algorithm a proof may use.
+        Error::InvalidDpopProof => {
+            let challenge = format!(r#"DPoP error="invalid_dpop_proof", algs="{DPOP_ALGORITHM}""#);
+            if let Ok(value) = HeaderValue::from_str(&challenge) {
+                response
+                    .headers_mut()
+                    .insert(header::WWW_AUTHENTICATE, value);
+            }
+        }
+        _ => {}
     }
     response
 }
@@ -67,7 +80,7 @@ impl IntoResponse for LayerRefusal {
             LayerRefusal::AmbiguousSessionToken => (
                 StatusCode::BAD_REQUEST,
                 "ambiguous_session_token",
-                "the request carries both a session cookie and a bearer token",
+                "the request carries both a session cookie and a DPoP token",
             ),
         };
         json_error(status, code, message.to_owned())
@@ -86,7 +99,8 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
         Error::Email(_) => (StatusCode::INTERNAL_SERVER_ERROR, "email_error"),
         Error::SessionNotFound => (StatusCode::UNAUTHORIZED, "session_not_found"),
-        Error::BearerSessionNotAllowed => (StatusCode::FORBIDDEN, "bearer_session_not_allowed"),
+        Error::DpopSessionNotAllowed => (StatusCode::FORBIDDEN, "dpop_session_not_allowed"),
+        Error::InvalidDpopProof => (StatusCode::UNAUTHORIZED, "invalid_dpop_proof"),
         Error::UserNotFound => (StatusCode::NOT_FOUND, "user_not_found"),
         Error::InvalidEmail => (StatusCode::BAD_REQUEST, "invalid_email"),
         Error::InvalidPasskeyName => (StatusCode::BAD_REQUEST, "invalid_passkey_name"),
@@ -142,6 +156,19 @@ mod tests {
     }
 
     #[test]
+    fn an_invalid_dpop_proof_is_challenged_for_a_new_one() {
+        let response = error_response(&Error::InvalidDpopProof);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .expect("www-authenticate present"),
+            r#"DPoP error="invalid_dpop_proof", algs="ES256""#
+        );
+    }
+
+    #[test]
     fn classify_covers_every_variant() {
         use StatusCode as S;
         let cases: &[(Error, StatusCode, &str)] = &[
@@ -157,9 +184,14 @@ mod tests {
             ),
             (Error::SessionNotFound, S::UNAUTHORIZED, "session_not_found"),
             (
-                Error::BearerSessionNotAllowed,
+                Error::DpopSessionNotAllowed,
                 S::FORBIDDEN,
-                "bearer_session_not_allowed",
+                "dpop_session_not_allowed",
+            ),
+            (
+                Error::InvalidDpopProof,
+                S::UNAUTHORIZED,
+                "invalid_dpop_proof",
             ),
             (Error::UserNotFound, S::NOT_FOUND, "user_not_found"),
             (Error::InvalidEmail, S::BAD_REQUEST, "invalid_email"),

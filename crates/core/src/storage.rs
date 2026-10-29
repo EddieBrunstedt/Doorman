@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use crate::client_ip::ClientIp;
+pub use crate::dpop::JwkThumbprint;
 #[cfg(doc)]
 use crate::error::StorageErrorKind;
 use crate::error::StorageResult;
@@ -29,6 +30,7 @@ pub struct ExpiringStores {
     pub sessions: Arc<dyn SessionStore>,
     pub email_links: Arc<dyn EmailLinkStore>,
     pub passkey_challenges: Arc<dyn PasskeyChallengeStore>,
+    pub dpop_proofs: Arc<dyn DpopProofStore>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -118,7 +120,16 @@ impl User {
 #[serde(rename_all = "snake_case")]
 pub enum SessionTransport {
     Cookie,
-    Bearer,
+    Dpop { jkt: JwkThumbprint },
+}
+
+impl SessionTransport {
+    pub fn dpop_jkt(&self) -> Option<JwkThumbprint> {
+        match self {
+            SessionTransport::Dpop { jkt } => Some(*jkt),
+            SessionTransport::Cookie => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,6 +417,24 @@ pub trait EmailLinkStore: Send + Sync {
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DpopProofId(pub [u8; 32]);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsedDpopProof {
+    pub id: DpopProofId,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[async_trait]
+pub trait DpopProofStore: Send + Sync {
+    // Core never offers a proof at or past its deadline, so a row that has expired may refuse it
+    // or not.
+    async fn use_proof(&self, proof: UsedDpopProof) -> StorageResult<bool>;
+
+    async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,7 +453,9 @@ mod tests {
             id: SessionId::new(),
             user_id: UserId::new(),
             token_hash: hash_token("a-session-token"),
-            transport: SessionTransport::Bearer,
+            transport: SessionTransport::Dpop {
+                jkt: JwkThumbprint([9u8; 32]),
+            },
             created_at: ts(1_000),
             last_used_at: ts(1_000),
             expires_at: ts(2_000),

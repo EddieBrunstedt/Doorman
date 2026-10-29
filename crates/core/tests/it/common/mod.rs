@@ -15,8 +15,8 @@ use doorman_core::email::{DefaultEmailTemplates, EmailSender, EmailTemplates};
 use doorman_core::email_link::{LinkTemplate, LinkTemplates};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::memory::{
-    InMemoryEmailLinkStore, InMemoryPasskeyChallengeStore, InMemoryPasskeyStore,
-    InMemorySessionStore, InMemoryUserStore,
+    InMemoryDpopProofStore, InMemoryEmailLinkStore, InMemoryPasskeyChallengeStore,
+    InMemoryPasskeyStore, InMemorySessionStore, InMemoryUserStore,
 };
 use doorman_core::metrics::MetricSink;
 use doorman_core::operator::OperatorManager;
@@ -27,7 +27,7 @@ use doorman_core::recovery::{RecoveryConfig, RecoveryManager};
 use doorman_core::security_notice::NoticePolicy;
 use doorman_core::session::hash_token;
 use doorman_core::session::{
-    IssuedSession, ResolvedSession, SessionConfig, SessionContext, SessionManager,
+    IssuedSession, RequestTransport, ResolvedSession, SessionConfig, SessionContext, SessionManager,
 };
 use doorman_core::signup::{SignupConfig, SignupManager};
 use doorman_core::storage::{
@@ -505,6 +505,7 @@ impl HarnessBuilder {
         let passkeys: Arc<InMemoryPasskeyStore> = Arc::new(InMemoryPasskeyStore::new());
         let challenges: Arc<InMemoryPasskeyChallengeStore> =
             Arc::new(InMemoryPasskeyChallengeStore::new());
+        let dpop_proofs: Arc<InMemoryDpopProofStore> = Arc::new(InMemoryDpopProofStore::new());
         let audit: Arc<InMemoryAuditSink> = Arc::new(InMemoryAuditSink::new());
         let email: Arc<CapturingEmailSender> = Arc::new(CapturingEmailSender::new());
         let clock: Arc<MockClock> = Arc::new(MockClock::new(ts(2026, 1, 1)));
@@ -539,6 +540,7 @@ impl HarnessBuilder {
                 sessions: session_store.clone(),
                 email_links: email_link_store.clone(),
                 passkey_challenges: challenge_store.clone(),
+                dpop_proofs,
             },
         };
 
@@ -695,7 +697,7 @@ async fn stored_session(
         .await
         .expect("store session");
     h.session_manager
-        .resolve(&token, SessionTransport::Cookie)
+        .resolve(&token, &RequestTransport::Cookie)
         .await
         .expect("resolve")
         .expect("resolve stored session")
@@ -765,7 +767,7 @@ pub async fn provision_user(h: &Harness, email: &str) -> User {
             started.challenge_id,
             &attestation,
             Some("initial device".into()),
-            SessionTransport::Cookie,
+            RequestTransport::Cookie,
             request_context(),
         )
         .await
@@ -826,7 +828,7 @@ pub async fn log_in(
         .expect("start login");
     let assertion = wa.do_authentication(options, credential_id);
     h.passkey
-        .finish_authentication(challenge_id, &assertion, SessionTransport::Cookie, context)
+        .finish_authentication(challenge_id, &assertion, RequestTransport::Cookie, context)
         .await
         .expect("finish login")
         .session

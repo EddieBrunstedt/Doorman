@@ -4,7 +4,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use axum::{Router, routing::get};
 use doorman_axum::dto::{
-    BearerAuthResponse, PasskeyAuthenticateFinishRequest, PasskeyChallenge, RecoveryRedeemRequest,
+    DpopAuthResponse, PasskeyAuthenticateFinishRequest, PasskeyChallenge, RecoveryRedeemRequest,
     RecoveryRequest, RegistrationFinishRequest, SignupRedeemRequest, SignupRequest,
 };
 use doorman_axum::prelude::*;
@@ -12,7 +12,7 @@ use doorman_core::email_link::TOKEN_PLACEHOLDER;
 use doorman_core::memory::InMemoryRateLimiter;
 use doorman_sqlx::SqliteStorage;
 use doorman_test_support::CapturingEmailSender;
-use doorman_test_support::ResidentAuthenticator;
+use doorman_test_support::{DpopClient, ResidentAuthenticator};
 use tokio::net::TcpListener;
 use url::Url;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
@@ -26,6 +26,13 @@ async fn signup_login_recovery_round_trip() {
     async fn me(AuthUser(user): AuthUser) -> String {
         user.email.unwrap_or_else(|| "unknown".to_owned())
     }
+
+    // Bound first, so the server knows the origin its DPoP clients send their requests to.
+    let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let api: Url = format!("http://{addr}").parse().expect("api origin");
 
     let storage = SqliteStorage::connect("sqlite::memory:")
         .await
@@ -56,7 +63,7 @@ async fn signup_login_recovery_round_trip() {
         },
     })
     .session(SessionConfig {
-        allow_bearer_sessions: true,
+        dpop_origin: Some(api.origin()),
         ..Default::default()
     })
     .build()
@@ -71,10 +78,6 @@ async fn signup_login_recovery_round_trip() {
         .route("/api/me", get(me))
         .layer(auth.session_layer());
 
-    let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let server = tokio::spawn(async move {
         axum::serve(
@@ -91,6 +94,10 @@ async fn signup_login_recovery_round_trip() {
     let client = reqwest::Client::new();
     let url = |path: &str| format!("http://{addr}{path}");
     let mut authenticator = ResidentAuthenticator::new(&origin);
+    let key = DpopClient::new(api.as_str());
+    let proof = |method: &str, path: &str, token: Option<&str>| {
+        key.proof(method, path, token, chrono::Utc::now())
+    };
 
     let request = client
         .post(url("/auth/signup/request"))
@@ -125,19 +132,24 @@ async fn signup_login_recovery_round_trip() {
     let login_credential_id = attestation.raw_id.as_ref().to_vec();
     let finish = client
         .post(url("/auth/signup/finish"))
+        .header("dpop", proof("POST", "/auth/signup/finish", None))
         .json(&RegistrationFinishRequest {
             challenge_id: challenge.challenge_id,
             response: attestation,
             name: Some("primary device".into()),
-            transport: Some(SessionTransport::Bearer),
         })
         .send()
         .await
         .expect("signup finish");
     assert_eq!(finish.status(), StatusCode::OK);
     assert!(finish.headers().get("set-cookie").is_none());
-    let signed_up: BearerAuthResponse = finish.json().await.expect("finish body");
+    let signed_up: DpopAuthResponse = finish.json().await.expect("finish body");
     assert!(!signed_up.token.is_empty(), "signup issued a session token");
+    assert_eq!(
+        signed_up.session.transport,
+        SessionTransport::Dpop { jkt: key.jkt() },
+        "the session is bound to the key that signed the finish",
+    );
 
     let start = client
         .post(url("/auth/passkey/authenticate/start"))
@@ -150,21 +162,25 @@ async fn signup_login_recovery_round_trip() {
     let assertion = authenticator.do_authentication(challenge.options, &login_credential_id);
     let finish = client
         .post(url("/auth/passkey/authenticate/finish"))
+        .header(
+            "dpop",
+            proof("POST", "/auth/passkey/authenticate/finish", None),
+        )
         .json(&PasskeyAuthenticateFinishRequest {
             challenge_id: challenge.challenge_id,
             response: assertion,
-            transport: Some(SessionTransport::Bearer),
         })
         .send()
         .await
         .expect("authenticate finish");
     assert_eq!(finish.status(), StatusCode::OK);
-    let logged_in: BearerAuthResponse = finish.json().await.expect("authenticate finish body");
+    let logged_in: DpopAuthResponse = finish.json().await.expect("authenticate finish body");
     assert_eq!(logged_in.user.id, signed_up.user.id, "same user");
 
     let me = client
         .get(url("/api/me"))
-        .bearer_auth(&logged_in.token)
+        .header("authorization", format!("DPoP {}", logged_in.token))
+        .header("dpop", proof("GET", "/api/me", Some(&logged_in.token)))
         .send()
         .await
         .expect("me");
@@ -208,17 +224,17 @@ async fn signup_login_recovery_round_trip() {
     let attestation = authenticator.do_registration(challenge.options);
     let finish = client
         .post(url("/auth/recovery/finish"))
+        .header("dpop", proof("POST", "/auth/recovery/finish", None))
         .json(&RegistrationFinishRequest {
             challenge_id: challenge.challenge_id,
             response: attestation,
             name: Some("recovery device".into()),
-            transport: Some(SessionTransport::Bearer),
         })
         .send()
         .await
         .expect("recovery finish");
     assert_eq!(finish.status(), StatusCode::OK);
-    let recovered: BearerAuthResponse = finish.json().await.expect("recovery finish body");
+    let recovered: DpopAuthResponse = finish.json().await.expect("recovery finish body");
     assert_eq!(
         recovered.user.id, signed_up.user.id,
         "recovered the same user"
@@ -226,7 +242,8 @@ async fn signup_login_recovery_round_trip() {
 
     let me = client
         .get(url("/api/me"))
-        .bearer_auth(&recovered.token)
+        .header("authorization", format!("DPoP {}", recovered.token))
+        .header("dpop", proof("GET", "/api/me", Some(&recovered.token)))
         .send()
         .await
         .expect("me after recovery");

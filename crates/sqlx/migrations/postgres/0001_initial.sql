@@ -13,6 +13,7 @@ CREATE TABLE sessions (
     user_id BYTEA NOT NULL,
     token_hash BYTEA NOT NULL UNIQUE,
     transport TEXT NOT NULL,
+    dpop_jkt BYTEA,
     created_at TIMESTAMPTZ NOT NULL,
     last_used_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
@@ -72,3 +73,9 @@ CREATE TABLE passkey_authentications (
     expires_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX idx_passkey_authentications_expires_at ON passkey_authentications(expires_at);
+
+CREATE TABLE dpop_proofs (
+    id BYTEA PRIMARY KEY,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX idx_dpop_proofs_expires_at ON dpop_proofs(expires_at);

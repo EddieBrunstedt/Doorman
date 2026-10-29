@@ -75,6 +75,10 @@ impl MongoDb {
         self.collection("passkey_authentications")
     }
 
+    pub(crate) fn dpop_proofs(&self) -> Coll {
+        self.collection("dpop_proofs")
+    }
+
     pub(crate) async fn ensure_indexes(&self) -> StorageResult<()> {
         self.ensure_user_indexes().await?;
         self.ensure_session_indexes().await?;
@@ -82,6 +86,7 @@ impl MongoDb {
         self.ensure_passkey_indexes().await?;
         self.ensure_pkreg_indexes().await?;
         self.ensure_pkauth_indexes().await?;
+        self.ensure_dpop_proof_indexes().await?;
         Ok(())
     }
 
@@ -225,6 +230,24 @@ impl MongoDb {
                     .options(
                         IndexOptions::builder()
                             .name("idx_pkauth_expires_at".to_string())
+                            .expire_after(Duration::ZERO)
+                            .build(),
+                    )
+                    .build(),
+            )
+            .await
+            .map_err(err)?;
+        Ok(())
+    }
+
+    async fn ensure_dpop_proof_indexes(&self) -> StorageResult<()> {
+        self.dpop_proofs()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "expires_at": 1 })
+                    .options(
+                        IndexOptions::builder()
+                            .name("idx_dpop_proofs_expires_at".to_string())
                             .expire_after(Duration::ZERO)
                             .build(),
                     )

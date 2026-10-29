@@ -974,6 +974,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "doorman-test-support",
+ "openssl",
  "proptest",
  "rand 0.10.3",
  "serde",
@@ -1067,8 +1068,12 @@ name = "doorman-test-support"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "chrono",
  "doorman-core",
+ "openssl",
+ "serde_json",
+ "sha2 0.11.1",
  "url",
  "webauthn-authenticator-rs",
  "webauthn-rs-proto",
