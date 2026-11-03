@@ -41,7 +41,7 @@ use doorman_core::user::UserManager;
 pub use doorman_test_support::token_from_email;
 use doorman_test_support::{
     CLIENT_IP, CapturingEmailSender, CapturingMetrics, InMemoryAuditSink, MockClock, lifetime,
-    request_context,
+    relying_party, request_context,
 };
 pub use doorman_test_support::{
     ResidentAuthenticator, assert_discoverable_request_options,
@@ -52,11 +52,12 @@ use url::Url;
 pub const SIGNUP_URL: &str = "https://app.test/signup?token={token}";
 pub const RECOVERY_URL: &str = "https://app.test/recovery?token={token}";
 pub const USER_URL: &str = "https://app.test/email-change?token={token}";
-pub const RP_ID: &str = "localhost";
-pub const RP_NAME: &str = "doorman tests";
-
 pub fn rp_origin() -> Url {
     Url::parse("http://localhost:8080").expect("valid url")
+}
+
+pub fn passkey_config() -> PasskeyConfig {
+    PasskeyConfig::new(relying_party(rp_origin()))
 }
 
 pub fn ts(year: i32, month: u32, day: u32) -> DateTime<Utc> {
@@ -478,7 +479,7 @@ impl Harness {
             storage: self.storage.clone(),
             email_sender: self.email.clone() as Arc<dyn EmailSender>,
             audit_sink: self.audit.clone() as Arc<dyn AuditSink>,
-            passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
+            passkey: passkey_config(),
             reauthentication: ReauthPolicy::disabled(),
             rate_limiting: RateLimiting::Disabled,
             links: link_templates(),
@@ -486,7 +487,6 @@ impl Harness {
         .clock(self.clock.clone() as Arc<dyn Clock>)
         .session(session_config)
         .build()
-        .expect("another process assembles")
     }
 }
 
@@ -510,7 +510,7 @@ impl HarnessBuilder {
                 expiry: SessionExpiry::absolute(lifetime(Duration::from_secs(60 * 60))),
                 ..SessionConfig::default()
             },
-            passkey: PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME),
+            passkey: passkey_config(),
             rate_limiting: RateLimiting::Disabled,
             email_templates: Arc::new(DefaultEmailTemplates),
             notice_policy: NoticePolicy::default(),
@@ -625,8 +625,7 @@ impl HarnessBuilder {
         .signup(self.signup)
         .recovery(self.recovery)
         .notice_policy(self.notice_policy)
-        .build()
-        .expect("harness assembles");
+        .build();
 
         Harness {
             passkey: core.passkey,

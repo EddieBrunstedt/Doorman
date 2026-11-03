@@ -14,15 +14,10 @@ use doorman_test_support::request_context;
 use webauthn_rs_proto::AuthenticatorTransport;
 
 use crate::common::{
-    Harness, RP_ID, RP_NAME, assert_discoverable_request_options,
-    assert_resident_registration_options, authenticator, kinds, last_email_change_token, make_user,
-    passkey_count, register_passkey, rp_origin, session_count, session_for,
-    session_in_cool_down_for,
+    Harness, assert_discoverable_request_options, assert_resident_registration_options,
+    authenticator, kinds, last_email_change_token, make_user, passkey_config, passkey_count,
+    register_passkey, session_count, session_for, session_in_cool_down_for,
 };
-
-fn base_passkey_config() -> PasskeyConfig {
-    PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
-}
 
 #[tokio::test]
 async fn register_then_discoverable_authenticate_round_trip() {
@@ -1429,7 +1424,7 @@ async fn start_registration_refuses_disabled_user() {
     let h = Harness::builder()
         .passkey_config(PasskeyConfig {
             max_pending_registrations_per_user: NonZeroU32::new(1),
-            ..base_passkey_config()
+            ..passkey_config()
         })
         .build();
     let user = make_user(&h, "disabled@example.com").await;
@@ -1462,7 +1457,7 @@ async fn registration_is_rejected_once_passkey_cap_is_reached() {
     let h = Harness::builder()
         .passkey_config(PasskeyConfig {
             max_passkeys_per_user: NonZeroU32::new(1),
-            ..base_passkey_config()
+            ..passkey_config()
         })
         .build();
     let user = make_user(&h, "cap@example.com").await;
@@ -1504,7 +1499,7 @@ async fn start_registration_is_rejected_once_pending_challenge_cap_is_reached() 
     let h = Harness::builder()
         .passkey_config(PasskeyConfig {
             max_pending_registrations_per_user: NonZeroU32::new(2),
-            ..base_passkey_config()
+            ..passkey_config()
         })
         .build();
     let user = make_user(&h, "pending@example.com").await;
@@ -1554,7 +1549,7 @@ async fn expired_registrations_do_not_count_toward_the_pending_cap() {
     let h = Harness::builder()
         .passkey_config(PasskeyConfig {
             max_pending_registrations_per_user: NonZeroU32::new(1),
-            ..base_passkey_config()
+            ..passkey_config()
         })
         .build();
     let user = make_user(&h, "abandoned@example.com").await;

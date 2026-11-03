@@ -1,6 +1,7 @@
 use axum::http::{Method, StatusCode};
 use doorman_axum::dto::PasskeyChallenge;
 use doorman_core::passkey::PasskeyConfig;
+use doorman_core::relying_party::RelyingParty;
 use url::Url;
 use webauthn_rs::prelude::RequestChallengeResponse;
 
@@ -169,10 +170,12 @@ async fn the_relying_party_origins_and_the_hosts_trusted_origins_are_the_applica
         let app = TestApp::with(
             |r| {
                 harness_core(AuthCoreRequired {
-                    passkey: PasskeyConfig {
-                        additional_origins: vec![related],
-                        ..PasskeyConfig::new("localhost", rp_origin(), "doorman tests")
-                    },
+                    passkey: PasskeyConfig::new(
+                        RelyingParty::builder(rp_origin(), "doorman tests")
+                            .additional_origin(related)
+                            .build()
+                            .expect("additional origins are not checked against the ID"),
+                    ),
                     ..r
                 })
             },

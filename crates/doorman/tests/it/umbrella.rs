@@ -21,7 +21,7 @@ async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn 
         storage: storage.all_stores(),
         email_sender: Arc::new(TerminalEmailSender),
         audit_sink: Arc::new(NoopAuditSink),
-        passkey: PasskeyConfig::new("localhost", origin.clone(), "Example"),
+        passkey: PasskeyConfig::new(RelyingParty::from_origin(origin.clone(), "Example")?),
         reauthentication: ReauthPolicy::required_for([
             ReauthAction::DeleteUser,
             ReauthAction::RemovePasskey,
@@ -52,7 +52,7 @@ async fn umbrella_prelude_builds_the_stack() -> std::result::Result<(), Box<dyn 
         token_lifetime: Lifetime::new(Duration::from_secs(60 * 10))?,
         cool_down: CoolDownLength::new(Lifetime::new(Duration::from_secs(60 * 60 * 48))?)?,
     })
-    .build()?;
+    .build();
     let auth = AuthService::builder(core, PurgeSchedule::external())
         .cookie(CookieConfig::default())
         .build()?;

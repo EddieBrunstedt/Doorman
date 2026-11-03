@@ -12,7 +12,7 @@ use doorman_axum::prelude::*;
 use doorman_core::audit::{Actor, AuditEventKind};
 use doorman_core::memory::{InMemoryRateLimiter, InMemoryStorage};
 use doorman_core::rate_limit::RateLimits;
-use doorman_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock};
+use doorman_test_support::{CapturingEmailSender, InMemoryAuditSink, MockClock, relying_party};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -30,7 +30,7 @@ fn clock() -> Arc<MockClock> {
 fn router(limits: RateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAuditSink>) {
     let clock = clock();
     let audit = Arc::new(InMemoryAuditSink::new());
-    let passkey = PasskeyConfig::new("localhost", ORIGIN.parse().expect("origin"), "tests");
+    let passkey = PasskeyConfig::new(relying_party(ORIGIN.parse().expect("origin")));
     let core = AuthCore::builder(AuthCoreRequired {
         storage: InMemoryStorage::new().all_stores(),
         email_sender: Arc::new(CapturingEmailSender::new()),
@@ -44,8 +44,7 @@ fn router(limits: RateLimits) -> (Router, Arc<MockClock>, Arc<InMemoryAuditSink>
         links: common::link_templates(),
     })
     .clock(clock.clone())
-    .build()
-    .expect("auth core built");
+    .build();
     let auth = AuthService::builder(core, PurgeSchedule::external())
         .build()
         .expect("build");

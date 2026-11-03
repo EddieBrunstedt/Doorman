@@ -108,15 +108,14 @@ impl PasskeyRegistrations {
     pub(crate) fn new(
         deps: &CoreDeps,
         config: &PasskeyConfig,
-        webauthn: Arc<Webauthn>,
         recovery_cool_down: CoolDownLength,
     ) -> Self {
         Self {
             records: UserRecords::new(deps),
-            challenges: PasskeyChallenges::from_deps(deps, config, webauthn.clone()),
+            challenges: PasskeyChallenges::from_deps(deps, config),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
-            webauthn,
+            webauthn: config.relying_party.webauthn().clone(),
             max_passkeys_per_user: config.max_passkeys_per_user,
             recovery_cool_down,
         }

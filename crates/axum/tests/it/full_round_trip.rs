@@ -47,7 +47,9 @@ async fn signup_login_recovery_round_trip() {
         storage: storage.all_stores(),
         email_sender: email.clone() as Arc<dyn doorman_core::email::EmailSender>,
         audit_sink: Arc::new(NoopAuditSink),
-        passkey: PasskeyConfig::new("localhost", origin.clone(), "Example"),
+        passkey: PasskeyConfig::new(
+            RelyingParty::from_origin(origin.clone(), "Example").expect("relying party"),
+        ),
         reauthentication: ReauthPolicy::disabled(),
         rate_limiting: RateLimiting::enforced(Arc::new(InMemoryRateLimiter::new(Arc::new(
             SystemClock,
@@ -67,8 +69,7 @@ async fn signup_login_recovery_round_trip() {
         dpop_origin: Some(DpopOrigin::new(api.origin()).expect("DPoP origin")),
         ..Default::default()
     })
-    .build()
-    .expect("auth core built");
+    .build();
     let auth = AuthService::builder(core, PurgeSchedule::external())
         .cookie(CookieConfig::default())
         .build()

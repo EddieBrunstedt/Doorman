@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use doorman_axum::config::CookieConfig;
+use doorman_axum::config::{CookieConfig, CookieConfigError, SameSite};
 use doorman_axum::{
     AuthService, AuthServiceBuilder, BuilderError, PurgeIntervalError, PurgeSchedule,
 };
@@ -19,7 +19,6 @@ fn core() -> AuthCore {
         Arc::new(CapturingEmailSender::new()),
     )
     .build()
-    .expect("core")
 }
 
 fn valid_builder() -> AuthServiceBuilder {
@@ -71,8 +70,7 @@ async fn service_drives_the_managers_the_core_assembled() {
         email.clone() as Arc<dyn EmailSender>,
     )
     .notice_policy(policy.clone())
-    .build()
-    .expect("core");
+    .build();
     let auth = AuthService::builder(core, PurgeSchedule::external())
         .build()
         .expect("build");
@@ -92,101 +90,121 @@ async fn service_drives_the_managers_the_core_assembled() {
 }
 
 #[test]
-fn host_prefixed_cookie_without_secure_is_rejected() {
-    let err = valid_builder()
-        .cookie(CookieConfig {
-            session_cookie_name: "__Host-doorman".to_string(),
-            secure: false,
-            ..CookieConfig::default()
-        })
-        .build()
-        .err();
+fn a_cookie_name_that_is_not_a_token_is_refused() {
+    for name in ["", "a b", "a=b", "a;b", "a\nb", "sess\u{e9}", "a\"b", "a,b"] {
+        assert_eq!(
+            CookieConfig::builder(name).build().err(),
+            Some(CookieConfigError::InvalidName(name.to_owned())),
+            "{name:?}"
+        );
+    }
+}
+
+#[test]
+fn a_cookie_path_that_cannot_be_an_attribute_is_refused() {
+    for path in ["", "relative", "/a;b", "/a\nb", "/caf\u{e9}"] {
+        assert_eq!(
+            CookieConfig::builder("s").path(path).build().err(),
+            Some(CookieConfigError::InvalidPath(path.to_owned())),
+            "{path:?}"
+        );
+    }
+    assert!(CookieConfig::builder("s").path("/app").build().is_ok());
+}
+
+#[test]
+fn a_cookie_domain_must_be_a_domain_name() {
+    for domain in [
+        "",
+        ".",
+        "a..b",
+        "example.com;",
+        "exa mple.com",
+        "b\u{fc}cher.de",
+    ] {
+        assert_eq!(
+            CookieConfig::builder("s").domain(domain).build().err(),
+            Some(CookieConfigError::InvalidDomain(domain.to_owned())),
+            "{domain:?}"
+        );
+    }
+    for domain in [
+        "example.com",
+        ".example.com",
+        "xn--bcher-kva.de",
+        "localhost",
+    ] {
+        assert!(
+            CookieConfig::builder("s").domain(domain).build().is_ok(),
+            "{domain:?}"
+        );
+    }
+}
+
+#[test]
+fn a_host_prefixed_cookie_must_be_secure_with_the_root_path_and_no_domain() {
+    // Browsers match the prefix whatever its case.
+    for name in ["__Host-s", "__host-s", "__HOST-s"] {
+        assert!(CookieConfig::builder(name).build().is_ok(), "{name}");
+        assert_eq!(
+            CookieConfig::builder(name).insecure().build().err(),
+            Some(CookieConfigError::PrefixNeedsSecure("__Host-")),
+            "{name}"
+        );
+        assert_eq!(
+            CookieConfig::builder(name).path("/app").build().err(),
+            Some(CookieConfigError::HostPrefixNeedsRootPath),
+            "{name}"
+        );
+        assert_eq!(
+            CookieConfig::builder(name)
+                .domain("example.com")
+                .build()
+                .err(),
+            Some(CookieConfigError::HostPrefixForbidsDomain),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_secure_prefixed_cookie_must_be_secure() {
+    for name in ["__Secure-s", "__secure-s"] {
+        assert!(
+            CookieConfig::builder(name)
+                .domain("example.com")
+                .path("/app")
+                .build()
+                .is_ok(),
+            "{name}"
+        );
+        assert_eq!(
+            CookieConfig::builder(name).insecure().build().err(),
+            Some(CookieConfigError::PrefixNeedsSecure("__Secure-")),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_same_site_none_cookie_must_be_secure() {
     assert!(
-        matches!(
-            err,
-            Some(BuilderError::InvalidCookiePrefix {
-                prefix: "__Host-",
-                ..
-            })
-        ),
-        "expected InvalidCookiePrefix for __Host- without Secure, got: {err:?}"
+        CookieConfig::builder("s")
+            .same_site(SameSite::None)
+            .build()
+            .is_ok()
+    );
+    assert_eq!(
+        CookieConfig::builder("s")
+            .same_site(SameSite::None)
+            .insecure()
+            .build()
+            .err(),
+        Some(CookieConfigError::SameSiteNoneNeedsSecure)
     );
 }
 
 #[test]
-fn host_prefixed_cookie_with_domain_is_rejected() {
-    let err = valid_builder()
-        .cookie(CookieConfig {
-            session_cookie_name: "__Host-doorman".to_string(),
-            secure: true,
-            domain: Some("app.test".to_string()),
-            ..CookieConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::InvalidCookiePrefix {
-                prefix: "__Host-",
-                ..
-            })
-        ),
-        "expected InvalidCookiePrefix for __Host- with a Domain attribute, got: {err:?}"
-    );
-}
-
-#[test]
-fn secure_prefixed_cookie_without_secure_is_rejected() {
-    let err = valid_builder()
-        .cookie(CookieConfig {
-            session_cookie_name: "__Secure-doorman".to_string(),
-            secure: false,
-            ..CookieConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(
-            err,
-            Some(BuilderError::InvalidCookiePrefix {
-                prefix: "__Secure-",
-                ..
-            })
-        ),
-        "expected InvalidCookiePrefix for __Secure- without Secure, got: {err:?}"
-    );
-}
-
-#[test]
-fn host_prefixed_cookie_with_correct_attributes_builds() {
-    let err = valid_builder()
-        .cookie(CookieConfig {
-            session_cookie_name: "__Host-doorman".to_string(),
-            secure: true,
-            domain: None,
-            path: "/".to_string(),
-            ..CookieConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        err.is_none(),
-        "a __Host- cookie with Secure, Path=/, and no Domain should build; got: {err:?}"
-    );
-}
-
-#[test]
-fn cookie_attributes_a_header_cannot_carry_are_rejected() {
-    let err = valid_builder()
-        .cookie(CookieConfig {
-            path: "/\n".to_string(),
-            ..CookieConfig::default()
-        })
-        .build()
-        .err();
-    assert!(
-        matches!(err, Some(BuilderError::InvalidCookieAttributes)),
-        "expected InvalidCookieAttributes for a path with a newline, got: {err:?}"
-    );
+fn an_unprefixed_cookie_may_be_insecure() {
+    assert!(CookieConfig::builder("s").insecure().build().is_ok());
 }

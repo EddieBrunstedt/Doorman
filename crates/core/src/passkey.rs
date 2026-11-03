@@ -2,11 +2,10 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Instant;
 
-use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
     AttestationMetadata, CreationChallengeResponse, Credential, Passkey, PublicKeyCredential,
-    RegisterPublicKeyCredential, RequestChallengeResponse, Webauthn, WebauthnBuilder,
+    RegisterPublicKeyCredential, RequestChallengeResponse,
 };
 
 use crate::assertion::{AssertionVerifier, VerifiedAssertion};
@@ -21,6 +20,7 @@ use crate::passkey_registration::{
     PasskeyRegistrations, RegisteredPasskey, RegistrationFinish, RegistrationSource,
 };
 use crate::rate_limit::{Attempt, RateLimitEnforcer};
+use crate::relying_party::RelyingParty;
 use crate::security_notice::{SecurityNotice, SecurityNotices};
 use crate::session::{IssuedSession, RequestTransport, SessionContext};
 use crate::session_records::LiveSession;
@@ -61,10 +61,7 @@ impl PasskeyName {
 
 #[derive(Clone, Debug)]
 pub struct PasskeyConfig {
-    pub rp_id: String,
-    pub rp_origin: Url,
-    pub rp_name: String,
-    pub additional_origins: Vec<Url>,
+    pub relying_party: RelyingParty,
     pub challenge_lifetime: Lifetime,
     pub max_passkeys_per_user: Option<NonZeroU32>,
     pub max_pending_registrations_per_user: Option<NonZeroU32>,
@@ -73,23 +70,13 @@ pub struct PasskeyConfig {
 impl PasskeyConfig {
     pub const DEFAULT_CHALLENGE_LIFETIME: Lifetime = Lifetime::from_secs(300);
 
-    pub fn new(rp_id: impl Into<String>, rp_origin: Url, rp_name: impl Into<String>) -> Self {
+    pub fn new(relying_party: RelyingParty) -> Self {
         Self {
-            rp_id: rp_id.into(),
-            rp_origin,
-            rp_name: rp_name.into(),
-            additional_origins: Vec::new(),
+            relying_party,
             challenge_lifetime: Self::DEFAULT_CHALLENGE_LIFETIME,
             max_passkeys_per_user: None,
             max_pending_registrations_per_user: None,
         }
-    }
-
-    pub fn from_origin(rp_origin: Url, rp_name: impl Into<String>) -> Result<Self> {
-        let rp_id = rp_origin.host_str().ok_or_else(|| {
-            Error::InvalidRelyingParty(format!("origin {rp_origin} has no host to use as rp_id"))
-        })?;
-        Ok(Self::new(rp_id.to_owned(), rp_origin.clone(), rp_name))
     }
 }
 
@@ -133,13 +120,12 @@ impl PasskeyManager {
         deps: &CoreDeps,
         registrations: PasskeyRegistrations,
         config: PasskeyConfig,
-        webauthn: Arc<Webauthn>,
     ) -> Self {
         Self {
             passkeys: deps.passkeys.clone(),
             registrations,
-            challenges: PasskeyChallenges::from_deps(deps, &config, webauthn.clone()),
-            assertions: AssertionVerifier::from_deps(deps, webauthn),
+            challenges: PasskeyChallenges::from_deps(deps, &config),
+            assertions: AssertionVerifier::from_deps(deps, config.relying_party.webauthn().clone()),
             records: UserRecords::new(deps),
             audit: deps.audit.clone(),
             notices: deps.notices.clone(),
@@ -149,8 +135,8 @@ impl PasskeyManager {
         }
     }
 
-    pub fn rp_origins(&self) -> impl Iterator<Item = &Url> {
-        std::iter::once(&self.config.rp_origin).chain(&self.config.additional_origins)
+    pub fn relying_party(&self) -> &RelyingParty {
+        &self.config.relying_party
     }
 
     #[tracing::instrument(skip(self, session), fields(method = "passkey", user_id = %session.user_id))]
@@ -423,18 +409,6 @@ pub(crate) fn check_credential_id(credential_id: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn build_webauthn(config: &PasskeyConfig) -> Result<Webauthn> {
-    let mut builder = WebauthnBuilder::new(&config.rp_id, &config.rp_origin)
-        .map_err(|e| Error::InvalidRelyingParty(e.to_string()))?
-        .rp_name(&config.rp_name);
-    for origin in &config.additional_origins {
-        builder = builder.append_allowed_origin(origin);
-    }
-    builder
-        .build()
-        .map_err(|e| Error::InvalidRelyingParty(e.to_string()))
-}
-
 pub(crate) fn encode_passkey(passkey: &Passkey) -> Result<Vec<u8>> {
     serde_json::to_vec(passkey).map_err(|e| Error::Internal(format!("serialise passkey: {e}")))
 }
@@ -445,10 +419,7 @@ pub(crate) fn decode_passkey(bytes: &[u8]) -> Result<Passkey> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
-    use url::Url;
 
     #[test]
     fn credential_id_is_refused_past_the_webauthn_limit() {
@@ -457,101 +428,5 @@ mod tests {
             check_credential_id(&[0; MAX_CREDENTIAL_ID_LEN + 1]),
             Err(Error::Webauthn(_))
         ));
-    }
-
-    #[test]
-    fn config_constructor_sets_default_lifetime() {
-        let c = PasskeyConfig::new(
-            "example.com",
-            Url::parse("https://example.com").expect("valid url"),
-            "Example",
-        );
-        assert_eq!(c.challenge_lifetime.get(), Duration::from_secs(300));
-        assert_eq!(c.rp_id, "example.com");
-        assert_eq!(c.rp_name, "Example");
-    }
-
-    #[test]
-    fn from_origin_derives_rp_id_from_host() {
-        let c = PasskeyConfig::from_origin(
-            Url::parse("https://app.example.com:8443/auth").expect("valid url"),
-            "Example",
-        )
-        .expect("origin has a host");
-        assert_eq!(c.rp_id, "app.example.com");
-        assert_eq!(c.rp_name, "Example");
-        assert_eq!(c.challenge_lifetime.get(), Duration::from_secs(300));
-    }
-
-    #[test]
-    fn config_defaults_to_no_additional_origins() {
-        let c = PasskeyConfig::new(
-            "example.com",
-            Url::parse("https://example.com").expect("valid url"),
-            "Example",
-        );
-        assert!(c.additional_origins.is_empty());
-    }
-
-    #[test]
-    fn build_webauthn_trusts_only_the_primary_origin_by_default() {
-        let config = PasskeyConfig::from_origin(
-            Url::parse("https://example.com").expect("valid url"),
-            "Example",
-        )
-        .expect("origin has a host");
-
-        let webauthn = build_webauthn(&config).expect("webauthn builds");
-        assert_eq!(webauthn.get_allowed_origins(), &[config.rp_origin]);
-    }
-
-    #[test]
-    fn build_webauthn_trusts_additional_origins() {
-        let mut config = PasskeyConfig::from_origin(
-            Url::parse("https://example.com").expect("valid url"),
-            "Example",
-        )
-        .expect("origin has a host");
-        let related = Url::parse("https://example.co.uk").expect("valid url");
-        config.additional_origins = vec![related.clone()];
-
-        let webauthn = build_webauthn(&config).expect("webauthn builds");
-        let allowed = webauthn.get_allowed_origins();
-        assert!(
-            allowed.contains(&config.rp_origin),
-            "the primary origin stays trusted"
-        );
-        assert!(
-            allowed.contains(&related),
-            "an additional origin becomes trusted"
-        );
-    }
-
-    #[test]
-    fn build_webauthn_trusts_a_native_app_origin() {
-        let mut config = PasskeyConfig::from_origin(
-            Url::parse("https://example.com").expect("valid url"),
-            "Example",
-        )
-        .expect("origin has a host");
-        let android = Url::parse("android:apk-key-hash:pNxxqHowXQk").expect("valid url");
-        assert_eq!(android.host_str(), None, "the app origin is hostless");
-        config.additional_origins = vec![android.clone()];
-
-        let webauthn = build_webauthn(&config).expect("webauthn builds");
-        assert!(
-            webauthn.get_allowed_origins().contains(&android),
-            "the native-app origin becomes trusted"
-        );
-    }
-
-    #[test]
-    fn from_origin_rejects_hostless_origin() {
-        let err = PasskeyConfig::from_origin(
-            Url::parse("data:text/plain,hi").expect("valid url"),
-            "Example",
-        )
-        .expect_err("hostless origin must be rejected");
-        assert!(matches!(err, Error::InvalidRelyingParty(_)));
     }
 }

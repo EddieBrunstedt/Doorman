@@ -4,7 +4,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use axum::http::{Method, StatusCode};
 use chrono::{DateTime, Utc};
-use doorman_axum::config::CookieConfig;
 use doorman_core::clock::Clock;
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::lifetime::Lifetime;
@@ -14,7 +13,8 @@ use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId,
 use doorman_test_support::{MockClock, lifetime};
 
 use crate::common::{
-    Client, ResidentAuthenticator, TestApp, TestSession, harness_core, rp_origin, session_config,
+    Client, ResidentAuthenticator, TestApp, TestSession, harness_core, insecure_cookie, rp_origin,
+    session_config,
 };
 
 #[tokio::test]
@@ -165,12 +165,7 @@ fn sliding_app(clock: Arc<MockClock>) -> TestApp {
                     ..session_config()
                 })
         },
-        |b| {
-            b.cookie(CookieConfig {
-                secure: false,
-                ..CookieConfig::default()
-            })
-        },
+        |b| b.cookie(insecure_cookie()),
     )
     .proofs_signed_by(clock)
 }

@@ -19,8 +19,7 @@ fn start() -> DateTime<Utc> {
 fn in_process_service(storage: Storage, clock: Arc<MockClock>) -> AuthService {
     let core = core_builder(storage, Arc::new(CapturingEmailSender::new()))
         .clock(clock as Arc<dyn Clock>)
-        .build()
-        .expect("core");
+        .build();
     let purge = PurgeSchedule::in_process(EVERY).expect("purge schedule");
     AuthService::builder(core, purge).build().expect("build")
 }

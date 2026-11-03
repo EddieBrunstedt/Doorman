@@ -27,7 +27,7 @@ use doorman_core::rate_limit::{RateLimiting, RateLimits};
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::session::{SessionConfig, SessionManager};
 use doorman_core::storage::{Storage, UserId, UserStatus, UserStore};
-use doorman_test_support::{CapturingEmailSender, dpop_origin, token_from_email};
+use doorman_test_support::{CapturingEmailSender, dpop_origin, relying_party, token_from_email};
 pub use doorman_test_support::{DpopClient, ResidentAuthenticator};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -81,7 +81,7 @@ pub fn core_required(storage: Storage, email: Arc<dyn EmailSender>) -> AuthCoreR
         storage,
         email_sender: email,
         audit_sink: Arc::new(NoopAuditSink),
-        passkey: PasskeyConfig::new("localhost", rp_origin(), "doorman tests"),
+        passkey: PasskeyConfig::new(relying_party(rp_origin())),
         reauthentication: ReauthPolicy::disabled(),
         rate_limiting: RateLimiting::Disabled,
         links: link_templates(),
@@ -184,12 +184,9 @@ impl TestApp {
             rate_limiting: harness_rate_limiting(Arc::new(SystemClock)),
             ..core_required(storage, email.clone() as Arc<dyn EmailSender>)
         };
-        let core = customise_core(required).build().expect("auth core built");
+        let core = customise_core(required).build();
 
-        let http = AuthService::builder(core, PurgeSchedule::external()).cookie(CookieConfig {
-            secure: false,
-            ..CookieConfig::default()
-        });
+        let http = AuthService::builder(core, PurgeSchedule::external()).cookie(insecure_cookie());
         let auth = customise_http(http).build().expect("auth built");
         let sessions = auth.state().sessions().clone();
 
@@ -562,6 +559,14 @@ impl TestApp {
             other => panic!("unexpected /me status {other}"),
         }
     }
+}
+
+// The tests' origin is plain http.
+pub fn insecure_cookie() -> CookieConfig {
+    CookieConfig::builder(CookieConfig::DEFAULT_NAME)
+        .insecure()
+        .build()
+        .expect("an unprefixed cookie may be insecure")
 }
 
 pub fn rp_origin() -> Url {

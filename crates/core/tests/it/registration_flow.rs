@@ -13,9 +13,9 @@ use doorman_test_support::request_context;
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
 
 use crate::common::{
-    Harness, LOCK_OUTS, LockOut, RECOVERY_URL, RP_ID, RP_NAME, SIGNUP_URL, authenticator, kinds,
-    locked_out_during, operator, passkey_count, provision_user, rp_origin, session_count,
-    session_for, token_from_email,
+    Harness, LOCK_OUTS, LockOut, RECOVERY_URL, SIGNUP_URL, authenticator, kinds, locked_out_during,
+    operator, passkey_config, passkey_count, provision_user, session_count, session_for,
+    token_from_email,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -177,7 +177,7 @@ async fn redeeming_an_email_link_replaces_unfinished_registrations_rather_than_h
         let h = Harness::builder()
             .passkey_config(PasskeyConfig {
                 max_pending_registrations_per_user: NonZeroU32::new(1),
-                ..PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
+                ..passkey_config()
             })
             .build();
         let (user, token) = link.issue(&h).await;

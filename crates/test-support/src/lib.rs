@@ -14,6 +14,7 @@ use doorman_core::email_link::TOKEN_PLACEHOLDER;
 use doorman_core::error::{EmailError, EmailResult};
 use doorman_core::lifetime::Lifetime;
 use doorman_core::metrics::{MetricEvent, MetricSink};
+use doorman_core::relying_party::RelyingParty;
 use doorman_core::session::SessionContext;
 
 pub use dpop::DpopClient;
@@ -31,6 +32,10 @@ pub fn request_context() -> SessionContext {
 
 pub fn lifetime(lifetime: std::time::Duration) -> Lifetime {
     Lifetime::new(lifetime).expect("a lifetime in bounds")
+}
+
+pub fn relying_party(origin: url::Url) -> RelyingParty {
+    RelyingParty::from_origin(origin, "doorman tests").expect("an origin with a domain")
 }
 
 pub fn dpop_origin(origin: &str) -> DpopOrigin {

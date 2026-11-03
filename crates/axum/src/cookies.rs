@@ -25,19 +25,11 @@ pub fn session_cookie(
     token: &str,
     max_age: Duration,
 ) -> Result<HeaderValue, Error> {
-    encode(
-        build_cookie(
-            &config.session_cookie_name,
-            token.to_owned(),
-            config,
-            Some(max_age),
-        )
-        .build(),
-    )
+    encode(build_cookie(&config.name, token.to_owned(), config, Some(max_age)).build())
 }
 
 pub fn clear_session_cookie(config: &CookieConfig) -> Result<HeaderValue, Error> {
-    encode(clear_cookie(&config.session_cookie_name, config))
+    encode(clear_cookie(&config.name, config))
 }
 
 fn build_cookie<'a>(
@@ -106,20 +98,51 @@ mod tests {
             let read = read_cookie(&headers, &name);
             prop_assert_eq!(read.as_deref(), Some(value.as_str()));
         }
+
+        // `CookieConfig::build` is the only check a cookie's attributes get.
+        #[test]
+        fn a_config_that_builds_writes_a_cookie_a_header_can_carry(
+            name in "(__Host-|__Secure-)?[!-~]{0,8}",
+            path in proptest::option::of("/?[ -~]{0,12}"),
+            domain in proptest::option::of("[a-z0-9.;-]{0,12}"),
+            insecure in any::<bool>(),
+            same_site in prop_oneof![
+                Just(cookie::SameSite::Strict),
+                Just(cookie::SameSite::Lax),
+                Just(cookie::SameSite::None),
+            ],
+            token in "[A-Za-z0-9_-]{43}",
+        ) {
+            let mut builder = CookieConfig::builder(name).same_site(same_site);
+            if let Some(path) = path {
+                builder = builder.path(path);
+            }
+            if let Some(domain) = domain {
+                builder = builder.domain(domain);
+            }
+            if insecure {
+                builder = builder.insecure();
+            }
+            if let Ok(config) = builder.build() {
+                let written = session_cookie(&config, &token, Duration::from_secs(60))
+                    .expect("a session cookie encodes");
+                let mut headers = HeaderMap::new();
+                headers.insert(header::COOKIE, written);
+                prop_assert!(read_cookie(&headers, config.name()).is_some());
+                prop_assert!(clear_session_cookie(&config).is_ok());
+            }
+        }
     }
 
     fn cfg() -> CookieConfig {
-        CookieConfig {
-            secure: false,
-            ..CookieConfig::default()
-        }
+        CookieConfig::builder(CookieConfig::DEFAULT_NAME)
+            .insecure()
+            .build()
+            .expect("an unprefixed cookie may be insecure")
     }
 
     fn secure_cfg() -> CookieConfig {
-        CookieConfig {
-            secure: true,
-            ..CookieConfig::default()
-        }
+        CookieConfig::default()
     }
 
     #[test]

@@ -55,13 +55,9 @@ struct RegistrationChallengeState {
 }
 
 impl PasskeyChallenges {
-    pub(crate) fn from_deps(
-        deps: &CoreDeps,
-        config: &PasskeyConfig,
-        webauthn: Arc<Webauthn>,
-    ) -> Self {
+    pub(crate) fn from_deps(deps: &CoreDeps, config: &PasskeyConfig) -> Self {
         Self {
-            webauthn,
+            webauthn: config.relying_party.webauthn().clone(),
             challenges: deps.passkey_challenges.clone(),
             passkeys: deps.passkeys.clone(),
             records: UserRecords::new(deps),

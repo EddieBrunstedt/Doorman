@@ -99,7 +99,7 @@ where
             async move {
                 let token = match session_token::read(
                     req.headers(),
-                    &state.cookie.session_cookie_name,
+                    &state.cookie.name,
                     state.sessions.allows_dpop_sessions(),
                 ) {
                     Ok(token) => token,

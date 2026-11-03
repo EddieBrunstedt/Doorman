@@ -23,7 +23,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         storage,
         email_sender: Arc::new(TerminalEmailSender),
         audit_sink: Arc::new(NoopAuditSink),
-        passkey: PasskeyConfig::from_origin(external_origin.clone(), "doorman purge example")?,
+        passkey: PasskeyConfig::new(RelyingParty::from_origin(
+            external_origin.clone(),
+            "doorman purge example",
+        )?),
         reauthentication: ReauthPolicy::disabled(),
         rate_limiting: RateLimiting::enforced(Arc::new(InMemoryRateLimiter::new(Arc::new(
             SystemClock,
@@ -36,13 +39,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             ))?,
         },
     })
-    .build()?;
+    .build();
+    let mut cookie = CookieConfig::builder(CookieConfig::DEFAULT_NAME);
+    if external_origin.scheme() != "https" {
+        cookie = cookie.insecure();
+    }
     // The `purge` binary sweeps expired rows when the host's scheduler runs it.
     let auth = AuthService::builder(core, PurgeSchedule::external())
-        .cookie(CookieConfig {
-            secure: external_origin.scheme() == "https",
-            ..CookieConfig::default()
-        })
+        .cookie(cookie.build()?)
         .build()?;
 
     let app = Router::new()

@@ -1,4 +1,4 @@
-pub use crate::assembly::{AssemblyError, AuthCore, AuthCoreBuilder, AuthCoreRequired};
+pub use crate::assembly::{AuthCore, AuthCoreBuilder, AuthCoreRequired};
 pub use crate::audit::{
     Actor, AuditEvent, AuditEventKind, AuditSink, NoopAuditSink, OperatorActor,
     RecoveryFailureReason, RedemptionFailureReason, SecretKind, SignupFailureReason,
@@ -29,6 +29,7 @@ pub use crate::rate_limit::{
 };
 pub use crate::reauth::{ReauthAction, ReauthPolicy, ReauthProof};
 pub use crate::recovery::{CoolDownLength, CoolDownTooShort, RecoveryConfig, RecoveryManager};
+pub use crate::relying_party::{RelyingParty, RelyingPartyBuilder, RelyingPartyError};
 pub use crate::security_notice::{NoticePolicy, OperatorNotice};
 pub use crate::session::{
     IdleTimeout, IdleTimeoutError, IssuedSession, RequestTransport, ResolvedSession, SessionConfig,

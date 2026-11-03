@@ -62,9 +62,6 @@ pub enum Error {
     #[error("internal error: {0}")]
     Internal(String),
 
-    #[error("invalid relying party configuration: {0}")]
-    InvalidRelyingParty(String),
-
     #[error("rate limit exceeded; retry after {} ms", retry_after.as_millis())]
     RateLimited { retry_after: Duration },
 

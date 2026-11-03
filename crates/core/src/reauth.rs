@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
-use webauthn_rs::prelude::{PublicKeyCredential, RequestChallengeResponse, Webauthn};
+use webauthn_rs::prelude::{PublicKeyCredential, RequestChallengeResponse};
 
 use crate::assertion::AssertionVerifier;
 use crate::audit::{AuditDispatch, AuditEventKind};
@@ -56,10 +55,10 @@ pub(crate) struct ReauthManager {
 }
 
 impl ReauthManager {
-    pub(crate) fn new(deps: &CoreDeps, config: &PasskeyConfig, webauthn: Arc<Webauthn>) -> Self {
+    pub(crate) fn new(deps: &CoreDeps, config: &PasskeyConfig) -> Self {
         Self {
-            challenges: PasskeyChallenges::from_deps(deps, config, webauthn.clone()),
-            assertions: AssertionVerifier::from_deps(deps, webauthn),
+            challenges: PasskeyChallenges::from_deps(deps, config),
+            assertions: AssertionVerifier::from_deps(deps, config.relying_party.webauthn().clone()),
             audit: deps.audit.clone(),
         }
     }

@@ -8,7 +8,7 @@ use crate::email::{DefaultEmailTemplates, EmailSender, EmailTemplates, Mailer};
 use crate::email_link::LinkTemplates;
 use crate::metrics::{MetricSink, NoopMetricSink};
 use crate::operator::OperatorManager;
-use crate::passkey::{PasskeyConfig, PasskeyManager, build_webauthn};
+use crate::passkey::{PasskeyConfig, PasskeyManager};
 use crate::passkey_registration::PasskeyRegistrations;
 use crate::purge::PurgeSummary;
 use crate::rate_limit::{RateLimitEnforcer, RateLimiting};
@@ -20,12 +20,6 @@ use crate::session_records::SessionRecords;
 use crate::signup::{SignupConfig, SignupManager};
 use crate::storage::{ExpiringStores, Storage};
 use crate::user::{UserConfig, UserManager};
-
-#[derive(Debug, thiserror::Error)]
-pub enum AssemblyError {
-    #[error("passkey manager construction failed: {0}")]
-    Passkey(crate::error::Error),
-}
 
 #[derive(Clone)]
 pub struct AuthCore {
@@ -128,7 +122,7 @@ impl AuthCoreBuilder {
         self
     }
 
-    pub fn build(self) -> Result<AuthCore, AssemblyError> {
+    pub fn build(self) -> AuthCore {
         let AuthCoreRequired {
             storage,
             email_sender,
@@ -168,8 +162,6 @@ impl AuthCoreBuilder {
             session_config,
         );
 
-        let webauthn = Arc::new(build_webauthn(&passkey_config).map_err(AssemblyError::Passkey)?);
-
         let expiring = storage.expiring.clone();
         let deps = CoreDeps::new(
             clock.clone(),
@@ -182,16 +174,12 @@ impl AuthCoreBuilder {
         )
         .with_metrics(metrics);
 
-        let reauth = ReauthManager::new(&deps, &passkey_config, webauthn.clone());
+        let reauth = ReauthManager::new(&deps, &passkey_config);
 
-        let registrations = PasskeyRegistrations::new(
-            &deps,
-            &passkey_config,
-            webauthn.clone(),
-            recovery_config.cool_down,
-        );
+        let registrations =
+            PasskeyRegistrations::new(&deps, &passkey_config, recovery_config.cool_down);
 
-        let passkey = PasskeyManager::new(&deps, registrations.clone(), passkey_config, webauthn);
+        let passkey = PasskeyManager::new(&deps, registrations.clone(), passkey_config);
 
         let signup = SignupManager::new(&deps, registrations.clone(), links.signup, signup_config);
 
@@ -211,7 +199,7 @@ impl AuthCoreBuilder {
 
         let sessions = SessionManager::new(&deps, passkey.clone(), reauth, destructive);
 
-        Ok(AuthCore {
+        AuthCore {
             sessions,
             passkey,
             signup,
@@ -220,6 +208,6 @@ impl AuthCoreBuilder {
             operator,
             expiring,
             clock,
-        })
+        }
     }
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use doorman_core::assembly::{AuthCore, AuthCoreBuilder, AuthCoreRequired};
+use doorman_core::assembly::{AuthCore, AuthCoreRequired};
 use doorman_core::audit::NoopAuditSink;
 use doorman_core::dpop::{DpopOrigin, OpaqueDpopOrigin};
 use doorman_core::email_link::{LinkTemplate, LinkTemplateError, LinkTemplates};
@@ -11,16 +11,17 @@ use doorman_core::passkey::PasskeyConfig;
 use doorman_core::rate_limit::RateLimiting;
 use doorman_core::reauth::ReauthPolicy;
 use doorman_core::recovery::{CoolDownLength, CoolDownTooShort};
+use doorman_core::relying_party::{RelyingParty, RelyingPartyError};
 use doorman_core::session::{IdleTimeout, IdleTimeoutError, SessionExpiry, SessionExpiryError};
-use doorman_test_support::{CapturingEmailSender, lifetime};
+use doorman_test_support::{CapturingEmailSender, lifetime, relying_party, request_context};
 use url::Url;
 
 fn passkey_config() -> PasskeyConfig {
-    PasskeyConfig::new(
-        "localhost",
-        "http://localhost:8080".parse().expect("rp origin"),
-        "doorman tests",
-    )
+    PasskeyConfig::new(relying_party(url("http://localhost:8080")))
+}
+
+fn url(raw: &str) -> Url {
+    Url::parse(raw).expect("valid url")
 }
 
 fn link_template(template: &str) -> LinkTemplate {
@@ -43,13 +44,18 @@ fn required() -> AuthCoreRequired {
     }
 }
 
-fn valid_builder() -> AuthCoreBuilder {
-    AuthCore::builder(required())
-}
-
-#[test]
-fn fully_wired_builder_builds() {
-    valid_builder().build().expect("build");
+async fn ceremony_rp_id(relying_party: RelyingParty) -> String {
+    let core = AuthCore::builder(AuthCoreRequired {
+        passkey: PasskeyConfig::new(relying_party),
+        ..required()
+    })
+    .build();
+    let (_, options) = core
+        .passkey
+        .start_authentication(request_context())
+        .await
+        .expect("authentication starts");
+    options.public_key.rp_id
 }
 
 #[test]
@@ -189,4 +195,86 @@ fn an_opaque_dpop_origin_is_refused() {
         DpopOrigin::new(tuple.clone()).map(|origin| origin.as_origin().clone()),
         Ok(tuple)
     );
+}
+
+#[tokio::test]
+async fn a_relying_party_from_an_origin_takes_its_id_from_the_origins_domain() {
+    let relying_party = RelyingParty::from_origin(url("https://app.example.com:8443/auth"), "App")
+        .expect("the origin has a domain");
+    assert_eq!(ceremony_rp_id(relying_party).await, "app.example.com");
+}
+
+#[tokio::test]
+async fn a_relying_party_id_may_be_a_parent_of_the_origins_domain() {
+    let relying_party = RelyingParty::builder(url("https://app.example.com"), "App")
+        .id("example.com")
+        .build()
+        .expect("example.com is a parent of app.example.com");
+    assert_eq!(ceremony_rp_id(relying_party).await, "example.com");
+}
+
+#[test]
+fn a_relying_party_id_outside_the_origins_domain_is_refused() {
+    let origin = url("https://app.example.com");
+    for id in [
+        "other.com",
+        "ample.com",
+        "app.example.com.evil",
+        "sub.app.example.com",
+    ] {
+        assert_eq!(
+            RelyingParty::builder(origin.clone(), "App")
+                .id(id)
+                .build()
+                .err(),
+            Some(RelyingPartyError::IdOutsideOrigin {
+                id: id.to_owned(),
+                origin: origin.clone(),
+            }),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn a_relying_party_origin_without_a_domain_is_refused() {
+    for origin in [
+        "http://127.0.0.1:3000",
+        "http://[::1]:3000",
+        "data:text/plain,hi",
+    ] {
+        assert_eq!(
+            RelyingParty::from_origin(url(origin), "App").err(),
+            Some(RelyingPartyError::NoDomain(url(origin))),
+            "{origin}"
+        );
+        assert_eq!(
+            RelyingParty::builder(url(origin), "App")
+                .id("localhost")
+                .build()
+                .err(),
+            Some(RelyingPartyError::NoDomain(url(origin))),
+            "{origin} with an explicit ID"
+        );
+    }
+}
+
+#[test]
+fn a_relying_party_trusts_its_origin_then_its_additional_origins() {
+    let origin = url("https://example.com");
+    assert_eq!(
+        RelyingParty::from_origin(origin.clone(), "App")
+            .expect("the origin has a domain")
+            .origins(),
+        std::slice::from_ref(&origin)
+    );
+
+    let related = url("https://example.co.uk");
+    let android = url("android:apk-key-hash:pNxxqHowXQk");
+    let relying_party = RelyingParty::builder(origin.clone(), "App")
+        .additional_origin(related.clone())
+        .additional_origin(android.clone())
+        .build()
+        .expect("additional origins are not checked against the ID");
+    assert_eq!(relying_party.origins(), &[origin, related, android]);
 }

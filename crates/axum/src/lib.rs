@@ -28,7 +28,7 @@ pub use doorman_core as core;
 pub use doorman_core::client_ip::ClientIp;
 
 pub use builder::{AuthServiceBuilder, BuilderError};
-pub use config::CookieConfig;
+pub use config::{CookieConfig, CookieConfigBuilder, CookieConfigError, SameSite};
 pub use error::{ErrorBody, ErrorPayload, ErrorResponse};
 pub use extractors::{AuthSession, AuthUser, OptionalAuthUser, RequestContext};
 pub use purge::{PurgeIntervalError, PurgeSchedule};

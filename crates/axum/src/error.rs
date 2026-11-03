@@ -113,9 +113,6 @@ fn classify(err: &Error) -> (StatusCode, &'static str) {
         Error::UserVerificationRequired => (StatusCode::BAD_REQUEST, "user_verification_required"),
         Error::Webauthn(_) => (StatusCode::BAD_REQUEST, "webauthn_error"),
         Error::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
-        Error::InvalidRelyingParty(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, "invalid_relying_party")
-        }
         Error::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         Error::RecoveryCoolDownActive => (StatusCode::CONFLICT, "recovery_cool_down_active"),
         Error::ReauthRequired => (StatusCode::UNAUTHORIZED, "reauth_required"),
@@ -240,11 +237,6 @@ mod tests {
                 Error::Internal("x".to_owned()),
                 S::INTERNAL_SERVER_ERROR,
                 "internal_error",
-            ),
-            (
-                Error::InvalidRelyingParty("x".to_owned()),
-                S::INTERNAL_SERVER_ERROR,
-                "invalid_relying_party",
             ),
             (
                 Error::RateLimited {

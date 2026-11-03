@@ -17,9 +17,9 @@ use doorman_core::storage::{PasskeyStore, User, UserStore};
 use doorman_test_support::{lifetime, request_context};
 
 use crate::common::{
-    Harness, RECOVERY_URL, RP_ID, RP_NAME, authenticator, kinds, last_email_change_token,
-    make_user, passkey_count, provision_user, register_passkey, rp_origin, session_count,
-    session_for, token_from_email,
+    Harness, RECOVERY_URL, authenticator, kinds, last_email_change_token, make_user,
+    passkey_config, passkey_count, provision_user, register_passkey, session_count, session_for,
+    token_from_email,
 };
 
 #[tokio::test]
@@ -849,7 +849,7 @@ async fn custom_emails_override_recovery_subjects_and_html() {
 fn capped_passkey_config(cap: u32) -> PasskeyConfig {
     PasskeyConfig {
         max_passkeys_per_user: NonZeroU32::new(cap),
-        ..PasskeyConfig::new(RP_ID, rp_origin(), RP_NAME)
+        ..passkey_config()
     }
 }
 
