@@ -47,6 +47,12 @@ struct Found<R> {
     row: Option<R>,
 }
 
+// One batch the deadline index named as due at the cutoff, read apart from its delete.
+struct Due<R> {
+    cutoff_ms: i64,
+    rows: Vec<Found<R>>,
+}
+
 pub(crate) enum Insert {
     Done,
     Conflict,
@@ -244,23 +250,35 @@ impl<R: Row> Table<R> {
     }
 
     pub(crate) async fn purge(&self, now: DateTime<Utc>) -> StorageResult<u64> {
-        let cutoff = now.timestamp_millis();
-        let deadlines = self.deadlines();
+        let cutoff_ms = now.timestamp_millis();
         let mut removed = 0;
         loop {
-            let ids = self
-                .client
-                .zmembers_due(&deadlines, cutoff, PURGE_BATCH)
-                .await?;
-            let batch = ids.len();
-            let entries = ids.into_iter().map(|id| (String::new(), id)).collect();
-            let found = self.find(entries).await?;
-            // Every due entry leaves the index, so the next batch starts past this one.
-            removed += self.delete_rows(&found, None, Some(cutoff)).await?;
-            if batch < PURGE_BATCH {
+            let due = self.read_due(cutoff_ms).await?;
+            // Every entry read leaves the index or slides past the cutoff, so the next batch
+            // starts past this one.
+            removed += self.purge_due(&due).await?;
+            if due.rows.len() < PURGE_BATCH {
                 return Ok(removed);
             }
         }
+    }
+
+    async fn read_due(&self, cutoff_ms: i64) -> StorageResult<Due<R>> {
+        let ids = self
+            .client
+            .zmembers_due(&self.deadlines(), cutoff_ms, PURGE_BATCH)
+            .await?;
+        let entries = ids.into_iter().map(|id| (String::new(), id)).collect();
+        Ok(Due {
+            cutoff_ms,
+            rows: self.find(entries).await?,
+        })
+    }
+
+    // Another caller may touch or delete a row between the read and this delete, so the script
+    // checks each row is still due at the cutoff it was read at.
+    async fn purge_due(&self, due: &Due<R>) -> StorageResult<u64> {
+        self.delete_rows(&due.rows, None, Some(due.cutoff_ms)).await
     }
 
     // Each entry is a field in the owner's index (empty for a set) and the row id it names.
@@ -340,5 +358,152 @@ fn ownership<R: Row>(owner_index: Option<&Key>) -> &'static str {
         (_, None) | (Ownership::None, _) => "none",
         (Ownership::Set, Some(_)) => "set",
         (Ownership::Field, Some(_)) => "field",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Duration;
+    use doorman_core::session::hash_token;
+    use doorman_core::storage::{Session, SessionId, SessionTransport};
+    use testcontainers_modules::redis::Redis;
+    use testcontainers_modules::testcontainers::ImageExt;
+    use testcontainers_modules::testcontainers::runners::AsyncRunner;
+    use testcontainers_modules::valkey::Valkey;
+
+    use super::*;
+    use crate::RedisStorage;
+
+    #[derive(Clone, Copy)]
+    enum Backend {
+        Redis,
+        Valkey,
+    }
+
+    // Only held so the container lives as long as the test.
+    type ContainerGuard = Box<dyn std::any::Any + Send>;
+
+    async fn start(backend: Backend) -> (ContainerGuard, RedisStorage) {
+        let (node, host, port): (ContainerGuard, _, _) = match backend {
+            Backend::Redis => {
+                let node = Redis::default()
+                    .with_tag("7-alpine")
+                    .start()
+                    .await
+                    .expect("start redis container");
+                let host = node.get_host().await.expect("container host");
+                let port = node.get_host_port_ipv4(6379).await.expect("container port");
+                (Box::new(node), host, port)
+            }
+            Backend::Valkey => {
+                let node = Valkey::default()
+                    .start()
+                    .await
+                    .expect("start valkey container");
+                let host = node.get_host().await.expect("container host");
+                let port = node.get_host_port_ipv4(6379).await.expect("container port");
+                (Box::new(node), host, port)
+            }
+        };
+        let storage = RedisStorage::connect(&format!("redis://{host}:{port}"))
+            .await
+            .expect("connect");
+        (node, storage)
+    }
+
+    fn session(user_id: UserId, token: &str, expires_at: DateTime<Utc>) -> Session {
+        Session {
+            id: SessionId::new(),
+            user_id,
+            token_hash: hash_token(token),
+            transport: SessionTransport::Cookie,
+            created_at: Utc::now(),
+            last_used_at: Utc::now(),
+            expires_at,
+            ip: "192.0.2.1".parse().expect("client IP"),
+            user_agent: None,
+            recovery_cool_down_until: None,
+        }
+    }
+
+    fn ids(sessions: Vec<Session>) -> Vec<SessionId> {
+        sessions.into_iter().map(|session| session.id).collect()
+    }
+
+    // The store interface can't act between a purge's read and its delete, so this steps through
+    // them itself.
+    async fn run_a_purge_deletes_only_rows_still_due_when_it_deletes(backend: Backend) {
+        let (_node, storage) = start(backend).await;
+        let sessions = storage.expiring().sessions;
+        let table = Table::<Session>::new(storage.client.clone());
+        let now = Utc::now();
+        let user = UserId::new();
+        let touched = session(user, "touched", now + Duration::hours(1));
+        let deleted = session(user, "deleted", now + Duration::hours(1));
+        for s in [&touched, &deleted] {
+            sessions
+                .create_session(s.clone())
+                .await
+                .expect("create session");
+        }
+
+        let cutoff = now + Duration::hours(2);
+        let due = table
+            .read_due(cutoff.timestamp_millis())
+            .await
+            .expect("read the due rows");
+        assert_eq!(due.rows.len(), 2, "both sessions were due at the cutoff");
+        let slid = now + Duration::hours(3);
+        sessions
+            .touch_session(touched.id, now, slid)
+            .await
+            .expect("touch a session");
+        sessions
+            .delete_session(deleted.id)
+            .await
+            .expect("delete a session");
+
+        assert_eq!(
+            table.purge_due(&due).await.expect("purge the due rows"),
+            0,
+            "neither session was still due when the purge deleted",
+        );
+        assert_eq!(
+            sessions
+                .find_session_by_token_hash(&touched.token_hash)
+                .await
+                .expect("find by token hash")
+                .map(|s| s.id),
+            Some(touched.id),
+            "the touched session kept its row and its lookup",
+        );
+        assert_eq!(
+            ids(sessions.list_for_user(user).await.expect("list")),
+            [touched.id],
+            "the touched session kept its owner's index entry",
+        );
+        assert_eq!(
+            sessions.purge_expired(cutoff).await.expect("purge"),
+            0,
+            "the touched session's deadline index entry slid past the cutoff",
+        );
+        assert_eq!(
+            sessions
+                .purge_expired(slid + Duration::seconds(1))
+                .await
+                .expect("purge"),
+            1,
+            "the touched session is purged once its slid deadline passes",
+        );
+    }
+
+    #[tokio::test]
+    async fn redis_a_purge_deletes_only_rows_still_due_when_it_deletes() {
+        run_a_purge_deletes_only_rows_still_due_when_it_deletes(Backend::Redis).await;
+    }
+
+    #[tokio::test]
+    async fn valkey_a_purge_deletes_only_rows_still_due_when_it_deletes() {
+        run_a_purge_deletes_only_rows_still_due_when_it_deletes(Backend::Valkey).await;
     }
 }
