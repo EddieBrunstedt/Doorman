@@ -44,6 +44,8 @@ Passkey-only authentication for a single application: passkeys are the only way 
 
 **Security notice**: An email telling a user that something affecting their security happened, such as a passkey being removed or a recovery being requested. _Avoid_: notification, alert
 
+**Email template**: The wording of one kind of email doorman sends, either the email that carries an email link or a security notice: its subject, its text body and, optionally, an HTML body. doorman fills in what each email needs, such as its email link or a passkey's name, then addresses it and hands it to the host to deliver. The host may replace any template; doorman has its own for each. `EmailTemplates` in identifiers. _Avoid_: message template, email copy
+
 **Destructive action**: An action that someone holding a stolen session could use to lock the real user out. _Avoid_: protected action, sensitive action
 
 **Recovery cool-down**: The period after a recovery during which destructive actions are refused to every session that started from the recovered passkey, or from a passkey added in one of those sessions, and none of those passkeys can re-authenticate. The user's other passkeys and their sessions are unaffected. `cool_down` is its spelling in identifiers. _Avoid_: restricted session, cooldown
