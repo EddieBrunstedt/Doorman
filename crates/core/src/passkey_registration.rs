@@ -17,7 +17,7 @@ use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::SessionContext;
 use crate::session_records::LiveSession;
 use crate::storage::{
-    PasskeyChallengeId, PasskeyStore, RegistrationPurpose, SessionId, StoredPasskey, User, UserId,
+    PasskeyChallengeId, RegistrationPurpose, SessionId, StoredPasskey, User, UserId,
 };
 use crate::user_records::{OwnerRefusal, UserRecords};
 
@@ -96,7 +96,6 @@ pub(crate) struct RegisteredPasskey {
 #[derive(Clone)]
 pub(crate) struct PasskeyRegistrations {
     records: UserRecords,
-    passkeys: Arc<dyn PasskeyStore>,
     challenges: PasskeyChallenges,
     clock: Arc<dyn Clock>,
     audit: AuditDispatch,
@@ -114,7 +113,6 @@ impl PasskeyRegistrations {
     ) -> Self {
         Self {
             records: UserRecords::new(deps),
-            passkeys: deps.passkeys.clone(),
             challenges: PasskeyChallenges::from_deps(deps, config, webauthn.clone()),
             clock: deps.clock.clone(),
             audit: deps.audit.clone(),
@@ -177,7 +175,7 @@ impl PasskeyRegistrations {
             .await?;
         let user_id = redeemed.user.id;
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
-        let held = self.passkeys.list_passkeys_for_user(user_id).await?.len() as u64;
+        let held = self.records.count_passkeys(user_id).await?;
         // A user who has lost their passkeys may still sit at the cap, and recovery is their way
         // back.
         if purpose != RegistrationPurpose::Recovery {
@@ -192,15 +190,17 @@ impl PasskeyRegistrations {
             RegistrationPurpose::Signup | RegistrationPurpose::AddPasskey => redeemed.cool_down,
         };
         let passkey = self.verify(&redeemed, response, name, cool_down)?;
-        // Marked before the passkey is stored: a failure in between leaves a user who has to
-        // recover, never a signed-up user that a signup link still reaches.
-        let user = if purpose == RegistrationPurpose::Signup {
-            self.records.mark_signed_up(redeemed.user).await?
-        } else {
-            redeemed.user
+        // The owner can be disabled or deleted after the redemption checked them, so the
+        // registration is refused as if that had come first.
+        let user = match self.store(&passkey, purpose).await? {
+            Ok(user) => user,
+            Err(refusal) => {
+                return Err(self
+                    .challenges
+                    .refuse_registration_owner(purpose, user_id, refusal, &actor)
+                    .await);
+            }
         };
-
-        self.passkeys.add_passkey(passkey.clone()).await?;
         self.audit
             .emit(actor, AuditEventKind::PasskeyAdded { user_id })
             .await;
@@ -209,6 +209,21 @@ impl PasskeyRegistrations {
             passkey,
             passkey_count: held + 1,
         })
+    }
+
+    async fn store(
+        &self,
+        passkey: &StoredPasskey,
+        purpose: RegistrationPurpose,
+    ) -> Result<std::result::Result<User, OwnerRefusal>> {
+        // Marked before the passkey is stored: a failure in between leaves a user who has to
+        // recover, never a signed-up user that a signup link still reaches.
+        if purpose == RegistrationPurpose::Signup
+            && let Err(refusal) = self.records.mark_signed_up(passkey.user_id).await?
+        {
+            return Ok(Err(refusal));
+        }
+        self.records.add_passkey(passkey).await
     }
 
     pub(crate) async fn invalidate_pending(&self, user_id: UserId) -> Result<()> {

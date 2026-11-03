@@ -109,10 +109,9 @@ impl UserRecords {
         })
     }
 
-    // Disable and delete change the user before deleting the sessions, email links and passkey
-    // registrations the user owns, so a row written meanwhile can miss that delete. Its writer
-    // calls this once the row is written, and hands out the row's secret only if the owner is
-    // still there and active; otherwise the row is discarded.
+    // Disable and delete change the user before deleting the rows the user owns, so a row written
+    // meanwhile can miss that delete. Its writer calls this once the row is written, and goes on
+    // only if the owner is still there and active; otherwise the row is discarded.
     pub(crate) async fn confirm_written(
         &self,
         owner: UserId,
@@ -133,6 +132,30 @@ impl UserRecords {
             Ok(user) => Ok(Ok(user)),
             Err(Error::UserNotFound) => Ok(Err(OwnerRefusal::UserNotFound)),
             Err(error) => Err(error),
+        }
+    }
+
+    // Only delete removes passkeys, yet a disabled owner refuses one too: a user being deleted is
+    // disabled until their row goes, and a disable has already discarded the registration this
+    // passkey finishes.
+    pub(crate) async fn add_passkey(
+        &self,
+        passkey: &StoredPasskey,
+    ) -> Result<std::result::Result<User, OwnerRefusal>> {
+        self.passkeys.add_passkey(passkey.clone()).await?;
+        self.confirm_written(
+            passkey.user_id,
+            self.discard_passkey(&passkey.credential_id),
+        )
+        .await
+    }
+
+    async fn discard_passkey(&self, credential_id: &[u8]) {
+        if let Err(error) = self.passkeys.delete_passkey(credential_id).await {
+            tracing::warn!(
+                %error,
+                "refused passkey left behind; its user is disabled or deleted",
+            );
         }
     }
 
@@ -162,14 +185,15 @@ impl UserRecords {
         }
     }
 
-    pub(crate) async fn mark_signed_up(&self, user: User) -> Result<User> {
-        let now = self.now();
-        self.users.mark_signed_up(user.id, now).await?;
-        Ok(User {
-            signed_up_at: Some(now),
-            updated_at: now,
-            ..user
-        })
+    pub(crate) async fn mark_signed_up(
+        &self,
+        user_id: UserId,
+    ) -> Result<std::result::Result<(), OwnerRefusal>> {
+        match self.users.mark_signed_up(user_id, self.now()).await {
+            Ok(()) => Ok(Ok(())),
+            Err(e) if e.kind() == StorageErrorKind::NotFound => Ok(Err(OwnerRefusal::UserNotFound)),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub(crate) async fn change_email(&self, user_id: UserId, email: &EmailAddress) -> Result<User> {
@@ -246,8 +270,8 @@ impl UserRecords {
     pub(crate) async fn delete(&self, user_id: UserId, actor: Actor) -> Result<()> {
         self.find(user_id).await?;
 
-        // Disabling first makes a racing write refuse its own row (see `confirm_written`), and
-        // leaves a delete that fails partway with a user who cannot log in.
+        // Disabling first makes a racing write refuse its own row, a passkey included (see
+        // `confirm_written`), and leaves a delete that fails partway with a user who cannot log in.
         self.disable(user_id).await?;
         self.passkeys.delete_passkeys_for_user(user_id).await?;
         self.users.delete_user(user_id).await?;

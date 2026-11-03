@@ -33,9 +33,9 @@ use doorman_core::session::{
 use doorman_core::signup::{SignupConfig, SignupManager};
 use doorman_core::storage::{
     EmailLink, EmailLinkStore, ExpiringStores, PasskeyChallengeId, PasskeyChallengeStore,
-    PasskeyStore, RecordStores, Session, SessionId, SessionStore, SessionTransport, Storage,
-    StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash, User, UserId,
-    UserStatus, UserStore,
+    PasskeyStore, PasskeyUse, RecordStores, Session, SessionId, SessionStore, SessionTransport,
+    Storage, StoredPasskey, StoredPasskeyAuthentication, StoredPasskeyRegistration, TokenHash,
+    User, UserId, UserStatus, UserStore,
 };
 use doorman_core::user::UserManager;
 pub use doorman_test_support::token_from_email;
@@ -85,6 +85,7 @@ pub struct CountingUserStore {
     inner: Arc<InMemoryUserStore>,
     reads: AtomicUsize,
     create_hold: Mutex<Option<(Arc<Barrier>, usize)>>,
+    signup_mark_hold: WriteHold,
 }
 
 impl CountingUserStore {
@@ -100,6 +101,10 @@ impl CountingUserStore {
         let barrier = Arc::new(Barrier::new(creates + 1));
         *self.create_hold.lock().expect("create hold lock") = Some((barrier.clone(), creates));
         barrier
+    }
+
+    pub fn hold_next_signup_mark(&self) -> Arc<Barrier> {
+        self.signup_mark_hold.hold_next()
     }
 }
 
@@ -148,6 +153,7 @@ impl UserStore for CountingUserStore {
     }
 
     async fn mark_signed_up(&self, id: UserId, at: DateTime<Utc>) -> StorageResult<()> {
+        self.signup_mark_hold.pass().await;
         self.inner.mark_signed_up(id, at).await
     }
 
@@ -321,6 +327,62 @@ impl EmailLinkStore for HeldEmailLinkStore {
     }
 }
 
+pub struct HeldPasskeyStore {
+    inner: Arc<InMemoryPasskeyStore>,
+    write_hold: WriteHold,
+}
+
+impl HeldPasskeyStore {
+    pub fn hold_next_passkey_write(&self) -> Arc<Barrier> {
+        self.write_hold.hold_next()
+    }
+}
+
+#[async_trait]
+impl PasskeyStore for HeldPasskeyStore {
+    async fn add_passkey(&self, passkey: StoredPasskey) -> StorageResult<()> {
+        self.write_hold.pass().await;
+        self.inner.add_passkey(passkey).await
+    }
+
+    async fn record_passkey_use(
+        &self,
+        credential_id: &[u8],
+        used: PasskeyUse,
+    ) -> StorageResult<()> {
+        self.inner.record_passkey_use(credential_id, used).await
+    }
+
+    async fn set_passkey_name(
+        &self,
+        credential_id: &[u8],
+        name: Option<&str>,
+    ) -> StorageResult<()> {
+        self.inner.set_passkey_name(credential_id, name).await
+    }
+
+    async fn list_passkeys_for_user(&self, user_id: UserId) -> StorageResult<Vec<StoredPasskey>> {
+        self.inner.list_passkeys_for_user(user_id).await
+    }
+
+    async fn find_passkey_by_credential_id(
+        &self,
+        credential_id: &[u8],
+    ) -> StorageResult<Option<StoredPasskey>> {
+        self.inner
+            .find_passkey_by_credential_id(credential_id)
+            .await
+    }
+
+    async fn delete_passkey(&self, credential_id: &[u8]) -> StorageResult<()> {
+        self.inner.delete_passkey(credential_id).await
+    }
+
+    async fn delete_passkeys_for_user(&self, user_id: UserId) -> StorageResult<u64> {
+        self.inner.delete_passkeys_for_user(user_id).await
+    }
+}
+
 pub struct HeldPasskeyChallengeStore {
     inner: Arc<InMemoryPasskeyChallengeStore>,
     write_hold: WriteHold,
@@ -387,6 +449,7 @@ pub struct Harness {
     pub email_links: Arc<InMemoryEmailLinkStore>,
     pub email_link_store: Arc<HeldEmailLinkStore>,
     pub passkeys: Arc<InMemoryPasskeyStore>,
+    pub passkey_store: Arc<HeldPasskeyStore>,
     pub challenges: Arc<InMemoryPasskeyChallengeStore>,
     pub challenge_store: Arc<HeldPasskeyChallengeStore>,
     pub storage: Storage,
@@ -512,6 +575,7 @@ impl HarnessBuilder {
             inner: users.clone(),
             reads: AtomicUsize::new(0),
             create_hold: Mutex::new(None),
+            signup_mark_hold: WriteHold::default(),
         });
         let session_store = Arc::new(CountingSessionStore {
             inner: sessions.clone(),
@@ -523,6 +587,10 @@ impl HarnessBuilder {
             inner: email_links.clone(),
             write_hold: WriteHold::default(),
         });
+        let passkey_store = Arc::new(HeldPasskeyStore {
+            inner: passkeys.clone(),
+            write_hold: WriteHold::default(),
+        });
         let challenge_store = Arc::new(HeldPasskeyChallengeStore {
             inner: challenges.clone(),
             write_hold: WriteHold::default(),
@@ -531,7 +599,7 @@ impl HarnessBuilder {
         let storage = Storage {
             records: RecordStores {
                 users: user_store.clone(),
-                passkeys: passkeys.clone(),
+                passkeys: passkey_store.clone(),
             },
             expiring: ExpiringStores {
                 sessions: session_store.clone(),
@@ -574,6 +642,7 @@ impl HarnessBuilder {
             email_links,
             email_link_store,
             passkeys,
+            passkey_store,
             challenges,
             challenge_store,
             storage,

@@ -232,6 +232,20 @@ impl PasskeyChallenges {
         })
     }
 
+    // For a refusal that comes once the registration is redeemed, so it is audited as the
+    // redemption's.
+    pub(crate) async fn refuse_registration_owner(
+        &self,
+        purpose: RegistrationPurpose,
+        owner: UserId,
+        refusal: OwnerRefusal,
+        actor: &Actor,
+    ) -> Error {
+        self.redeemer
+            .refuse_owner::<StoredPasskeyRegistration>(purpose, owner, refusal, actor)
+            .await
+    }
+
     pub(crate) async fn invalidate_registrations(&self, user_id: UserId) -> Result<()> {
         let dropped = self
             .challenges

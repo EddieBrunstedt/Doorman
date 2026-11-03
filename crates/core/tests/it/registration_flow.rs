@@ -6,7 +6,8 @@ use doorman_core::error::Error;
 use doorman_core::passkey::{PasskeyConfig, RegistrationOutcome, StartedRegistration};
 use doorman_core::session::{RequestTransport, ResolvedSession};
 use doorman_core::storage::{
-    PasskeyChallengeId, PasskeyChallengeStore, SessionTransport, User, UserStatus, UserStore,
+    PasskeyChallengeId, PasskeyChallengeStore, PasskeyStore, SessionTransport, User, UserStatus,
+    UserStore,
 };
 use doorman_test_support::request_context;
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential};
@@ -328,6 +329,16 @@ enum Started {
     AddPasskey,
 }
 
+impl Started {
+    const fn finish(self) -> Finish {
+        match self {
+            Started::Signup => Finish::Signup,
+            Started::Recovery => Finish::Recovery,
+            Started::AddPasskey => Finish::AddPasskey,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Finish {
     Signup,
@@ -371,7 +382,7 @@ async fn finish(
     session: &ResolvedSession,
     challenge_id: PasskeyChallengeId,
     response: &RegisterPublicKeyCredential,
-) -> Error {
+) -> Result<(), Error> {
     let context = request_context;
     match finish {
         Finish::Signup => h
@@ -402,7 +413,6 @@ async fn finish(
             .await
             .map(drop),
     }
-    .expect_err("a registration challenge started for another purpose is refused")
 }
 
 // Ready to make the call that starts a registration.
@@ -496,6 +506,80 @@ async fn a_registration_started_while_its_owner_is_locked_out_does_not_survive()
     }
 }
 
+// The write a lock-out lands during, once the redemption has checked the owner.
+#[derive(Debug, Clone, Copy)]
+enum HeldWrite {
+    SignupMark,
+    Passkey,
+}
+
+#[tokio::test]
+async fn a_passkey_registered_while_its_owner_is_locked_out_does_not_survive() {
+    let cases = [
+        (Started::Signup, HeldWrite::SignupMark),
+        (Started::Signup, HeldWrite::Passkey),
+        (Started::Recovery, HeldWrite::Passkey),
+        (Started::AddPasskey, HeldWrite::Passkey),
+    ];
+    for (started, write) in cases {
+        for lock_out in LOCK_OUTS {
+            let h = Harness::fresh();
+            let (user, session, challenge_id, options) = start(&h, started).await;
+            let response = authenticator().do_registration(options);
+            let audited_before = h.audit.events().len();
+
+            let held = match write {
+                HeldWrite::SignupMark => h.user_store.hold_next_signup_mark(),
+                HeldWrite::Passkey => h.passkey_store.hold_next_passkey_write(),
+            };
+            let result = locked_out_during(
+                &h,
+                held,
+                lock_out,
+                user.id,
+                finish(&h, started.finish(), &session, challenge_id, &response),
+            )
+            .await;
+
+            let case = format!("{started:?} racing {lock_out:?} at {write:?}");
+            // Refused as if the lock-out had come before the redemption checked the owner.
+            let (refused, reason) = match lock_out {
+                LockOut::Disable => (
+                    matches!(result, Err(Error::UserDisabled)),
+                    RedemptionFailureReason::UserDisabled,
+                ),
+                LockOut::Delete => (
+                    matches!(result, Err(Error::InvalidPasskeyChallenge)),
+                    RedemptionFailureReason::UserNotFound,
+                ),
+            };
+            assert!(refused, "{case}: got {result:?}");
+            let audited = kinds(&h.audit.events()[audited_before..]);
+            assert!(
+                audited.contains(&AuditEventKind::RedemptionFailed {
+                    user_id: Some(user.id),
+                    secret: SecretKind::RegistrationChallenge,
+                    reason,
+                }),
+                "{case}: {audited:?}"
+            );
+            assert!(
+                !audited.iter().any(|kind| matches!(
+                    kind,
+                    AuditEventKind::PasskeyAdded { .. } | AuditEventKind::SessionCreated { .. }
+                )),
+                "{case}: {audited:?}"
+            );
+            let stored = h
+                .passkeys
+                .find_passkey_by_credential_id(response.raw_id.as_ref())
+                .await
+                .expect("find passkey");
+            assert!(stored.is_none(), "{case}: the passkey is discarded");
+        }
+    }
+}
+
 async fn assert_refused_as_wrong_purpose(started: Started, finished_as: Finish) {
     let h = Harness::fresh();
     let (user, session, challenge_id, options) = start(&h, started).await;
@@ -505,7 +589,9 @@ async fn assert_refused_as_wrong_purpose(started: Started, finished_as: Finish) 
     let audited_before = h.audit.events().len();
 
     let response = authenticator().do_registration(options);
-    let err = finish(&h, finished_as, &session, challenge_id, &response).await;
+    let err = finish(&h, finished_as, &session, challenge_id, &response)
+        .await
+        .expect_err("a registration challenge started for another purpose is refused");
 
     assert!(
         matches!(err, Error::InvalidPasskeyChallenge),
@@ -572,8 +658,12 @@ async fn wrong_purpose_finish_burns_the_challenge() {
     let h = Harness::fresh();
     let (_, session, challenge_id, options) = start(&h, Started::AddPasskey).await;
     let response = authenticator().do_registration(options);
-    finish(&h, Finish::Signup, &session, challenge_id, &response).await;
+    finish(&h, Finish::Signup, &session, challenge_id, &response)
+        .await
+        .expect_err("a registration challenge started for another purpose is refused");
 
-    let err = finish(&h, Finish::AddPasskey, &session, challenge_id, &response).await;
+    let err = finish(&h, Finish::AddPasskey, &session, challenge_id, &response)
+        .await
+        .expect_err("a burnt challenge is refused");
     assert!(matches!(err, Error::InvalidPasskeyChallenge), "got {err:?}");
 }
