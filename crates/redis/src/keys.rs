@@ -7,15 +7,15 @@ use redis::{RedisWrite, ToRedisArgs};
 pub struct Namespace(String);
 
 impl Namespace {
-    pub fn new(name: impl Into<String>) -> Result<Self, InvalidNamespace> {
+    pub fn new(name: impl Into<String>) -> Result<Self, NamespaceError> {
         let name = name.into();
         if name.is_empty() {
-            return Err(InvalidNamespace::Empty);
+            return Err(NamespaceError::Empty);
         }
         // Every key starts with the namespace as its hash tag; a brace inside it would end the tag
         // early or open another, and the keys would no longer share one hash slot.
         if name.contains(['{', '}']) {
-            return Err(InvalidNamespace::Brace);
+            return Err(NamespaceError::Brace);
         }
         Ok(Self(name))
     }
@@ -38,7 +38,7 @@ impl fmt::Display for Namespace {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum InvalidNamespace {
+pub enum NamespaceError {
     #[error("a Redis namespace must not be empty")]
     Empty,
     #[error("a Redis namespace must not contain `{{` or `}}`")]
@@ -133,11 +133,11 @@ mod tests {
 
     #[test]
     fn a_namespace_must_be_a_non_empty_hash_tag() {
-        assert_eq!(Namespace::new(""), Err(InvalidNamespace::Empty));
+        assert_eq!(Namespace::new(""), Err(NamespaceError::Empty));
         for braced in ["{app", "app}", "a{b}c", "{}"] {
             assert_eq!(
                 Namespace::new(braced),
-                Err(InvalidNamespace::Brace),
+                Err(NamespaceError::Brace),
                 "{braced}"
             );
         }

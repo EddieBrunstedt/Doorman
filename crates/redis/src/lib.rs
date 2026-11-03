@@ -28,7 +28,7 @@ use redis::cluster::ClusterClient;
 use crate::client::{Connection, RedisClient};
 
 pub use crate::eviction::EvictionPolicyError;
-pub use crate::keys::{InvalidNamespace, Namespace};
+pub use crate::keys::{Namespace, NamespaceError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {

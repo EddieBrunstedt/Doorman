@@ -32,6 +32,8 @@ Passkey-only authentication for a single application: passkeys are the only way 
 
 **Email link**: A single-use link, bound to one purpose, that proves control of an email address. It never starts a session by itself. _Avoid_: magic link, verification link, verification token
 
+**Link template**: The absolute URL, holding a `{token}` placeholder, that the host gives doorman for each email link purpose (signup, recovery and email change). doorman puts each link's token in place of the placeholder, so the link opens a page of the application. `LinkTemplate` in identifiers. _Avoid_: URL template, email template
+
 **Redeem**: To use up a single-use secret, such as an email link, so that it can never be used again. _Avoid_: consume
 
 **Signup**: Creating a new user through an email link, followed by registration of their first passkey.
@@ -53,6 +55,8 @@ Passkey-only authentication for a single application: passkeys are the only way 
 **Expiring stores**: The stores that hold sessions, email links, passkey challenges and used DPoP proofs. Every row in them expires and is purged once it has. `expiring` is their spelling in identifiers. _Avoid_: ephemeral
 
 **Purge schedule**: How the expiring stores' expired rows get purged: on an interval, from the process that serves the application, or by a separate process that a scheduler outside doorman runs. The host must choose one. `PurgeSchedule` in identifiers.
+
+**Namespace**: The name the Redis adapter puts at the start of every key it writes, so that one application's expiring stores and rate limits stay apart from anything else on the same Redis server, such as another deployment of the same application. `doorman` unless the host sets another. _Avoid_: key prefix, tenant
 
 ## WebAuthn specifics
 
