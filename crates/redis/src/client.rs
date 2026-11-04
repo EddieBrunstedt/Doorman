@@ -2,8 +2,6 @@ use doorman_core::error::{StorageError, StorageResult};
 use redis::aio::ConnectionManager;
 use redis::cluster_async::ClusterConnection;
 use redis::{Cmd, FromRedisValue, RedisResult, Script, Value};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 
 use crate::keys::{Key, Keys, Namespace};
 
@@ -76,24 +74,11 @@ impl RedisClient {
         self.query(redis::cmd("GET").arg(key)).await
     }
 
-    pub(crate) async fn get_json<T: DeserializeOwned>(
-        &self,
-        key: &Key,
-    ) -> StorageResult<Option<T>> {
-        self.get(key).await?.as_deref().map(from_json).transpose()
-    }
-
-    pub(crate) async fn mget_json<T: DeserializeOwned>(
-        &self,
-        keys: &[Key],
-    ) -> StorageResult<Vec<Option<T>>> {
+    pub(crate) async fn mget(&self, keys: &[Key]) -> StorageResult<Vec<Option<String>>> {
         if keys.is_empty() {
             return Ok(Vec::new());
         }
-        let raws: Vec<Option<String>> = self.query(redis::cmd("MGET").arg(keys)).await?;
-        raws.iter()
-            .map(|raw| raw.as_deref().map(from_json).transpose())
-            .collect()
+        self.query(redis::cmd("MGET").arg(keys)).await
     }
 
     pub(crate) async fn del(&self, key: &Key) -> StorageResult<()> {
@@ -133,12 +118,4 @@ impl RedisClient {
     pub(crate) async fn hgetall(&self, key: &Key) -> StorageResult<Vec<(String, String)>> {
         self.query(redis::cmd("HGETALL").arg(key)).await
     }
-}
-
-pub(crate) fn to_json<T: Serialize>(value: &T) -> StorageResult<String> {
-    serde_json::to_string(value).map_err(StorageError::new)
-}
-
-pub(crate) fn from_json<T: DeserializeOwned>(raw: &str) -> StorageResult<T> {
-    serde_json::from_str(raw).map_err(StorageError::new)
 }

@@ -5,6 +5,7 @@ use doorman_core::storage::{PasskeyStore, PasskeyUse, StoredPasskey, UserId};
 use redb::ReadableTable as _;
 
 use crate::db::{self, RedbHandle};
+use crate::rows;
 
 pub(crate) struct RedbPasskeyStore {
     handle: RedbHandle,
@@ -29,10 +30,10 @@ impl RedbPasskeyStore {
                         .get(passkey_key.as_str())
                         .map_err(db::err)?
                         .ok_or_else(|| StorageError::not_found("passkey not found"))?;
-                    db::decode_passkey(guard.value())?
+                    rows::decode::<StoredPasskey>(guard.value())?
                 };
                 change(&mut passkey);
-                let encoded = db::encode_passkey(&passkey)?;
+                let encoded = rows::encode(&passkey)?;
                 passkeys
                     .insert(passkey_key.as_str(), encoded.as_slice())
                     .map_err(db::err)?;
@@ -49,7 +50,7 @@ impl PasskeyStore for RedbPasskeyStore {
             .write(move |wtxn| {
                 let passkey_key = db::hex_bytes(&passkey.credential_id);
                 let user_idx_key = db::owner_key(passkey.user_id, &passkey_key);
-                let encoded = db::encode_passkey(&passkey)?;
+                let encoded = rows::encode(&passkey)?;
 
                 let mut passkeys = wtxn.open_table(db::PASSKEYS).map_err(db::err)?;
                 let mut user_idx = wtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
@@ -106,7 +107,7 @@ impl PasskeyStore for RedbPasskeyStore {
                 let mut out = Vec::with_capacity(passkey_keys.len());
                 for key in &passkey_keys {
                     if let Some(guard) = creds_tbl.get(key.as_str()).map_err(db::err)? {
-                        out.push(db::decode_passkey(guard.value())?);
+                        out.push(rows::decode::<StoredPasskey>(guard.value())?);
                     }
                 }
                 Ok(out)
@@ -123,7 +124,7 @@ impl PasskeyStore for RedbPasskeyStore {
             .read(move |rtxn| {
                 let creds_tbl = rtxn.open_table(db::PASSKEYS).map_err(db::err)?;
                 match creds_tbl.get(key.as_str()).map_err(db::err)? {
-                    Some(guard) => Ok(Some(db::decode_passkey(guard.value())?)),
+                    Some(guard) => Ok(Some(rows::decode::<StoredPasskey>(guard.value())?)),
                     None => Ok(None),
                 }
             })
@@ -138,7 +139,7 @@ impl PasskeyStore for RedbPasskeyStore {
                 let mut user_idx = wtxn.open_table(db::USER_PASSKEYS_IDX).map_err(db::err)?;
 
                 if let Some(guard) = passkeys.remove(passkey_key.as_str()).map_err(db::err)? {
-                    let passkey = db::decode_passkey(guard.value())?;
+                    let passkey = rows::decode::<StoredPasskey>(guard.value())?;
                     let user_idx_key = db::owner_key(passkey.user_id, &passkey_key);
                     user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
                 }

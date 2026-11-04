@@ -4,9 +4,9 @@ use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{EmailLink, EmailLinkStore, TokenHash, UserId};
 
 use crate::db::{self, RedbHandle};
-use crate::expiring::{Family, Row, Writer};
+use crate::expiring::{Expiring, Family, Writer};
 
-impl Row for EmailLink {
+impl Expiring for EmailLink {
     const FAMILY: Family = db::EMAIL_LINKS;
 
     fn key(&self) -> String {

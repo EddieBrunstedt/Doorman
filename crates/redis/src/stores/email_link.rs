@@ -6,9 +6,9 @@ use doorman_core::storage::{EmailLink, EmailLinkStore, TokenHash, UserId};
 
 use crate::client::RedisClient;
 use crate::keys::{self, Family, Ownership};
-use crate::table::{Insert, Row, Table};
+use crate::table::{Expiring, Insert, Table};
 
-impl Row for EmailLink {
+impl Expiring for EmailLink {
     const FAMILY: Family = Family {
         row: "email_link",
         rows: "email_links",

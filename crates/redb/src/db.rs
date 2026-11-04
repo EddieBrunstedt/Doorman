@@ -1,15 +1,12 @@
 use std::fmt::Display;
 use std::sync::Arc;
 
-use chrono::{DateTime, SecondsFormat, Utc};
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{StoredPasskey, TokenHash, UserId};
+use doorman_core::storage::TokenHash;
 use redb::{
     Database, ReadTransaction, ReadableDatabase as _, ReadableTable, TableDefinition,
     WriteTransaction,
 };
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::expiring::Family;
 
@@ -80,98 +77,6 @@ pub(crate) fn owned_members(
                 .map_err(err)
         })
         .collect()
-}
-
-pub(crate) fn fmt_ts(dt: DateTime<Utc>) -> String {
-    dt.to_rfc3339_opts(SecondsFormat::Nanos, true)
-}
-
-pub(crate) fn parse_ts(s: &str) -> StorageResult<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(err)
-}
-
-pub(crate) fn encode<T: Serialize>(value: &T) -> StorageResult<Vec<u8>> {
-    serde_json::to_vec(value).map_err(err)
-}
-
-pub(crate) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> StorageResult<T> {
-    serde_json::from_slice(bytes).map_err(err)
-}
-
-#[derive(Serialize, Deserialize)]
-pub(crate) struct PasskeyRow {
-    pub credential_id_hex: String,
-    pub user_id: String,
-    pub passkey: Vec<u8>,
-    pub name: Option<String>,
-    pub created_at: String,
-    pub last_used_at: Option<String>,
-    pub aaguid: Option<String>,
-    pub transports: Vec<String>,
-    pub backup_eligible: bool,
-    pub backup_state: bool,
-    pub recovery_cool_down_until: Option<String>,
-}
-
-pub(crate) fn encode_passkey(passkey: &StoredPasskey) -> StorageResult<Vec<u8>> {
-    let row = PasskeyRow {
-        credential_id_hex: hex_bytes(&passkey.credential_id),
-        user_id: passkey.user_id.0.to_string(),
-        passkey: passkey.passkey.clone(),
-        name: passkey.name.clone(),
-        created_at: fmt_ts(passkey.created_at),
-        last_used_at: passkey.last_used_at.map(fmt_ts),
-        aaguid: passkey.aaguid.map(|u| u.to_string()),
-        transports: passkey.transports.clone(),
-        backup_eligible: passkey.backup_eligible,
-        backup_state: passkey.backup_state,
-        recovery_cool_down_until: passkey.recovery_cool_down_until.map(fmt_ts),
-    };
-    serde_json::to_vec(&row).map_err(err)
-}
-
-fn row_to_passkey(row: PasskeyRow) -> StorageResult<StoredPasskey> {
-    Ok(StoredPasskey {
-        credential_id: decode_hex(&row.credential_id_hex)?,
-        user_id: UserId(Uuid::parse_str(&row.user_id).map_err(err)?),
-        passkey: row.passkey,
-        name: row.name,
-        created_at: parse_ts(&row.created_at)?,
-        last_used_at: row.last_used_at.as_deref().map(parse_ts).transpose()?,
-        aaguid: row
-            .aaguid
-            .as_deref()
-            .map(|s| Uuid::parse_str(s).map_err(err))
-            .transpose()?,
-        transports: row.transports,
-        backup_eligible: row.backup_eligible,
-        backup_state: row.backup_state,
-        recovery_cool_down_until: row
-            .recovery_cool_down_until
-            .as_deref()
-            .map(parse_ts)
-            .transpose()?,
-    })
-}
-
-pub(crate) fn decode_passkey(bytes: &[u8]) -> StorageResult<StoredPasskey> {
-    let row: PasskeyRow = serde_json::from_slice(bytes).map_err(err)?;
-    row_to_passkey(row)
-}
-
-fn decode_hex(s: &str) -> StorageResult<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return Err(StorageError::msg("odd-length hex string in stored record"));
-    }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for i in (0..s.len()).step_by(2) {
-        let byte =
-            u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| StorageError::msg("invalid hex"))?;
-        out.push(byte);
-    }
-    Ok(out)
 }
 
 #[derive(Clone)]

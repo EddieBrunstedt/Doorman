@@ -5,9 +5,9 @@ use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId}
 use redb::WriteTransaction;
 
 use crate::db::{self, RedbHandle};
-use crate::expiring::{Family, Reader, Row, Writer};
+use crate::expiring::{Expiring, Family, Reader, Writer};
 
-impl Row for Session {
+impl Expiring for Session {
     const FAMILY: Family = db::SESSIONS;
 
     fn key(&self) -> String {

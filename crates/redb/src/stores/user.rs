@@ -6,6 +6,7 @@ use doorman_core::storage::{User, UserId, UserStatus, UserStore};
 use redb::ReadableTable as _;
 
 use crate::db::{self, RedbHandle};
+use crate::rows;
 
 pub(crate) struct RedbUserStore {
     handle: RedbHandle,
@@ -37,10 +38,10 @@ impl RedbUserStore {
                         .get(user_key.as_str())
                         .map_err(db::err)?
                         .ok_or_else(|| StorageError::not_found("user not found"))?;
-                    db::decode(guard.value())?
+                    rows::decode(guard.value())?
                 };
                 change(&mut user, &mut email_guard)?;
-                let encoded = db::encode(&user)?;
+                let encoded = rows::encode(&user)?;
                 users
                     .insert(user_key.as_str(), encoded.as_slice())
                     .map_err(db::err)?;
@@ -56,7 +57,7 @@ impl UserStore for RedbUserStore {
         self.handle
             .write(move |wtxn| {
                 let user_key = user.id.0.to_string();
-                let encoded = db::encode(&user)?;
+                let encoded = rows::encode(&user)?;
 
                 let mut users = wtxn.open_table(db::USERS).map_err(db::err)?;
                 let mut email_guard = wtxn.open_table(db::EMAIL_GUARD).map_err(db::err)?;
@@ -86,7 +87,7 @@ impl UserStore for RedbUserStore {
                 let key = id.0.to_string();
                 let table = rtxn.open_table(db::USERS).map_err(db::err)?;
                 match table.get(key.as_str()).map_err(db::err)? {
-                    Some(guard) => Ok(Some(db::decode(guard.value())?)),
+                    Some(guard) => Ok(Some(rows::decode(guard.value())?)),
                     None => Ok(None),
                 }
             })
@@ -106,7 +107,7 @@ impl UserStore for RedbUserStore {
                 };
                 let users_tbl = rtxn.open_table(db::USERS).map_err(db::err)?;
                 match users_tbl.get(user_id_str.as_str()).map_err(db::err)? {
-                    Some(guard) => Ok(Some(db::decode(guard.value())?)),
+                    Some(guard) => Ok(Some(rows::decode(guard.value())?)),
                     None => Ok(None),
                 }
             })
@@ -171,7 +172,7 @@ impl UserStore for RedbUserStore {
                 let mut email_guard = wtxn.open_table(db::EMAIL_GUARD).map_err(db::err)?;
 
                 if let Some(guard) = users.remove(key.as_str()).map_err(db::err)? {
-                    let user: User = db::decode(guard.value())?;
+                    let user: User = rows::decode(guard.value())?;
                     if let Some(email) = user.email.as_deref() {
                         email_guard.remove(email).map_err(db::err)?;
                     }

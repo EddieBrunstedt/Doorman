@@ -188,35 +188,16 @@ mod tests {
     }
 
     #[test]
-    fn purpose_str_matches_serde_rename() {
-        for p in [
-            EmailLinkPurpose::Signup,
-            EmailLinkPurpose::Recovery,
-            EmailLinkPurpose::EmailChange,
-        ] {
-            let serde_form = serde_json::to_value(p).unwrap();
-            assert_eq!(
-                serde_form,
-                serde_json::Value::String(purpose_to_str(p).to_string())
-            );
-        }
-    }
-
-    #[test]
-    fn authentication_purpose_round_trips_and_matches_serde() {
+    fn authentication_purpose_round_trips() {
         for p in [AuthenticationPurpose::Login, AuthenticationPurpose::Reauth] {
             let raw = authentication_purpose_to_str(p);
             assert_eq!(authentication_purpose_from_str(raw).unwrap(), p);
-            assert_eq!(
-                serde_json::to_value(p).unwrap(),
-                serde_json::Value::String(raw.to_string())
-            );
         }
         assert!(authentication_purpose_from_str("nope").is_err());
     }
 
     #[test]
-    fn registration_purpose_round_trips_and_matches_serde() {
+    fn registration_purpose_round_trips() {
         for p in [
             RegistrationPurpose::Signup,
             RegistrationPurpose::Recovery,
@@ -224,10 +205,6 @@ mod tests {
         ] {
             let raw = registration_purpose_to_str(p);
             assert_eq!(registration_purpose_from_str(raw).unwrap(), p);
-            assert_eq!(
-                serde_json::to_value(p).unwrap(),
-                serde_json::Value::String(raw.to_string())
-            );
         }
         assert!(registration_purpose_from_str("nope").is_err());
     }
@@ -245,10 +222,6 @@ mod tests {
                 t
             );
         }
-        assert_eq!(
-            serde_json::to_value(SessionTransport::Cookie).unwrap(),
-            serde_json::Value::String("cookie".to_string())
-        );
     }
 
     #[test]

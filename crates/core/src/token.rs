@@ -4,7 +4,6 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::TryRng;
 use rand::rngs::SysRng;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -16,7 +15,7 @@ pub(crate) const TOKEN_BYTES: usize = 32;
     clippy::derived_hash_with_manual_eq,
     reason = "PartialEq is constant-time but byte-equivalent to a derived impl, so the Hash/Eq contract holds"
 )]
-#[derive(Clone, Copy, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Hash)]
 pub struct TokenHash(pub [u8; 32]);
 
 impl PartialEq for TokenHash {

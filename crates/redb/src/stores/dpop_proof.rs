@@ -4,9 +4,9 @@ use doorman_core::error::StorageResult;
 use doorman_core::storage::{DpopProofStore, UsedDpopProof};
 
 use crate::db::{self, RedbHandle};
-use crate::expiring::{Family, Row, Writer};
+use crate::expiring::{Expiring, Family, Writer};
 
-impl Row for UsedDpopProof {
+impl Expiring for UsedDpopProof {
     const FAMILY: Family = db::DPOP_PROOFS;
 
     fn key(&self) -> String {

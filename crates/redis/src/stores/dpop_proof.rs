@@ -5,9 +5,9 @@ use doorman_core::storage::{DpopProofStore, UsedDpopProof};
 
 use crate::client::RedisClient;
 use crate::keys::{Family, Ownership};
-use crate::table::{Insert, Row, Table};
+use crate::table::{Expiring, Insert, Table};
 
-impl Row for UsedDpopProof {
+impl Expiring for UsedDpopProof {
     const FAMILY: Family = Family {
         row: "dpop_proof",
         rows: "dpop_proofs",

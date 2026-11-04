@@ -7,9 +7,9 @@ use doorman_core::storage::{
 };
 
 use crate::db::{self, RedbHandle};
-use crate::expiring::{Family, Reader, Row, Writer};
+use crate::expiring::{Expiring, Family, Reader, Writer};
 
-impl Row for StoredPasskeyRegistration {
+impl Expiring for StoredPasskeyRegistration {
     const FAMILY: Family = db::PASSKEY_REGISTRATIONS;
 
     fn key(&self) -> String {
@@ -25,7 +25,7 @@ impl Row for StoredPasskeyRegistration {
     }
 }
 
-impl Row for StoredPasskeyAuthentication {
+impl Expiring for StoredPasskeyAuthentication {
     const FAMILY: Family = db::PASSKEY_AUTHENTICATIONS;
 
     fn key(&self) -> String {

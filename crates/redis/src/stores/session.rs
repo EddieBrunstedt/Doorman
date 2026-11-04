@@ -5,9 +5,9 @@ use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId}
 
 use crate::client::RedisClient;
 use crate::keys::{Family, Key, Keys, Ownership};
-use crate::table::{Insert, Row, Table};
+use crate::table::{Expiring, Insert, Table};
 
-impl Row for Session {
+impl Expiring for Session {
     const FAMILY: Family = Family {
         row: "session",
         rows: "sessions",

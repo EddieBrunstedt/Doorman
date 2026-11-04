@@ -11,6 +11,7 @@ mod client;
 mod eviction;
 mod keys;
 mod rate_limit;
+mod rows;
 mod scripts;
 mod stores;
 mod table;

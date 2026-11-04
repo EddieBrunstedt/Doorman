@@ -5,11 +5,10 @@ use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::UserId;
 use redis::Script;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 
-use crate::client::{self, RedisClient};
+use crate::client::RedisClient;
 use crate::keys::{Family, Key, Keys, Ownership};
+use crate::rows::{self, Stored};
 use crate::scripts;
 
 static INSERT: LazyLock<Script> = LazyLock::new(|| scripts::script(scripts::INSERT));
@@ -20,7 +19,7 @@ static DELETE: LazyLock<Script> = LazyLock::new(|| scripts::removing_script(scri
 
 const PURGE_BATCH: usize = 256;
 
-pub(crate) trait Row: Serialize + DeserializeOwned + Send + Sync {
+pub(crate) trait Expiring: Stored + Send + Sync {
     const FAMILY: Family;
 
     fn id(&self) -> String;
@@ -63,7 +62,7 @@ pub(crate) struct Table<R> {
     row: PhantomData<fn() -> R>,
 }
 
-impl<R: Row> Table<R> {
+impl<R: Expiring> Table<R> {
     pub(crate) fn new(client: RedisClient) -> Self {
         Self {
             client,
@@ -115,7 +114,7 @@ impl<R: Row> Table<R> {
             row.deadline().timestamp_millis().to_string(),
             ownership::<R>(owner.as_ref()).to_owned(),
             id.clone(),
-            client::to_json(row)?,
+            rows::encode(row)?,
         ];
         args.extend(lookups.iter().map(|_| id.clone()));
 
@@ -139,7 +138,7 @@ impl<R: Row> Table<R> {
         let row_key = self.row_key(&id);
         let deadlines = self.deadlines();
         let owned = self.owned(owner);
-        let json = client::to_json(row)?;
+        let json = rows::encode(row)?;
         let field = row.owner_field();
 
         let current = self.client.hget(&owned, field).await?.unwrap_or_default();
@@ -162,7 +161,12 @@ impl<R: Row> Table<R> {
     }
 
     pub(crate) async fn get(&self, id: &str) -> StorageResult<Option<R>> {
-        self.client.get_json(&self.row_key(id)).await
+        self.client
+            .get(&self.row_key(id))
+            .await?
+            .as_deref()
+            .map(rows::decode)
+            .transpose()
     }
 
     pub(crate) async fn get_by(&self, lookup: &Key) -> StorageResult<Option<R>> {
@@ -194,7 +198,7 @@ impl<R: Row> Table<R> {
             row.owner_field().to_owned(),
         ];
         let taken: Option<String> = self.client.eval(&TAKE, &keys, &args).await?;
-        taken.as_deref().map(client::from_json).transpose()
+        taken.as_deref().map(rows::decode).transpose()
     }
 
     // Rewrites a row that still exists, at its new deadline; a row deleted meanwhile stays gone.
@@ -208,7 +212,7 @@ impl<R: Row> Table<R> {
         keys.extend(&lookups);
         keys.extend(&owner);
         let args = [
-            client::to_json(row)?,
+            rows::encode(row)?,
             row.deadline().timestamp_millis().to_string(),
             id,
             lookups.len().to_string(),
@@ -299,18 +303,21 @@ impl<R: Row> Table<R> {
 
     async fn find(&self, entries: Vec<(String, String)>) -> StorageResult<Vec<Found<R>>> {
         let keys: Vec<Key> = entries.iter().map(|(_, id)| self.row_key(id)).collect();
-        let rows = self.client.mget_json(&keys).await?;
-        Ok(entries
+        let raws = self.client.mget(&keys).await?;
+        entries
             .into_iter()
-            .zip(rows)
-            .map(|((field, id), row): ((String, String), Option<R>)| Found {
-                field: row
-                    .as_ref()
-                    .map_or(field, |row| row.owner_field().to_owned()),
-                id,
-                row,
+            .zip(raws)
+            .map(|((field, id), raw)| {
+                let row: Option<R> = raw.as_deref().map(rows::decode).transpose()?;
+                Ok(Found {
+                    field: row
+                        .as_ref()
+                        .map_or(field, |row| row.owner_field().to_owned()),
+                    id,
+                    row,
+                })
             })
-            .collect())
+            .collect()
     }
 
     // A row already gone still leaves its indexes; its lookups expired with it.
@@ -353,7 +360,7 @@ impl<R: Row> Table<R> {
     }
 }
 
-fn ownership<R: Row>(owner_index: Option<&Key>) -> &'static str {
+fn ownership<R: Expiring>(owner_index: Option<&Key>) -> &'static str {
     match (R::FAMILY.ownership, owner_index) {
         (_, None) | (Ownership::None, _) => "none",
         (Ownership::Set, Some(_)) => "set",

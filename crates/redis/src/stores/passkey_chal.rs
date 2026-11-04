@@ -8,9 +8,9 @@ use doorman_core::storage::{
 
 use crate::client::RedisClient;
 use crate::keys::{Family, Ownership};
-use crate::table::{Insert, Row, Table};
+use crate::table::{Expiring, Insert, Table};
 
-impl Row for StoredPasskeyRegistration {
+impl Expiring for StoredPasskeyRegistration {
     const FAMILY: Family = Family {
         row: "pkreg",
         rows: "pkregs",
@@ -30,7 +30,7 @@ impl Row for StoredPasskeyRegistration {
     }
 }
 
-impl Row for StoredPasskeyAuthentication {
+impl Expiring for StoredPasskeyAuthentication {
     const FAMILY: Family = Family {
         row: "pkauth",
         rows: "pkauths",

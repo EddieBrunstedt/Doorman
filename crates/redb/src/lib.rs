@@ -9,6 +9,7 @@
 
 mod db;
 mod expiring;
+mod rows;
 mod stores;
 
 use std::path::Path;

@@ -1,9 +1,7 @@
 use std::marker::PhantomData;
 
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-
 use crate::db::{self, err};
+use crate::rows::{self, Stored};
 use chrono::{DateTime, Utc};
 use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::UserId;
@@ -44,7 +42,7 @@ impl Family {
     }
 }
 
-pub(crate) trait Row: Serialize + DeserializeOwned {
+pub(crate) trait Expiring: Stored {
     const FAMILY: Family;
 
     fn key(&self) -> String;
@@ -103,12 +101,12 @@ fn unpack(bytes: &[u8]) -> StorageResult<(Deadline, &[u8])> {
     Ok((deadline, body))
 }
 
-fn read<R: Row>(
+fn read<R: Expiring>(
     rows: &impl ReadableTable<&'static str, &'static [u8]>,
     key: &str,
 ) -> StorageResult<Option<R>> {
     match rows.get(key).map_err(err)? {
-        Some(bytes) => Ok(Some(db::decode(unpack(bytes.value())?.1)?)),
+        Some(bytes) => Ok(Some(rows::decode(unpack(bytes.value())?.1)?)),
         None => Ok(None),
     }
 }
@@ -131,7 +129,7 @@ pub(crate) struct Writer<'txn, R> {
     row: PhantomData<fn() -> R>,
 }
 
-impl<'txn, R: Row> Writer<'txn, R> {
+impl<'txn, R: Expiring> Writer<'txn, R> {
     pub(crate) fn open(wtxn: &'txn WriteTransaction) -> StorageResult<Self> {
         let family = R::FAMILY;
         Ok(Self {
@@ -165,7 +163,7 @@ impl<'txn, R: Row> Writer<'txn, R> {
         }
 
         let deadline = Deadline::at(row.deadline());
-        let body = db::encode(row)?;
+        let body = rows::encode(row)?;
         self.rows
             .insert(key.as_str(), pack(deadline, &body).as_slice())
             .map_err(err)?;
@@ -196,7 +194,7 @@ impl<'txn, R: Row> Writer<'txn, R> {
         let (deadline, row) = match self.rows.remove(key).map_err(err)? {
             Some(bytes) => {
                 let (deadline, body) = unpack(bytes.value())?;
-                (deadline, db::decode(body)?)
+                (deadline, rows::decode(body)?)
             }
             None => return Ok(None),
         };
@@ -297,7 +295,7 @@ pub(crate) struct Reader<R> {
     row: PhantomData<fn() -> R>,
 }
 
-impl<R: Row> Reader<R> {
+impl<R: Expiring> Reader<R> {
     pub(crate) fn open(rtxn: &ReadTransaction) -> StorageResult<Self> {
         let family = R::FAMILY;
         Ok(Self {
