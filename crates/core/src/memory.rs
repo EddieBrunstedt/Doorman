@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 
 use crate::clock::Clock;
 use crate::error::{StorageError, StorageResult};
@@ -610,25 +610,15 @@ impl DpopProofStore for InMemoryDpopProofStore {
 
 pub struct InMemoryRateLimiter {
     clock: Arc<dyn Clock>,
-    inner: Mutex<HashMap<BucketKey, Vec<DateTime<Utc>>>>,
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-struct BucketKey {
-    key: String,
-    window_ms: u128,
+    buckets: Mutex<Buckets>,
 }
 
 impl InMemoryRateLimiter {
     pub fn new(clock: Arc<dyn Clock>) -> Self {
         Self {
             clock,
-            inner: Mutex::new(HashMap::new()),
+            buckets: Mutex::new(Buckets::default()),
         }
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<BucketKey, Vec<DateTime<Utc>>>> {
-        sync::lock(&self.inner)
     }
 }
 
@@ -640,20 +630,59 @@ impl RateLimiter for InMemoryRateLimiter {
         policy: RateLimitPolicy,
     ) -> StorageResult<RateLimitDecision> {
         let now = self.clock.now();
+        sync::lock(&self.buckets).charge(key, policy, now)
+    }
+}
+
+// Below this many buckets the table is never swept, so a small table costs no sweeps at all.
+const MIN_SWEEP_AT: usize = 1024;
+
+#[derive(Debug)]
+struct Buckets {
+    charges: HashMap<BucketKey, Vec<DateTime<Utc>>>,
+    // Swept only once it has doubled since the last sweep, so sweeping costs O(1) per bucket
+    // added, and the table stays within twice the buckets whose window hasn't passed.
+    sweep_at: usize,
+}
+
+impl Default for Buckets {
+    fn default() -> Self {
+        Self {
+            charges: HashMap::new(),
+            sweep_at: MIN_SWEEP_AT,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct BucketKey {
+    key: RateLimitKey,
+    window: TimeDelta,
+}
+
+impl Buckets {
+    fn charge(
+        &mut self,
+        key: &RateLimitKey,
+        policy: RateLimitPolicy,
+        now: DateTime<Utc>,
+    ) -> StorageResult<RateLimitDecision> {
         let out_of_range = || StorageError::msg("rate limit window is out of range");
-        let window = chrono::Duration::from_std(policy.window).map_err(|_| out_of_range())?;
+        let window = TimeDelta::from_std(policy.window).map_err(|_| out_of_range())?;
         let cutoff = now.checked_sub_signed(window).ok_or_else(out_of_range)?;
         let bucket = BucketKey {
-            key: key.as_str().to_owned(),
-            window_ms: policy.window.as_millis(),
+            key: key.clone(),
+            window,
         };
 
-        let mut state = self.lock();
-        let entries = state.entry(bucket).or_default();
-        entries.retain(|t| *t > cutoff);
+        if !self.charges.contains_key(&bucket) && self.charges.len() >= self.sweep_at {
+            self.sweep(now);
+        }
+        let charges = self.charges.entry(bucket).or_default();
+        charges.retain(|t| *t > cutoff);
 
-        if entries.len() as u32 >= policy.max_attempts {
-            let oldest = entries.first().copied().unwrap_or(now);
+        if charges.len() as u32 >= policy.max_attempts {
+            let oldest = charges.first().copied().unwrap_or(now);
             let retry_at = oldest.checked_add_signed(window).ok_or_else(out_of_range)?;
             let retry_after = (retry_at - now)
                 .to_std()
@@ -662,8 +691,24 @@ impl RateLimiter for InMemoryRateLimiter {
             return Ok(RateLimitDecision::Limited { retry_after });
         }
 
-        entries.push(now);
+        charges.push(now);
         Ok(RateLimitDecision::Allowed)
+    }
+
+    // Leaves every bucket as charging it now would, and drops those left empty.
+    fn sweep(&mut self, now: DateTime<Utc>) {
+        self.charges.retain(|bucket, charges| {
+            if let Some(cutoff) = now.checked_sub_signed(bucket.window) {
+                charges.retain(|t| *t > cutoff);
+            }
+            !charges.is_empty()
+        });
+        self.sweep_at = MIN_SWEEP_AT.max(2 * self.charges.len());
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.charges.len()
     }
 }
 
@@ -778,5 +823,65 @@ mod tests {
             .check_and_charge(&RateLimitKey::new("test"), policy)
             .await;
         assert!(result.is_err(), "expected an error, got {result:?}");
+    }
+
+    const MINUTE: std::time::Duration = std::time::Duration::from_secs(60);
+
+    fn charge_distinct_keys(buckets: &mut Buckets, round: usize, count: usize, now: DateTime<Utc>) {
+        let policy = RateLimitPolicy::new(1, MINUTE);
+        for i in 0..count {
+            let key = RateLimitKey::new(format!("round-{round}:{i}"));
+            let decision = buckets.charge(&key, policy, now).expect("charge");
+            assert_eq!(decision, RateLimitDecision::Allowed);
+        }
+    }
+
+    #[test]
+    fn rate_limiter_buckets_do_not_grow_with_keys_whose_window_has_passed() {
+        let mut buckets = Buckets::default();
+        let mut now = Utc::now();
+
+        for round in 0..16 {
+            charge_distinct_keys(&mut buckets, round, MIN_SWEEP_AT, now);
+            assert!(
+                buckets.len() <= 2 * MIN_SWEEP_AT,
+                "round {round} left {} buckets",
+                buckets.len(),
+            );
+            now += MINUTE * 2;
+        }
+    }
+
+    #[test]
+    fn rate_limiter_sweep_keeps_buckets_whose_window_has_not_passed() {
+        let mut buckets = Buckets::default();
+        let start = Utc::now();
+        let hourly = RateLimitPolicy::new(1, MINUTE * 60);
+        let held = RateLimitKey::new("held");
+
+        assert_eq!(
+            buckets.charge(&held, hourly, start).expect("charge"),
+            RateLimitDecision::Allowed,
+        );
+        charge_distinct_keys(&mut buckets, 0, MIN_SWEEP_AT - 1, start);
+        let swept_at = start + MINUTE * 2;
+        assert_eq!(
+            buckets
+                .charge(&RateLimitKey::new("newcomer"), hourly, swept_at)
+                .expect("charge"),
+            RateLimitDecision::Allowed,
+        );
+
+        assert_eq!(
+            buckets.len(),
+            2,
+            "only `held` and `newcomer` are in their window"
+        );
+        assert_eq!(
+            buckets.charge(&held, hourly, swept_at).expect("charge"),
+            RateLimitDecision::Limited {
+                retry_after: (MINUTE * 58),
+            },
+        );
     }
 }
