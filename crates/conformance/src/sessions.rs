@@ -235,6 +235,19 @@ pub(crate) async fn session_touch_slides_deadline(stores: &ExpiringStores) {
     );
 
     sessions
+        .purge_expired(days(400))
+        .await
+        .expect("purge between the old and new deadlines");
+    assert!(
+        sessions
+            .find_session_by_id(original.id)
+            .await
+            .expect("find after purge")
+            .is_some(),
+        "purge past the old deadline keeps the touched session",
+    );
+
+    sessions
         .delete_session(original.id)
         .await
         .expect("cleanup session");

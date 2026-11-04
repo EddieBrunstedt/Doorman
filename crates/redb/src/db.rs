@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use doorman_core::error::{StorageError, StorageResult};
-use doorman_core::storage::{Session, StoredPasskey, TokenHash, UserId};
+use doorman_core::storage::{StoredPasskey, TokenHash, UserId};
 use redb::{
     Database, ReadTransaction, ReadableDatabase as _, ReadableTable, TableDefinition,
     WriteTransaction,
@@ -11,24 +11,44 @@ use redb::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::expiring::Family;
+
 pub(crate) const USERS: TableDefinition<&str, &[u8]> = TableDefinition::new("users");
 pub(crate) const EMAIL_GUARD: TableDefinition<&str, &str> = TableDefinition::new("email_guard");
-pub(crate) const SESSIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("sessions");
-pub(crate) const SESSION_HASH_IDX: TableDefinition<&str, &str> =
-    TableDefinition::new("session_hash_idx");
-pub(crate) const USER_SESSIONS_IDX: TableDefinition<&str, ()> =
-    TableDefinition::new("user_sessions_idx");
-pub(crate) const EMAIL_LINKS: TableDefinition<&str, &[u8]> = TableDefinition::new("email_links");
-pub(crate) const USER_EMAIL_LINKS_IDX: TableDefinition<&str, ()> =
-    TableDefinition::new("user_email_links_idx");
 pub(crate) const PASSKEYS: TableDefinition<&str, &[u8]> = TableDefinition::new("passkeys");
 pub(crate) const USER_PASSKEYS_IDX: TableDefinition<&str, ()> =
     TableDefinition::new("user_passkeys_idx");
-pub(crate) const PKREGS: TableDefinition<&str, &[u8]> = TableDefinition::new("pkregs");
-pub(crate) const USER_PKREGS_IDX: TableDefinition<&str, ()> =
-    TableDefinition::new("user_pkregs_idx");
-pub(crate) const PKAUTHS: TableDefinition<&str, &[u8]> = TableDefinition::new("pkauths");
-pub(crate) const DPOP_PROOFS: TableDefinition<&str, &[u8]> = TableDefinition::new("dpop_proofs");
+
+pub(crate) const SESSIONS: Family = Family {
+    rows: TableDefinition::new("sessions"),
+    deadlines: TableDefinition::new("session_deadlines"),
+    owners: Some(TableDefinition::new("user_sessions_idx")),
+    lookups: Some(TableDefinition::new("session_hash_idx")),
+};
+pub(crate) const EMAIL_LINKS: Family = Family {
+    rows: TableDefinition::new("email_links"),
+    deadlines: TableDefinition::new("email_link_deadlines"),
+    owners: Some(TableDefinition::new("user_email_links_idx")),
+    lookups: None,
+};
+pub(crate) const PASSKEY_REGISTRATIONS: Family = Family {
+    rows: TableDefinition::new("pkregs"),
+    deadlines: TableDefinition::new("pkreg_deadlines"),
+    owners: Some(TableDefinition::new("user_pkregs_idx")),
+    lookups: None,
+};
+pub(crate) const PASSKEY_AUTHENTICATIONS: Family = Family {
+    rows: TableDefinition::new("pkauths"),
+    deadlines: TableDefinition::new("pkauth_deadlines"),
+    owners: None,
+    lookups: None,
+};
+pub(crate) const DPOP_PROOFS: Family = Family {
+    rows: TableDefinition::new("dpop_proofs"),
+    deadlines: TableDefinition::new("dpop_proof_deadlines"),
+    owners: None,
+    lookups: None,
+};
 
 const SEP: char = '\x00';
 
@@ -199,48 +219,22 @@ impl RedbHandle {
     }
 }
 
-pub(crate) fn write_session(wtxn: &WriteTransaction, session: &Session) -> StorageResult<()> {
-    let session_key = session.id.0.to_string();
-    let hash_key = token_hash_hex(&session.token_hash);
-    let user_idx_key = owner_key(session.user_id, session.id);
-    let encoded = encode(session)?;
-
-    let mut sessions = wtxn.open_table(SESSIONS).map_err(err)?;
-    let mut hash_idx = wtxn.open_table(SESSION_HASH_IDX).map_err(err)?;
-    let mut user_idx = wtxn.open_table(USER_SESSIONS_IDX).map_err(err)?;
-
-    if sessions.get(session_key.as_str()).map_err(err)?.is_some() {
-        return Err(StorageError::conflict("session id already exists"));
-    }
-    if hash_idx.get(hash_key.as_str()).map_err(err)?.is_some() {
-        return Err(StorageError::conflict("session token hash already exists"));
-    }
-    sessions
-        .insert(session_key.as_str(), encoded.as_slice())
-        .map_err(err)?;
-    hash_idx
-        .insert(hash_key.as_str(), session_key.as_str())
-        .map_err(err)?;
-    user_idx.insert(user_idx_key.as_str(), ()).map_err(err)?;
-    Ok(())
-}
-
 #[allow(clippy::result_large_err)]
 pub(crate) fn ensure_tables(db: &Database) -> Result<(), redb::Error> {
     let wtxn = db.begin_write()?;
     wtxn.open_table(USERS)?;
     wtxn.open_table(EMAIL_GUARD)?;
-    wtxn.open_table(SESSIONS)?;
-    wtxn.open_table(SESSION_HASH_IDX)?;
-    wtxn.open_table(USER_SESSIONS_IDX)?;
-    wtxn.open_table(EMAIL_LINKS)?;
-    wtxn.open_table(USER_EMAIL_LINKS_IDX)?;
     wtxn.open_table(PASSKEYS)?;
     wtxn.open_table(USER_PASSKEYS_IDX)?;
-    wtxn.open_table(PKREGS)?;
-    wtxn.open_table(USER_PKREGS_IDX)?;
-    wtxn.open_table(PKAUTHS)?;
-    wtxn.open_table(DPOP_PROOFS)?;
+    for family in [
+        SESSIONS,
+        EMAIL_LINKS,
+        PASSKEY_REGISTRATIONS,
+        PASSKEY_AUTHENTICATIONS,
+        DPOP_PROOFS,
+    ] {
+        family.create_tables(&wtxn)?;
+    }
     wtxn.commit()?;
     Ok(())
 }

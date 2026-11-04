@@ -8,6 +8,7 @@
 )]
 
 mod db;
+mod expiring;
 mod stores;
 
 use std::path::Path;
@@ -74,5 +75,5 @@ impl RedbStorage {
 }
 
 pub fn write_session(wtxn: &WriteTransaction, session: &Session) -> StorageResult<()> {
-    db::write_session(wtxn, session)
+    stores::session::write_session(wtxn, session)
 }

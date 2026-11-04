@@ -1,11 +1,41 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use doorman_core::error::StorageResult;
+use doorman_core::error::{StorageError, StorageResult};
 use doorman_core::storage::{Session, SessionId, SessionStore, TokenHash, UserId};
-
-use redb::ReadableTable as _;
+use redb::WriteTransaction;
 
 use crate::db::{self, RedbHandle};
+use crate::expiring::{Family, Reader, Row, Writer};
+
+impl Row for Session {
+    const FAMILY: Family = db::SESSIONS;
+
+    fn key(&self) -> String {
+        self.id.to_string()
+    }
+
+    fn deadline(&self) -> DateTime<Utc> {
+        self.expires_at
+    }
+
+    fn owner(&self) -> Option<UserId> {
+        Some(self.user_id)
+    }
+
+    fn lookup(&self) -> Option<String> {
+        Some(db::token_hash_hex(&self.token_hash))
+    }
+}
+
+pub(crate) fn write_session(wtxn: &WriteTransaction, session: &Session) -> StorageResult<()> {
+    if Writer::open(wtxn)?.insert(session)? {
+        Ok(())
+    } else {
+        Err(StorageError::conflict(
+            "session id or token hash already exists",
+        ))
+    }
+}
 
 pub(crate) struct RedbSessionStore {
     handle: RedbHandle,
@@ -21,10 +51,7 @@ impl RedbSessionStore {
 impl SessionStore for RedbSessionStore {
     async fn create_session(&self, session: Session) -> StorageResult<()> {
         self.handle
-            .write(move |wtxn| {
-                db::write_session(wtxn, &session)?;
-                Ok(())
-            })
+            .write(move |wtxn| write_session(wtxn, &session))
             .await
     }
 
@@ -36,19 +63,12 @@ impl SessionStore for RedbSessionStore {
     ) -> StorageResult<()> {
         self.handle
             .write(move |wtxn| {
-                let key = id.0.to_string();
-                let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
-                let existing = match sessions.get(key.as_str()).map_err(db::err)? {
-                    Some(guard) => Some(db::decode::<Session>(guard.value())?),
-                    None => None,
-                };
-                if let Some(mut existing) = existing {
-                    existing.last_used_at = last_used_at;
-                    existing.expires_at = expires_at;
-                    let bytes = db::encode(&existing)?;
-                    sessions
-                        .insert(key.as_str(), bytes.as_slice())
-                        .map_err(db::err)?;
+                let mut sessions = Writer::<Session>::open(wtxn)?;
+                // Taken and written again, so its deadline entry moves with it.
+                if let Some(mut session) = sessions.take(&id.to_string())? {
+                    session.last_used_at = last_used_at;
+                    session.expires_at = expires_at;
+                    sessions.insert(&session)?;
                 }
                 Ok(())
             })
@@ -56,71 +76,28 @@ impl SessionStore for RedbSessionStore {
     }
 
     async fn find_session_by_token_hash(&self, hash: &TokenHash) -> StorageResult<Option<Session>> {
-        let hash_hex = db::token_hash_hex(hash);
+        let lookup = db::token_hash_hex(hash);
         self.handle
-            .read(move |rtxn| {
-                let session_key = {
-                    let hash_tbl = rtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
-                    match hash_tbl.get(hash_hex.as_str()).map_err(db::err)? {
-                        Some(guard) => guard.value().to_owned(),
-                        None => return Ok(None),
-                    }
-                };
-                let sessions = rtxn.open_table(db::SESSIONS).map_err(db::err)?;
-                match sessions.get(session_key.as_str()).map_err(db::err)? {
-                    Some(guard) => Ok(Some(db::decode(guard.value())?)),
-                    None => Ok(None),
-                }
-            })
+            .read(move |rtxn| Reader::<Session>::open(rtxn)?.get_by(&lookup))
             .await
     }
 
     async fn find_session_by_id(&self, id: SessionId) -> StorageResult<Option<Session>> {
         self.handle
-            .read(move |rtxn| {
-                let key = id.0.to_string();
-                let sessions = rtxn.open_table(db::SESSIONS).map_err(db::err)?;
-                match sessions.get(key.as_str()).map_err(db::err)? {
-                    Some(guard) => Ok(Some(db::decode(guard.value())?)),
-                    None => Ok(None),
-                }
-            })
+            .read(move |rtxn| Reader::<Session>::open(rtxn)?.get(&id.to_string()))
             .await
     }
 
     async fn list_for_user(&self, user_id: UserId) -> StorageResult<Vec<Session>> {
         self.handle
-            .read(move |rtxn| {
-                let user_idx = rtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
-                let session_ids = db::owned_members(&user_idx, user_id)?;
-
-                let sessions_tbl = rtxn.open_table(db::SESSIONS).map_err(db::err)?;
-                let mut out = Vec::with_capacity(session_ids.len());
-                for id in &session_ids {
-                    if let Some(guard) = sessions_tbl.get(id.as_str()).map_err(db::err)? {
-                        out.push(db::decode(guard.value())?);
-                    }
-                }
-                Ok(out)
-            })
+            .read(move |rtxn| Reader::<Session>::open(rtxn)?.list_owned(user_id))
             .await
     }
 
     async fn delete_session(&self, id: SessionId) -> StorageResult<()> {
         self.handle
             .write(move |wtxn| {
-                let key = id.0.to_string();
-                let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
-                let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
-                let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
-
-                if let Some(guard) = sessions.remove(key.as_str()).map_err(db::err)? {
-                    let session: Session = db::decode(guard.value())?;
-                    let hash_hex = db::token_hash_hex(&session.token_hash);
-                    let user_idx_key = db::owner_key(session.user_id, session.id);
-                    hash_idx.remove(hash_hex.as_str()).map_err(db::err)?;
-                    user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
-                }
+                Writer::<Session>::open(wtxn)?.remove(&id.to_string())?;
                 Ok(())
             })
             .await
@@ -133,60 +110,15 @@ impl SessionStore for RedbSessionStore {
     ) -> StorageResult<u64> {
         self.handle
             .write(move |wtxn| {
-                let except_key = except.map(|id| id.0.to_string());
-
-                let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
-                let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
-                let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
-
-                let mut count = 0u64;
-                for sid in db::owned_members(&user_idx, user_id)? {
-                    if except_key.as_ref() == Some(&sid) {
-                        continue;
-                    }
-                    if let Some(guard) = sessions.remove(sid.as_str()).map_err(db::err)? {
-                        let session: Session = db::decode(guard.value())?;
-                        let hash_hex = db::token_hash_hex(&session.token_hash);
-                        hash_idx.remove(hash_hex.as_str()).map_err(db::err)?;
-                        count += 1;
-                    }
-                    let user_idx_key = db::owner_key(user_id, &sid);
-                    user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
-                }
-                Ok(count)
+                let except = except.map(|id| id.to_string());
+                Writer::<Session>::open(wtxn)?.remove_owned(user_id, except.as_deref())
             })
             .await
     }
 
     async fn purge_expired(&self, now: DateTime<Utc>) -> StorageResult<u64> {
         self.handle
-            .write(move |wtxn| {
-                let mut sessions = wtxn.open_table(db::SESSIONS).map_err(db::err)?;
-                let mut hash_idx = wtxn.open_table(db::SESSION_HASH_IDX).map_err(db::err)?;
-                let mut user_idx = wtxn.open_table(db::USER_SESSIONS_IDX).map_err(db::err)?;
-
-                let expired: Vec<(String, Session)> = sessions
-                    .iter()
-                    .map_err(db::err)?
-                    .map(|r| {
-                        r.map_err(db::err).and_then(|(k, v)| {
-                            let key = k.value().to_owned();
-                            let s = db::decode::<Session>(v.value())?;
-                            Ok((key, s))
-                        })
-                    })
-                    .filter(|r| r.as_ref().map_or(true, |(_, s)| s.expires_at <= now))
-                    .collect::<StorageResult<_>>()?;
-
-                for (key, session) in &expired {
-                    sessions.remove(key.as_str()).map_err(db::err)?;
-                    let hash_hex = db::token_hash_hex(&session.token_hash);
-                    let user_idx_key = db::owner_key(session.user_id, session.id);
-                    hash_idx.remove(hash_hex.as_str()).map_err(db::err)?;
-                    user_idx.remove(user_idx_key.as_str()).map_err(db::err)?;
-                }
-                Ok(expired.len() as u64)
-            })
+            .write(move |wtxn| Writer::<Session>::open(wtxn)?.purge(now))
             .await
     }
 }
