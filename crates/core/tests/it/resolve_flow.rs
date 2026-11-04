@@ -507,15 +507,23 @@ async fn a_session_issued_while_the_user_is_locked_out_does_not_survive() {
                     matches!(issued, Err(Error::UserNotFound)),
                     "{case}: got {issued:?}"
                 ),
+                // The owner was active when the session was confirmed, so it was issued before
+                // the user was deleted.
+                LockOut::DeleteEnabledMidway => {
+                    assert!(issued.is_ok(), "{case}: got {issued:?}");
+                }
             }
             assert_eq!(session_count(&h, user_id).await, 0, "{case}");
-            assert!(
-                !h.audit.events()[audited_before..].iter().any(|e| matches!(
-                    e.kind,
-                    AuditEventKind::SessionCreated { .. } | AuditEventKind::LoginSucceeded { .. }
-                )),
-                "{case}: a refused session is not audited as issued",
-            );
+            if !matches!(lock_out, LockOut::DeleteEnabledMidway) {
+                assert!(
+                    !h.audit.events()[audited_before..].iter().any(|e| matches!(
+                        e.kind,
+                        AuditEventKind::SessionCreated { .. }
+                            | AuditEventKind::LoginSucceeded { .. }
+                    )),
+                    "{case}: a refused session is not audited as issued",
+                );
+            }
         }
     }
 }

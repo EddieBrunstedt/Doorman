@@ -464,17 +464,23 @@ async fn a_registration_started_while_its_owner_is_locked_out_does_not_survive()
             let case = format!("{started:?} racing {lock_out:?}");
             let audited = kinds(&h.audit.events()[audited_before..]);
             match (&starter, lock_out) {
+                // The owner was active when the registration was confirmed, so it was written
+                // before the user was deleted.
+                (_, LockOut::DeleteEnabledMidway) => {
+                    assert!(result.is_ok(), "{case}: got {result:?}");
+                }
                 // A link is refused as if the lock-out had come before it was redeemed.
-                (Starter::Link(link, _), _) => {
-                    let (refused, reason) = match lock_out {
-                        LockOut::Disable => (
+                (Starter::Link(link, _), LockOut::Disable | LockOut::Delete) => {
+                    let (refused, reason) = if matches!(lock_out, LockOut::Disable) {
+                        (
                             matches!(result, Err(Error::UserDisabled)),
                             RedemptionFailureReason::UserDisabled,
-                        ),
-                        LockOut::Delete => (
+                        )
+                    } else {
+                        (
                             matches!(result, Err(Error::InvalidEmailLink)),
                             RedemptionFailureReason::UserNotFound,
-                        ),
+                        )
                     };
                     assert!(refused, "{case}: got {result:?}");
                     assert!(
@@ -501,7 +507,7 @@ async fn a_registration_started_while_its_owner_is_locked_out_does_not_survive()
                 .list_registrations_for_user(user.id)
                 .await
                 .expect("list registrations");
-            assert!(left.is_empty(), "{case}: the registration is discarded");
+            assert!(left.is_empty(), "{case}: the registration does not survive");
         }
     }
 }
@@ -543,39 +549,47 @@ async fn a_passkey_registered_while_its_owner_is_locked_out_does_not_survive() {
 
             let case = format!("{started:?} racing {lock_out:?} at {write:?}");
             // Refused as if the lock-out had come before the redemption checked the owner.
-            let (refused, reason) = match lock_out {
-                LockOut::Disable => (
+            let refusal = match lock_out {
+                LockOut::Disable => Some((
                     matches!(result, Err(Error::UserDisabled)),
                     RedemptionFailureReason::UserDisabled,
-                ),
-                LockOut::Delete => (
+                )),
+                LockOut::Delete => Some((
                     matches!(result, Err(Error::InvalidPasskeyChallenge)),
                     RedemptionFailureReason::UserNotFound,
-                ),
-            };
-            assert!(refused, "{case}: got {result:?}");
-            let audited = kinds(&h.audit.events()[audited_before..]);
-            assert!(
-                audited.contains(&AuditEventKind::RedemptionFailed {
-                    user_id: Some(user.id),
-                    secret: SecretKind::RegistrationChallenge,
-                    reason,
-                }),
-                "{case}: {audited:?}"
-            );
-            assert!(
-                !audited.iter().any(|kind| matches!(
-                    kind,
-                    AuditEventKind::PasskeyAdded { .. } | AuditEventKind::SessionCreated { .. }
                 )),
-                "{case}: {audited:?}"
-            );
+                // The owner was active when the passkey was confirmed, so it was written before
+                // the user was deleted.
+                LockOut::DeleteEnabledMidway => None,
+            };
+            let audited = kinds(&h.audit.events()[audited_before..]);
+            if let Some((refused, reason)) = refusal {
+                assert!(refused, "{case}: got {result:?}");
+                assert!(
+                    audited.contains(&AuditEventKind::RedemptionFailed {
+                        user_id: Some(user.id),
+                        secret: SecretKind::RegistrationChallenge,
+                        reason,
+                    }),
+                    "{case}: {audited:?}"
+                );
+                assert!(
+                    !audited.iter().any(|kind| matches!(
+                        kind,
+                        AuditEventKind::PasskeyAdded { .. } | AuditEventKind::SessionCreated { .. }
+                    )),
+                    "{case}: {audited:?}"
+                );
+            } else {
+                assert!(result.is_ok(), "{case}: got {result:?}");
+            }
             let stored = h
                 .passkeys
                 .find_passkey_by_credential_id(response.raw_id.as_ref())
                 .await
                 .expect("find passkey");
-            assert!(stored.is_none(), "{case}: the passkey is discarded");
+            assert!(stored.is_none(), "{case}: the passkey does not survive");
+            assert_eq!(session_count(&h, user.id).await, 0, "{case}");
         }
     }
 }

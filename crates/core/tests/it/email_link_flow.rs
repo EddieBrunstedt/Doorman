@@ -39,6 +39,10 @@ impl Link {
         }
     }
 
+    fn mail_prefix(self) -> &'static str {
+        self.template().split('{').next().expect("template prefix")
+    }
+
     // Signup creates the user it sends a link to, so its owner already holds one.
     async fn owner(self, h: &Harness) -> User {
         match self {
@@ -88,13 +92,12 @@ impl Link {
     async fn issue(self, h: &Harness) -> (UserId, String) {
         let owner = self.owner(h).await;
         self.request(h, &owner).await.expect("request link");
-        let prefix = self.template().split('{').next().expect("template prefix");
         let email = h
             .email
             .sent()
             .into_iter()
             .rev()
-            .find(|e| e.body_text.contains(prefix))
+            .find(|e| e.body_text.contains(self.mail_prefix()))
             .expect("link sent");
         (
             owner.id,
@@ -322,6 +325,17 @@ async fn a_link_issued_while_its_owner_is_locked_out_does_not_survive() {
 
             let case = format!("{link:?} racing {lock_out:?}");
             match (refused_issue(link, owner.id), lock_out) {
+                // The owner was active when the link was confirmed, so it was written, and sent,
+                // before the user was deleted.
+                (_, LockOut::DeleteEnabledMidway) => {
+                    assert!(result.is_ok(), "{case}: got {result:?}");
+                    assert!(
+                        h.email.sent()[mail_before..]
+                            .iter()
+                            .any(|e| e.body_text.contains(link.mail_prefix())),
+                        "{case}: the link is sent"
+                    );
+                }
                 // Delete disables the user first, so signup and recovery refuse a deleted user
                 // as a disabled one, as silently.
                 (Some(refusal), _) => {
@@ -340,8 +354,13 @@ async fn a_link_issued_while_its_owner_is_locked_out_does_not_survive() {
                     "{case}: got {result:?}"
                 ),
             }
-            assert_eq!(h.email.sent().len(), mail_before, "{case}: nothing is sent");
-            assert!(h.email_links.is_empty(), "{case}: the link is discarded");
+            if !matches!(lock_out, LockOut::DeleteEnabledMidway) {
+                assert_eq!(h.email.sent().len(), mail_before, "{case}: nothing is sent");
+            }
+            assert!(
+                h.email_links.is_empty(),
+                "{case}: the link does not survive"
+            );
         }
     }
 }

@@ -212,19 +212,34 @@ impl UserRecords {
     }
 
     pub(crate) async fn disable(&self, user_id: UserId) -> Result<u64> {
-        let now = self.now();
         // The status goes before the rows the user owns; `confirm_written` relies on that order.
+        self.set_disabled(user_id).await?;
+        // Redemption refuses links and registrations while the user is disabled; deleting them
+        // keeps an enable from bringing them back.
+        self.delete_expiring_rows(user_id).await
+    }
+
+    async fn set_disabled(&self, user_id: UserId) -> Result<()> {
+        let now = self.now();
         self.users
             .set_user_status(user_id, UserStatus::Disabled { at: now }, now)
             .await?;
+        Ok(())
+    }
+
+    async fn delete_expiring_rows(&self, user_id: UserId) -> Result<u64> {
         let revoked_count = self.sessions.revoke_all_for_user(user_id).await?;
-        // Redemption refuses these while the user is disabled; deleting them keeps an enable from
-        // bringing them back.
         self.links.delete_links_for_user(user_id).await?;
         self.challenges
             .delete_registrations_for_user(user_id)
             .await?;
         Ok(revoked_count)
+    }
+
+    async fn delete_owned_rows(&self, user_id: UserId) -> Result<()> {
+        self.delete_expiring_rows(user_id).await?;
+        self.passkeys.delete_passkeys_for_user(user_id).await?;
+        Ok(())
     }
 
     pub(crate) fn check_transport(&self, requested: &RequestTransport) -> Result<CheckedTransport> {
@@ -272,9 +287,18 @@ impl UserRecords {
 
         // Disabling first makes a racing write refuse its own row, a passkey included (see
         // `confirm_written`), and leaves a delete that fails partway with a user who cannot log in.
-        self.disable(user_id).await?;
-        self.passkeys.delete_passkeys_for_user(user_id).await?;
+        self.set_disabled(user_id).await?;
+        self.delete_owned_rows(user_id).await?;
         self.users.delete_user(user_id).await?;
+        // An enable can land between the disable and the user's delete, so a racing write can
+        // find its owner active and keep a row written after the deletes above. Such a row was
+        // written before this second delete, and one written after it finds its owner gone.
+        if let Err(error) = self.delete_owned_rows(user_id).await {
+            tracing::warn!(
+                %error,
+                "a row written while its user was being deleted may be left behind",
+            );
+        }
 
         self.audit
             .emit(actor, AuditEventKind::UserDeleted { user_id })

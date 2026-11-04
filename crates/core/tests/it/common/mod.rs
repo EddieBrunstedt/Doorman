@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::Barrier;
+use tokio::sync::{Barrier, Notify};
 
 use chrono::{DateTime, TimeZone, Utc};
 use doorman_core::assembly::{AuthCore, AuthCoreRequired};
@@ -87,6 +87,7 @@ pub struct CountingUserStore {
     reads: AtomicUsize,
     create_hold: Mutex<Option<(Arc<Barrier>, usize)>>,
     signup_mark_hold: WriteHold,
+    delete_hold: WriteHold,
 }
 
 impl CountingUserStore {
@@ -106,6 +107,10 @@ impl CountingUserStore {
 
     pub fn hold_next_signup_mark(&self) -> Arc<Barrier> {
         self.signup_mark_hold.hold_next()
+    }
+
+    pub fn hold_next_user_delete(&self) -> Arc<Barrier> {
+        self.delete_hold.hold_next()
     }
 }
 
@@ -159,6 +164,7 @@ impl UserStore for CountingUserStore {
     }
 
     async fn delete_user(&self, id: UserId) -> StorageResult<()> {
+        self.delete_hold.pass().await;
         self.inner.delete_user(id).await
     }
 }
@@ -188,9 +194,16 @@ impl WriteHold {
 pub enum LockOut {
     Disable,
     Delete,
+    // An enable lands once the delete has deleted the user's rows, before it deletes the user, so
+    // the held write finds its owner active and keeps its row.
+    DeleteEnabledMidway,
 }
 
-pub const LOCK_OUTS: [LockOut; 2] = [LockOut::Disable, LockOut::Delete];
+pub const LOCK_OUTS: [LockOut; 3] = [
+    LockOut::Disable,
+    LockOut::Delete,
+    LockOut::DeleteEnabledMidway,
+];
 
 // Runs `flow` with the lock-out landing, from another process, while the held write waits.
 pub async fn locked_out_during<T>(
@@ -201,16 +214,52 @@ pub async fn locked_out_during<T>(
     flow: impl Future<Output = T>,
 ) -> T {
     let other = h.another_process();
+    let flow_done = Notify::new();
     let (out, ()) = within_deadline(async {
-        tokio::join!(flow, async {
-            held.wait().await;
-            match lock_out {
-                LockOut::Disable => other.operator.disable(user_id, operator()).await,
-                LockOut::Delete => other.operator.delete_user(user_id, operator()).await,
+        tokio::join!(
+            async {
+                let out = flow.await;
+                flow_done.notify_one();
+                out
+            },
+            async {
+                held.wait().await;
+                match lock_out {
+                    LockOut::Disable => {
+                        other
+                            .operator
+                            .disable(user_id, operator())
+                            .await
+                            .expect("disable");
+                        held.wait().await;
+                    }
+                    LockOut::Delete => {
+                        other
+                            .operator
+                            .delete_user(user_id, operator())
+                            .await
+                            .expect("delete");
+                        held.wait().await;
+                    }
+                    LockOut::DeleteEnabledMidway => {
+                        let deleting_user = h.user_store.hold_next_user_delete();
+                        let (deleted, ()) =
+                            tokio::join!(other.operator.delete_user(user_id, operator()), async {
+                                deleting_user.wait().await;
+                                other
+                                    .operator
+                                    .enable(user_id, operator())
+                                    .await
+                                    .expect("enable");
+                                held.wait().await;
+                                flow_done.notified().await;
+                                deleting_user.wait().await;
+                            });
+                        deleted.expect("delete");
+                    }
+                }
             }
-            .expect("lock out");
-            held.wait().await;
-        })
+        )
     })
     .await;
     out
@@ -576,6 +625,7 @@ impl HarnessBuilder {
             reads: AtomicUsize::new(0),
             create_hold: Mutex::new(None),
             signup_mark_hold: WriteHold::default(),
+            delete_hold: WriteHold::default(),
         });
         let session_store = Arc::new(CountingSessionStore {
             inner: sessions.clone(),
