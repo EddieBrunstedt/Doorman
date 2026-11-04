@@ -90,8 +90,9 @@ async fn override_create_session_reuses_bundled_reads() {
         .await
         .expect("connect to mongodb");
     let database = client.database("doorman_composability");
-    let storage = MongoDbStorage::new(database.clone());
-    storage.ensure_indexes().await.expect("ensure indexes");
+    let storage = MongoDbStorage::new(database.clone())
+        .await
+        .expect("open storage");
 
     let mut composite = storage.all_stores();
     composite.expiring.sessions = Arc::new(AuditedSessions {

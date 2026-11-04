@@ -105,7 +105,9 @@ async fn reads_see_every_finished_write_when_the_host_prefers_secondaries() {
     ))
     .await
     .expect("connect to replica set");
-    let storage = MongoDbStorage::new(client.database(DATABASE));
+    let storage = MongoDbStorage::new(client.database(DATABASE))
+        .await
+        .expect("open storage");
     let stores = storage.all_stores();
     let (users, passkeys, sessions) = (
         &stores.records.users,

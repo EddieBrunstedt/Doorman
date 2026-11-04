@@ -59,8 +59,7 @@ async fn every_row_expires_at_its_deadline() {
         .await
         .expect("connect to mongodb");
     let db = client.database("doorman_native_expiry");
-    let storage = MongoDbStorage::new(db.clone());
-    storage.ensure_indexes().await.expect("ensure indexes");
+    let storage = MongoDbStorage::new(db.clone()).await.expect("open storage");
     let stores = storage.expiring();
     let now = Utc::now();
 

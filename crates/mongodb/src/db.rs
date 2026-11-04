@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use doorman_core::error::{StorageError, StorageResult};
+use doorman_core::error::StorageError;
 use mongodb::bson::doc;
 use mongodb::error::{ErrorKind, WriteFailure};
 use mongodb::options::{
@@ -28,8 +28,12 @@ pub(crate) struct MongoDb {
 }
 
 impl MongoDb {
-    pub(crate) fn new(db: Database) -> Self {
-        Self { db }
+    // The unique indexes are what refuse a second user with one email, or a second session or
+    // email link with one token hash, so no store exists until every index does.
+    pub(crate) async fn open(db: Database) -> mongodb::error::Result<Self> {
+        let db = Self { db };
+        db.build_indexes().await?;
+        Ok(db)
     }
 
     // Core refuses a login to a disabled user, and a request to a revoked session, only if every
@@ -79,182 +83,89 @@ impl MongoDb {
         self.collection("dpop_proofs")
     }
 
-    pub(crate) async fn ensure_indexes(&self) -> StorageResult<()> {
-        self.ensure_user_indexes().await?;
-        self.ensure_session_indexes().await?;
-        self.ensure_email_link_indexes().await?;
-        self.ensure_passkey_indexes().await?;
-        self.ensure_pkreg_indexes().await?;
-        self.ensure_pkauth_indexes().await?;
-        self.ensure_dpop_proof_indexes().await?;
+    // Creating an index that already exists with the same options does nothing, so every
+    // process that opens the database runs this; one whose options changed fails it.
+    async fn build_indexes(&self) -> mongodb::error::Result<()> {
+        let collections = [
+            (
+                self.users(),
+                vec![
+                    // Users who haven't given an email hold none, and any number of them may.
+                    IndexModel::builder()
+                        .keys(doc! { "email": 1 })
+                        .options(
+                            IndexOptions::builder()
+                                .name("idx_users_email".to_string())
+                                .unique(true)
+                                .partial_filter_expression(doc! { "email": { "$type": "string" } })
+                                .build(),
+                        )
+                        .build(),
+                ],
+            ),
+            (
+                self.sessions(),
+                vec![
+                    unique("idx_sessions_token_hash", "token_hash"),
+                    lookup("idx_sessions_user_id", "user_id"),
+                    expiry("idx_sessions_expires_at"),
+                ],
+            ),
+            (
+                self.email_links(),
+                vec![
+                    unique("idx_email_links_token_hash", "token_hash"),
+                    lookup("idx_email_links_user_id", "user_id"),
+                    expiry("idx_email_links_expires_at"),
+                ],
+            ),
+            (
+                self.passkeys(),
+                vec![lookup("idx_passkey_creds_user_id", "user_id")],
+            ),
+            (
+                self.passkey_registrations(),
+                vec![
+                    lookup("idx_pkreg_user_id", "user_id"),
+                    expiry("idx_pkreg_expires_at"),
+                ],
+            ),
+            (
+                self.passkey_authentications(),
+                vec![expiry("idx_pkauth_expires_at")],
+            ),
+            (
+                self.dpop_proofs(),
+                vec![expiry("idx_dpop_proofs_expires_at")],
+            ),
+        ];
+        for (collection, indexes) in collections {
+            collection.create_indexes(indexes).await?;
+        }
         Ok(())
     }
+}
 
-    async fn ensure_user_indexes(&self) -> StorageResult<()> {
-        self.users()
-            .create_index(
-                IndexModel::builder()
-                    .keys(doc! { "email": 1 })
-                    .options(
-                        IndexOptions::builder()
-                            .unique(true)
-                            .name("idx_users_email".to_string())
-                            .partial_filter_expression(doc! { "email": { "$type": "string" } })
-                            .build(),
-                    )
-                    .build(),
-            )
-            .await
-            .map_err(err)?;
-        Ok(())
-    }
+fn index(name: &str, field: &str, mut options: IndexOptions) -> IndexModel {
+    options.name = Some(name.to_string());
+    IndexModel::builder()
+        .keys(doc! { field: 1 })
+        .options(options)
+        .build()
+}
 
-    async fn ensure_session_indexes(&self) -> StorageResult<()> {
-        self.sessions()
-            .create_indexes(vec![
-                IndexModel::builder()
-                    .keys(doc! { "token_hash": 1 })
-                    .options(
-                        IndexOptions::builder()
-                            .unique(true)
-                            .name("idx_sessions_token_hash".to_string())
-                            .build(),
-                    )
-                    .build(),
-                IndexModel::builder()
-                    .keys(doc! { "user_id": 1 })
-                    .options(
-                        IndexOptions::builder()
-                            .name("idx_sessions_user_id".to_string())
-                            .build(),
-                    )
-                    .build(),
-                IndexModel::builder()
-                    .keys(doc! { "expires_at": 1 })
-                    .options(
-                        IndexOptions::builder()
-                            .name("idx_sessions_expires_at".to_string())
-                            .expire_after(Duration::ZERO)
-                            .build(),
-                    )
-                    .build(),
-            ])
-            .await
-            .map_err(err)?;
-        Ok(())
-    }
+fn lookup(name: &str, field: &str) -> IndexModel {
+    index(name, field, IndexOptions::default())
+}
 
-    async fn ensure_email_link_indexes(&self) -> StorageResult<()> {
-        self.email_links()
-            .create_indexes(vec![
-                IndexModel::builder()
-                    .keys(doc! { "token_hash": 1 })
-                    .options(
-                        IndexOptions::builder()
-                            .name("idx_email_links_token_hash".to_string())
-                            .unique(true)
-                            .build(),
-                    )
-                    .build(),
-                IndexModel::builder()
-                    .keys(doc! { "user_id": 1 })
-                    .options(
-                        IndexOptions::builder()
-                            .name("idx_email_links_user_id".to_string())
-                            .build(),
-                    )
-                    .build(),
-                IndexModel::builder()
-                    .keys(doc! { "expires_at": 1 })
-                    .options(
-                        IndexOptions::builder()
-                            .name("idx_email_links_expires_at".to_string())
-                            .expire_after(Duration::ZERO)
-                            .build(),
-                    )
-                    .build(),
-            ])
-            .await
-            .map_err(err)?;
-        Ok(())
-    }
+fn unique(name: &str, field: &str) -> IndexModel {
+    index(name, field, IndexOptions::builder().unique(true).build())
+}
 
-    async fn ensure_passkey_indexes(&self) -> StorageResult<()> {
-        self.passkeys()
-            .create_index(
-                IndexModel::builder()
-                    .keys(doc! { "user_id": 1 })
-                    .options(
-                        IndexOptions::builder()
-                            .name("idx_passkey_creds_user_id".to_string())
-                            .build(),
-                    )
-                    .build(),
-            )
-            .await
-            .map_err(err)?;
-        Ok(())
-    }
-
-    async fn ensure_pkreg_indexes(&self) -> StorageResult<()> {
-        self.passkey_registrations()
-            .create_indexes(vec![
-                IndexModel::builder()
-                    .keys(doc! { "user_id": 1 })
-                    .options(
-                        IndexOptions::builder()
-                            .name("idx_pkreg_user_id".to_string())
-                            .build(),
-                    )
-                    .build(),
-                IndexModel::builder()
-                    .keys(doc! { "expires_at": 1 })
-                    .options(
-                        IndexOptions::builder()
-                            .name("idx_pkreg_expires_at".to_string())
-                            .expire_after(Duration::ZERO)
-                            .build(),
-                    )
-                    .build(),
-            ])
-            .await
-            .map_err(err)?;
-        Ok(())
-    }
-
-    async fn ensure_pkauth_indexes(&self) -> StorageResult<()> {
-        self.passkey_authentications()
-            .create_index(
-                IndexModel::builder()
-                    .keys(doc! { "expires_at": 1 })
-                    .options(
-                        IndexOptions::builder()
-                            .name("idx_pkauth_expires_at".to_string())
-                            .expire_after(Duration::ZERO)
-                            .build(),
-                    )
-                    .build(),
-            )
-            .await
-            .map_err(err)?;
-        Ok(())
-    }
-
-    async fn ensure_dpop_proof_indexes(&self) -> StorageResult<()> {
-        self.dpop_proofs()
-            .create_index(
-                IndexModel::builder()
-                    .keys(doc! { "expires_at": 1 })
-                    .options(
-                        IndexOptions::builder()
-                            .name("idx_dpop_proofs_expires_at".to_string())
-                            .expire_after(Duration::ZERO)
-                            .build(),
-                    )
-                    .build(),
-            )
-            .await
-            .map_err(err)?;
-        Ok(())
-    }
+fn expiry(name: &str) -> IndexModel {
+    index(
+        name,
+        "expires_at",
+        IndexOptions::builder().expire_after(Duration::ZERO).build(),
+    )
 }

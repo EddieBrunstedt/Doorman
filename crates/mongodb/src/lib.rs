@@ -26,14 +26,10 @@ pub struct MongoDbStorage {
 }
 
 impl MongoDbStorage {
-    pub fn new(database: mongodb::Database) -> Self {
-        Self {
-            db: MongoDb::new(database),
-        }
-    }
-
-    pub async fn ensure_indexes(&self) -> StorageResult<()> {
-        self.db.ensure_indexes().await
+    pub async fn new(database: mongodb::Database) -> mongodb::error::Result<Self> {
+        Ok(Self {
+            db: MongoDb::open(database).await?,
+        })
     }
 
     pub fn all_stores(&self) -> Storage {

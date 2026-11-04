@@ -19,8 +19,7 @@ async fn mongodb_storage_conformance() {
         .expect("connect to mongodb");
     let database = client.database("doorman_conformance");
 
-    let storage = MongoDbStorage::new(database);
-    storage.ensure_indexes().await.expect("ensure indexes");
+    let storage = MongoDbStorage::new(database).await.expect("open storage");
 
     doorman_conformance::run(&storage.all_stores()).await;
 }
