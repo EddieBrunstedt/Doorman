@@ -42,7 +42,13 @@ jobs:
     if: ${{ github.event_name != 'schedule' }}
     runs-on: [self-hosted, native]
     steps:
-      - uses: actions/checkout@v4
+      # The runner runs as the owner of the checkout, so git needs no
+      # safe.directory entry. checkout's step for it copies ~/.gitconfig, which
+      # fails on this machine, where that file is a relative symlink.
+      - uses: actions/checkout@v7
+        with:
+          set-safe-directory: false
+          persist-credentials: false
       # Build into a persistent path outside the workspace so the cache survives
       # checkout's `git clean` between runs (and keeps the multi-gigabyte target
       # dir out of the repo tree, where git and dprint would otherwise scan it).
@@ -85,6 +91,9 @@ jobs:
   audit:
     runs-on: [self-hosted, native]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          set-safe-directory: false
+          persist-credentials: false
       - name: cargo-deny
         run: just deny
