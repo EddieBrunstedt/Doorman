@@ -4,8 +4,8 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::{
-    CreationChallengeResponse, CredentialID, Passkey, PasskeyAuthentication, PasskeyRegistration,
-    RequestChallengeResponse, Webauthn,
+    CreationChallengeResponse, CredentialID, DiscoverableAuthentication, Passkey,
+    PasskeyAuthentication, PasskeyRegistration, RequestChallengeResponse, Webauthn,
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
 
@@ -47,6 +47,30 @@ pub(crate) struct PasskeyChallenges {
     max_pending_registrations: Option<NonZeroU32>,
 }
 
+// Every type stored as a passkey challenge's state. The tests pin each one's format, webauthn-rs's
+// state inside it included, so an upgrade that changes one fails them instead of the ceremonies in
+// flight when it deploys.
+trait ChallengeState: Serialize + DeserializeOwned {}
+
+// An authentication's state names the purpose it is stored under, so the two can't disagree.
+trait AuthenticationChallengeState: ChallengeState {
+    const PURPOSE: AuthenticationPurpose;
+}
+
+impl ChallengeState for RegistrationChallengeState {}
+
+impl ChallengeState for DiscoverableAuthentication {}
+
+impl AuthenticationChallengeState for DiscoverableAuthentication {
+    const PURPOSE: AuthenticationPurpose = AuthenticationPurpose::Login;
+}
+
+impl ChallengeState for ReauthChallengeState {}
+
+impl AuthenticationChallengeState for ReauthChallengeState {
+    const PURPOSE: AuthenticationPurpose = AuthenticationPurpose::Reauth;
+}
+
 // A passkey added from a session can be finished only by that session, so revoking a stolen
 // session also kills the registrations it started.
 #[derive(Serialize, Deserialize)]
@@ -69,9 +93,8 @@ impl PasskeyChallenges {
         }
     }
 
-    async fn put_authentication<S: Serialize>(
+    async fn put_authentication<S: AuthenticationChallengeState>(
         &self,
-        purpose: AuthenticationPurpose,
         state: &S,
     ) -> Result<PasskeyChallengeId> {
         let now = self.clock.now();
@@ -79,7 +102,7 @@ impl PasskeyChallenges {
         self.challenges
             .put_authentication(StoredPasskeyAuthentication {
                 id,
-                purpose,
+                purpose: S::PURPOSE,
                 state: encode_state(state)?,
                 created_at: now,
                 expires_at: self.lifetime.ends(now),
@@ -88,10 +111,9 @@ impl PasskeyChallenges {
         Ok(id)
     }
 
-    async fn take_authentication<S: DeserializeOwned>(
+    async fn take_authentication<S: AuthenticationChallengeState>(
         &self,
         id: PasskeyChallengeId,
-        purpose: AuthenticationPurpose,
         owner: Option<UserId>,
         actor: &Actor,
     ) -> Result<S> {
@@ -99,7 +121,7 @@ impl PasskeyChallenges {
         self.redeemer
             .check(
                 taken,
-                purpose,
+                S::PURPOSE,
                 owner,
                 |stored| decode_state(&stored.state),
                 actor,
@@ -261,9 +283,7 @@ impl PasskeyChallenges {
             .webauthn
             .start_discoverable_authentication()
             .map_err(|e| Error::Webauthn(e.to_string()))?;
-        let id = self
-            .put_authentication(AuthenticationPurpose::Login, &state)
-            .await?;
+        let id = self.put_authentication(&state).await?;
         Ok((id, rcr))
     }
 
@@ -273,9 +293,7 @@ impl PasskeyChallenges {
         context: &SessionContext,
     ) -> Result<PendingAssertion> {
         let actor = Actor::from(context);
-        let state = self
-            .take_authentication(id, AuthenticationPurpose::Login, None, &actor)
-            .await?;
+        let state: DiscoverableAuthentication = self.take_authentication(id, None, &actor).await?;
         Ok(PendingAssertion::Login(state))
     }
 }
@@ -321,9 +339,7 @@ impl PasskeyChallenges {
             session_id: session.id,
             state,
         };
-        let id = self
-            .put_authentication(AuthenticationPurpose::Reauth, &state)
-            .await?;
+        let id = self.put_authentication(&state).await?;
         Ok((id, rcr))
     }
 
@@ -334,9 +350,8 @@ impl PasskeyChallenges {
     ) -> Result<PendingAssertion> {
         let user_id = session.user_id;
         let actor = session.actor();
-        let ReauthChallengeState { session_id, state } = self
-            .take_authentication(id, AuthenticationPurpose::Reauth, Some(user_id), &actor)
-            .await?;
+        let ReauthChallengeState { session_id, state } =
+            self.take_authentication(id, Some(user_id), &actor).await?;
         if session_id != session.id {
             return Err(self
                 .redeemer
@@ -369,12 +384,12 @@ fn require_discoverable_credential(ccr: &mut CreationChallengeResponse) -> Resul
     Ok(())
 }
 
-fn encode_state<S: Serialize>(state: &S) -> Result<Vec<u8>> {
+fn encode_state<S: ChallengeState>(state: &S) -> Result<Vec<u8>> {
     serde_json::to_vec(state)
         .map_err(|e| Error::Internal(format!("serialise passkey challenge state: {e}")))
 }
 
-fn decode_state<S: DeserializeOwned>(bytes: &[u8]) -> Result<S> {
+fn decode_state<S: ChallengeState>(bytes: &[u8]) -> Result<S> {
     serde_json::from_slice(bytes)
         .map_err(|e| Error::Internal(format!("deserialise passkey challenge state: {e}")))
 }
@@ -382,6 +397,7 @@ fn decode_state<S: DeserializeOwned>(bytes: &[u8]) -> Result<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
     use url::Url;
     use uuid::Uuid;
     use webauthn_rs::prelude::WebauthnBuilder;
@@ -444,6 +460,94 @@ mod tests {
             UserVerificationPolicy::Required,
             "webauthn-rs changed its discoverable-auth UV default; doorman enforces user \
              verification at finish assuming Required — reconcile before bumping",
+        );
+    }
+
+    // Each fixture is a challenge state as doorman stores it today. One that stops reading fails
+    // the ceremonies in flight when the change deploys; replace it only once that is accepted.
+    fn assert_format<S: ChallengeState>(fixture: Value) -> S {
+        let bytes = serde_json::to_vec(&fixture).expect("fixture bytes");
+        let state: S = decode_state(&bytes).expect("the fixture reads");
+        let written: Value =
+            serde_json::from_slice(&encode_state(&state).expect("encode")).expect("written JSON");
+        assert_eq!(
+            written,
+            fixture,
+            "a {} is written in the fixture's format",
+            std::any::type_name::<S>(),
+        );
+        state
+    }
+
+    const SESSION_ID: &str = "3a4b5c6d-7e8f-4a1b-9c2d-3e4f5a6b7c8d";
+
+    #[test]
+    fn every_stored_challenge_state_keeps_its_format() {
+        let registration: RegistrationChallengeState = assert_format(json!({
+            "session_id": SESSION_ID,
+            "state": {"rs": {
+                "policy": "required",
+                "exclude_credentials": ["wP_u"],
+                "challenge": "NEMP7NK0sXnXUs-sYRlQD8_We9XDJtHhIyvFvxp0-Ss",
+                "credential_algorithms": ["ES256", "RS256"],
+                "require_resident_key": false,
+                "authenticator_attachment": null,
+                "extensions": {
+                    "credentialProtectionPolicy": "userVerificationRequired",
+                    "enforceCredentialProtectionPolicy": false,
+                    "uvm": true,
+                    "credProps": true,
+                },
+                "allow_synchronised_authenticators": true,
+            }},
+        }));
+        assert_eq!(
+            registration.session_id,
+            Some(SessionId(SESSION_ID.parse().expect("uuid")))
+        );
+
+        assert_format::<DiscoverableAuthentication>(json!({"ast": {
+            "credentials": [],
+            "policy": "required",
+            "challenge": "IziYVKJXcZlBzXxEAwVWppix3o2gOUctzig5WZltFPE",
+            "appid": null,
+            "allow_backup_eligible_upgrade": false,
+        }}));
+
+        let reauth: ReauthChallengeState = assert_format(json!({
+            "session_id": SESSION_ID,
+            "state": {"ast": {
+                "credentials": [{
+                    "cred_id": "wP_u",
+                    "cred": {"type_": "ES256", "key": {"EC_EC2": {
+                        "curve": "SECP256R1",
+                        "x": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+                        "y": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+                    }}},
+                    "counter": 7,
+                    "transports": ["internal"],
+                    "user_verified": true,
+                    "backup_eligible": true,
+                    "backup_state": true,
+                    "registration_policy": "required",
+                    "extensions": {
+                        "cred_protect": "NotRequested",
+                        "hmac_create_secret": "NotRequested",
+                        "appid": "NotRequested",
+                        "cred_props": "NotRequested",
+                    },
+                    "attestation": {"data": "None", "metadata": "None"},
+                    "attestation_format": "none",
+                }],
+                "policy": "required",
+                "challenge": "ZfinifuRI8AtqKYUh2iNrzUoQj_dgZeUP97GFecHCP4",
+                "appid": null,
+                "allow_backup_eligible_upgrade": true,
+            }},
+        }));
+        assert_eq!(
+            reauth.session_id,
+            SessionId(SESSION_ID.parse().expect("uuid"))
         );
     }
 }
