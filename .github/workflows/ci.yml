@@ -1,4 +1,4 @@
-# Continuous integration for doorman on Forgejo Actions (Codeberg).
+# Continuous integration for doorman on GitHub Actions.
 #
 # The runner is a self-hosted machine exposed under the `native` label. It
 # already carries most of the toolchain — just, a rustup with the stable and
@@ -20,9 +20,12 @@ on:
     # `audit` runs on this trigger; `ci` skips it (see its `if`).
     - cron: "0 6 * * 1"
 
+permissions:
+  contents: read
+
 # A newer push to the same ref cancels the in-flight run.
 concurrency:
-  group: ${{ forgejo.workflow }}-${{ forgejo.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -36,8 +39,8 @@ jobs:
   # suite runs last. Skipped on the weekly cron — that trigger only re-scans
   # advisories via `audit`.
   ci:
-    if: ${{ forgejo.event_name != 'schedule' }}
-    runs-on: native
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: [self-hosted, native]
     steps:
       - uses: actions/checkout@v4
       # Build into a persistent path outside the workspace so the cache survives
@@ -80,7 +83,7 @@ jobs:
   # The one check `just verify` leaves out: its advisory database changes
   # without any change to the repo.
   audit:
-    runs-on: native
+    runs-on: [self-hosted, native]
     steps:
       - uses: actions/checkout@v4
       - name: cargo-deny
