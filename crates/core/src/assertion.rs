@@ -10,7 +10,8 @@ use crate::audit::AuthFailureReason;
 use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result};
-use crate::passkey::{PasskeyMetadata, decode_passkey, encode_passkey};
+use crate::passkey::PasskeyMetadata;
+use crate::passkey_format;
 use crate::storage::{PasskeyStore, PasskeyUse, StoredPasskey, User, UserId};
 use crate::user_records::UserRecords;
 
@@ -91,7 +92,7 @@ impl AssertionVerifier {
         };
         let user_id = stored.user_id;
 
-        let mut passkey = decode_passkey(&stored.passkey)?;
+        let mut passkey = passkey_format::decode(&stored.passkey)?;
         let result = match self.finish(pending, response, &passkey) {
             Ok(result) => result,
             Err(WebauthnError::CredentialPossibleCompromise) => {
@@ -135,7 +136,7 @@ impl AssertionVerifier {
             .record_passkey_use(
                 &stored.credential_id,
                 PasskeyUse {
-                    passkey: encode_passkey(&passkey)?,
+                    passkey: passkey_format::encode(&passkey)?,
                     backup_eligible: refreshed.backup_eligible,
                     backup_state: refreshed.backup_state,
                     used_at: self.clock.now(),

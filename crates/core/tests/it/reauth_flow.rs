@@ -236,7 +236,7 @@ async fn reauth_refuses_a_disabled_users_passkey() {
 
 fn signature_counter(passkey: &StoredPasskey) -> u64 {
     let blob: serde_json::Value = serde_json::from_slice(&passkey.passkey).expect("blob is json");
-    blob["cred"]["counter"]
+    blob["counter"]
         .as_u64()
         .expect("the stored passkey carries a counter")
 }

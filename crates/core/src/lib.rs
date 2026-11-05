@@ -26,6 +26,7 @@ pub mod memory;
 pub mod metrics;
 pub mod operator;
 pub mod passkey;
+mod passkey_format;
 mod passkey_registration;
 pub mod prelude;
 pub mod purge;

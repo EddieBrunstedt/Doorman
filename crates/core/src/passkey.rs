@@ -409,14 +409,6 @@ pub(crate) fn check_credential_id(credential_id: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn encode_passkey(passkey: &Passkey) -> Result<Vec<u8>> {
-    serde_json::to_vec(passkey).map_err(|e| Error::Internal(format!("serialise passkey: {e}")))
-}
-
-pub(crate) fn decode_passkey(bytes: &[u8]) -> Result<Passkey> {
-    serde_json::from_slice(bytes).map_err(|e| Error::Internal(format!("deserialise passkey: {e}")))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

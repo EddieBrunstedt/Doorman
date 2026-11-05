@@ -16,7 +16,8 @@ use crate::clock::Clock;
 use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::lifetime::Lifetime;
-use crate::passkey::{PasskeyConfig, decode_passkey};
+use crate::passkey::PasskeyConfig;
+use crate::passkey_format;
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::redeem::Redeemer;
 use crate::session::{ResolvedSession, SessionContext};
@@ -309,7 +310,7 @@ impl PasskeyChallenges {
             })?;
         let passkeys = stored
             .iter()
-            .map(|c| decode_passkey(&c.passkey))
+            .map(|c| passkey_format::decode(&c.passkey))
             .collect::<Result<Vec<Passkey>>>()?;
 
         let (rcr, state) = self

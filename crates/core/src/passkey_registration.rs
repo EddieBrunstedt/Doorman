@@ -10,8 +10,8 @@ use crate::context::CoreDeps;
 use crate::error::{Error, Result};
 use crate::passkey::{
     PasskeyConfig, PasskeyMetadata, PasskeyName, StartedRegistration, check_credential_id,
-    encode_passkey,
 };
+use crate::passkey_format;
 use crate::recovery::CoolDownLength;
 use crate::recovery_cool_down::RecoveryCoolDown;
 use crate::session::SessionContext;
@@ -268,7 +268,7 @@ impl PasskeyRegistrations {
         Ok(StoredPasskey {
             credential_id: passkey.cred_id().to_vec(),
             user_id,
-            passkey: encode_passkey(&passkey)?,
+            passkey: passkey_format::encode(&passkey)?,
             name: name.map(PasskeyName::into_string),
             created_at: self.clock.now(),
             last_used_at: None,

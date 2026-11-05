@@ -635,7 +635,7 @@ async fn finish_authentication_rejects_counter_regression_and_audits_it() {
         .expect("passkey persisted");
     let mut blob: serde_json::Value =
         serde_json::from_slice(&stored.passkey).expect("blob is json");
-    blob["cred"]["counter"] = serde_json::json!(1_000_000u32);
+    blob["counter"] = serde_json::json!(1_000_000u32);
     h.passkeys
         .record_passkey_use(
             &passkey.credential_id,
