@@ -8,7 +8,12 @@
 version = 2
 # Fail on crates with an open RustSec advisory or that have been yanked.
 yanked = "deny"
-ignore = []
+ignore = [
+  # Unmaintained, with no patched release. testcontainers pulls it into the
+  # storage adapters' tests only; no doorman crate depends on it. Drop this once
+  # testcontainers ships its replacement (testcontainers/testcontainers-rs#1006).
+  { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar is unmaintained; reached only through testcontainers, a dev-dependency" },
+]
 
 [licenses]
 version = 2
