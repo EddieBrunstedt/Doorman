@@ -4,7 +4,7 @@
 
 Please report security issues **privately** and give the maintainer a chance to ship a fix before any public disclosure.
 
-- **Preferred:** open a private security advisory on the repository (<https://codeberg.org/EddieBrunstedt/Doorman>) if the platform exposes the advisory workflow.
+- **Preferred:** report it through a private security advisory at <https://github.com/EddieBrunstedt/Doorman/security/advisories/new>.
 - **Otherwise:** email `eddie.brunstedt@protonmail.com` with the details and a reproduction. Use a subject line that makes the security nature obvious.
 
 Include the affected version, the impact, and steps to reproduce. You will get an acknowledgement; once a fix is available it will be released and the reporter credited unless they ask otherwise. Do not open a public issue or pull request for an unfixed vulnerability.

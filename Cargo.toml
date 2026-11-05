@@ -17,9 +17,9 @@ members = [
 version = "0.1.0"
 authors = ["Eddie Brunstedt <eddie.brunstedt@protonmail.com>"]
 edition = "2024"
-homepage = "https://codeberg.org/EddieBrunstedt/Doorman"
+homepage = "https://github.com/EddieBrunstedt/Doorman"
 license = "MIT OR Apache-2.0"
-repository = "https://codeberg.org/EddieBrunstedt/Doorman"
+repository = "https://github.com/EddieBrunstedt/Doorman"
 # MSRV tracks a recent stable release rather than the dependency tree's floor.
 # CI and `just msrv` enforce it against the pinned `1.99.0` toolchain
 # (`cargo +1.99.0 check --workspace --all-features --locked`).
