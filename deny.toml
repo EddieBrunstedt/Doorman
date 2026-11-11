@@ -13,6 +13,16 @@ ignore = [
   # storage adapters' tests only; no doorman crate depends on it. Drop this once
   # testcontainers ships its replacement (testcontainers/testcontainers-rs#1006).
   { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar is unmaintained; reached only through testcontainers, a dev-dependency" },
+  # SQLite before 3.54.0 can return stale memory from a database opened beside a
+  # crafted `-wal` file. Whoever can write those files already holds the store's
+  # contents. sqlx 0.9.0 caps libsqlite3-sys below 0.38, and the fix is in 0.39.
+  # Drop this once sqlx allows libsqlite3-sys 0.39.
+  { id = "RUSTSEC-2026-0459", reason = "needs a local attacker who can write the SQLite database files; sqlx 0.9.0 does not allow the patched libsqlite3-sys" },
+  # The Marvin attack times RSA private-key operations. webauthn-rs only verifies
+  # RSA signatures, with public keys. crypto-glue 0.2.2 asks rsa for a feature
+  # the fixed 0.10.0 dropped, so the release candidate stays locked. Drop this
+  # once crypto-glue allows rsa 0.10.0.
+  { id = "RUSTSEC-2023-0071", reason = "webauthn-rs performs no RSA private-key operation; crypto-glue 0.2.2 cannot use the fixed rsa 0.10.0" },
 ]
 
 [licenses]
