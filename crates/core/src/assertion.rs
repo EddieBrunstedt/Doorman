@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 use webauthn_rs::prelude::{
-    AuthenticationResult, DiscoverableAuthentication, DiscoverableKey, Passkey,
-    PasskeyAuthentication, PublicKeyCredential, Webauthn, WebauthnError,
+    AuthenticationResult, DiscoverableAuthentication, Passkey, PasskeyAuthentication,
+    PublicKeyCredential, Webauthn, WebauthnError,
 };
 
 use crate::audit::AuthFailureReason;
@@ -157,11 +157,9 @@ impl AssertionVerifier {
         passkey: &Passkey,
     ) -> std::result::Result<AuthenticationResult, WebauthnError> {
         match pending {
-            PendingAssertion::Login(state) => self.webauthn.finish_discoverable_authentication(
-                response,
-                state,
-                &[DiscoverableKey::from(passkey)],
-            ),
+            PendingAssertion::Login(state) => self
+                .webauthn
+                .finish_discoverable_authentication_v2(response, state, passkey),
             PendingAssertion::Reauth { state, .. } => self
                 .webauthn
                 .finish_passkey_authentication(response, &state),

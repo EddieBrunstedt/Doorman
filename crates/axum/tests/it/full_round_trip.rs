@@ -131,7 +131,7 @@ async fn signup_login_recovery_round_trip() {
         redeem.json().await.expect("redeem body");
 
     let attestation = authenticator.do_registration(challenge.options);
-    let login_credential_id = attestation.raw_id.as_ref().to_vec();
+    let login_credential_id = attestation.raw_id.clone();
     let finish = client
         .post(url("/auth/signup/finish"))
         .header("dpop", proof("POST", "/auth/signup/finish", None))

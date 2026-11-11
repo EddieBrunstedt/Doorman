@@ -16,7 +16,7 @@ struct DiscoverableCredential {
 // passkey it registers and answers a discoverable login the way a resident
 // authenticator would: by picking the passkey and returning its user handle.
 pub struct ResidentAuthenticator {
-    inner: WebauthnAuthenticator<SoftPasskey>,
+    inner: SoftPasskey,
     origin: Url,
     discoverable_credentials: Vec<DiscoverableCredential>,
 }
@@ -24,7 +24,7 @@ pub struct ResidentAuthenticator {
 impl ResidentAuthenticator {
     pub fn new(origin: &Url) -> Self {
         Self {
-            inner: WebauthnAuthenticator::new(SoftPasskey::new(true)),
+            inner: SoftPasskey::new(true),
             origin: origin.clone(),
             discoverable_credentials: Vec::new(),
         }
@@ -43,7 +43,7 @@ impl ResidentAuthenticator {
     ) -> RegisterPublicKeyCredential {
         assert_resident_registration_options(&challenge);
 
-        let user_handle = challenge.public_key.user.id.as_ref().to_vec();
+        let user_handle = challenge.public_key.user.id.clone();
         let mut compatible = challenge;
         let selection = compatible
             .public_key
@@ -58,7 +58,7 @@ impl ResidentAuthenticator {
             .do_registration(self.origin.clone(), compatible)
             .expect("authenticator register");
         self.discoverable_credentials.push(DiscoverableCredential {
-            credential_id: response.raw_id.as_ref().to_vec(),
+            credential_id: response.raw_id.clone(),
             user_handle,
         });
         response
@@ -110,14 +110,14 @@ impl ResidentAuthenticator {
         let mut compatible = challenge;
         compatible.public_key.allow_credentials = vec![AllowCredentials {
             type_: "public-key".to_string(),
-            id: resident.credential_id.clone().into(),
+            id: resident.credential_id.clone(),
             transports: None,
         }];
         let mut assertion = self
             .inner
             .do_authentication(self.origin.clone(), compatible)
             .expect("authenticator auth");
-        assertion.response.user_handle = include_user_handle.then(|| resident.user_handle.into());
+        assertion.response.user_handle = include_user_handle.then_some(resident.user_handle);
         assertion
     }
 }

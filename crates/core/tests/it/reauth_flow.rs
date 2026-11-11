@@ -487,7 +487,7 @@ fn scoped_to(
     use webauthn_rs_proto::AllowCredentials;
     options.public_key.allow_credentials = vec![AllowCredentials {
         type_: "public-key".to_string(),
-        id: credential_id.to_vec().into(),
+        id: credential_id.to_vec(),
         transports: None,
     }];
     options
@@ -634,7 +634,7 @@ async fn a_passkey_in_recovery_cool_down_cannot_reauthenticate() {
             .public_key
             .allow_credentials
             .iter()
-            .all(|c| c.id.as_ref() != recovered.credential_id.as_slice()),
+            .all(|c| c.id.as_slice() != recovered.credential_id.as_slice()),
         "the challenge names the passkey in cool-down"
     );
     assert!(

@@ -549,7 +549,7 @@ async fn finish_authentication_rejects_tampered_signature() {
         .expect("start auth");
     let mut assertion = wa.do_authentication(rcr, &passkey.credential_id);
 
-    let mut signature = assertion.response.signature.as_ref().to_vec();
+    let mut signature = assertion.response.signature.clone();
     signature[0] ^= 0x01;
     assertion.response.signature = signature.as_slice().into();
 
@@ -603,7 +603,7 @@ async fn finish_registration_rejects_tampered_attestation() {
         .expect("start");
     let mut response = wa.do_registration(ccr);
 
-    let mut attestation = response.response.attestation_object.as_ref().to_vec();
+    let mut attestation = response.response.attestation_object.clone();
     attestation[0] ^= 0x01;
     response.response.attestation_object = attestation.as_slice().into();
 

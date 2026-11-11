@@ -1,6 +1,5 @@
 use std::fmt::Debug;
 
-use openssl::x509::X509;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
@@ -13,6 +12,9 @@ use webauthn_rs_proto::{
     AuthenticatorTransport, CredProps, CredentialProtectionPolicy, ExtnState, RegisteredExtensions,
     UserVerificationPolicy,
 };
+
+use x509_cert::Certificate;
+use x509_cert::der::{Decode, Encode};
 
 use crate::encoding::hex;
 use crate::error::{Error, Result};
@@ -62,7 +64,7 @@ impl PasskeyRow {
             attestation_format,
         } = credential;
         Ok(Self {
-            credential_id: Hex(cred_id.into()),
+            credential_id: Hex(cred_id),
             public_key: PublicKeyRow::from_key(cred)?,
             counter,
             transports: transports.map(|transports| {
@@ -83,7 +85,7 @@ impl PasskeyRow {
     fn into_credential(self) -> Result<Credential> {
         let (attestation, attestation_format) = self.attestation.into_attestation()?;
         Ok(Credential {
-            cred_id: self.credential_id.0.into(),
+            cred_id: self.credential_id.0,
             cred: self.public_key.into_key(),
             counter: self.counter,
             transports: self.transports.map(|transports| {
@@ -136,17 +138,17 @@ impl PublicKeyRow {
             COSEKeyType::EC_EC2(COSEEC2Key { curve, x, y }) => Self::Ec2 {
                 alg,
                 crv: Ec2CurveRow::from_curve(curve),
-                x: Hex(x.into()),
-                y: Hex(y.into()),
+                x: Hex(x),
+                y: Hex(y),
             },
             COSEKeyType::EC_OKP(COSEOKPKey { curve, x }) => Self::Okp {
                 alg,
                 crv: OkpCurveRow::from_curve(curve),
-                x: Hex(x.into()),
+                x: Hex(x),
             },
             COSEKeyType::RSA(COSERSAKey { n, e }) => Self::Rsa {
                 alg,
-                n: Hex(n.into()),
+                n: Hex(n),
                 e: Hex(e),
             },
         })
@@ -158,24 +160,18 @@ impl PublicKeyRow {
                 alg,
                 COSEKeyType::EC_EC2(COSEEC2Key {
                     curve: crv.into_curve(),
-                    x: x.0.into(),
-                    y: y.0.into(),
+                    x: x.0,
+                    y: y.0,
                 }),
             ),
             Self::Okp { alg, crv, x } => (
                 alg,
                 COSEKeyType::EC_OKP(COSEOKPKey {
                     curve: crv.into_curve(),
-                    x: x.0.into(),
+                    x: x.0,
                 }),
             ),
-            Self::Rsa { alg, n, e } => (
-                alg,
-                COSEKeyType::RSA(COSERSAKey {
-                    n: n.0.into(),
-                    e: e.0,
-                }),
-            ),
+            Self::Rsa { alg, n, e } => (alg, COSEKeyType::RSA(COSERSAKey { n: n.0, e: e.0 })),
         };
         COSEKey {
             type_: alg.into_algorithm(),
@@ -204,7 +200,7 @@ impl AlgorithmRow {
         Ok(match algorithm {
             COSEAlgorithm::ES256 => Self::ES256,
             COSEAlgorithm::ES384 => Self::ES384,
-            COSEAlgorithm::ES512 => Self::ES512,
+            COSEAlgorithm::ES521 => Self::ES512,
             COSEAlgorithm::RS256 => Self::RS256,
             COSEAlgorithm::RS384 => Self::RS384,
             COSEAlgorithm::RS512 => Self::RS512,
@@ -226,7 +222,7 @@ impl AlgorithmRow {
         match self {
             Self::ES256 => COSEAlgorithm::ES256,
             Self::ES384 => COSEAlgorithm::ES384,
-            Self::ES512 => COSEAlgorithm::ES512,
+            Self::ES512 => COSEAlgorithm::ES521,
             Self::RS256 => COSEAlgorithm::RS256,
             Self::RS384 => COSEAlgorithm::RS384,
             Self::RS512 => COSEAlgorithm::RS512,
@@ -574,7 +570,7 @@ impl AttestationDataRow {
     }
 }
 
-fn chain_to_der(chain: &[X509]) -> Result<Vec<Hex<Vec<u8>>>> {
+fn chain_to_der(chain: &[Certificate]) -> Result<Vec<Hex<Vec<u8>>>> {
     chain
         .iter()
         .map(|certificate| {
@@ -585,11 +581,11 @@ fn chain_to_der(chain: &[X509]) -> Result<Vec<Hex<Vec<u8>>>> {
         .collect()
 }
 
-fn chain_from_der(chain: Vec<Hex<Vec<u8>>>) -> Result<Vec<X509>> {
+fn chain_from_der(chain: Vec<Hex<Vec<u8>>>) -> Result<Vec<Certificate>> {
     chain
         .into_iter()
         .map(|Hex(der)| {
-            X509::from_der(&der).map_err(|e| {
+            Certificate::from_der(&der).map_err(|e| {
                 Error::Internal(format!("deserialise passkey attestation certificate: {e}"))
             })
         })
@@ -649,7 +645,7 @@ impl AttestationMetadataRow {
                 apk_package_name,
                 apk_certificate_digest_sha256: apk_certificate_digest_sha256
                     .into_iter()
-                    .map(|digest| Hex(digest.into()))
+                    .map(Hex)
                     .collect(),
                 cts_profile_match,
                 basic_integrity,
@@ -686,7 +682,7 @@ impl AttestationMetadataRow {
                 apk_package_name,
                 apk_certificate_digest_sha256: apk_certificate_digest_sha256
                     .into_iter()
-                    .map(|Hex(digest)| digest.into())
+                    .map(|Hex(digest)| digest)
                     .collect(),
                 cts_profile_match,
                 basic_integrity,
@@ -741,8 +737,8 @@ mod tests {
 
     const AAGUID: &str = "6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f";
 
-    fn certificate() -> X509 {
-        X509::from_der(&unhex(CERTIFICATE).expect("hex")).expect("certificate")
+    fn certificate() -> Certificate {
+        Certificate::from_der(&unhex(CERTIFICATE).expect("hex")).expect("certificate")
     }
 
     // webauthn-rs's own serialization compares two credentials, which have no `PartialEq`.
@@ -801,13 +797,13 @@ mod tests {
                 },
             }),
             Credential {
-                cred_id: vec![0xc0, 0xff, 0xee].into(),
+                cred_id: vec![0xc0, 0xff, 0xee],
                 cred: COSEKey {
                     type_: COSEAlgorithm::ES256,
                     key: COSEKeyType::EC_EC2(COSEEC2Key {
                         curve: ECDSACurve::SECP256R1,
-                        x: vec![1; 32].into(),
-                        y: vec![2; 32].into(),
+                        x: vec![1; 32],
+                        y: vec![2; 32],
                     }),
                 },
                 counter: 7,
@@ -859,12 +855,12 @@ mod tests {
                 },
             }),
             Credential {
-                cred_id: vec![1, 2].into(),
+                cred_id: vec![1, 2],
                 cred: COSEKey {
                     type_: COSEAlgorithm::EDDSA,
                     key: COSEKeyType::EC_OKP(COSEOKPKey {
                         curve: EDDSACurve::ED25519,
-                        x: vec![3; 32].into(),
+                        x: vec![3; 32],
                     }),
                 },
                 counter: 0,
@@ -909,11 +905,11 @@ mod tests {
                 },
             }),
             Credential {
-                cred_id: vec![0xff].into(),
+                cred_id: vec![0xff],
                 cred: COSEKey {
                     type_: COSEAlgorithm::RS256,
                     key: COSEKeyType::RSA(COSERSAKey {
-                        n: vec![4; 256].into(),
+                        n: vec![4; 256],
                         e: [1, 0, 1],
                     }),
                 },
@@ -964,7 +960,7 @@ mod tests {
         let algorithm = prop::sample::select(vec![
             COSEAlgorithm::ES256,
             COSEAlgorithm::ES384,
-            COSEAlgorithm::ES512,
+            COSEAlgorithm::ES521,
             COSEAlgorithm::RS256,
             COSEAlgorithm::RS384,
             COSEAlgorithm::RS512,
@@ -986,16 +982,16 @@ mod tests {
             )
                 .prop_map(|(curve, x, y)| COSEKeyType::EC_EC2(COSEEC2Key {
                     curve,
-                    x: x.into(),
-                    y: y.into(),
+                    x,
+                    y,
                 })),
             (
                 prop::sample::select(vec![EDDSACurve::ED25519, EDDSACurve::ED448]),
                 bytes(0..58),
             )
-                .prop_map(|(curve, x)| COSEKeyType::EC_OKP(COSEOKPKey { curve, x: x.into() })),
+                .prop_map(|(curve, x)| COSEKeyType::EC_OKP(COSEOKPKey { curve, x })),
             (bytes(0..513), any::<[u8; 3]>())
-                .prop_map(|(n, e)| COSEKeyType::RSA(COSERSAKey { n: n.into(), e })),
+                .prop_map(|(n, e)| COSEKeyType::RSA(COSERSAKey { n, e })),
         ];
         (algorithm, key).prop_map(|(type_, key)| COSEKey { type_, key })
     }
@@ -1061,10 +1057,7 @@ mod tests {
                     |(name, digests, cts_profile_match, basic_integrity, evaluation_type)| {
                         AttestationMetadata::AndroidSafetyNet {
                             apk_package_name: name,
-                            apk_certificate_digest_sha256: digests
-                                .into_iter()
-                                .map(Into::into)
-                                .collect(),
+                            apk_certificate_digest_sha256: digests.into_iter().collect(),
                             cts_profile_match,
                             basic_integrity,
                             evaluation_type,
@@ -1113,7 +1106,7 @@ mod tests {
                     [user_verified, backup_eligible, backup_state],
                     (registration_policy, extensions, attestation, attestation_format),
                 )| Credential {
-                    cred_id: cred_id.into(),
+                    cred_id,
                     cred,
                     counter,
                     transports,

@@ -230,9 +230,7 @@ async fn take(step: Step, limiter: Recording, limits: RateLimits) -> Outcome {
         .build();
     let prepared = step.prepare(&h).await;
     let passkey = match &prepared {
-        Prepared::LoginFinish { assertion, .. } => {
-            URL_SAFE_NO_PAD.encode(assertion.raw_id.as_ref())
-        }
+        Prepared::LoginFinish { assertion, .. } => URL_SAFE_NO_PAD.encode(&assertion.raw_id),
         _ => String::new(),
     };
     let audited_before = h.audit.events().len();
